@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/bwmarrin/discordgo"
+)
 
 func TestSegmentAccumulatorSplitsByRunes(t *testing.T) {
 	t.Parallel()
@@ -46,5 +50,47 @@ func TestBuildRenderSpecsMarksSettledAndStreamingSegments(t *testing.T) {
 
 	if finalSpecs[0].content != "only" || finalSpecs[0].color != embedColorComplete {
 		t.Fatalf("unexpected final spec: %#v", finalSpecs[0])
+	}
+}
+
+func TestNewReplyMessageDisablesReplyAuthorMention(t *testing.T) {
+	t.Parallel()
+
+	reference := new(discordgo.Message)
+	reference.ID = "source-message"
+	reference.ChannelID = "source-channel"
+
+	send := newReplyMessage(reference)
+	if send.AllowedMentions == nil {
+		t.Fatal("expected allowed mentions to be configured")
+	}
+
+	if send.AllowedMentions.RepliedUser {
+		t.Fatal("expected replied user mentions to be disabled")
+	}
+
+	expectedParse := []discordgo.AllowedMentionType{
+		discordgo.AllowedMentionTypeRoles,
+		discordgo.AllowedMentionTypeUsers,
+		discordgo.AllowedMentionTypeEveryone,
+	}
+
+	if len(send.AllowedMentions.Parse) != len(expectedParse) {
+		t.Fatalf("unexpected allowed mention parse count: %#v", send.AllowedMentions.Parse)
+	}
+
+	for index, mentionType := range expectedParse {
+		if send.AllowedMentions.Parse[index] != mentionType {
+			t.Fatalf(
+				"unexpected allowed mention parse at %d: got %q want %q",
+				index,
+				send.AllowedMentions.Parse[index],
+				mentionType,
+			)
+		}
+	}
+
+	if send.Reference == nil {
+		t.Fatal("expected message reference to be set")
 	}
 }
