@@ -29,10 +29,11 @@ func TestMessageAllowed(t *testing.T) {
 				BlockedIDs: idList{"blocked-channel"},
 			},
 		},
-		Providers:    nil,
-		Models:       nil,
-		ModelOrder:   nil,
-		SystemPrompt: "",
+		Providers:          nil,
+		Models:             nil,
+		ModelOrder:         nil,
+		SearchDeciderModel: "",
+		SystemPrompt:       "",
 	}
 
 	testCases := []struct {

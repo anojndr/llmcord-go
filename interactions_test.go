@@ -47,6 +47,81 @@ func TestHandleModelCommandAllowsNonAdminSwitch(t *testing.T) {
 	}
 }
 
+func TestHandleSearchDeciderModelCommandAllowsSwitch(t *testing.T) {
+	t.Parallel()
+
+	configPath := writeModelConfig(t)
+
+	var response discordgo.InteractionResponse
+
+	session := newInteractionTestSession(t, &response)
+	instance := newModelTestBot(configPath, "openai/first-model")
+	instance.currentSearchDeciderModel = "openai/first-model"
+	interaction := newSearchDeciderModelCommandInteraction("member-user", "openai/second-model")
+
+	err := instance.handleSearchDeciderModelCommand(session, interaction)
+	if err != nil {
+		t.Fatalf("handle search decider model command: %v", err)
+	}
+
+	if instance.currentSearchDeciderModel != "openai/second-model" {
+		t.Fatalf("unexpected current search decider model: %q", instance.currentSearchDeciderModel)
+	}
+
+	if response.Data == nil {
+		t.Fatal("expected interaction response data")
+	}
+
+	expectedContent := "Search decider model switched to: `openai/second-model`"
+	if response.Data.Content != expectedContent {
+		t.Fatalf("unexpected response content: got %q want %q", response.Data.Content, expectedContent)
+	}
+}
+
+func TestHandleInteractionCreateRespondsToShowSourcesButton(t *testing.T) {
+	t.Parallel()
+
+	var response discordgo.InteractionResponse
+
+	session := newInteractionTestSession(t, &response)
+	instance := new(bot)
+	instance.nodes = newMessageNodeStore(10)
+
+	node := instance.nodes.getOrCreate("response-message")
+	node.mu.Lock()
+	node.searchMetadata = &searchMetadata{
+		Queries: []string{"latest ai news"},
+		Results: []webSearchResult{
+			{
+				Query: "latest ai news",
+				Text: "Title: Example Source\n" +
+					"URL: https://example.com/source\n",
+			},
+		},
+	}
+	node.mu.Unlock()
+
+	interaction := newShowSourcesInteraction("response-message")
+
+	instance.handleInteractionCreate(session, interaction)
+
+	if response.Data == nil {
+		t.Fatal("expected interaction response data")
+	}
+
+	if response.Data.Flags != discordgo.MessageFlagsEphemeral {
+		t.Fatalf("unexpected response flags: %v", response.Data.Flags)
+	}
+
+	if !containsFold(response.Data.Content, "latest ai news") {
+		t.Fatalf("expected query in response content: %q", response.Data.Content)
+	}
+
+	if !containsFold(response.Data.Content, "https://example.com/source") {
+		t.Fatalf("expected source URL in response content: %q", response.Data.Content)
+	}
+}
+
 func writeModelConfig(t *testing.T) string {
 	t.Helper()
 
@@ -134,6 +209,27 @@ func newModelTestBot(configPath string, currentModel string) *bot {
 }
 
 func newModelCommandInteraction(userID string, modelName string) *discordgo.InteractionCreate {
+	return newConfiguredModelCommandInteraction(userID, modelName, modelCommandName, modelOptionName)
+}
+
+func newSearchDeciderModelCommandInteraction(
+	userID string,
+	modelName string,
+) *discordgo.InteractionCreate {
+	return newConfiguredModelCommandInteraction(
+		userID,
+		modelName,
+		searchDeciderModelCommandName,
+		searchDeciderModelOptionName,
+	)
+}
+
+func newConfiguredModelCommandInteraction(
+	userID string,
+	modelName string,
+	commandName string,
+	optionName string,
+) *discordgo.InteractionCreate {
 	user := new(discordgo.User)
 	user.ID = userID
 
@@ -141,13 +237,13 @@ func newModelCommandInteraction(userID string, modelName string) *discordgo.Inte
 	member.User = user
 
 	option := new(discordgo.ApplicationCommandInteractionDataOption)
-	option.Name = modelOptionName
+	option.Name = optionName
 	option.Type = discordgo.ApplicationCommandOptionString
 	option.Value = modelName
 
 	var commandData discordgo.ApplicationCommandInteractionData
 
-	commandData.Name = modelCommandName
+	commandData.Name = commandName
 	commandData.Options = []*discordgo.ApplicationCommandInteractionDataOption{option}
 
 	interaction := new(discordgo.Interaction)
@@ -156,6 +252,26 @@ func newModelCommandInteraction(userID string, modelName string) *discordgo.Inte
 	interaction.Type = discordgo.InteractionApplicationCommand
 	interaction.Member = member
 	interaction.Data = commandData
+
+	result := new(discordgo.InteractionCreate)
+	result.Interaction = interaction
+
+	return result
+}
+
+func newShowSourcesInteraction(messageID string) *discordgo.InteractionCreate {
+	message := new(discordgo.Message)
+	message.ID = messageID
+
+	interaction := new(discordgo.Interaction)
+	interaction.ID = "interaction-id"
+	interaction.Token = "interaction-token"
+	interaction.Type = discordgo.InteractionMessageComponent
+	interaction.Message = message
+
+	componentData := new(discordgo.MessageComponentInteractionData)
+	componentData.CustomID = showSourcesButtonCustomID
+	interaction.Data = *componentData
 
 	result := new(discordgo.InteractionCreate)
 	result.Interaction = interaction

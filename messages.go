@@ -156,16 +156,6 @@ func (instance *bot) respondToMessage(
 	message *discordgo.Message,
 	providerSlashModel string,
 ) error {
-	providerName, modelName, err := splitConfiguredModel(providerSlashModel)
-	if err != nil {
-		return fmt.Errorf("parse current model %q: %w", providerSlashModel, err)
-	}
-
-	provider, ok := loadedConfig.Providers[providerName]
-	if !ok {
-		return fmt.Errorf("find provider %q: %w", providerName, os.ErrNotExist)
-	}
-
 	maxImages := loadedConfig.MaxImages
 	if !isVisionModel(providerSlashModel) {
 		maxImages = 0
@@ -191,6 +181,19 @@ func (instance *bot) respondToMessage(
 		message.Content,
 	)
 
+	searchMessages, searchMetadata, searchWarnings, err := instance.maybeAugmentConversationWithWebSearch(
+		ctx,
+		loadedConfig,
+		messages,
+	)
+	if err != nil {
+		return fmt.Errorf("augment conversation with web search: %w", err)
+	}
+
+	messages = searchMessages
+
+	warnings = append(warnings, searchWarnings...)
+
 	if loadedConfig.SystemPrompt != "" {
 		systemMessage := chatMessage{
 			Role:    "system",
@@ -199,21 +202,16 @@ func (instance *bot) respondToMessage(
 		messages = append([]chatMessage{systemMessage}, messages...)
 	}
 
-	modelParameters := loadedConfig.Models[providerSlashModel]
-	request := chatCompletionRequest{
-		BaseURL:      provider.BaseURL,
-		APIKey:       providerAPIKey(provider.APIKey),
-		Model:        modelName,
-		Messages:     messages,
-		ExtraHeaders: provider.ExtraHeaders,
-		ExtraQuery:   provider.ExtraQuery,
-		ExtraBody:    mergeExtraBody(provider.ExtraBody, modelParameters),
+	request, err := buildChatCompletionRequest(loadedConfig, providerSlashModel, messages)
+	if err != nil {
+		return fmt.Errorf("build chat completion request: %w", err)
 	}
 
 	err = instance.generateAndSendResponse(
 		ctx,
 		request,
 		message,
+		searchMetadata,
 		warnings,
 		loadedConfig.UsePlainResponses,
 	)
@@ -242,4 +240,40 @@ func mergeExtraBody(providerExtraBody map[string]any, modelParameters map[string
 	maps.Copy(mergedBody, modelParameters)
 
 	return mergedBody
+}
+
+func buildChatCompletionRequest(
+	loadedConfig config,
+	providerSlashModel string,
+	messages []chatMessage,
+) (chatCompletionRequest, error) {
+	providerName, modelName, err := splitConfiguredModel(providerSlashModel)
+	if err != nil {
+		return chatCompletionRequest{}, fmt.Errorf(
+			"parse current model %q: %w",
+			providerSlashModel,
+			err,
+		)
+	}
+
+	provider, ok := loadedConfig.Providers[providerName]
+	if !ok {
+		return chatCompletionRequest{}, fmt.Errorf(
+			"find provider %q: %w",
+			providerName,
+			os.ErrNotExist,
+		)
+	}
+
+	modelParameters := loadedConfig.Models[providerSlashModel]
+
+	return chatCompletionRequest{
+		BaseURL:      provider.BaseURL,
+		APIKey:       providerAPIKey(provider.APIKey),
+		Model:        modelName,
+		Messages:     messages,
+		ExtraHeaders: provider.ExtraHeaders,
+		ExtraQuery:   provider.ExtraQuery,
+		ExtraBody:    mergeExtraBody(provider.ExtraBody, modelParameters),
+	}, nil
 }

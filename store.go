@@ -15,6 +15,7 @@ type messageNode struct {
 	role              string
 	text              string
 	images            []contentPart
+	searchMetadata    *searchMetadata
 	hasBadAttachments bool
 	fetchParentFailed bool
 	parentMessage     *discordgo.Message
@@ -48,6 +49,15 @@ func (store *messageNodeStore) getOrCreate(messageID string) *messageNode {
 	store.nodes[messageID] = node
 
 	return node
+}
+
+func (store *messageNodeStore) get(messageID string) (*messageNode, bool) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+
+	node, ok := store.nodes[messageID]
+
+	return node, ok
 }
 
 func (store *messageNodeStore) addPending(messageID string, parentMessage *discordgo.Message) *messageNode {

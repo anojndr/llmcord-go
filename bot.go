@@ -13,15 +13,17 @@ import (
 )
 
 type bot struct {
-	configPath   string
-	session      *discordgo.Session
-	httpClient   *http.Client
-	openAI       openAIClient
-	nodes        *messageNodeStore
-	currentModel string
-	modelMu      sync.RWMutex
-	editMu       sync.Mutex
-	nextEditAt   time.Time
+	configPath                string
+	session                   *discordgo.Session
+	httpClient                *http.Client
+	openAI                    chatCompletionClient
+	webSearch                 webSearchClient
+	nodes                     *messageNodeStore
+	currentModel              string
+	currentSearchDeciderModel string
+	modelMu                   sync.RWMutex
+	editMu                    sync.Mutex
+	nextEditAt                time.Time
 }
 
 func newBot(configPath string, loadedConfig config) (*bot, error) {
@@ -37,8 +39,10 @@ func newBot(configPath string, loadedConfig config) (*bot, error) {
 	instance.session = discordSession
 	instance.httpClient = httpClient
 	instance.openAI = newOpenAIClient(httpClient)
+	instance.webSearch = newExaSearchClient(httpClient)
 	instance.nodes = newMessageNodeStore(maxMessageNodes)
 	instance.currentModel = loadedConfig.firstModel()
+	instance.currentSearchDeciderModel = loadedConfig.SearchDeciderModel
 
 	discordSession.Identify.Intents = discordgo.IntentsGuilds |
 		discordgo.IntentsGuildMessages |
@@ -131,8 +135,9 @@ func (instance *bot) syncCommands() error {
 		return fmt.Errorf("sync commands without discord user state: %w", os.ErrInvalid)
 	}
 
-	commands := make([]*discordgo.ApplicationCommand, 0, 1)
+	commands := make([]*discordgo.ApplicationCommand, 0, registeredCommandCount)
 	commands = append(commands, newModelCommand())
+	commands = append(commands, newSearchDeciderModelCommand())
 
 	_, err := instance.session.ApplicationCommandBulkOverwrite(
 		instance.session.State.User.ID,
@@ -147,14 +152,37 @@ func (instance *bot) syncCommands() error {
 }
 
 func newModelCommand() *discordgo.ApplicationCommand {
+	return newConfiguredModelCommand(
+		modelCommandName,
+		modelCommandDescription,
+		modelOptionName,
+		modelOptionDescription,
+	)
+}
+
+func newSearchDeciderModelCommand() *discordgo.ApplicationCommand {
+	return newConfiguredModelCommand(
+		searchDeciderModelCommandName,
+		searchDeciderModelCommandDescription,
+		searchDeciderModelOptionName,
+		searchDeciderModelOptionDescription,
+	)
+}
+
+func newConfiguredModelCommand(
+	commandName string,
+	commandDescription string,
+	optionName string,
+	optionDescription string,
+) *discordgo.ApplicationCommand {
 	command := new(discordgo.ApplicationCommand)
-	command.Name = modelCommandName
-	command.Description = modelCommandDescription
+	command.Name = commandName
+	command.Description = commandDescription
 	command.Type = discordgo.ChatApplicationCommand
 
 	option := new(discordgo.ApplicationCommandOption)
-	option.Name = modelOptionName
-	option.Description = modelOptionDescription
+	option.Name = optionName
+	option.Description = optionDescription
 	option.Type = discordgo.ApplicationCommandOptionString
 	option.Required = true
 	option.Autocomplete = true
@@ -242,4 +270,22 @@ func (instance *bot) setCurrentModel(modelName string) {
 	defer instance.modelMu.Unlock()
 
 	instance.currentModel = modelName
+}
+
+func (instance *bot) currentSearchDeciderModelForConfig(loadedConfig config) string {
+	instance.modelMu.Lock()
+	defer instance.modelMu.Unlock()
+
+	if instance.currentSearchDeciderModel == "" || !loadedConfig.hasModel(instance.currentSearchDeciderModel) {
+		instance.currentSearchDeciderModel = loadedConfig.SearchDeciderModel
+	}
+
+	return instance.currentSearchDeciderModel
+}
+
+func (instance *bot) setCurrentSearchDeciderModel(modelName string) {
+	instance.modelMu.Lock()
+	defer instance.modelMu.Unlock()
+
+	instance.currentSearchDeciderModel = modelName
 }

@@ -183,16 +183,7 @@ func buildMessageText(
 	}
 
 	for _, component := range message.Components {
-		switch typedComponent := component.(type) {
-		case *discordgo.TextDisplay:
-			if typedComponent.Content != "" {
-				textParts = append(textParts, typedComponent.Content)
-			}
-		case discordgo.TextDisplay:
-			if typedComponent.Content != "" {
-				textParts = append(textParts, typedComponent.Content)
-			}
-		}
+		textParts = append(textParts, messageComponentTextParts(component)...)
 	}
 
 	for _, payload := range payloads {
@@ -202,6 +193,53 @@ func buildMessageText(
 	}
 
 	return joinNonEmpty(textParts)
+}
+
+func messageComponentTextParts(component discordgo.MessageComponent) []string {
+	switch typedComponent := component.(type) {
+	case *discordgo.TextDisplay:
+		if typedComponent.Content == "" {
+			return nil
+		}
+
+		return []string{typedComponent.Content}
+	case discordgo.TextDisplay:
+		if typedComponent.Content == "" {
+			return nil
+		}
+
+		return []string{typedComponent.Content}
+	case *discordgo.ActionsRow:
+		return nestedMessageComponentTextParts(typedComponent.Components)
+	case discordgo.ActionsRow:
+		return nestedMessageComponentTextParts(typedComponent.Components)
+	case *discordgo.Section:
+		textParts := nestedMessageComponentTextParts(typedComponent.Components)
+		textParts = append(textParts, messageComponentTextParts(typedComponent.Accessory)...)
+
+		return textParts
+	case discordgo.Section:
+		textParts := nestedMessageComponentTextParts(typedComponent.Components)
+		textParts = append(textParts, messageComponentTextParts(typedComponent.Accessory)...)
+
+		return textParts
+	case *discordgo.Container:
+		return nestedMessageComponentTextParts(typedComponent.Components)
+	case discordgo.Container:
+		return nestedMessageComponentTextParts(typedComponent.Components)
+	default:
+		return nil
+	}
+}
+
+func nestedMessageComponentTextParts(components []discordgo.MessageComponent) []string {
+	textParts := make([]string, 0, len(components))
+
+	for _, component := range components {
+		textParts = append(textParts, messageComponentTextParts(component)...)
+	}
+
+	return textParts
 }
 
 func buildImageParts(payloads []attachmentPayload) []contentPart {

@@ -8,6 +8,11 @@ import (
 	"time"
 )
 
+const (
+	firstTestModel  = "openai/first-model"
+	secondTestModel = "openai/second-model"
+)
+
 func TestLoadConfigAppliesDefaultsAndPreservesModelOrder(t *testing.T) {
 	t.Parallel()
 
@@ -60,9 +65,13 @@ models:
 
 	if !slices.Equal(
 		loadedConfig.ModelOrder,
-		[]string{"openai/first-model", "openai/second-model"},
+		[]string{firstTestModel, secondTestModel},
 	) {
 		t.Fatalf("unexpected model order: %#v", loadedConfig.ModelOrder)
+	}
+
+	if loadedConfig.SearchDeciderModel != firstTestModel {
+		t.Fatalf("unexpected default search decider model: %q", loadedConfig.SearchDeciderModel)
 	}
 }
 
@@ -87,6 +96,37 @@ models: {}
 	_, err = loadConfig(configPath)
 	if err == nil {
 		t.Fatal("expected missing models to fail validation")
+	}
+}
+
+func TestLoadConfigUsesConfiguredSearchDeciderModel(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	configText := `
+bot_token: discord-token
+providers:
+  openai:
+    base_url: https://api.example.com/v1
+models:
+  openai/first-model:
+  openai/second-model:
+search_decider_model: openai/second-model
+`
+
+	err := os.WriteFile(configPath, []byte(configText), 0o600)
+	if err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	loadedConfig, err := loadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	if loadedConfig.SearchDeciderModel != secondTestModel {
+		t.Fatalf("unexpected search decider model: %q", loadedConfig.SearchDeciderModel)
 	}
 }
 
