@@ -55,12 +55,10 @@ func (instance *bot) handleModelCommand(
 		responseText = fmt.Sprintf("Current model: `%s`", currentModel)
 	case !loadedConfig.hasModel(requestedModel):
 		responseText = "Unknown model."
-	case containsID(loadedConfig.Permissions.Users.AdminIDs, interactionUserID(interaction.Interaction)):
+	default:
 		instance.setCurrentModel(requestedModel)
 		responseText = fmt.Sprintf("Model switched to: `%s`", requestedModel)
 		slog.Info("model switched", "model", requestedModel)
-	default:
-		responseText = "You don't have permission to change the model."
 	}
 
 	err = respondInteractionText(session, interaction.Interaction, responseText)
@@ -121,18 +119,6 @@ func interactionOptionString(options []*discordgo.ApplicationCommandInteractionD
 	}
 
 	return options[0].StringValue()
-}
-
-func interactionUserID(interaction *discordgo.Interaction) string {
-	if interaction.Member != nil && interaction.Member.User != nil {
-		return interaction.Member.User.ID
-	}
-
-	if interaction.User != nil {
-		return interaction.User.ID
-	}
-
-	return ""
 }
 
 func respondInteractionText(
