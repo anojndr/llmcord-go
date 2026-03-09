@@ -7,6 +7,7 @@ This bot turns Discord into a reply-chain frontend for OpenAI-compatible LLM API
 ## Features
 
 - Reply-chain conversations in guilds, DMs, and public threads
+- Reply-chain responses without pinging the replied author
 - `/model` autocomplete and model switching for all users
 - Streaming embed responses with automatic message splitting
 - Plain-response mode using Discord text display components
@@ -80,7 +81,7 @@ go mod tidy
 go test ./...
 go test -race ./...
 go vet ./...
-golangci-lint run --default all
+golangci-lint run --default=all
 ```
 
 ## Notes

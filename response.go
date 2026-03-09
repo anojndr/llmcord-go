@@ -350,6 +350,16 @@ func referenceTarget(tracker *responseTracker) *discordgo.Message {
 
 func newReplyMessage(reference *discordgo.Message) *discordgo.MessageSend {
 	send := new(discordgo.MessageSend)
+
+	allowedMentions := new(discordgo.MessageAllowedMentions)
+	allowedMentions.Parse = []discordgo.AllowedMentionType{
+		discordgo.AllowedMentionTypeRoles,
+		discordgo.AllowedMentionTypeUsers,
+		discordgo.AllowedMentionTypeEveryone,
+	}
+	allowedMentions.RepliedUser = false
+
+	send.AllowedMentions = allowedMentions
 	send.Reference = reference.Reference()
 	send.Flags = discordgo.MessageFlagsSuppressNotifications
 
