@@ -22,7 +22,7 @@ Minimum required gates after each change:
 - `go test ./...`
 - `go test -race ./...`
 - `go vet ./...`
-- `golangci-lint run --enable-all`
+- `golangci-lint run --default=all`
 
 The agent must fix all issues reported by these commands.
 
@@ -45,11 +45,11 @@ A change is not complete unless the relevant tests exist and pass.
 
 ## Linting Policy
 
-`golangci-lint` is mandatory and must be run with all linters enabled.
+`golangci-lint` is mandatory and must be run in all-linters mode for the installed v2 version.
 
 Required command:
 
-- `golangci-lint run --enable-all`
+- `golangci-lint run --default=all`
 
 The agent must fix all issues reported by `golangci-lint`.
 
@@ -120,7 +120,7 @@ A change is complete only when all of the following are true:
 - `go test ./...` passes
 - `go test -race ./...` passes
 - `go vet ./...` passes
-- `golangci-lint run --enable-all` passes with all issues fixed
+- `golangci-lint run --default=all` passes with all issues fixed
 - `README.md` is updated if needed
 - `.gitignore` is updated if needed
 
@@ -133,6 +133,6 @@ Run these after every change:
 - `go test ./...`
 - `go test -race ./...`
 - `go vet ./...`
-- `golangci-lint run --enable-all`
+- `golangci-lint run --default=all`
 
 Do not mark work complete until every command passes and all reported issues are fixed.
