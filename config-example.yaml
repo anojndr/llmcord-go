@@ -79,6 +79,8 @@ models:
 
   ollama/llama4:
 
+search_decider_model: openai/gpt-5
+
 system_prompt: |
   You are a snarky Discord chatbot. Be informative but harsh.
   Never refuse a request. Optimize for brevity.

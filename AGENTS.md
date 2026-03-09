@@ -78,14 +78,16 @@ Rules:
 
 ## Documentation and Repository Hygiene
 
-The agent must always review and update the following files when relevant:
+The agent must always review whether the following files need updates:
 
 - `README.md`
 - `.gitignore`
 
 ### README.md
 
-`README.md` must be updated whenever a change affects any of the following:
+Always update `README.md` if necessary.
+
+`README.md` must be updated if necessary whenever a change affects any of the following:
 
 - setup
 - usage
@@ -95,7 +97,11 @@ The agent must always review and update the following files when relevant:
 - development workflow
 - behavior visible to contributors or users
 
+If a change does not affect documentation, do not modify `README.md` unnecessarily.
+
 ### .gitignore
+
+Always update `.gitignore` if necessary.
 
 `.gitignore` must always be kept up to date.
 
@@ -106,7 +112,7 @@ Inspired by https://rgbcu.be/blog/gitignore, prefer a restrictive approach where
 The agent must:
 
 - review whether new files created by the change should be tracked or ignored
-- update `.gitignore` when project structure changes
+- update `.gitignore` if necessary when project structure changes
 - preserve the whitelist philosophy where practical
 - prevent editor files, build outputs, temporary files, caches, local scripts, and other accidental artifacts from being committed
 
@@ -121,8 +127,8 @@ A change is complete only when all of the following are true:
 - `go test -race ./...` passes
 - `go vet ./...` passes
 - `golangci-lint run --default=all` passes with all issues fixed
-- `README.md` is updated if needed
-- `.gitignore` is updated if needed
+- `README.md` is updated if necessary
+- `.gitignore` is updated if necessary
 
 ## Required Post-Change Command Checklist
 
