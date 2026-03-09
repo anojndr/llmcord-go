@@ -1,0 +1,23 @@
+version: "2"
+
+linters:
+  settings:
+    cyclop:
+      max-complexity: 20
+    depguard:
+      rules:
+        main:
+          allow:
+            - $gostd
+            - github.com/bwmarrin/discordgo
+            - gopkg.in/yaml.v3
+    funlen:
+      lines: 90
+      statements: 60
+    gocognit:
+      min-complexity: 35
+    tagliatelle:
+      case:
+        rules:
+          json: snake
+          yaml: snake
