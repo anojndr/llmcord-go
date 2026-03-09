@@ -89,34 +89,36 @@ type providerConfig struct {
 }
 
 type rawConfig struct {
-	BotToken          scalarString                 `yaml:"bot_token"`
-	ClientID          scalarString                 `yaml:"client_id"`
-	StatusMessage     string                       `yaml:"status_message"`
-	MaxText           *int                         `yaml:"max_text"`
-	MaxImages         *int                         `yaml:"max_images"`
-	MaxMessages       *int                         `yaml:"max_messages"`
-	UsePlainResponses bool                         `yaml:"use_plain_responses"`
-	AllowDMs          *bool                        `yaml:"allow_dms"`
-	Permissions       permissionsConfig            `yaml:"permissions"`
-	Providers         map[string]rawProviderConfig `yaml:"providers"`
-	Models            map[string]map[string]any    `yaml:"models"`
-	SystemPrompt      string                       `yaml:"system_prompt"`
+	BotToken           scalarString                 `yaml:"bot_token"`
+	ClientID           scalarString                 `yaml:"client_id"`
+	StatusMessage      string                       `yaml:"status_message"`
+	MaxText            *int                         `yaml:"max_text"`
+	MaxImages          *int                         `yaml:"max_images"`
+	MaxMessages        *int                         `yaml:"max_messages"`
+	UsePlainResponses  bool                         `yaml:"use_plain_responses"`
+	AllowDMs           *bool                        `yaml:"allow_dms"`
+	Permissions        permissionsConfig            `yaml:"permissions"`
+	Providers          map[string]rawProviderConfig `yaml:"providers"`
+	Models             map[string]map[string]any    `yaml:"models"`
+	SearchDeciderModel scalarString                 `yaml:"search_decider_model"`
+	SystemPrompt       string                       `yaml:"system_prompt"`
 }
 
 type config struct {
-	BotToken          string
-	ClientID          string
-	StatusMessage     string
-	MaxText           int
-	MaxImages         int
-	MaxMessages       int
-	UsePlainResponses bool
-	AllowDMs          bool
-	Permissions       permissionsConfig
-	Providers         map[string]providerConfig
-	Models            map[string]map[string]any
-	ModelOrder        []string
-	SystemPrompt      string
+	BotToken           string
+	ClientID           string
+	StatusMessage      string
+	MaxText            int
+	MaxImages          int
+	MaxMessages        int
+	UsePlainResponses  bool
+	AllowDMs           bool
+	Permissions        permissionsConfig
+	Providers          map[string]providerConfig
+	Models             map[string]map[string]any
+	ModelOrder         []string
+	SearchDeciderModel string
+	SystemPrompt       string
 }
 
 func loadConfig(filename string) (config, error) {
@@ -160,20 +162,26 @@ func loadConfig(filename string) (config, error) {
 		allowDMs = *rawLoadedConfig.AllowDMs
 	}
 
+	searchDeciderModel := strings.TrimSpace(string(rawLoadedConfig.SearchDeciderModel))
+	if searchDeciderModel == "" && len(modelOrder) > 0 {
+		searchDeciderModel = modelOrder[0]
+	}
+
 	loadedConfig := config{
-		BotToken:          string(rawLoadedConfig.BotToken),
-		ClientID:          string(rawLoadedConfig.ClientID),
-		StatusMessage:     rawLoadedConfig.StatusMessage,
-		MaxText:           intValueOrDefault(rawLoadedConfig.MaxText, defaultMaxText),
-		MaxImages:         intValueOrDefault(rawLoadedConfig.MaxImages, defaultMaxImages),
-		MaxMessages:       intValueOrDefault(rawLoadedConfig.MaxMessages, defaultMaxMessages),
-		UsePlainResponses: rawLoadedConfig.UsePlainResponses,
-		AllowDMs:          allowDMs,
-		Permissions:       rawLoadedConfig.Permissions,
-		Providers:         loadedProviders,
-		Models:            rawLoadedConfig.Models,
-		ModelOrder:        modelOrder,
-		SystemPrompt:      rawLoadedConfig.SystemPrompt,
+		BotToken:           string(rawLoadedConfig.BotToken),
+		ClientID:           string(rawLoadedConfig.ClientID),
+		StatusMessage:      rawLoadedConfig.StatusMessage,
+		MaxText:            intValueOrDefault(rawLoadedConfig.MaxText, defaultMaxText),
+		MaxImages:          intValueOrDefault(rawLoadedConfig.MaxImages, defaultMaxImages),
+		MaxMessages:        intValueOrDefault(rawLoadedConfig.MaxMessages, defaultMaxMessages),
+		UsePlainResponses:  rawLoadedConfig.UsePlainResponses,
+		AllowDMs:           allowDMs,
+		Permissions:        rawLoadedConfig.Permissions,
+		Providers:          loadedProviders,
+		Models:             rawLoadedConfig.Models,
+		ModelOrder:         modelOrder,
+		SearchDeciderModel: searchDeciderModel,
+		SystemPrompt:       rawLoadedConfig.SystemPrompt,
 	}
 
 	err = validateConfig(loadedConfig)
@@ -260,6 +268,14 @@ func validateConfig(loadedConfig config) error {
 		if strings.TrimSpace(provider.BaseURL) == "" {
 			return fmt.Errorf("provider %q is missing base_url: %w", providerName, os.ErrInvalid)
 		}
+	}
+
+	if !loadedConfig.hasModel(loadedConfig.SearchDeciderModel) {
+		return fmt.Errorf(
+			"search_decider_model %q is not defined in models: %w",
+			loadedConfig.SearchDeciderModel,
+			os.ErrNotExist,
+		)
 	}
 
 	return nil

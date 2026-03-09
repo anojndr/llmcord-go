@@ -8,10 +8,12 @@ This bot turns Discord into a reply-chain frontend for OpenAI-compatible LLM API
 
 - Reply-chain conversations in guilds, DMs, and public threads
 - Reply-chain responses without pinging the replied author
-- `/model` autocomplete and model switching for all users
+- `/model` and `/searchdecidermodel` autocomplete and model switching for all users
 - Streaming embed responses with automatic message splitting
 - Plain-response mode using Discord text display components
 - Text attachment ingestion and image attachment support for vision models
+- Search-decider flow that can skip search or call Exa MCP web search when current information is needed
+- `Show Sources` button on searched replies that reveals the queries and parsed source URLs used
 - Hot-reloaded `config.yaml`
 - Permission controls for users, roles, and channels
 - Bounded, mutex-protected message cache to avoid unbounded growth
@@ -69,6 +71,7 @@ The config schema stays close to the original Python project.
 | --- | --- |
 | `providers` | OpenAI-compatible endpoints keyed by provider name. Supports optional `api_key`, `extra_headers`, `extra_query`, and `extra_body`. |
 | `models` | Ordered list of `<provider>/<model>` entries. The first entry is the startup default. Append `:vision` to enable image support heuristics. |
+| `search_decider_model` | Optional `<provider>/<model>` entry used for deciding whether web search is required. Defaults to the first configured model. |
 | `system_prompt` | Optional prompt prepended to every request. `{date}` and `{time}` are expanded using the host time zone. |
 
 ## Development
@@ -87,5 +90,6 @@ golangci-lint run --default=all
 ## Notes
 
 - The bot reads `config.yaml` on each message and `/model` autocomplete request, so configuration changes apply without restarting.
+- When the search decider requires web search, the bot queries Exa MCP at `https://mcp.exa.ai/mcp` without requiring an API key by default.
 - The implementation targets chat-completions-style OpenAI-compatible APIs.
 - If you need the original single-file Python implementation, use [`jakobdylanc/llmcord`](https://github.com/jakobdylanc/llmcord).

@@ -15,8 +15,9 @@ type segmentAccumulator struct {
 }
 
 type renderSpec struct {
-	content string
-	color   int
+	content           string
+	color             int
+	showSourcesButton bool
 }
 
 type pendingResponse struct {
@@ -25,6 +26,7 @@ type pendingResponse struct {
 
 type responseTracker struct {
 	sourceMessage    *discordgo.Message
+	searchMetadata   *searchMetadata
 	responseMessages []*discordgo.Message
 	pendingResponses []pendingResponse
 	renderedSpecs    []renderSpec
@@ -88,9 +90,13 @@ func (accumulator *segmentAccumulator) renderSegments(final bool) []string {
 	return segments
 }
 
-func newResponseTracker(sourceMessage *discordgo.Message) *responseTracker {
+func newResponseTracker(
+	sourceMessage *discordgo.Message,
+	searchMetadata *searchMetadata,
+) *responseTracker {
 	tracker := new(responseTracker)
 	tracker.sourceMessage = sourceMessage
+	tracker.searchMetadata = cloneSearchMetadata(searchMetadata)
 
 	return tracker
 }
@@ -109,6 +115,7 @@ func (instance *bot) generateAndSendResponse(
 	ctx context.Context,
 	request chatCompletionRequest,
 	sourceMessage *discordgo.Message,
+	searchMetadata *searchMetadata,
 	warnings []string,
 	usePlainResponses bool,
 ) error {
@@ -119,7 +126,7 @@ func (instance *bot) generateAndSendResponse(
 
 	accumulator := newSegmentAccumulator(maxLength)
 
-	tracker := newResponseTracker(sourceMessage)
+	tracker := newResponseTracker(sourceMessage, searchMetadata)
 	defer tracker.release(accumulator.joined())
 
 	stopTyping := instance.startTyping(ctx, sourceMessage.ChannelID)
@@ -221,6 +228,7 @@ func buildRenderSpecs(
 	segments []string,
 	finishReason string,
 	final bool,
+	hasSearchMetadata bool,
 ) []renderSpec {
 	specs := make([]renderSpec, 0, len(segments))
 
@@ -228,8 +236,9 @@ func buildRenderSpecs(
 		settled := index < len(segments)-1 || final
 
 		spec := renderSpec{
-			content: segment,
-			color:   0,
+			content:           segment,
+			color:             0,
+			showSourcesButton: final && hasSearchMetadata && index == len(segments)-1,
 		}
 
 		switch {
@@ -260,7 +269,12 @@ func (instance *bot) renderEmbedResponse(
 		return nil
 	}
 
-	desiredSpecs := buildRenderSpecs(segments, finishReason, final)
+	desiredSpecs := buildRenderSpecs(
+		segments,
+		finishReason,
+		final,
+		tracker.searchMetadata != nil,
+	)
 	for index, spec := range desiredSpecs {
 		if index < len(tracker.renderedSpecs) && tracker.renderedSpecs[index] == spec {
 			continue
@@ -274,12 +288,20 @@ func (instance *bot) renderEmbedResponse(
 		}
 
 		if index < len(tracker.responseMessages) {
-			err := instance.editEmbedMessage(tracker.responseMessages[index], embed)
+			err := instance.editEmbedMessage(
+				tracker.responseMessages[index],
+				embed,
+				buildEmbedComponents(spec.showSourcesButton),
+			)
 			if err != nil {
 				return fmt.Errorf("edit embed message: %w", err)
 			}
 		} else {
-			sentMessage, pending, err := instance.sendEmbedMessage(tracker, embed)
+			sentMessage, pending, err := instance.sendEmbedMessage(
+				tracker,
+				embed,
+				spec.showSourcesButton,
+			)
 			if err != nil {
 				return fmt.Errorf("send embed message: %w", err)
 			}
@@ -303,8 +325,14 @@ func (instance *bot) sendPlainResponse(
 	tracker *responseTracker,
 	segments []string,
 ) error {
-	for _, segment := range segments {
-		sentMessage, pending, err := instance.sendPlainMessage(tracker, segment)
+	for index, segment := range segments {
+		showSourcesButton := tracker.searchMetadata != nil && index == len(segments)-1
+
+		sentMessage, pending, err := instance.sendPlainMessage(
+			tracker,
+			segment,
+			showSourcesButton,
+		)
 		if err != nil {
 			return fmt.Errorf("send plain message: %w", err)
 		}
@@ -319,9 +347,11 @@ func (instance *bot) sendPlainResponse(
 func (instance *bot) sendEmbedMessage(
 	tracker *responseTracker,
 	embed *discordgo.MessageEmbed,
+	showSourcesButton bool,
 ) (*discordgo.Message, pendingResponse, error) {
 	send := newReplyMessage(referenceTarget(tracker))
 	send.Embeds = append(send.Embeds, embed)
+	send.Components = buildEmbedComponents(showSourcesButton)
 
 	return instance.sendReplyMessage(tracker, send)
 }
@@ -329,13 +359,11 @@ func (instance *bot) sendEmbedMessage(
 func (instance *bot) sendPlainMessage(
 	tracker *responseTracker,
 	content string,
+	showSourcesButton bool,
 ) (*discordgo.Message, pendingResponse, error) {
 	send := newReplyMessage(referenceTarget(tracker))
 	send.Flags |= discordgo.MessageFlagsIsComponentsV2
-
-	textDisplay := new(discordgo.TextDisplay)
-	textDisplay.Content = content
-	send.Components = append(send.Components, textDisplay)
+	send.Components = buildPlainComponents(content, showSourcesButton)
 
 	return instance.sendReplyMessage(tracker, send)
 }
@@ -380,6 +408,7 @@ func (instance *bot) sendReplyMessage(
 	pending := pendingResponse{
 		node: instance.nodes.addPending(sentMessage.ID, tracker.sourceMessage),
 	}
+	pending.node.searchMetadata = cloneSearchMetadata(tracker.searchMetadata)
 
 	return sentMessage, pending, nil
 }
@@ -387,9 +416,11 @@ func (instance *bot) sendReplyMessage(
 func (instance *bot) editEmbedMessage(
 	message *discordgo.Message,
 	embed *discordgo.MessageEmbed,
+	components []discordgo.MessageComponent,
 ) error {
 	edit := discordgo.NewMessageEdit(message.ChannelID, message.ID)
 	edit.SetEmbeds([]*discordgo.MessageEmbed{embed})
+	edit.Components = &components
 
 	_, err := instance.session.ChannelMessageEditComplex(edit)
 	if err != nil {
@@ -417,4 +448,43 @@ func buildResponseEmbed(
 	}
 
 	return embed
+}
+
+func buildEmbedComponents(showSourcesButton bool) []discordgo.MessageComponent {
+	if !showSourcesButton {
+		return nil
+	}
+
+	button := new(discordgo.Button)
+	button.CustomID = showSourcesButtonCustomID
+	button.Label = showSourcesButtonLabel
+	button.Style = discordgo.SecondaryButton
+
+	row := new(discordgo.ActionsRow)
+	row.Components = []discordgo.MessageComponent{button}
+
+	return []discordgo.MessageComponent{row}
+}
+
+func buildPlainComponents(content string, showSourcesButton bool) []discordgo.MessageComponent {
+	if !showSourcesButton {
+		textDisplay := new(discordgo.TextDisplay)
+		textDisplay.Content = content
+
+		return []discordgo.MessageComponent{textDisplay}
+	}
+
+	section := new(discordgo.Section)
+	section.Components = []discordgo.MessageComponent{
+		discordgo.TextDisplay{Content: content},
+	}
+
+	button := new(discordgo.Button)
+	button.CustomID = showSourcesButtonCustomID
+	button.Label = showSourcesButtonLabel
+	button.Style = discordgo.SecondaryButton
+
+	section.Accessory = button
+
+	return []discordgo.MessageComponent{section}
 }
