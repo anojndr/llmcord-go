@@ -7,7 +7,7 @@ This bot turns Discord into a reply-chain frontend for OpenAI-compatible LLM API
 ## Features
 
 - Reply-chain conversations in guilds, DMs, and public threads
-- `/model` autocomplete and admin-only model switching
+- `/model` autocomplete and model switching for all users
 - Streaming embed responses with automatic message splitting
 - Plain-response mode using Discord text display components
 - Text attachment ingestion and image attachment support for vision models
@@ -60,7 +60,7 @@ The config schema stays close to the original Python project.
 | `max_messages` | Maximum messages loaded from the reply chain. Default: `25`. |
 | `use_plain_responses` | Switch from streaming embeds to plain text display components. This disables warnings and streamed edits. |
 | `allow_dms` | Allow non-admin users to DM the bot. Default: `true`. |
-| `permissions` | Access control lists for `users`, `roles`, and `channels`. User admins may switch models and bypass DM restrictions. |
+| `permissions` | Access control lists for `users`, `roles`, and `channels`. User admins bypass DM restrictions. |
 
 ### LLM settings
 
@@ -75,12 +75,12 @@ The config schema stays close to the original Python project.
 Run the full repository checklist from the project root:
 
 ```bash
-gofmt -s -w *.go
+gofmt -s -w .
 go mod tidy
 go test ./...
 go test -race ./...
 go vet ./...
-golangci-lint run --enable-all
+golangci-lint run --default all
 ```
 
 ## Notes
