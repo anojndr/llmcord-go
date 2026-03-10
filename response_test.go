@@ -1,10 +1,35 @@
 package main
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"net/http"
 	"testing"
 
 	"github.com/bwmarrin/discordgo"
 )
+
+type fakeChatCompletionClient struct {
+	deltas []streamDelta
+}
+
+func (client fakeChatCompletionClient) streamChatCompletion(
+	_ context.Context,
+	_ chatCompletionRequest,
+	handle func(streamDelta) error,
+) error {
+	for _, delta := range client.deltas {
+		err := handle(delta)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
 
 func TestSegmentAccumulatorSplitsByRunes(t *testing.T) {
 	t.Parallel()
@@ -132,5 +157,237 @@ func TestBuildPlainComponentsAddsShowSourcesButton(t *testing.T) {
 
 	if button.CustomID != showSourcesButtonCustomID {
 		t.Fatalf("unexpected button custom id: %q", button.CustomID)
+	}
+}
+
+var errUnexpectedTestRequest = errors.New("unexpected test request")
+
+func TestGenerateAndSendResponseKeepsAssistantReplyInConversationHistory(t *testing.T) {
+	t.Parallel()
+
+	const (
+		botUserID          = "bot-user"
+		channelID          = "channel-1"
+		userID             = "user-1"
+		sourceMessageID    = "user-message-1"
+		assistantMessageID = "assistant-message-1"
+		assistantReplyText = "@sweet_potet, your random 10-digit number is: 8294051736"
+	)
+
+	sourceMessage := newPromptMessage(sourceMessageID, channelID, userID, botUserID)
+	assistantMessage := newAssistantResponseMessage(
+		assistantMessageID,
+		channelID,
+		botUserID,
+		sourceMessage.Reference(),
+	)
+	session := newResponseHistoryTestSession(t, channelID, botUserID, assistantMessage)
+	instance := newResponseHistoryTestBot(session, assistantReplyText)
+
+	var request chatCompletionRequest
+
+	err := instance.generateAndSendResponse(
+		context.Background(),
+		request,
+		sourceMessage,
+		nil,
+		nil,
+		true,
+	)
+	if err != nil {
+		t.Fatalf("generate and send response: %v", err)
+	}
+
+	followUpMessage := newFollowUpReplyMessage("user-message-2", channelID, userID, assistantMessage)
+
+	conversation, warnings := instance.buildConversation(
+		context.Background(),
+		followUpMessage,
+		defaultMaxText,
+		0,
+		defaultMaxMessages,
+	)
+	if len(warnings) != 0 {
+		t.Fatalf("unexpected warnings: %#v", warnings)
+	}
+
+	assertConversationHistory(
+		t,
+		conversation,
+		userID,
+		assistantReplyText,
+	)
+}
+
+func newResponseHistoryTestSession(
+	t *testing.T,
+	channelID string,
+	botUserID string,
+	sentMessage *discordgo.Message,
+) *discordgo.Session {
+	t.Helper()
+
+	session, err := discordgo.New("Bot discord-token")
+	if err != nil {
+		t.Fatalf("create discord session: %v", err)
+	}
+
+	session.State.User = newDiscordUser(botUserID, true)
+
+	channel := new(discordgo.Channel)
+	channel.ID = channelID
+	channel.Type = discordgo.ChannelTypeDM
+
+	err = session.State.ChannelAdd(channel)
+	if err != nil {
+		t.Fatalf("add channel to state: %v", err)
+	}
+
+	client := new(http.Client)
+	client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		t.Helper()
+
+		switch {
+		case request.Method == http.MethodPost &&
+			request.URL.Path == "/api/v9/channels/"+channelID+"/typing":
+			return newNoContentResponse(request), nil
+		case request.Method == http.MethodPost &&
+			request.URL.Path == "/api/v9/channels/"+channelID+"/messages":
+			return newJSONResponse(t, request, sentMessage), nil
+		default:
+			t.Fatalf("unexpected request: %s %s", request.Method, request.URL.Path)
+
+			return nil, errUnexpectedTestRequest
+		}
+	})
+	session.Client = client
+
+	return session
+}
+
+func newJSONResponse(t *testing.T, request *http.Request, payload any) *http.Response {
+	t.Helper()
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal response payload: %v", err)
+	}
+
+	response := new(http.Response)
+	response.Status = "200 OK"
+	response.StatusCode = http.StatusOK
+	response.Body = io.NopCloser(bytes.NewReader(body))
+	response.ContentLength = int64(len(body))
+	response.Header = make(http.Header)
+	response.Request = request
+
+	return response
+}
+
+func newResponseHistoryTestBot(session *discordgo.Session, assistantReplyText string) *bot {
+	instance := new(bot)
+	instance.session = session
+	instance.nodes = newMessageNodeStore(10)
+	instance.chatCompletions = fakeChatCompletionClient{
+		deltas: []streamDelta{
+			newStreamDelta(assistantReplyText, ""),
+			newStreamDelta("", finishReasonStop),
+		},
+	}
+
+	return instance
+}
+
+func newPromptMessage(
+	messageID string,
+	channelID string,
+	userID string,
+	botUserID string,
+) *discordgo.Message {
+	message := new(discordgo.Message)
+	message.ID = messageID
+	message.ChannelID = channelID
+	message.Author = newDiscordUser(userID, false)
+	message.Content = "<@" + botUserID + "> generate a random 10-digit number"
+	message.Mentions = []*discordgo.User{newDiscordUser(botUserID, false)}
+
+	return message
+}
+
+func newAssistantResponseMessage(
+	messageID string,
+	channelID string,
+	botUserID string,
+	reference *discordgo.MessageReference,
+) *discordgo.Message {
+	message := new(discordgo.Message)
+	message.ID = messageID
+	message.ChannelID = channelID
+	message.Author = newDiscordUser(botUserID, true)
+	message.MessageReference = reference
+	message.Type = discordgo.MessageTypeReply
+
+	return message
+}
+
+func newFollowUpReplyMessage(
+	messageID string,
+	channelID string,
+	userID string,
+	assistantMessage *discordgo.Message,
+) *discordgo.Message {
+	message := new(discordgo.Message)
+	message.ID = messageID
+	message.ChannelID = channelID
+	message.Author = newDiscordUser(userID, false)
+	message.Content = "repeat the 10-digit number that you just generated"
+	message.MessageReference = assistantMessage.Reference()
+	message.ReferencedMessage = assistantMessage
+
+	return message
+}
+
+func newDiscordUser(userID string, bot bool) *discordgo.User {
+	user := new(discordgo.User)
+	user.ID = userID
+	user.Bot = bot
+
+	return user
+}
+
+func newStreamDelta(content string, finishReason string) streamDelta {
+	var delta streamDelta
+
+	delta.Content = content
+	delta.FinishReason = finishReason
+
+	return delta
+}
+
+func assertConversationHistory(
+	t *testing.T,
+	conversation []chatMessage,
+	userID string,
+	assistantReplyText string,
+) {
+	t.Helper()
+
+	if len(conversation) != 3 {
+		t.Fatalf("unexpected conversation length: %#v", conversation)
+	}
+
+	if conversation[0].Role != messageRoleUser ||
+		conversation[0].Content != "<@"+userID+">: generate a random 10-digit number" {
+		t.Fatalf("unexpected source message: %#v", conversation[0])
+	}
+
+	if conversation[1].Role != messageRoleAssistant ||
+		conversation[1].Content != assistantReplyText {
+		t.Fatalf("unexpected assistant message: %#v", conversation[1])
+	}
+
+	if conversation[2].Role != messageRoleUser ||
+		conversation[2].Content != "<@"+userID+">: repeat the 10-digit number that you just generated" {
+		t.Fatalf("unexpected follow-up message: %#v", conversation[2])
 	}
 }
