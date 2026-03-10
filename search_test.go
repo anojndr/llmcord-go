@@ -107,11 +107,25 @@ func TestSearchDeciderConversationStripsImagesForTextOnlyModels(t *testing.T) {
 			Content: []contentPart{
 				{"type": contentTypeText, "text": "<@123>: what is this?"},
 				{"type": contentTypeImageURL, "image_url": map[string]string{"url": "data:image/png;base64,abc"}},
+				{
+					"type":               contentTypeAudioData,
+					contentFieldBytes:    []byte("audio-bytes"),
+					contentFieldMIMEType: "audio/mpeg",
+				},
+				{
+					"type":               contentTypeVideoData,
+					contentFieldBytes:    []byte("video-bytes"),
+					contentFieldMIMEType: "video/mp4",
+				},
 			},
 		},
 	}
 
-	sanitizedConversation, err := searchDeciderConversation(conversation, "openai/text-only-model")
+	sanitizedConversation, err := searchDeciderConversation(
+		conversation,
+		testSearchConfig(),
+		"openai/text-only-model",
+	)
 	if err != nil {
 		t.Fatalf("search decider conversation: %v", err)
 	}
@@ -126,7 +140,53 @@ func TestSearchDeciderConversationStripsImagesForTextOnlyModels(t *testing.T) {
 	}
 }
 
-func TestAppendWebSearchResultsToConversationPreservesImages(t *testing.T) {
+func TestSearchDeciderConversationPreservesGeminiMedia(t *testing.T) {
+	t.Parallel()
+
+	conversation := []chatMessage{
+		{
+			Role: messageRoleUser,
+			Content: []contentPart{
+				{"type": contentTypeText, "text": "<@123>: summarize these"},
+				{"type": contentTypeImageURL, "image_url": map[string]string{"url": "data:image/png;base64,abc"}},
+				{
+					"type":               contentTypeAudioData,
+					contentFieldBytes:    []byte("audio-bytes"),
+					contentFieldMIMEType: "audio/mpeg",
+				},
+				{
+					"type":               contentTypeVideoData,
+					contentFieldBytes:    []byte("video-bytes"),
+					contentFieldMIMEType: "video/mp4",
+				},
+			},
+		},
+	}
+
+	sanitizedConversation, err := searchDeciderConversation(
+		conversation,
+		testGeminiSearchConfig(),
+		"google/gemini-3-flash-preview",
+	)
+	if err != nil {
+		t.Fatalf("search decider conversation: %v", err)
+	}
+
+	parts, ok := sanitizedConversation[0].Content.([]contentPart)
+	if !ok {
+		t.Fatalf("unexpected sanitized content type: %T", sanitizedConversation[0].Content)
+	}
+
+	if len(parts) != 4 {
+		t.Fatalf("unexpected part count: %d", len(parts))
+	}
+
+	if parts[3]["type"] != contentTypeVideoData {
+		t.Fatalf("expected video to be preserved: %#v", parts[3])
+	}
+}
+
+func TestAppendWebSearchResultsToConversationPreservesMultimodalParts(t *testing.T) {
 	t.Parallel()
 
 	conversation := []chatMessage{
@@ -136,6 +196,16 @@ func TestAppendWebSearchResultsToConversationPreservesImages(t *testing.T) {
 			Content: []contentPart{
 				{"type": contentTypeText, "text": "<@123>: identify this"},
 				{"type": contentTypeImageURL, "image_url": map[string]string{"url": "data:image/png;base64,abc"}},
+				{
+					"type":               contentTypeAudioData,
+					contentFieldBytes:    []byte("audio-bytes"),
+					contentFieldMIMEType: "audio/mpeg",
+				},
+				{
+					"type":               contentTypeVideoData,
+					contentFieldBytes:    []byte("video-bytes"),
+					contentFieldMIMEType: "video/mp4",
+				},
 			},
 		},
 	}
@@ -153,7 +223,7 @@ func TestAppendWebSearchResultsToConversationPreservesImages(t *testing.T) {
 		t.Fatalf("unexpected augmented content type: %T", augmentedConversation[1].Content)
 	}
 
-	if len(parts) != 2 {
+	if len(parts) != 4 {
 		t.Fatalf("unexpected part count: %d", len(parts))
 	}
 
@@ -168,6 +238,14 @@ func TestAppendWebSearchResultsToConversationPreservesImages(t *testing.T) {
 
 	if parts[1]["type"] != contentTypeImageURL {
 		t.Fatalf("expected image to be preserved: %#v", parts[1])
+	}
+
+	if parts[2]["type"] != contentTypeAudioData {
+		t.Fatalf("expected audio to be preserved: %#v", parts[2])
+	}
+
+	if parts[3]["type"] != contentTypeVideoData {
+		t.Fatalf("expected video to be preserved: %#v", parts[3])
 	}
 }
 
@@ -480,6 +558,23 @@ func testSearchConfig() config {
 	}
 	loadedConfig.ModelOrder = []string{"openai/main-model", "openai/decider-model"}
 	loadedConfig.SearchDeciderModel = "openai/decider-model"
+
+	return *loadedConfig
+}
+
+func testGeminiSearchConfig() config {
+	loadedConfig := new(config)
+	loadedConfig.MaxImages = defaultMaxImages
+
+	googleProvider := new(providerConfig)
+	googleProvider.Type = string(providerAPIKindGemini)
+
+	loadedConfig.Providers = map[string]providerConfig{
+		"google": *googleProvider,
+	}
+	loadedConfig.Models = map[string]map[string]any{
+		"google/gemini-3-flash-preview": nil,
+	}
 
 	return *loadedConfig
 }

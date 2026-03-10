@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"io"
 	"iter"
 	"net/http"
 	"testing"
@@ -10,22 +11,48 @@ import (
 	"google.golang.org/genai"
 )
 
-type stubGeminiModelsClient struct {
+type stubGeminiAPIClient struct {
 	generateContentStream func(
 		context.Context,
 		string,
 		[]*genai.Content,
 		*genai.GenerateContentConfig,
 	) iter.Seq2[*genai.GenerateContentResponse, error]
+	uploadFile func(context.Context, io.Reader, *genai.UploadFileConfig) (*genai.File, error)
+	getFile    func(context.Context, string, *genai.GetFileConfig) (*genai.File, error)
 }
 
-func (client stubGeminiModelsClient) GenerateContentStream(
+func (client stubGeminiAPIClient) GenerateContentStream(
 	ctx context.Context,
 	model string,
 	contents []*genai.Content,
 	config *genai.GenerateContentConfig,
 ) iter.Seq2[*genai.GenerateContentResponse, error] {
 	return client.generateContentStream(ctx, model, contents, config)
+}
+
+func (client stubGeminiAPIClient) UploadFile(
+	ctx context.Context,
+	reader io.Reader,
+	config *genai.UploadFileConfig,
+) (*genai.File, error) {
+	if client.uploadFile == nil {
+		panic("unexpected UploadFile call")
+	}
+
+	return client.uploadFile(ctx, reader, config)
+}
+
+func (client stubGeminiAPIClient) GetFile(
+	ctx context.Context,
+	name string,
+	config *genai.GetFileConfig,
+) (*genai.File, error) {
+	if client.getFile == nil {
+		panic("unexpected GetFile call")
+	}
+
+	return client.getFile(ctx, name, config)
 }
 
 func TestBuildChatCompletionRequestUsesGeminiAPIKindForLegacyBaseURL(t *testing.T) {
@@ -56,7 +83,11 @@ func TestBuildChatCompletionRequestUsesGeminiAPIKindForLegacyBaseURL(t *testing.
 func TestBuildGeminiGenerateContentRequestConvertsMessagesAndHTTPOptions(t *testing.T) {
 	t.Parallel()
 
-	contents, config, err := buildGeminiGenerateContentRequest(newGeminiBuildTestRequest())
+	contents, config, err := buildGeminiGenerateContentRequest(
+		context.Background(),
+		newGeminiBuildTestRequest(),
+		nil,
+	)
 	if err != nil {
 		t.Fatalf("build gemini generate content request: %v", err)
 	}
@@ -75,12 +106,14 @@ func TestGeminiClientStreamChatCompletionEmitsTextAndFinishReason(t *testing.T) 
 		newClient: func(
 			_ context.Context,
 			config *genai.ClientConfig,
-		) (geminiModelsClient, error) {
+		) (geminiAPIClient, error) {
 			capturedConfig = config
 
-			return stubGeminiModelsClient{
-				generateContentStream: streamGeminiTestChunks(t),
-			}, nil
+			var stubClient stubGeminiAPIClient
+
+			stubClient.generateContentStream = streamGeminiTestChunks(t)
+
+			return stubClient, nil
 		},
 	}
 
@@ -112,6 +145,174 @@ func TestGeminiClientStreamChatCompletionEmitsTextAndFinishReason(t *testing.T) 
 	}
 
 	assertGeminiClientConfig(t, capturedConfig)
+}
+
+func TestBuildGeminiGenerateContentRequestUploadsAudioAndVideoFiles(t *testing.T) {
+	t.Parallel()
+
+	state := new(geminiUploadState)
+	files := newGeminiMediaUploadStub(t, state)
+	request := newGeminiMediaUploadRequest()
+
+	contents, config, err := buildGeminiGenerateContentRequest(
+		context.Background(),
+		request,
+		files,
+	)
+	if err != nil {
+		t.Fatalf("build gemini generate content request: %v", err)
+	}
+
+	if config == nil {
+		t.Fatal("expected generate content config")
+	}
+
+	assertGeminiMediaUploadCalls(t, state.calls)
+
+	if len(state.refreshedFiles) != 1 || state.refreshedFiles[0] != "files/video" {
+		t.Fatalf("unexpected refreshed files: %#v", state.refreshedFiles)
+	}
+
+	assertGeminiUploadedMediaParts(t, contents)
+}
+
+type geminiUploadCall struct {
+	mimeType    string
+	displayName string
+	body        []byte
+}
+
+type geminiUploadState struct {
+	calls          []geminiUploadCall
+	refreshedFiles []string
+}
+
+func newGeminiMediaUploadStub(t *testing.T, state *geminiUploadState) stubGeminiAPIClient {
+	t.Helper()
+
+	var files stubGeminiAPIClient
+
+	files.uploadFile = func(
+		_ context.Context,
+		reader io.Reader,
+		config *genai.UploadFileConfig,
+	) (*genai.File, error) {
+		body, err := io.ReadAll(reader)
+		if err != nil {
+			t.Fatalf("read upload body: %v", err)
+		}
+
+		state.calls = append(state.calls, geminiUploadCall{
+			mimeType:    config.MIMEType,
+			displayName: config.DisplayName,
+			body:        body,
+		})
+
+		uploadedFile := new(genai.File)
+		uploadedFile.Name = "files/audio"
+		uploadedFile.URI = "https://example.com/files/audio"
+		uploadedFile.MIMEType = config.MIMEType
+		uploadedFile.State = genai.FileStateActive
+
+		if config.MIMEType == testVideoMIMEType {
+			uploadedFile.Name = "files/video"
+			uploadedFile.State = genai.FileStateProcessing
+		}
+
+		return uploadedFile, nil
+	}
+	files.getFile = func(
+		_ context.Context,
+		name string,
+		_ *genai.GetFileConfig,
+	) (*genai.File, error) {
+		state.refreshedFiles = append(state.refreshedFiles, name)
+
+		file := new(genai.File)
+		file.Name = name
+		file.URI = "https://example.com/" + name
+		file.MIMEType = "video/mp4"
+		file.State = genai.FileStateActive
+
+		return file, nil
+	}
+
+	return files
+}
+
+func newGeminiMediaUploadRequest() chatCompletionRequest {
+	var provider providerRequestConfig
+
+	provider.APIKind = providerAPIKindGemini
+
+	return chatCompletionRequest{
+		Provider: provider,
+		Model:    "gemini-3-flash-preview",
+		Messages: []chatMessage{
+			{
+				Role: messageRoleUser,
+				Content: []contentPart{
+					{"type": contentTypeText, "text": "<@123>: summarize these"},
+					{
+						"type":               contentTypeAudioData,
+						contentFieldBytes:    []byte("audio-bytes"),
+						contentFieldMIMEType: "audio/mpeg",
+						contentFieldFilename: "clip.mp3",
+					},
+					{
+						"type":               contentTypeVideoData,
+						contentFieldBytes:    []byte("video-bytes"),
+						contentFieldMIMEType: "video/mp4",
+						contentFieldFilename: "clip.mp4",
+					},
+				},
+			},
+		},
+	}
+}
+
+func assertGeminiMediaUploadCalls(t *testing.T, uploadCalls []geminiUploadCall) {
+	t.Helper()
+
+	if len(uploadCalls) != 2 {
+		t.Fatalf("unexpected upload count: %d", len(uploadCalls))
+	}
+
+	if uploadCalls[0].mimeType != "audio/mpeg" ||
+		uploadCalls[0].displayName != "clip.mp3" ||
+		string(uploadCalls[0].body) != "audio-bytes" {
+		t.Fatalf("unexpected audio upload call: %#v", uploadCalls[0])
+	}
+
+	if uploadCalls[1].mimeType != "video/mp4" ||
+		uploadCalls[1].displayName != "clip.mp4" ||
+		string(uploadCalls[1].body) != "video-bytes" {
+		t.Fatalf("unexpected video upload call: %#v", uploadCalls[1])
+	}
+}
+
+func assertGeminiUploadedMediaParts(t *testing.T, contents []*genai.Content) {
+	t.Helper()
+
+	if len(contents) != 1 || len(contents[0].Parts) != 3 {
+		t.Fatalf("unexpected gemini contents: %#v", contents)
+	}
+
+	if contents[0].Parts[1].FileData == nil {
+		t.Fatal("expected uploaded audio file part")
+	}
+
+	if contents[0].Parts[1].FileData.FileURI != "https://example.com/files/audio" {
+		t.Fatalf("unexpected audio URI: %#v", contents[0].Parts[1].FileData)
+	}
+
+	if contents[0].Parts[2].FileData == nil {
+		t.Fatal("expected uploaded video file part")
+	}
+
+	if contents[0].Parts[2].FileData.FileURI != "https://example.com/files/video" {
+		t.Fatalf("unexpected video URI: %#v", contents[0].Parts[2].FileData)
+	}
 }
 
 func newGeminiBuildTestRequest() chatCompletionRequest {
@@ -223,18 +424,6 @@ func assertGeminiGenerateContentConfig(
 		t.Fatal("expected HTTP options")
 	}
 
-	if config.HTTPOptions.BaseURL != "https://generativelanguage.googleapis.com" {
-		t.Fatalf("unexpected gemini base URL: %q", config.HTTPOptions.BaseURL)
-	}
-
-	if config.HTTPOptions.APIVersion != "v1beta" {
-		t.Fatalf("unexpected gemini API version: %q", config.HTTPOptions.APIVersion)
-	}
-
-	if config.HTTPOptions.Headers.Get("X-Test") != "present" {
-		t.Fatalf("unexpected gemini extra header: %q", config.HTTPOptions.Headers.Get("X-Test"))
-	}
-
 	if got, ok := config.HTTPOptions.ExtraBody["temperature"].(float64); !ok || got != 0.2 {
 		t.Fatalf("unexpected gemini extra body: %#v", config.HTTPOptions.ExtraBody)
 	}
@@ -318,5 +507,34 @@ func assertGeminiClientConfig(t *testing.T, capturedConfig *genai.ClientConfig) 
 
 	if capturedConfig.APIKey != "gemini-key" {
 		t.Fatalf("unexpected gemini API key: %q", capturedConfig.APIKey)
+	}
+
+	if capturedConfig.HTTPOptions.BaseURL != "" {
+		t.Fatalf("unexpected gemini base URL: %q", capturedConfig.HTTPOptions.BaseURL)
+	}
+
+	if capturedConfig.HTTPOptions.APIVersion != "" {
+		t.Fatalf("unexpected gemini API version: %q", capturedConfig.HTTPOptions.APIVersion)
+	}
+}
+
+func TestBuildGeminiClientConfigUsesProviderHTTPOptions(t *testing.T) {
+	t.Parallel()
+
+	clientConfig, err := buildGeminiClientConfig(newGeminiBuildTestRequest().Provider, new(http.Client))
+	if err != nil {
+		t.Fatalf("build gemini client config: %v", err)
+	}
+
+	if clientConfig.HTTPOptions.BaseURL != "https://generativelanguage.googleapis.com" {
+		t.Fatalf("unexpected gemini base URL: %q", clientConfig.HTTPOptions.BaseURL)
+	}
+
+	if clientConfig.HTTPOptions.APIVersion != "v1beta" {
+		t.Fatalf("unexpected gemini API version: %q", clientConfig.HTTPOptions.APIVersion)
+	}
+
+	if clientConfig.HTTPOptions.Headers.Get("X-Test") != "present" {
+		t.Fatalf("unexpected gemini extra header: %q", clientConfig.HTTPOptions.Headers.Get("X-Test"))
 	}
 }

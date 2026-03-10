@@ -35,6 +35,8 @@ const (
 	maxYouTubeComments                   = 50
 	showSourcesMessageMaxLength          = 1900
 	attachmentRequestTimeout             = 30 * time.Second
+	geminiFilePollInterval               = 500 * time.Millisecond
+	geminiFileProcessingTimeout          = 2 * time.Minute
 	searchDeciderTimeout                 = 30 * time.Second
 	webSearchTimeout                     = 30 * time.Second
 	redditRequestTimeout                 = 30 * time.Second

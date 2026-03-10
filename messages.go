@@ -156,16 +156,19 @@ func (instance *bot) respondToMessage(
 	message *discordgo.Message,
 	providerSlashModel string,
 ) error {
-	maxImages := loadedConfig.MaxImages
-	if !isVisionModel(providerSlashModel) {
-		maxImages = 0
+	contentOptions, err := messageContentOptionsForModel(
+		loadedConfig,
+		providerSlashModel,
+	)
+	if err != nil {
+		return fmt.Errorf("build message content options: %w", err)
 	}
 
 	messages, warnings := instance.buildConversation(
 		ctx,
 		message,
 		loadedConfig.MaxText,
-		maxImages,
+		contentOptions,
 		loadedConfig.MaxMessages,
 	)
 
@@ -217,6 +220,41 @@ func (instance *bot) respondToMessage(
 	}
 
 	return nil
+}
+
+func messageContentOptionsForModel(
+	loadedConfig config,
+	providerSlashModel string,
+) (messageContentOptions, error) {
+	providerName, _, err := splitConfiguredModel(providerSlashModel)
+	if err != nil {
+		return messageContentOptions{}, fmt.Errorf(
+			"parse configured model %q: %w",
+			providerSlashModel,
+			err,
+		)
+	}
+
+	provider, ok := loadedConfig.Providers[providerName]
+	if !ok {
+		return messageContentOptions{}, fmt.Errorf(
+			"find provider %q: %w",
+			providerName,
+			os.ErrNotExist,
+		)
+	}
+
+	var options messageContentOptions
+	if isVisionModel(providerSlashModel) {
+		options.maxImages = loadedConfig.MaxImages
+	}
+
+	if provider.apiKind() == providerAPIKindGemini {
+		options.allowAudio = true
+		options.allowVideo = true
+	}
+
+	return options, nil
 }
 
 func (instance *bot) augmentConversation(

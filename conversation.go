@@ -17,11 +17,22 @@ type attachmentPayload struct {
 	body       []byte
 }
 
+type messageContentOptions struct {
+	maxImages  int
+	allowAudio bool
+	allowVideo bool
+}
+
+type messageContentSummary struct {
+	imageCount               int
+	unsupportedAttachmentCnt int
+}
+
 func (instance *bot) buildConversation(
 	ctx context.Context,
 	sourceMessage *discordgo.Message,
 	maxText int,
-	maxImages int,
+	contentOptions messageContentOptions,
 	maxMessages int,
 ) ([]chatMessage, []string) {
 	messages := make([]chatMessage, 0, maxMessages)
@@ -36,7 +47,8 @@ func (instance *bot) buildConversation(
 			instance.initializeNode(ctx, currentMessage, node)
 		}
 
-		if content := buildMessageContent(node, maxText, maxImages); content != nil {
+		content, summary := buildMessageContent(node, maxText, contentOptions)
+		if content != nil {
 			message := chatMessage{
 				Role:    node.role,
 				Content: content,
@@ -51,16 +63,19 @@ func (instance *bot) buildConversation(
 			)
 		}
 
-		if len(node.images) > maxImages {
+		if summary.imageCount > contentOptions.maxImages {
 			warningText := "Warning: can't see images"
-			if maxImages > 0 {
-				warningText = fmt.Sprintf("Warning: max %d images per message", maxImages)
+			if contentOptions.maxImages > 0 {
+				warningText = fmt.Sprintf(
+					"Warning: max %d images per message",
+					contentOptions.maxImages,
+				)
 			}
 
 			appendUniqueWarning(warningSet, warningText)
 		}
 
-		if node.hasBadAttachments {
+		if node.hasBadAttachments || summary.unsupportedAttachmentCnt > 0 {
 			appendUniqueWarning(warningSet, "Warning: unsupported attachments")
 		}
 
@@ -83,26 +98,76 @@ func (instance *bot) buildConversation(
 	return messages, sortedWarnings(warningSet)
 }
 
-func buildMessageContent(node *messageNode, maxText int, maxImages int) any {
-	imageCount := minInt(len(node.images), maxImages)
-	if imageCount > 0 {
-		parts := make([]contentPart, 0, imageCount+1)
+func buildMessageContent(
+	node *messageNode,
+	maxText int,
+	options messageContentOptions,
+) (any, messageContentSummary) {
+	selectedMedia, summary := selectMessageMedia(node.media, options)
+	if len(selectedMedia) > 0 {
+		parts := make([]contentPart, 0, len(selectedMedia)+1)
 
 		textPart := make(contentPart)
-		textPart["type"] = "text"
+		textPart["type"] = contentTypeText
 		textPart["text"] = truncateRunes(node.text, maxText)
 		parts = append(parts, textPart)
-		parts = append(parts, node.images[:imageCount]...)
+		parts = append(parts, selectedMedia...)
 
-		return parts
+		return parts, summary
 	}
 
 	truncatedText := truncateRunes(node.text, maxText)
 	if truncatedText == "" {
-		return nil
+		return nil, summary
 	}
 
-	return truncatedText
+	return truncatedText, summary
+}
+
+func selectMessageMedia(
+	media []contentPart,
+	options messageContentOptions,
+) ([]contentPart, messageContentSummary) {
+	selectedMedia := make([]contentPart, 0, len(media))
+
+	var summary messageContentSummary
+
+	imageCount := 0
+
+	for _, part := range media {
+		partType, _ := part["type"].(string)
+
+		switch partType {
+		case contentTypeImageURL:
+			summary.imageCount++
+			if imageCount >= options.maxImages {
+				continue
+			}
+
+			selectedMedia = append(selectedMedia, part)
+			imageCount++
+		case contentTypeAudioData:
+			if !options.allowAudio {
+				summary.unsupportedAttachmentCnt++
+
+				continue
+			}
+
+			selectedMedia = append(selectedMedia, part)
+		case contentTypeVideoData:
+			if !options.allowVideo {
+				summary.unsupportedAttachmentCnt++
+
+				continue
+			}
+
+			selectedMedia = append(selectedMedia, part)
+		default:
+			summary.unsupportedAttachmentCnt++
+		}
+	}
+
+	return selectedMedia, summary
 }
 
 func (instance *bot) initializeNode(
@@ -116,9 +181,9 @@ func (instance *bot) initializeNode(
 	node.role = messageRole(message, instance.session.State.User.ID)
 	node.text = buildMessageText(message, cleanedContent, payloads)
 
-	node.images = buildImageParts(payloads)
+	node.media = buildMediaParts(payloads)
 
-	if node.role == "user" && (node.text != "" || len(node.images) > 0) {
+	if node.role == "user" && (node.text != "" || len(node.media) > 0) {
 		node.text = fmt.Sprintf("<@%s>: %s", message.Author.ID, node.text)
 	}
 
@@ -143,8 +208,7 @@ func supportedAttachmentCount(attachments []*discordgo.MessageAttachment) int {
 			continue
 		}
 
-		if strings.HasPrefix(attachment.ContentType, "text") ||
-			strings.HasPrefix(attachment.ContentType, "image") {
+		if attachmentIsSupported(attachment.ContentType) {
 			count++
 		}
 	}
@@ -187,7 +251,7 @@ func buildMessageText(
 	}
 
 	for _, payload := range payloads {
-		if strings.HasPrefix(payload.attachment.ContentType, "text") {
+		if attachmentIsText(payload.attachment.ContentType) {
 			textParts = append(textParts, string(payload.body))
 		}
 	}
@@ -242,27 +306,57 @@ func nestedMessageComponentTextParts(components []discordgo.MessageComponent) []
 	return textParts
 }
 
-func buildImageParts(payloads []attachmentPayload) []contentPart {
+func buildMediaParts(payloads []attachmentPayload) []contentPart {
 	parts := make([]contentPart, 0, len(payloads))
 
 	for _, payload := range payloads {
-		if !strings.HasPrefix(payload.attachment.ContentType, "image") {
+		part, ok := attachmentPayloadToContentPart(payload)
+		if !ok {
 			continue
 		}
 
-		part := make(contentPart)
-		part["type"] = "image_url"
-		part["image_url"] = map[string]string{
-			"url": fmt.Sprintf(
-				"data:%s;base64,%s",
-				payload.attachment.ContentType,
-				base64.StdEncoding.EncodeToString(payload.body),
-			),
-		}
 		parts = append(parts, part)
 	}
 
 	return parts
+}
+
+func attachmentPayloadToContentPart(payload attachmentPayload) (contentPart, bool) {
+	contentType := strings.TrimSpace(payload.attachment.ContentType)
+
+	switch {
+	case strings.HasPrefix(contentType, "image/"):
+		part := make(contentPart)
+		part["type"] = contentTypeImageURL
+		part["image_url"] = map[string]string{
+			"url": fmt.Sprintf(
+				"data:%s;base64,%s",
+				contentType,
+				base64.StdEncoding.EncodeToString(payload.body),
+			),
+		}
+
+		return part, true
+	case strings.HasPrefix(contentType, "audio/"):
+		return binaryAttachmentContentPart(contentTypeAudioData, payload), true
+	case strings.HasPrefix(contentType, "video/"):
+		return binaryAttachmentContentPart(contentTypeVideoData, payload), true
+	default:
+		return nil, false
+	}
+}
+
+func binaryAttachmentContentPart(partType string, payload attachmentPayload) contentPart {
+	part := make(contentPart)
+	part["type"] = partType
+	part[contentFieldBytes] = payload.body
+	part[contentFieldMIMEType] = strings.TrimSpace(payload.attachment.ContentType)
+
+	if payload.attachment.Filename != "" {
+		part[contentFieldFilename] = payload.attachment.Filename
+	}
+
+	return part
 }
 
 func (instance *bot) fetchSupportedAttachments(
@@ -279,8 +373,7 @@ func (instance *bot) fetchSupportedAttachments(
 			continue
 		}
 
-		if !strings.HasPrefix(attachment.ContentType, "text") &&
-			!strings.HasPrefix(attachment.ContentType, "image") {
+		if !attachmentIsSupported(attachment.ContentType) {
 			continue
 		}
 
@@ -335,6 +428,51 @@ func (instance *bot) fetchSupportedAttachments(
 	}
 
 	return payloads
+}
+
+func attachmentIsSupported(contentType string) bool {
+	return attachmentIsText(contentType) ||
+		strings.HasPrefix(strings.TrimSpace(contentType), "image/") ||
+		strings.HasPrefix(strings.TrimSpace(contentType), "audio/") ||
+		strings.HasPrefix(strings.TrimSpace(contentType), "video/")
+}
+
+func attachmentIsText(contentType string) bool {
+	return strings.HasPrefix(strings.TrimSpace(contentType), "text/")
+}
+
+func filterContentPartsForOptions(
+	parts []contentPart,
+	options messageContentOptions,
+) []contentPart {
+	filteredParts := make([]contentPart, 0, len(parts))
+	imageCount := 0
+
+	for _, part := range parts {
+		partType, _ := part["type"].(string)
+
+		switch partType {
+		case contentTypeText:
+			filteredParts = append(filteredParts, part)
+		case contentTypeImageURL:
+			if imageCount >= options.maxImages {
+				continue
+			}
+
+			filteredParts = append(filteredParts, part)
+			imageCount++
+		case contentTypeAudioData:
+			if options.allowAudio {
+				filteredParts = append(filteredParts, part)
+			}
+		case contentTypeVideoData:
+			if options.allowVideo {
+				filteredParts = append(filteredParts, part)
+			}
+		}
+	}
+
+	return filteredParts
 }
 
 func (instance *bot) resolveParentMessage(message *discordgo.Message) (*discordgo.Message, bool) {

@@ -200,11 +200,13 @@ func TestGenerateAndSendResponseKeepsAssistantReplyInConversationHistory(t *test
 
 	followUpMessage := newFollowUpReplyMessage("user-message-2", channelID, userID, assistantMessage)
 
+	var contentOptions messageContentOptions
+
 	conversation, warnings := instance.buildConversation(
 		context.Background(),
 		followUpMessage,
 		defaultMaxText,
-		0,
+		contentOptions,
 		defaultMaxMessages,
 	)
 	if len(warnings) != 0 {
