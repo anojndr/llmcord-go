@@ -119,7 +119,7 @@ func statusMessage(text string) string {
 
 func isGoodFinishReason(reason string) bool {
 	switch strings.ToLower(strings.TrimSpace(reason)) {
-	case "stop", "end_turn":
+	case finishReasonStop, "end_turn":
 		return true
 	default:
 		return false
