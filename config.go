@@ -110,6 +110,7 @@ type rawConfig struct {
 	Providers          map[string]rawProviderConfig `yaml:"providers"`
 	Models             map[string]map[string]any    `yaml:"models"`
 	SearchDeciderModel scalarString                 `yaml:"search_decider_model"`
+	MediaAnalysisModel scalarString                 `yaml:"media_analysis_model"`
 	SystemPrompt       string                       `yaml:"system_prompt"`
 }
 
@@ -127,6 +128,7 @@ type config struct {
 	Models             map[string]map[string]any
 	ModelOrder         []string
 	SearchDeciderModel string
+	MediaAnalysisModel string
 	SystemPrompt       string
 }
 
@@ -177,6 +179,8 @@ func loadConfig(filename string) (config, error) {
 		searchDeciderModel = modelOrder[0]
 	}
 
+	mediaAnalysisModel := strings.TrimSpace(string(rawLoadedConfig.MediaAnalysisModel))
+
 	loadedConfig := config{
 		BotToken:           string(rawLoadedConfig.BotToken),
 		ClientID:           string(rawLoadedConfig.ClientID),
@@ -191,6 +195,7 @@ func loadConfig(filename string) (config, error) {
 		Models:             rawLoadedConfig.Models,
 		ModelOrder:         modelOrder,
 		SearchDeciderModel: searchDeciderModel,
+		MediaAnalysisModel: mediaAnalysisModel,
 		SystemPrompt:       rawLoadedConfig.SystemPrompt,
 	}
 
@@ -287,6 +292,36 @@ func validateConfig(loadedConfig config) error {
 			loadedConfig.SearchDeciderModel,
 			os.ErrNotExist,
 		)
+	}
+
+	if strings.TrimSpace(loadedConfig.MediaAnalysisModel) != "" {
+		if !loadedConfig.hasModel(loadedConfig.MediaAnalysisModel) {
+			return fmt.Errorf(
+				"media_analysis_model %q is not defined in models: %w",
+				loadedConfig.MediaAnalysisModel,
+				os.ErrNotExist,
+			)
+		}
+
+		apiKind, err := configuredModelAPIKind(
+			loadedConfig,
+			loadedConfig.MediaAnalysisModel,
+		)
+		if err != nil {
+			return fmt.Errorf(
+				"inspect media_analysis_model %q: %w",
+				loadedConfig.MediaAnalysisModel,
+				err,
+			)
+		}
+
+		if apiKind != providerAPIKindGemini {
+			return fmt.Errorf(
+				"media_analysis_model %q must use a gemini provider: %w",
+				loadedConfig.MediaAnalysisModel,
+				os.ErrInvalid,
+			)
+		}
 	}
 
 	return nil
