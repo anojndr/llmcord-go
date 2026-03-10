@@ -18,6 +18,7 @@ type bot struct {
 	httpClient                *http.Client
 	chatCompletions           chatCompletionClient
 	webSearch                 webSearchClient
+	tiktok                    tiktokContentClient
 	youtube                   youtubeContentClient
 	reddit                    redditContentClient
 	nodes                     *messageNodeStore
@@ -42,6 +43,7 @@ func newBot(configPath string, loadedConfig config) (*bot, error) {
 	instance.httpClient = httpClient
 	instance.chatCompletions = newChatCompletionRouter(httpClient)
 	instance.webSearch = newExaSearchClient(httpClient)
+	instance.tiktok = newTikTokClient(httpClient)
 	instance.youtube = newYouTubeClient(httpClient)
 	instance.reddit = newRedditClient(httpClient)
 	instance.nodes = newMessageNodeStore(maxMessageNodes)

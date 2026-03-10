@@ -12,6 +12,7 @@ This bot turns Discord into a reply-chain frontend for OpenAI-compatible LLM API
 - Streaming embed responses with automatic message splitting
 - Plain-response mode using Discord text display components
 - Text attachment ingestion, image attachment support for vision models, Gemini audio/video understanding via the native Files API, and Gemini sidecar audio/video preprocessing for non-Gemini models
+- Automatic TikTok URL handling that resolves short links, converts videos to MP4 through SnapTik, and either sends the MP4 to Gemini models or preprocesses it with Gemini for non-Gemini replies
 - Automatic YouTube URL enrichment that fetches transcripts, titles, channel names, and up to 50 top comments without an API key
 - Automatic Reddit URL enrichment that fetches thread metadata, post bodies, and nested comments from Reddit's `.json` endpoint without an API key
 - Search-decider flow that can skip search or call Exa MCP web search when current information is needed
@@ -96,6 +97,7 @@ golangci-lint run --default=all
 - Gemini providers use the official `google.golang.org/genai` SDK. Existing configs that still point at `https://generativelanguage.googleapis.com/.../openai` are detected and routed through the native Gemini client automatically.
 - Gemini requests can include Discord audio and video attachments. Those attachments are uploaded through the Gemini Files API before `GenerateContent`, so Gemini models can inspect them without relying on inline request blobs.
 - When the selected reply model is not Gemini, Discord audio and video attachments from the triggering user message are first analyzed with Gemini. The bot appends one `<media_analysis>...</media_analysis>` block per file to the user query, using `media_analysis_model` when configured or otherwise falling back to `search_decider_model` when it is Gemini, or the first configured Gemini model.
+- When a user message contains one or more TikTok URLs, the bot resolves short links, downloads each video as MP4 through SnapTik, and then either appends the MP4s to the latest user message for Gemini models or runs those MP4s through the same Gemini media-analysis path before non-Gemini replies. If the reply model is Gemini but the search decider is not, the bot also appends Gemini-generated TikTok analysis text so the search decider still receives the video context.
 - When a user message contains one or more YouTube URLs, the bot fetches each video concurrently over plain HTTP and appends the extracted transcript, title, channel name, and top comments to the latest user message before the main completion request.
 - When a user message contains one or more Reddit thread URLs, the bot fetches each thread concurrently from the corresponding `.json` URL over a dedicated HTTP/1.1 transport, then appends the post metadata, post body, and nested comments to the latest user message before the main completion request.
 - When the search decider requires web search, the bot queries Exa MCP at `https://mcp.exa.ai/mcp` without requiring an API key by default.
