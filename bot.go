@@ -18,6 +18,7 @@ type bot struct {
 	httpClient                *http.Client
 	openAI                    chatCompletionClient
 	webSearch                 webSearchClient
+	youtube                   youtubeContentClient
 	nodes                     *messageNodeStore
 	currentModel              string
 	currentSearchDeciderModel string
@@ -40,6 +41,7 @@ func newBot(configPath string, loadedConfig config) (*bot, error) {
 	instance.httpClient = httpClient
 	instance.openAI = newOpenAIClient(httpClient)
 	instance.webSearch = newExaSearchClient(httpClient)
+	instance.youtube = newYouTubeClient(httpClient)
 	instance.nodes = newMessageNodeStore(maxMessageNodes)
 	instance.currentModel = loadedConfig.firstModel()
 	instance.currentSearchDeciderModel = loadedConfig.SearchDeciderModel

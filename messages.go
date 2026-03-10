@@ -181,6 +181,18 @@ func (instance *bot) respondToMessage(
 		message.Content,
 	)
 
+	youtubeMessages, youtubeWarnings, err := instance.maybeAugmentConversationWithYouTube(
+		ctx,
+		messages,
+	)
+	if err != nil {
+		return fmt.Errorf("augment conversation with youtube: %w", err)
+	}
+
+	messages = youtubeMessages
+
+	warnings = append(warnings, youtubeWarnings...)
+
 	searchMessages, searchMetadata, searchWarnings, err := instance.maybeAugmentConversationWithWebSearch(
 		ctx,
 		loadedConfig,
