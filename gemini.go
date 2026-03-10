@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"iter"
 	"maps"
 	"mime"
@@ -12,6 +14,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"time"
 
 	"google.golang.org/genai"
 )
@@ -27,14 +30,67 @@ type geminiModelsClient interface {
 	) iter.Seq2[*genai.GenerateContentResponse, error]
 }
 
-type geminiModelsClientFactory func(
+type geminiFilesClient interface {
+	UploadFile(
+		ctx context.Context,
+		reader io.Reader,
+		config *genai.UploadFileConfig,
+	) (*genai.File, error)
+	GetFile(ctx context.Context, name string, config *genai.GetFileConfig) (*genai.File, error)
+}
+
+type geminiAPIClient interface {
+	geminiModelsClient
+	geminiFilesClient
+}
+
+type liveGeminiAPIClient struct {
+	client *genai.Client
+}
+
+func (client liveGeminiAPIClient) GenerateContentStream(
+	ctx context.Context,
+	model string,
+	contents []*genai.Content,
+	config *genai.GenerateContentConfig,
+) iter.Seq2[*genai.GenerateContentResponse, error] {
+	return client.client.Models.GenerateContentStream(ctx, model, contents, config)
+}
+
+func (client liveGeminiAPIClient) UploadFile(
+	ctx context.Context,
+	reader io.Reader,
+	config *genai.UploadFileConfig,
+) (*genai.File, error) {
+	file, err := client.client.Files.Upload(ctx, reader, config)
+	if err != nil {
+		return nil, fmt.Errorf("upload gemini file: %w", err)
+	}
+
+	return file, nil
+}
+
+func (client liveGeminiAPIClient) GetFile(
+	ctx context.Context,
+	name string,
+	config *genai.GetFileConfig,
+) (*genai.File, error) {
+	file, err := client.client.Files.Get(ctx, name, config)
+	if err != nil {
+		return nil, fmt.Errorf("get gemini file: %w", err)
+	}
+
+	return file, nil
+}
+
+type geminiClientFactory func(
 	context.Context,
 	*genai.ClientConfig,
-) (geminiModelsClient, error)
+) (geminiAPIClient, error)
 
 type geminiClient struct {
 	httpClient *http.Client
-	newClient  geminiModelsClientFactory
+	newClient  geminiClientFactory
 }
 
 func newGeminiClient(httpClient *http.Client) geminiClient {
@@ -43,13 +99,13 @@ func newGeminiClient(httpClient *http.Client) geminiClient {
 		newClient: func(
 			ctx context.Context,
 			config *genai.ClientConfig,
-		) (geminiModelsClient, error) {
+		) (geminiAPIClient, error) {
 			client, err := genai.NewClient(ctx, config)
 			if err != nil {
 				return nil, fmt.Errorf("new genai client: %w", err)
 			}
 
-			return client.Models, nil
+			return liveGeminiAPIClient{client: client}, nil
 		},
 	}
 }
@@ -59,32 +115,26 @@ func (client geminiClient) streamChatCompletion(
 	request chatCompletionRequest,
 	handle func(streamDelta) error,
 ) error {
-	contents, generateConfig, err := buildGeminiGenerateContentRequest(request)
+	clientConfig, err := buildGeminiClientConfig(request.Provider, client.httpClient)
 	if err != nil {
-		return fmt.Errorf("build gemini request: %w", err)
+		return fmt.Errorf("build gemini client config: %w", err)
 	}
 
-	modelsClient, err := client.newClient(ctx, &genai.ClientConfig{
-		APIKey:      strings.TrimSpace(request.Provider.APIKey),
-		Backend:     genai.BackendGeminiAPI,
-		Project:     "",
-		Location:    "",
-		Credentials: nil,
-		HTTPClient:  client.httpClient,
-		HTTPOptions: genai.HTTPOptions{
-			BaseURL:               "",
-			APIVersion:            "",
-			Headers:               nil,
-			Timeout:               nil,
-			ExtraBody:             nil,
-			ExtrasRequestProvider: nil,
-		},
-	})
+	apiClient, err := client.newClient(ctx, clientConfig)
 	if err != nil {
 		return fmt.Errorf("create gemini client: %w", err)
 	}
 
-	for response, streamErr := range modelsClient.GenerateContentStream(
+	contents, generateConfig, err := buildGeminiGenerateContentRequest(
+		ctx,
+		request,
+		apiClient,
+	)
+	if err != nil {
+		return fmt.Errorf("build gemini request: %w", err)
+	}
+
+	for response, streamErr := range apiClient.GenerateContentStream(
 		ctx,
 		request.Model,
 		contents,
@@ -109,9 +159,15 @@ func (client geminiClient) streamChatCompletion(
 }
 
 func buildGeminiGenerateContentRequest(
+	ctx context.Context,
 	request chatCompletionRequest,
+	files geminiFilesClient,
 ) ([]*genai.Content, *genai.GenerateContentConfig, error) {
-	contents, systemInstruction, err := geminiContentsAndSystemInstruction(request.Messages)
+	contents, systemInstruction, err := geminiContentsAndSystemInstruction(
+		ctx,
+		request.Messages,
+		files,
+	)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -120,7 +176,7 @@ func buildGeminiGenerateContentRequest(
 		return nil, nil, fmt.Errorf("missing gemini contents: %w", os.ErrInvalid)
 	}
 
-	httpOptions, err := buildGeminiHTTPOptions(request.Provider)
+	extraBody, err := geminiExtraBody(request.Provider.ExtraBody)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -130,40 +186,53 @@ func buildGeminiGenerateContentRequest(
 		config.SystemInstruction = genai.NewContentFromText(systemInstruction, "")
 	}
 
-	if !geminiHTTPOptionsIsZero(httpOptions) {
-		config.HTTPOptions = &httpOptions
+	if len(extraBody) > 0 {
+		httpOptions := new(genai.HTTPOptions)
+		httpOptions.ExtraBody = extraBody
+		config.HTTPOptions = httpOptions
 	}
 
 	return contents, config, nil
 }
 
-func buildGeminiHTTPOptions(provider providerRequestConfig) (genai.HTTPOptions, error) {
-	baseURL, apiVersion, err := normalizeGeminiBaseURL(provider.BaseURL, provider.ExtraQuery)
+func buildGeminiClientConfig(
+	provider providerRequestConfig,
+	httpClient *http.Client,
+) (*genai.ClientConfig, error) {
+	httpOptions, err := buildGeminiClientHTTPOptions(provider)
 	if err != nil {
-		return genai.HTTPOptions{}, err
+		return nil, err
 	}
 
-	extraBody, err := geminiExtraBody(provider.ExtraBody)
+	return &genai.ClientConfig{
+		APIKey:      strings.TrimSpace(provider.APIKey),
+		Backend:     genai.BackendGeminiAPI,
+		Project:     "",
+		Location:    "",
+		Credentials: nil,
+		HTTPClient:  httpClient,
+		HTTPOptions: httpOptions,
+	}, nil
+}
+
+func buildGeminiClientHTTPOptions(
+	provider providerRequestConfig,
+) (genai.HTTPOptions, error) {
+	baseURL, apiVersion, err := normalizeGeminiBaseURL(provider.BaseURL, provider.ExtraQuery)
 	if err != nil {
 		return genai.HTTPOptions{}, err
 	}
 
 	headers := geminiHeaders(provider.ExtraHeaders)
 
-	options := genai.HTTPOptions{
-		BaseURL:               "",
-		APIVersion:            "",
-		Headers:               nil,
+	return genai.HTTPOptions{
+		BaseURL:               baseURL,
+		APIVersion:            apiVersion,
+		Headers:               headers,
 		Timeout:               nil,
 		ExtraBody:             nil,
 		ExtrasRequestProvider: nil,
-	}
-	options.BaseURL = baseURL
-	options.APIVersion = apiVersion
-	options.Headers = headers
-	options.ExtraBody = extraBody
-
-	return options, nil
+	}, nil
 }
 
 func normalizeGeminiBaseURL(
@@ -327,7 +396,9 @@ func geminiHeaders(extraHeaders map[string]any) http.Header {
 }
 
 func geminiContentsAndSystemInstruction(
+	ctx context.Context,
 	messages []chatMessage,
+	files geminiFilesClient,
 ) ([]*genai.Content, string, error) {
 	contents := make([]*genai.Content, 0, len(messages))
 	systemInstructions := make([]string, 0, 1)
@@ -351,7 +422,7 @@ func geminiContentsAndSystemInstruction(
 			continue
 		}
 
-		content, ok, err := geminiContentFromChatMessage(message)
+		content, ok, err := geminiContentFromChatMessage(ctx, message, files)
 		if err != nil {
 			return nil, "", fmt.Errorf("convert message %d: %w", index, err)
 		}
@@ -385,13 +456,17 @@ func geminiSystemInstructionText(content any) (string, error) {
 	}
 }
 
-func geminiContentFromChatMessage(message chatMessage) (*genai.Content, bool, error) {
+func geminiContentFromChatMessage(
+	ctx context.Context,
+	message chatMessage,
+	files geminiFilesClient,
+) (*genai.Content, bool, error) {
 	role, err := geminiRoleFromChatRole(message.Role)
 	if err != nil {
 		return nil, false, err
 	}
 
-	parts, err := geminiPartsFromMessageContent(message.Content)
+	parts, err := geminiPartsFromMessageContent(ctx, message.Content, files)
 	if err != nil {
 		return nil, false, err
 	}
@@ -414,7 +489,11 @@ func geminiRoleFromChatRole(role string) (genai.Role, error) {
 	}
 }
 
-func geminiPartsFromMessageContent(content any) ([]*genai.Part, error) {
+func geminiPartsFromMessageContent(
+	ctx context.Context,
+	content any,
+	files geminiFilesClient,
+) ([]*genai.Part, error) {
 	switch typedContent := content.(type) {
 	case nil:
 		return nil, nil
@@ -454,6 +533,17 @@ func geminiPartsFromMessageContent(content any) ([]*genai.Part, error) {
 				}
 
 				parts = append(parts, genai.NewPartFromBytes(imageBytes, mimeType))
+			case contentTypeAudioData, contentTypeVideoData:
+				uploadedPart, err := geminiUploadedMediaPart(ctx, files, part)
+				if err != nil {
+					return nil, err
+				}
+
+				if uploadedPart == nil {
+					continue
+				}
+
+				parts = append(parts, uploadedPart)
 			default:
 				return nil, fmt.Errorf(
 					"unsupported gemini content part type %q: %w",
@@ -471,6 +561,60 @@ func geminiPartsFromMessageContent(content any) ([]*genai.Part, error) {
 			os.ErrInvalid,
 		)
 	}
+}
+
+func geminiUploadedMediaPart(
+	ctx context.Context,
+	files geminiFilesClient,
+	part contentPart,
+) (*genai.Part, error) {
+	if files == nil {
+		return nil, fmt.Errorf("missing gemini file client: %w", os.ErrInvalid)
+	}
+
+	mediaBytes, mimeType, filename, err := geminiBinaryAttachment(part)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(mediaBytes) == 0 {
+		return nil, fmt.Errorf("empty gemini media bytes: %w", os.ErrInvalid)
+	}
+
+	uploadedFile, err := files.UploadFile(ctx, bytes.NewReader(mediaBytes), &genai.UploadFileConfig{
+		HTTPOptions: nil,
+		Name:        "",
+		MIMEType:    mimeType,
+		DisplayName: filename,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("upload gemini media %q: %w", filename, err)
+	}
+
+	activeFile, err := geminiWaitForFileActive(ctx, files, uploadedFile)
+	if err != nil {
+		return nil, err
+	}
+
+	return genai.NewPartFromFile(*activeFile), nil
+}
+
+func geminiBinaryAttachment(part contentPart) ([]byte, string, string, error) {
+	mediaBytes, ok := part[contentFieldBytes].([]byte)
+	if !ok {
+		return nil, "", "", fmt.Errorf("decode gemini media bytes: %w", os.ErrInvalid)
+	}
+
+	mimeType, _ := part[contentFieldMIMEType].(string)
+
+	mimeType = strings.TrimSpace(mimeType)
+	if mimeType == "" {
+		return nil, "", "", fmt.Errorf("decode gemini media mime type: %w", os.ErrInvalid)
+	}
+
+	filename, _ := part[contentFieldFilename].(string)
+
+	return mediaBytes, mimeType, filename, nil
 }
 
 func geminiImageURL(part contentPart) (string, error) {
@@ -545,6 +689,75 @@ func geminiInlineImage(imageURL string) ([]byte, string, error) {
 	return imageBytes, mimeType, nil
 }
 
+func geminiWaitForFileActive(
+	ctx context.Context,
+	files geminiFilesClient,
+	file *genai.File,
+) (*genai.File, error) {
+	if file == nil {
+		return nil, fmt.Errorf("missing uploaded gemini file: %w", os.ErrInvalid)
+	}
+
+	currentFile := file
+	switch currentFile.State {
+	case "", genai.FileStateActive:
+		return currentFile, nil
+	case genai.FileStateProcessing, genai.FileStateUnspecified:
+	case genai.FileStateFailed:
+		return nil, geminiFileStateError(currentFile)
+	}
+
+	waitContext, cancel := context.WithTimeout(ctx, geminiFileProcessingTimeout)
+	defer cancel()
+
+	ticker := time.NewTicker(geminiFilePollInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-waitContext.Done():
+			return nil, fmt.Errorf(
+				"wait for gemini file %q to become active: %w",
+				currentFile.Name,
+				waitContext.Err(),
+			)
+		case <-ticker.C:
+			updatedFile, err := files.GetFile(waitContext, currentFile.Name, nil)
+			if err != nil {
+				return nil, fmt.Errorf("refresh gemini file %q: %w", currentFile.Name, err)
+			}
+
+			currentFile = updatedFile
+
+			switch currentFile.State {
+			case "", genai.FileStateActive:
+				return currentFile, nil
+			case genai.FileStateProcessing, genai.FileStateUnspecified:
+			case genai.FileStateFailed:
+				return nil, geminiFileStateError(currentFile)
+			}
+		}
+	}
+}
+
+func geminiFileStateError(file *genai.File) error {
+	if file != nil && file.Error != nil && strings.TrimSpace(file.Error.Message) != "" {
+		return fmt.Errorf(
+			"gemini file %q failed processing: %s: %w",
+			file.Name,
+			strings.TrimSpace(file.Error.Message),
+			os.ErrInvalid,
+		)
+	}
+
+	name := ""
+	if file != nil {
+		name = file.Name
+	}
+
+	return fmt.Errorf("gemini file %q failed processing: %w", name, os.ErrInvalid)
+}
+
 func geminiStreamDelta(response *genai.GenerateContentResponse) streamDelta {
 	var delta streamDelta
 	if response == nil {
@@ -557,13 +770,4 @@ func geminiStreamDelta(response *genai.GenerateContentResponse) streamDelta {
 	}
 
 	return delta
-}
-
-func geminiHTTPOptionsIsZero(options genai.HTTPOptions) bool {
-	return options.BaseURL == "" &&
-		options.APIVersion == "" &&
-		len(options.Headers) == 0 &&
-		len(options.ExtraBody) == 0 &&
-		options.Timeout == nil &&
-		options.ExtrasRequestProvider == nil
 }

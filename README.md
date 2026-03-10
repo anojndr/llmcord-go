@@ -11,7 +11,7 @@ This bot turns Discord into a reply-chain frontend for OpenAI-compatible LLM API
 - `/model` and `/searchdecidermodel` autocomplete and model switching for all users
 - Streaming embed responses with automatic message splitting
 - Plain-response mode using Discord text display components
-- Text attachment ingestion and image attachment support for vision models
+- Text attachment ingestion, image attachment support for vision models, and Gemini audio/video understanding via the native Files API
 - Automatic YouTube URL enrichment that fetches transcripts, titles, channel names, and up to 50 top comments without an API key
 - Automatic Reddit URL enrichment that fetches thread metadata, post bodies, and nested comments from Reddit's `.json` endpoint without an API key
 - Search-decider flow that can skip search or call Exa MCP web search when current information is needed
@@ -93,6 +93,7 @@ golangci-lint run --default=all
 
 - The bot reads `config.yaml` on each message and `/model` autocomplete request, so configuration changes apply without restarting.
 - Gemini providers use the official `google.golang.org/genai` SDK. Existing configs that still point at `https://generativelanguage.googleapis.com/.../openai` are detected and routed through the native Gemini client automatically.
+- Gemini requests can include Discord audio and video attachments. Those attachments are uploaded through the Gemini Files API before `GenerateContent`, so Gemini models can inspect them without relying on inline request blobs.
 - When a user message contains one or more YouTube URLs, the bot fetches each video concurrently over plain HTTP and appends the extracted transcript, title, channel name, and top comments to the latest user message before the main completion request.
 - When a user message contains one or more Reddit thread URLs, the bot fetches each thread concurrently from the corresponding `.json` URL over a dedicated HTTP/1.1 transport, then appends the post metadata, post body, and nested comments to the latest user message before the main completion request.
 - When the search decider requires web search, the bot queries Exa MCP at `https://mcp.exa.ai/mcp` without requiring an API key by default.

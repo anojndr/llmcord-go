@@ -14,7 +14,7 @@ type contentPart map[string]any
 type messageNode struct {
 	role              string
 	text              string
-	images            []contentPart
+	media             []contentPart
 	searchMetadata    *searchMetadata
 	hasBadAttachments bool
 	fetchParentFailed bool
