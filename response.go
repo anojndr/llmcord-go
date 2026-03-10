@@ -111,6 +111,10 @@ func (tracker *responseTracker) release(fullText string) {
 	}
 }
 
+func (tracker *responseTracker) releaseJoined(accumulator *segmentAccumulator) {
+	tracker.release(accumulator.joined())
+}
+
 func (instance *bot) generateAndSendResponse(
 	ctx context.Context,
 	request chatCompletionRequest,
@@ -127,7 +131,7 @@ func (instance *bot) generateAndSendResponse(
 	accumulator := newSegmentAccumulator(maxLength)
 
 	tracker := newResponseTracker(sourceMessage, searchMetadata)
-	defer tracker.release(accumulator.joined())
+	defer tracker.releaseJoined(&accumulator)
 
 	stopTyping := instance.startTyping(ctx, sourceMessage.ChannelID)
 	defer stopTyping()
