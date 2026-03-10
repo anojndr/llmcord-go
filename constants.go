@@ -30,10 +30,12 @@ const (
 	showSourcesButtonLabel               = "Show Sources"
 	maxSearchQueries                     = 5
 	maxSourcesPerQuery                   = 3
+	maxYouTubeComments                   = 50
 	showSourcesMessageMaxLength          = 1900
 	attachmentRequestTimeout             = 30 * time.Second
 	searchDeciderTimeout                 = 30 * time.Second
 	webSearchTimeout                     = 30 * time.Second
+	youtubeRequestTimeout                = 30 * time.Second
 	typingRefreshInterval                = 8 * time.Second
 	editDelay                            = time.Second
 	sseScannerInitialBuffer              = 64 * 1024
