@@ -5,36 +5,7 @@ import "testing"
 func TestMessageAllowed(t *testing.T) {
 	t.Parallel()
 
-	loadedConfig := config{
-		BotToken:          "",
-		ClientID:          "",
-		StatusMessage:     "",
-		MaxText:           0,
-		MaxImages:         0,
-		MaxMessages:       0,
-		UsePlainResponses: false,
-		AllowDMs:          false,
-		Permissions: permissionsConfig{
-			Users: userPermissions{
-				AdminIDs:   idList{"admin-user"},
-				AllowedIDs: idList{"allowed-user"},
-				BlockedIDs: idList{"blocked-user"},
-			},
-			Roles: scopePermissions{
-				AllowedIDs: idList{"allowed-role"},
-				BlockedIDs: idList{"blocked-role"},
-			},
-			Channels: scopePermissions{
-				AllowedIDs: idList{"allowed-channel"},
-				BlockedIDs: idList{"blocked-channel"},
-			},
-		},
-		Providers:          nil,
-		Models:             nil,
-		ModelOrder:         nil,
-		SearchDeciderModel: "",
-		SystemPrompt:       "",
-	}
+	loadedConfig := testPermissionsConfig()
 
 	testCases := []struct {
 		name     string
@@ -92,5 +63,39 @@ func TestMessageAllowed(t *testing.T) {
 				t.Fatalf("unexpected access result: got %t want %t", allowed, testCase.expected)
 			}
 		})
+	}
+}
+
+func testPermissionsConfig() config {
+	return config{
+		BotToken:          "",
+		ClientID:          "",
+		StatusMessage:     "",
+		MaxText:           0,
+		MaxImages:         0,
+		MaxMessages:       0,
+		UsePlainResponses: false,
+		AllowDMs:          false,
+		Permissions: permissionsConfig{
+			Users: userPermissions{
+				AdminIDs:   idList{"admin-user"},
+				AllowedIDs: idList{"allowed-user"},
+				BlockedIDs: idList{"blocked-user"},
+			},
+			Roles: scopePermissions{
+				AllowedIDs: idList{"allowed-role"},
+				BlockedIDs: idList{"blocked-role"},
+			},
+			Channels: scopePermissions{
+				AllowedIDs: idList{"allowed-channel"},
+				BlockedIDs: idList{"blocked-channel"},
+			},
+		},
+		Providers:          nil,
+		Models:             nil,
+		ModelOrder:         nil,
+		SearchDeciderModel: "",
+		MediaAnalysisModel: "",
+		SystemPrompt:       "",
 	}
 }

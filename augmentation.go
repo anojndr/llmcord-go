@@ -8,6 +8,8 @@ import (
 
 const (
 	augmentedPromptPrefix     = "Answer the user query based on "
+	mediaAnalysisCloseTag     = "</media_analysis>"
+	mediaAnalysisOpenTag      = "<media_analysis>"
 	userQuerySectionName      = "User query"
 	youtubeSectionName        = "YouTube URL content"
 	redditSectionName         = "Reddit URL content"
@@ -140,6 +142,20 @@ func appendWebSearchResultsToConversation(
 	})
 }
 
+func appendMediaAnalysesToConversation(
+	conversation []chatMessage,
+	analyses []string,
+) ([]chatMessage, error) {
+	renderedAnalyses := renderMediaAnalyses(analyses)
+	if renderedAnalyses == "" {
+		return conversation, nil
+	}
+
+	return appendContextToConversation(conversation, func(prompt *augmentedUserPrompt) {
+		prompt.UserQuery = appendPromptUserQuery(prompt.UserQuery, renderedAnalyses)
+	})
+}
+
 func appendContextToConversation(
 	conversation []chatMessage,
 	transform func(*augmentedUserPrompt),
@@ -210,6 +226,39 @@ func appendContextToMessageContent(
 	default:
 		return nil, fmt.Errorf("unsupported message content type %T: %w", content, os.ErrInvalid)
 	}
+}
+
+func renderMediaAnalyses(analyses []string) string {
+	blocks := make([]string, 0, len(analyses))
+
+	for _, analysis := range analyses {
+		trimmedAnalysis := strings.TrimSpace(analysis)
+		if trimmedAnalysis == "" {
+			continue
+		}
+
+		blocks = append(
+			blocks,
+			mediaAnalysisOpenTag+"\n"+trimmedAnalysis+"\n"+mediaAnalysisCloseTag,
+		)
+	}
+
+	return strings.Join(blocks, "\n\n")
+}
+
+func appendPromptUserQuery(userQuery string, addition string) string {
+	trimmedQuery := strings.TrimSpace(userQuery)
+	trimmedAddition := strings.TrimSpace(addition)
+
+	if trimmedAddition == "" {
+		return trimmedQuery
+	}
+
+	if trimmedQuery == "" {
+		return trimmedAddition
+	}
+
+	return trimmedQuery + "\n\n" + trimmedAddition
 }
 
 type promptSection struct {

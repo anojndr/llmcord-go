@@ -11,7 +11,7 @@ This bot turns Discord into a reply-chain frontend for OpenAI-compatible LLM API
 - `/model` and `/searchdecidermodel` autocomplete and model switching for all users
 - Streaming embed responses with automatic message splitting
 - Plain-response mode using Discord text display components
-- Text attachment ingestion, image attachment support for vision models, and Gemini audio/video understanding via the native Files API
+- Text attachment ingestion, image attachment support for vision models, Gemini audio/video understanding via the native Files API, and Gemini sidecar audio/video preprocessing for non-Gemini models
 - Automatic YouTube URL enrichment that fetches transcripts, titles, channel names, and up to 50 top comments without an API key
 - Automatic Reddit URL enrichment that fetches thread metadata, post bodies, and nested comments from Reddit's `.json` endpoint without an API key
 - Search-decider flow that can skip search or call Exa MCP web search when current information is needed
@@ -74,6 +74,7 @@ The config schema stays close to the original Python project.
 | `providers` | Provider definitions keyed by provider name. OpenAI-compatible providers use `base_url`. Gemini providers use `type: gemini` and the native `google.golang.org/genai` client; `base_url` is optional and can override the Gemini API endpoint or version. Supports optional `api_key`, `extra_headers`, `extra_query`, and `extra_body`. |
 | `models` | Ordered list of `<provider>/<model>` entries. The first entry is the startup default. Append `:vision` to enable image support heuristics. |
 | `search_decider_model` | Optional `<provider>/<model>` entry used for deciding whether web search is required. Defaults to the first configured model. |
+| `media_analysis_model` | Optional `<provider>/<model>` entry used for Gemini preprocessing of audio/video attachments before non-Gemini replies. Must reference a configured Gemini model. If omitted, the bot falls back to `search_decider_model` when that model is Gemini, or the first configured Gemini model. |
 | `system_prompt` | Optional prompt prepended to every request. `{date}` and `{time}` are expanded using the host time zone. |
 
 ## Development
@@ -94,6 +95,7 @@ golangci-lint run --default=all
 - The bot reads `config.yaml` on each message and `/model` autocomplete request, so configuration changes apply without restarting.
 - Gemini providers use the official `google.golang.org/genai` SDK. Existing configs that still point at `https://generativelanguage.googleapis.com/.../openai` are detected and routed through the native Gemini client automatically.
 - Gemini requests can include Discord audio and video attachments. Those attachments are uploaded through the Gemini Files API before `GenerateContent`, so Gemini models can inspect them without relying on inline request blobs.
+- When the selected reply model is not Gemini, Discord audio and video attachments from the triggering user message are first analyzed with Gemini. The bot appends one `<media_analysis>...</media_analysis>` block per file to the user query, using `media_analysis_model` when configured or otherwise falling back to `search_decider_model` when it is Gemini, or the first configured Gemini model.
 - When a user message contains one or more YouTube URLs, the bot fetches each video concurrently over plain HTTP and appends the extracted transcript, title, channel name, and top comments to the latest user message before the main completion request.
 - When a user message contains one or more Reddit thread URLs, the bot fetches each thread concurrently from the corresponding `.json` URL over a dedicated HTTP/1.1 transport, then appends the post metadata, post body, and nested comments to the latest user message before the main completion request.
 - When the search decider requires web search, the bot queries Exa MCP at `https://mcp.exa.ai/mcp` without requiring an API key by default.
