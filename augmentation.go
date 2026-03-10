@@ -7,218 +7,110 @@ import (
 )
 
 const (
-	youtubeAnswerTemplate = `Answer the user query based on the extracted YouTube URL content.
-
-User query:
-%s
-
-YouTube URL content:
-%s`
-	youtubeSearchAnswerTemplate = `Answer the user query based on the extracted YouTube URL content and web search results.
-
-User query:
-%s
-
-YouTube URL content:
-%s
-
-Web search results:
-%s`
+	augmentedPromptPrefix     = "Answer the user query based on "
+	userQuerySectionName      = "User query"
+	youtubeSectionName        = "YouTube URL content"
+	redditSectionName         = "Reddit URL content"
+	webSearchSectionName      = "Web search results"
+	youtubeSectionDescription = "the extracted YouTube URL content"
+	redditSectionDescription  = "the extracted Reddit URL content"
+	webSearchStandalonePrompt = "the web search results"
+	webSearchCombinedPrompt   = "web search results"
+	maxPromptSections         = 3
 )
 
 type augmentedUserPrompt struct {
 	UserQuery        string
 	YouTubeContent   string
+	RedditContent    string
 	WebSearchResults string
 }
 
 func (prompt augmentedUserPrompt) render() string {
 	trimmedUserQuery := strings.TrimSpace(prompt.UserQuery)
-	trimmedYouTubeContent := strings.TrimSpace(prompt.YouTubeContent)
-	trimmedWebSearchResults := strings.TrimSpace(prompt.WebSearchResults)
 
-	switch {
-	case trimmedYouTubeContent != "" && trimmedWebSearchResults != "":
-		return fmt.Sprintf(
-			youtubeSearchAnswerTemplate,
-			trimmedUserQuery,
-			trimmedYouTubeContent,
-			trimmedWebSearchResults,
-		)
-	case trimmedYouTubeContent != "":
-		return fmt.Sprintf(
-			youtubeAnswerTemplate,
-			trimmedUserQuery,
-			trimmedYouTubeContent,
-		)
-	case trimmedWebSearchResults != "":
-		return fmt.Sprintf(
-			searchAnswerTemplate,
-			trimmedUserQuery,
-			trimmedWebSearchResults,
-		)
-	default:
+	sections := prompt.activeSections()
+	if len(sections) == 0 {
 		return trimmedUserQuery
 	}
+
+	descriptions := make([]string, 0, len(sections))
+
+	renderedSections := make([]string, 0, len(sections))
+	for _, section := range sections {
+		descriptions = append(descriptions, section.descriptionForCount(len(sections)))
+		renderedSections = append(
+			renderedSections,
+			fmt.Sprintf("%s:\n%s", section.Name, section.Value),
+		)
+	}
+
+	return strings.Join(
+		append(
+			[]string{
+				augmentedPromptPrefix + joinPromptDescriptions(descriptions) + ".",
+				fmt.Sprintf("%s:\n%s", userQuerySectionName, trimmedUserQuery),
+			},
+			renderedSections...,
+		),
+		"\n\n",
+	)
 }
 
 func parseAugmentedUserPrompt(text string) augmentedUserPrompt {
 	trimmedText := strings.TrimSpace(text)
-
-	if prompt, ok := parseYouTubeSearchPrompt(trimmedText); ok {
-		return prompt
-	}
-
-	if prompt, ok := parseYouTubePrompt(trimmedText); ok {
-		return prompt
-	}
-
-	if prompt, ok := parseWebSearchPrompt(trimmedText); ok {
-		return prompt
-	}
-
-	return augmentedUserPrompt{
-		UserQuery:        trimmedText,
-		YouTubeContent:   "",
-		WebSearchResults: "",
-	}
-}
-
-func parseYouTubeSearchPrompt(text string) (augmentedUserPrompt, bool) {
-	return parseThreeSectionPrompt(
-		text,
-		"Answer the user query based on the extracted YouTube URL content and web search results.",
-		"YouTube URL content",
-		"Web search results",
-	)
-}
-
-func parseYouTubePrompt(text string) (augmentedUserPrompt, bool) {
-	intro := "Answer the user query based on the extracted YouTube URL content."
-
-	prompt, ok := parseTwoSectionPrompt(text, intro, "YouTube URL content")
-	if !ok {
+	if !strings.HasPrefix(trimmedText, augmentedPromptPrefix) {
 		return augmentedUserPrompt{
-			UserQuery:        "",
+			UserQuery:        trimmedText,
 			YouTubeContent:   "",
+			RedditContent:    "",
 			WebSearchResults: "",
-		}, false
+		}
 	}
 
-	return prompt, true
-}
+	userQueryMarker := "\n\n" + userQuerySectionName + ":\n"
 
-func parseWebSearchPrompt(text string) (augmentedUserPrompt, bool) {
-	intro := "Answer the user query based on the web search results."
-
-	prompt, ok := parseTwoSectionPrompt(text, intro, "Web search results")
-	if !ok {
+	_, remaining, found := strings.Cut(trimmedText, userQueryMarker)
+	if !found {
 		return augmentedUserPrompt{
-			UserQuery:        "",
+			UserQuery:        trimmedText,
 			YouTubeContent:   "",
+			RedditContent:    "",
 			WebSearchResults: "",
-		}, false
+		}
 	}
 
-	return prompt, true
-}
-
-func parseTwoSectionPrompt(
-	text string,
-	intro string,
-	sectionName string,
-) (augmentedUserPrompt, bool) {
-	prefix := intro + "\n\nUser query:\n"
-	if !strings.HasPrefix(text, prefix) {
+	sectionMatches := findPromptSectionMatches(remaining)
+	if len(sectionMatches) == 0 {
 		return augmentedUserPrompt{
-			UserQuery:        "",
+			UserQuery:        strings.TrimSpace(remaining),
 			YouTubeContent:   "",
+			RedditContent:    "",
 			WebSearchResults: "",
-		}, false
-	}
-
-	remaining := strings.TrimPrefix(text, prefix)
-
-	userQuery, sectionContent, ok := strings.Cut(
-		remaining,
-		"\n\n"+sectionName+":\n",
-	)
-	if !ok {
-		return augmentedUserPrompt{
-			UserQuery:        "",
-			YouTubeContent:   "",
-			WebSearchResults: "",
-		}, false
+		}
 	}
 
 	prompt := augmentedUserPrompt{
-		UserQuery:        strings.TrimSpace(userQuery),
+		UserQuery:        strings.TrimSpace(remaining[:sectionMatches[0].Start]),
 		YouTubeContent:   "",
+		RedditContent:    "",
 		WebSearchResults: "",
 	}
 
-	switch sectionName {
-	case "YouTube URL content":
-		prompt.YouTubeContent = strings.TrimSpace(sectionContent)
-	case "Web search results":
-		prompt.WebSearchResults = strings.TrimSpace(sectionContent)
-	default:
-		return augmentedUserPrompt{
-			UserQuery:        "",
-			YouTubeContent:   "",
-			WebSearchResults: "",
-		}, false
+	for index, match := range sectionMatches {
+		sectionEnd := len(remaining)
+		if index+1 < len(sectionMatches) {
+			sectionEnd = sectionMatches[index+1].Start
+		}
+
+		setPromptSectionValue(
+			&prompt,
+			match.Name,
+			remaining[match.Start+len(match.Marker):sectionEnd],
+		)
 	}
 
-	return prompt, true
-}
-
-func parseThreeSectionPrompt(
-	text string,
-	intro string,
-	secondSectionName string,
-	thirdSectionName string,
-) (augmentedUserPrompt, bool) {
-	prefix := intro + "\n\nUser query:\n"
-	if !strings.HasPrefix(text, prefix) {
-		return augmentedUserPrompt{
-			UserQuery:        "",
-			YouTubeContent:   "",
-			WebSearchResults: "",
-		}, false
-	}
-
-	remaining := strings.TrimPrefix(text, prefix)
-
-	userQuery, remaining, found := strings.Cut(
-		remaining,
-		"\n\n"+secondSectionName+":\n",
-	)
-	if !found {
-		return augmentedUserPrompt{
-			UserQuery:        "",
-			YouTubeContent:   "",
-			WebSearchResults: "",
-		}, false
-	}
-
-	secondSection, thirdSection, found := strings.Cut(
-		remaining,
-		"\n\n"+thirdSectionName+":\n",
-	)
-	if !found {
-		return augmentedUserPrompt{
-			UserQuery:        "",
-			YouTubeContent:   "",
-			WebSearchResults: "",
-		}, false
-	}
-
-	return augmentedUserPrompt{
-		UserQuery:        strings.TrimSpace(userQuery),
-		YouTubeContent:   strings.TrimSpace(secondSection),
-		WebSearchResults: strings.TrimSpace(thirdSection),
-	}, true
+	return prompt
 }
 
 func appendYouTubeContentToConversation(
@@ -227,6 +119,15 @@ func appendYouTubeContentToConversation(
 ) ([]chatMessage, error) {
 	return appendContextToConversation(conversation, func(prompt *augmentedUserPrompt) {
 		prompt.YouTubeContent = strings.TrimSpace(formattedContent)
+	})
+}
+
+func appendRedditContentToConversation(
+	conversation []chatMessage,
+	formattedContent string,
+) ([]chatMessage, error) {
+	return appendContextToConversation(conversation, func(prompt *augmentedUserPrompt) {
+		prompt.RedditContent = strings.TrimSpace(formattedContent)
 	})
 }
 
@@ -276,6 +177,7 @@ func appendContextToMessageContent(
 		prompt := augmentedUserPrompt{
 			UserQuery:        "",
 			YouTubeContent:   "",
+			RedditContent:    "",
 			WebSearchResults: "",
 		}
 		transform(&prompt)
@@ -307,5 +209,118 @@ func appendContextToMessageContent(
 		return updatedContent, nil
 	default:
 		return nil, fmt.Errorf("unsupported message content type %T: %w", content, os.ErrInvalid)
+	}
+}
+
+type promptSection struct {
+	Name                  string
+	Value                 string
+	StandaloneDescription string
+	CombinedDescription   string
+}
+
+type promptSectionMatch struct {
+	Name   string
+	Start  int
+	Marker string
+}
+
+func (prompt augmentedUserPrompt) activeSections() []promptSection {
+	sections := make([]promptSection, 0, maxPromptSections)
+	if trimmedValue := strings.TrimSpace(prompt.YouTubeContent); trimmedValue != "" {
+		sections = append(sections, promptSection{
+			Name:                  youtubeSectionName,
+			Value:                 trimmedValue,
+			StandaloneDescription: youtubeSectionDescription,
+			CombinedDescription:   youtubeSectionDescription,
+		})
+	}
+
+	if trimmedValue := strings.TrimSpace(prompt.RedditContent); trimmedValue != "" {
+		sections = append(sections, promptSection{
+			Name:                  redditSectionName,
+			Value:                 trimmedValue,
+			StandaloneDescription: redditSectionDescription,
+			CombinedDescription:   redditSectionDescription,
+		})
+	}
+
+	if trimmedValue := strings.TrimSpace(prompt.WebSearchResults); trimmedValue != "" {
+		sections = append(sections, promptSection{
+			Name:                  webSearchSectionName,
+			Value:                 trimmedValue,
+			StandaloneDescription: webSearchStandalonePrompt,
+			CombinedDescription:   webSearchCombinedPrompt,
+		})
+	}
+
+	return sections
+}
+
+func (section promptSection) descriptionForCount(sectionCount int) string {
+	if sectionCount <= 1 {
+		return section.StandaloneDescription
+	}
+
+	return section.CombinedDescription
+}
+
+func joinPromptDescriptions(descriptions []string) string {
+	switch len(descriptions) {
+	case 0:
+		return ""
+	case 1:
+		return descriptions[0]
+	case configuredModelParts:
+		return descriptions[0] + " and " + descriptions[1]
+	default:
+		return strings.Join(descriptions[:len(descriptions)-1], ", ") +
+			", and " + descriptions[len(descriptions)-1]
+	}
+}
+
+func findPromptSectionMatches(text string) []promptSectionMatch {
+	matches := make([]promptSectionMatch, 0, maxPromptSections)
+
+	for _, sectionName := range []string{
+		youtubeSectionName,
+		redditSectionName,
+		webSearchSectionName,
+	} {
+		marker := "\n\n" + sectionName + ":\n"
+
+		start := strings.Index(text, marker)
+		if start == -1 {
+			continue
+		}
+
+		matches = append(matches, promptSectionMatch{
+			Name:   sectionName,
+			Start:  start,
+			Marker: marker,
+		})
+	}
+
+	for left := 0; left < len(matches); left++ {
+		for right := left + 1; right < len(matches); right++ {
+			if matches[right].Start < matches[left].Start {
+				matches[left], matches[right] = matches[right], matches[left]
+			}
+		}
+	}
+
+	return matches
+}
+
+func setPromptSectionValue(prompt *augmentedUserPrompt, sectionName string, value string) {
+	trimmedValue := strings.TrimSpace(value)
+
+	switch sectionName {
+	case youtubeSectionName:
+		prompt.YouTubeContent = trimmedValue
+	case redditSectionName:
+		prompt.RedditContent = trimmedValue
+	case webSearchSectionName:
+		prompt.WebSearchResults = trimmedValue
 	}
 }

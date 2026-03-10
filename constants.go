@@ -35,6 +35,7 @@ const (
 	attachmentRequestTimeout             = 30 * time.Second
 	searchDeciderTimeout                 = 30 * time.Second
 	webSearchTimeout                     = 30 * time.Second
+	redditRequestTimeout                 = 30 * time.Second
 	youtubeRequestTimeout                = 30 * time.Second
 	typingRefreshInterval                = 8 * time.Second
 	editDelay                            = time.Second

@@ -122,41 +122,13 @@ func TestAppendWebSearchResultsKeepsOriginalUserQueryAfterYouTubeAugmentation(t 
 func TestAppendYouTubeContentToConversationPreservesImages(t *testing.T) {
 	t.Parallel()
 
-	conversation := []chatMessage{
-		{
-			Role: messageRoleUser,
-			Content: []contentPart{
-				{"type": contentTypeText, "text": "<@123>: summarize this https://youtu.be/dQw4w9WgXcQ"},
-				{"type": contentTypeImageURL, "image_url": map[string]string{"url": "data:image/png;base64,abc"}},
-			},
-		},
-	}
-
-	augmentedConversation, err := appendYouTubeContentToConversation(
-		conversation,
+	assertContextAugmentationPreservesImages(
+		t,
+		"<@123>: summarize this https://youtu.be/dQw4w9WgXcQ",
 		"URL: https://www.youtube.com/watch?v=dQw4w9WgXcQ\nTitle: Example",
+		youtubeSectionName,
+		appendYouTubeContentToConversation,
 	)
-	if err != nil {
-		t.Fatalf("append youtube content: %v", err)
-	}
-
-	parts, ok := augmentedConversation[0].Content.([]contentPart)
-	if !ok {
-		t.Fatalf("unexpected content type: %T", augmentedConversation[0].Content)
-	}
-
-	if len(parts) != 2 {
-		t.Fatalf("unexpected part count: %d", len(parts))
-	}
-
-	if parts[1]["type"] != contentTypeImageURL {
-		t.Fatalf("expected image to be preserved: %#v", parts[1])
-	}
-
-	textValue, _ := parts[0]["text"].(string)
-	if !containsFold(textValue, "YouTube URL content:") {
-		t.Fatalf("expected youtube prompt in text part: %q", textValue)
-	}
 }
 
 func TestMaybeAugmentConversationWithYouTubeFetchesMultipleURLsConcurrentlyAndKeepsOrder(t *testing.T) {

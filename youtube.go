@@ -15,7 +15,6 @@ import (
 	"os"
 	"regexp"
 	"strings"
-	"sync"
 )
 
 const (
@@ -146,65 +145,19 @@ func (instance *bot) maybeAugmentConversationWithYouTube(
 		return conversation, nil, nil
 	}
 
-	results := make([]youtubeVideoContent, len(youtubeURLs))
-	successful := make([]bool, len(youtubeURLs))
-
-	var (
-		fetchFailed bool
-		failedMu    sync.Mutex
-		waitGroup   sync.WaitGroup
-	)
-
-	for index, youtubeURL := range youtubeURLs {
-		waitGroup.Add(1)
-
-		go func(index int, youtubeURL string) {
-			defer waitGroup.Done()
-
-			result, fetchErr := instance.youtube.fetch(ctx, youtubeURL)
-			if fetchErr != nil {
-				slog.Warn("fetch youtube content", "url", youtubeURL, "error", fetchErr)
-				failedMu.Lock()
-				fetchFailed = true
-				failedMu.Unlock()
-
-				return
-			}
-
-			results[index] = result
-			successful[index] = true
-		}(index, youtubeURL)
-	}
-
-	waitGroup.Wait()
-
-	formattedResults := make([]youtubeVideoContent, 0, len(results))
-	for index, result := range results {
-		if !successful[index] {
-			continue
-		}
-
-		formattedResults = append(formattedResults, result)
-	}
-
-	warnings := make([]string, 0, 1)
-	if fetchFailed {
-		warnings = append(warnings, youtubeWarningText)
-	}
-
-	if len(formattedResults) == 0 {
-		return conversation, warnings, nil
-	}
-
-	augmentedConversation, err := appendYouTubeContentToConversation(
+	augmentedConversation, warnings, err := augmentConversationWithConcurrentURLContent(
+		ctx,
 		conversation,
-		formatYouTubeURLContent(formattedResults),
+		youtubeURLs,
+		instance.youtube.fetch,
+		"fetch youtube content",
+		youtubeWarningText,
+		formatYouTubeURLContent,
+		appendYouTubeContentToConversation,
+		"append youtube content to conversation",
 	)
-	if err != nil {
-		return nil, nil, fmt.Errorf("append youtube content to conversation: %w", err)
-	}
 
-	return augmentedConversation, warnings, nil
+	return augmentedConversation, warnings, err
 }
 
 func (client youtubeClient) fetch(ctx context.Context, rawURL string) (youtubeVideoContent, error) {
