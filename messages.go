@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -164,12 +165,21 @@ func (instance *bot) respondToMessage(
 		return fmt.Errorf("build message content options: %w", err)
 	}
 
+	useGeminiMediaAnalysis, err := canUseGeminiMediaAnalysis(
+		loadedConfig,
+		providerSlashModel,
+	)
+	if err != nil {
+		return fmt.Errorf("check gemini media analysis support: %w", err)
+	}
+
 	messages, warnings := instance.buildConversation(
 		ctx,
 		message,
 		loadedConfig.MaxText,
 		contentOptions,
 		loadedConfig.MaxMessages,
+		useGeminiMediaAnalysis,
 	)
 
 	slog.Info(
@@ -183,6 +193,17 @@ func (instance *bot) respondToMessage(
 		"content",
 		message.Content,
 	)
+
+	messages, err = instance.maybeAugmentConversationWithGeminiMedia(
+		ctx,
+		loadedConfig,
+		providerSlashModel,
+		message,
+		messages,
+	)
+	if err != nil {
+		return fmt.Errorf("augment conversation with gemini media: %w", err)
+	}
 
 	messages, searchMetadata, warnings, err := instance.augmentConversation(
 		ctx,
@@ -226,22 +247,9 @@ func messageContentOptionsForModel(
 	loadedConfig config,
 	providerSlashModel string,
 ) (messageContentOptions, error) {
-	providerName, _, err := splitConfiguredModel(providerSlashModel)
+	provider, err := configuredModelProvider(loadedConfig, providerSlashModel)
 	if err != nil {
-		return messageContentOptions{}, fmt.Errorf(
-			"parse configured model %q: %w",
-			providerSlashModel,
-			err,
-		)
-	}
-
-	provider, ok := loadedConfig.Providers[providerName]
-	if !ok {
-		return messageContentOptions{}, fmt.Errorf(
-			"find provider %q: %w",
-			providerName,
-			os.ErrNotExist,
-		)
+		return messageContentOptions{}, err
 	}
 
 	var options messageContentOptions
@@ -255,6 +263,56 @@ func messageContentOptionsForModel(
 	}
 
 	return options, nil
+}
+
+func canUseGeminiMediaAnalysis(
+	loadedConfig config,
+	providerSlashModel string,
+) (bool, error) {
+	apiKind, err := configuredModelAPIKind(loadedConfig, providerSlashModel)
+	if err != nil {
+		return false, err
+	}
+
+	if apiKind == providerAPIKindGemini {
+		return false, nil
+	}
+
+	_, err = configuredGeminiMediaModel(loadedConfig)
+	if err == nil {
+		return true, nil
+	}
+
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+
+	return false, err
+}
+
+func configuredModelProvider(
+	loadedConfig config,
+	providerSlashModel string,
+) (providerConfig, error) {
+	providerName, _, err := splitConfiguredModel(providerSlashModel)
+	if err != nil {
+		return providerConfig{}, fmt.Errorf(
+			"parse configured model %q: %w",
+			providerSlashModel,
+			err,
+		)
+	}
+
+	provider, ok := loadedConfig.Providers[providerName]
+	if !ok {
+		return providerConfig{}, fmt.Errorf(
+			"find provider %q: %w",
+			providerName,
+			os.ErrNotExist,
+		)
+	}
+
+	return provider, nil
 }
 
 func (instance *bot) augmentConversation(

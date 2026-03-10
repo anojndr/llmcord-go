@@ -1,0 +1,399 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"os"
+	"testing"
+
+	"github.com/bwmarrin/discordgo"
+)
+
+func TestAppendMediaAnalysesToConversationPreservesImages(t *testing.T) {
+	t.Parallel()
+
+	conversation := []chatMessage{
+		{
+			Role: messageRoleUser,
+			Content: []contentPart{
+				{"type": contentTypeText, "text": "<@123>: summarize this"},
+				{"type": contentTypeImageURL, "image_url": map[string]string{"url": "data:image/png;base64,abc"}},
+			},
+		},
+	}
+
+	augmentedConversation, err := appendMediaAnalysesToConversation(
+		conversation,
+		[]string{"audio result", "video result"},
+	)
+	if err != nil {
+		t.Fatalf("append media analyses: %v", err)
+	}
+
+	parts, ok := augmentedConversation[0].Content.([]contentPart)
+	if !ok {
+		t.Fatalf("unexpected content type: %T", augmentedConversation[0].Content)
+	}
+
+	if len(parts) != 2 {
+		t.Fatalf("unexpected part count: %d", len(parts))
+	}
+
+	textValue, _ := parts[0]["text"].(string)
+
+	expectedText := expectedMediaAnalysisUserText(
+		"<@123>: summarize this",
+		[]string{"audio result", "video result"},
+	)
+	if textValue != expectedText {
+		t.Fatalf("unexpected text value: %q", textValue)
+	}
+
+	if parts[1]["type"] != contentTypeImageURL {
+		t.Fatalf("expected image to be preserved: %#v", parts[1])
+	}
+}
+
+func TestMaybeAugmentConversationWithGeminiMediaAppendsAnalysesForNonGeminiModel(t *testing.T) {
+	t.Parallel()
+
+	expectedAnalyses := []string{
+		"Audio transcription per timestamp:\n\n0s to 10s: hello there",
+		"Video description per timestamp:\n\n0s to 10s: somebody waves",
+	}
+
+	chatClient, callIndex := newGeminiMediaAnalysisChatClient(t, expectedAnalyses)
+	instance, sourceMessage := newMediaAnalysisTestBot(
+		chatClient,
+		"message-1",
+		[]contentPart{
+			{
+				"type":               contentTypeAudioData,
+				contentFieldBytes:    []byte("audio-bytes"),
+				contentFieldMIMEType: "audio/mpeg",
+				contentFieldFilename: "clip.mp3",
+			},
+			{
+				"type":               contentTypeVideoData,
+				contentFieldBytes:    []byte("video-bytes"),
+				contentFieldMIMEType: testVideoMIMEType,
+				contentFieldFilename: "clip.mp4",
+			},
+		},
+	)
+
+	conversation := []chatMessage{
+		{Role: messageRoleAssistant, Content: "Earlier answer"},
+		{
+			Role: messageRoleUser,
+			Content: []contentPart{
+				{"type": contentTypeText, "text": "<@123>: summarize this"},
+				{"type": contentTypeImageURL, "image_url": map[string]string{"url": "data:image/png;base64,abc"}},
+			},
+		},
+	}
+
+	augmentedConversation, err := instance.maybeAugmentConversationWithGeminiMedia(
+		context.Background(),
+		testMediaAnalysisConfig(),
+		"openai/gpt-5",
+		sourceMessage,
+		conversation,
+	)
+	if err != nil {
+		t.Fatalf("augment conversation with gemini media: %v", err)
+	}
+
+	if *callIndex != 2 {
+		t.Fatalf("unexpected gemini analysis call count: %d", *callIndex)
+	}
+
+	parts, ok := augmentedConversation[1].Content.([]contentPart)
+	if !ok {
+		t.Fatalf("unexpected augmented content type: %T", augmentedConversation[1].Content)
+	}
+
+	if len(parts) != 2 {
+		t.Fatalf("unexpected augmented part count: %d", len(parts))
+	}
+
+	textValue, _ := parts[0]["text"].(string)
+
+	expectedText := expectedMediaAnalysisUserText(
+		"<@123>: summarize this",
+		expectedAnalyses,
+	)
+	if textValue != expectedText {
+		t.Fatalf("unexpected augmented text: %q", textValue)
+	}
+
+	if parts[1]["type"] != contentTypeImageURL {
+		t.Fatalf("expected image to be preserved: %#v", parts[1])
+	}
+}
+
+func TestMaybeAugmentConversationWithGeminiMediaSkipsGeminiModel(t *testing.T) {
+	t.Parallel()
+
+	chatClient := newStubChatClient(func(
+		_ context.Context,
+		_ chatCompletionRequest,
+		_ func(streamDelta) error,
+	) error {
+		t.Fatal("unexpected gemini analysis request")
+
+		return nil
+	})
+
+	instance, sourceMessage := newMediaAnalysisTestBot(
+		chatClient,
+		"message-2",
+		[]contentPart{
+			{
+				"type":               contentTypeAudioData,
+				contentFieldBytes:    []byte("audio-bytes"),
+				contentFieldMIMEType: "audio/mpeg",
+			},
+		},
+	)
+
+	conversation := []chatMessage{
+		{Role: messageRoleUser, Content: "<@123>: summarize this"},
+	}
+
+	augmentedConversation, err := instance.maybeAugmentConversationWithGeminiMedia(
+		context.Background(),
+		testMediaAnalysisConfig(),
+		testMediaAnalysisModel,
+		sourceMessage,
+		conversation,
+	)
+	if err != nil {
+		t.Fatalf("augment conversation with gemini media: %v", err)
+	}
+
+	content, ok := augmentedConversation[0].Content.(string)
+	if !ok {
+		t.Fatalf("unexpected content type: %T", augmentedConversation[0].Content)
+	}
+
+	if content != "<@123>: summarize this" {
+		t.Fatalf("unexpected content: %q", content)
+	}
+}
+
+func TestMaybeAugmentConversationWithGeminiMediaRequiresGeminiModel(t *testing.T) {
+	t.Parallel()
+
+	instance, sourceMessage := newMediaAnalysisTestBot(
+		newStubChatClient(func(
+			_ context.Context,
+			_ chatCompletionRequest,
+			_ func(streamDelta) error,
+		) error {
+			t.Fatal("unexpected chat completion request")
+
+			return nil
+		}),
+		"message-3",
+		[]contentPart{
+			{
+				"type":               contentTypeAudioData,
+				contentFieldBytes:    []byte("audio-bytes"),
+				contentFieldMIMEType: "audio/mpeg",
+			},
+		},
+	)
+
+	_, err := instance.maybeAugmentConversationWithGeminiMedia(
+		context.Background(),
+		testSearchConfig(),
+		"openai/main-model",
+		sourceMessage,
+		[]chatMessage{{Role: messageRoleUser, Content: "<@123>: summarize this"}},
+	)
+	if err == nil {
+		t.Fatal("expected missing gemini model error")
+	}
+
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestConfiguredGeminiMediaModelPrefersSearchDeciderModel(t *testing.T) {
+	t.Parallel()
+
+	loadedConfig := testMediaAnalysisFallbackConfig()
+	loadedConfig.Models["google/gemini-3-pro-preview"] = nil
+	loadedConfig.ModelOrder = append(loadedConfig.ModelOrder, "google/gemini-3-pro-preview")
+	loadedConfig.SearchDeciderModel = "google/gemini-3-pro-preview"
+
+	modelName, err := configuredGeminiMediaModel(loadedConfig)
+	if err != nil {
+		t.Fatalf("find configured gemini media model: %v", err)
+	}
+
+	if modelName != "google/gemini-3-pro-preview" {
+		t.Fatalf("unexpected gemini media model: %q", modelName)
+	}
+}
+
+func TestConfiguredGeminiMediaModelUsesConfiguredModel(t *testing.T) {
+	t.Parallel()
+
+	modelName, err := configuredGeminiMediaModel(testMediaAnalysisConfig())
+	if err != nil {
+		t.Fatalf("find configured gemini media model: %v", err)
+	}
+
+	if modelName != testMediaAnalysisModel {
+		t.Fatalf("unexpected gemini media model: %q", modelName)
+	}
+}
+
+func testMediaAnalysisConfig() config {
+	loadedConfig := new(config)
+
+	openAIProvider := new(providerConfig)
+	openAIProvider.BaseURL = "https://api.example.com/v1"
+
+	geminiProvider := new(providerConfig)
+	geminiProvider.Type = string(providerAPIKindGemini)
+
+	loadedConfig.Providers = map[string]providerConfig{
+		"openai": *openAIProvider,
+		"google": *geminiProvider,
+	}
+	loadedConfig.Models = map[string]map[string]any{
+		"openai/gpt-5":         nil,
+		"openai/decider-model": nil,
+		testMediaAnalysisModel: nil,
+	}
+	loadedConfig.ModelOrder = []string{
+		"openai/gpt-5",
+		testMediaAnalysisModel,
+		"openai/decider-model",
+	}
+	loadedConfig.SearchDeciderModel = "openai/decider-model"
+	loadedConfig.MediaAnalysisModel = testMediaAnalysisModel
+
+	return *loadedConfig
+}
+
+func testMediaAnalysisFallbackConfig() config {
+	loadedConfig := testMediaAnalysisConfig()
+	loadedConfig.MediaAnalysisModel = ""
+
+	return loadedConfig
+}
+
+func expectedMediaAnalysisUserText(userQuery string, analyses []string) string {
+	return userQuery + "\n\n" + renderMediaAnalyses(analyses)
+}
+
+func expectedGeminiMediaAnalysisRequest(callIndex int) (string, string) {
+	if callIndex == 1 {
+		return geminiVideoAnalysisPrompt, contentTypeVideoData
+	}
+
+	return geminiAudioAnalysisPrompt, contentTypeAudioData
+}
+
+func newGeminiMediaAnalysisChatClient(
+	t *testing.T,
+	expectedAnalyses []string,
+) (*stubChatCompletionClient, *int) {
+	t.Helper()
+
+	callIndex := 0
+	chatClient := newStubChatClient(func(
+		_ context.Context,
+		request chatCompletionRequest,
+		handle func(streamDelta) error,
+	) error {
+		t.Helper()
+
+		expectedPrompt, expectedPartType := expectedGeminiMediaAnalysisRequest(callIndex)
+
+		assertGeminiMediaAnalysisRequest(
+			t,
+			request,
+			expectedPrompt,
+			expectedPartType,
+		)
+
+		err := handle(streamDelta{
+			Content:      expectedAnalyses[callIndex],
+			FinishReason: finishReasonStop,
+		})
+		if err != nil {
+			return err
+		}
+
+		callIndex++
+
+		return nil
+	})
+
+	return chatClient, &callIndex
+}
+
+func assertGeminiMediaAnalysisRequest(
+	t *testing.T,
+	request chatCompletionRequest,
+	expectedPrompt string,
+	expectedPartType string,
+) {
+	t.Helper()
+
+	_, expectedModelName, err := splitConfiguredModel(testMediaAnalysisModel)
+	if err != nil {
+		t.Fatalf("split configured media analysis model: %v", err)
+	}
+
+	if request.Provider.APIKind != providerAPIKindGemini {
+		t.Fatalf("unexpected provider API kind: %q", request.Provider.APIKind)
+	}
+
+	if request.Model != expectedModelName {
+		t.Fatalf("unexpected model: %q", request.Model)
+	}
+
+	contentParts, ok := request.Messages[0].Content.([]contentPart)
+	if !ok {
+		t.Fatalf("unexpected request content type: %T", request.Messages[0].Content)
+	}
+
+	if len(contentParts) != 2 {
+		t.Fatalf("unexpected request part count: %d", len(contentParts))
+	}
+
+	prompt, _ := contentParts[0]["text"].(string)
+	if prompt != expectedPrompt {
+		t.Fatalf("unexpected gemini prompt: %q", prompt)
+	}
+
+	if contentParts[1]["type"] != expectedPartType {
+		t.Fatalf("unexpected media part: %#v", contentParts[1])
+	}
+}
+
+func newMediaAnalysisTestBot(
+	chatClient chatCompletionClient,
+	messageID string,
+	media []contentPart,
+) (*bot, *discordgo.Message) {
+	instance := new(bot)
+	instance.chatCompletions = chatClient
+	instance.nodes = newMessageNodeStore(maxMessageNodes)
+
+	sourceMessage := new(discordgo.Message)
+	sourceMessage.ID = messageID
+
+	sourceNode := instance.nodes.getOrCreate(sourceMessage.ID)
+	sourceNode.initialized = true
+	sourceNode.media = media
+
+	return instance, sourceMessage
+}

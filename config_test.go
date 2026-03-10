@@ -9,8 +9,9 @@ import (
 )
 
 const (
-	firstTestModel  = "openai/first-model"
-	secondTestModel = "openai/second-model"
+	firstTestModel         = "openai/first-model"
+	secondTestModel        = "openai/second-model"
+	testMediaAnalysisModel = "google/gemini-3.1-flash-lite-preview"
 )
 
 func TestLoadConfigAppliesDefaultsAndPreservesModelOrder(t *testing.T) {
@@ -73,6 +74,10 @@ models:
 	if loadedConfig.SearchDeciderModel != firstTestModel {
 		t.Fatalf("unexpected default search decider model: %q", loadedConfig.SearchDeciderModel)
 	}
+
+	if loadedConfig.MediaAnalysisModel != "" {
+		t.Fatalf("unexpected default media analysis model: %q", loadedConfig.MediaAnalysisModel)
+	}
 }
 
 func TestLoadConfigRejectsMissingModels(t *testing.T) {
@@ -130,6 +135,36 @@ search_decider_model: openai/second-model
 	}
 }
 
+func TestLoadConfigUsesConfiguredMediaAnalysisModel(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	configText := `
+bot_token: discord-token
+providers:
+  google:
+    type: gemini
+models:
+  ` + testMediaAnalysisModel + `:
+media_analysis_model: ` + testMediaAnalysisModel + `
+`
+
+	err := os.WriteFile(configPath, []byte(configText), 0o600)
+	if err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	loadedConfig, err := loadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	if loadedConfig.MediaAnalysisModel != testMediaAnalysisModel {
+		t.Fatalf("unexpected media analysis model: %q", loadedConfig.MediaAnalysisModel)
+	}
+}
+
 func TestLoadConfigAllowsGeminiProviderWithoutBaseURL(t *testing.T) {
 	t.Parallel()
 
@@ -183,6 +218,32 @@ models:
 	_, err = loadConfig(configPath)
 	if err == nil {
 		t.Fatal("expected unsupported provider type to fail validation")
+	}
+}
+
+func TestLoadConfigRejectsNonGeminiMediaAnalysisModel(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	configText := `
+bot_token: discord-token
+providers:
+  openai:
+    base_url: https://api.example.com/v1
+models:
+  openai/first-model:
+media_analysis_model: openai/first-model
+`
+
+	err := os.WriteFile(configPath, []byte(configText), 0o600)
+	if err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	_, err = loadConfig(configPath)
+	if err == nil {
+		t.Fatal("expected non-gemini media analysis model to fail validation")
 	}
 }
 

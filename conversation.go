@@ -34,6 +34,7 @@ func (instance *bot) buildConversation(
 	maxText int,
 	contentOptions messageContentOptions,
 	maxMessages int,
+	useGeminiMediaAnalysis bool,
 ) ([]chatMessage, []string) {
 	messages := make([]chatMessage, 0, maxMessages)
 	warningSet := make(map[string]struct{})
@@ -48,6 +49,16 @@ func (instance *bot) buildConversation(
 		}
 
 		content, summary := buildMessageContent(node, maxText, contentOptions)
+		if useGeminiMediaAnalysis && currentMessage.ID == sourceMessage.ID {
+			summary.unsupportedAttachmentCnt -= unsupportedGeminiMediaPartCount(
+				node.media,
+				contentOptions,
+			)
+			if summary.unsupportedAttachmentCnt < 0 {
+				summary.unsupportedAttachmentCnt = 0
+			}
+		}
+
 		if content != nil {
 			message := chatMessage{
 				Role:    node.role,
@@ -473,6 +484,30 @@ func filterContentPartsForOptions(
 	}
 
 	return filteredParts
+}
+
+func unsupportedGeminiMediaPartCount(
+	media []contentPart,
+	options messageContentOptions,
+) int {
+	count := 0
+
+	for _, part := range media {
+		partType, _ := part["type"].(string)
+
+		switch partType {
+		case contentTypeAudioData:
+			if !options.allowAudio {
+				count++
+			}
+		case contentTypeVideoData:
+			if !options.allowVideo {
+				count++
+			}
+		}
+	}
+
+	return count
 }
 
 func (instance *bot) resolveParentMessage(message *discordgo.Message) (*discordgo.Message, bool) {
