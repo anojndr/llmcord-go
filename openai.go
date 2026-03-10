@@ -21,10 +21,15 @@ type chatMessage struct {
 }
 
 type chatCompletionRequest struct {
+	Provider providerRequestConfig
+	Model    string
+	Messages []chatMessage
+}
+
+type providerRequestConfig struct {
+	APIKind      providerAPIKind
 	BaseURL      string
 	APIKey       string
-	Model        string
-	Messages     []chatMessage
 	ExtraHeaders map[string]any
 	ExtraQuery   map[string]any
 	ExtraBody    map[string]any
@@ -55,7 +60,7 @@ func (client openAIClient) streamChatCompletion(
 		return fmt.Errorf("marshal chat completion request: %w", err)
 	}
 
-	requestURL, err := buildChatCompletionURL(request.BaseURL, request.ExtraQuery)
+	requestURL, err := buildChatCompletionURL(request.Provider.BaseURL, request.Provider.ExtraQuery)
 	if err != nil {
 		return fmt.Errorf("build chat completion url: %w", err)
 	}
@@ -71,10 +76,10 @@ func (client openAIClient) streamChatCompletion(
 	}
 
 	httpRequest.Header.Set("Accept", "text/event-stream")
-	httpRequest.Header.Set("Authorization", "Bearer "+request.APIKey)
+	httpRequest.Header.Set("Authorization", "Bearer "+openAIAPIKey(request.Provider.APIKey))
 	httpRequest.Header.Set("Content-Type", "application/json")
 
-	for key, value := range request.ExtraHeaders {
+	for key, value := range request.Provider.ExtraHeaders {
 		httpRequest.Header.Set(key, stringifyValue(value))
 	}
 
@@ -116,12 +121,12 @@ func (client openAIClient) streamChatCompletion(
 }
 
 func buildChatCompletionRequestBody(request chatCompletionRequest) map[string]any {
-	requestBody := make(map[string]any, len(request.ExtraBody)+requestBodyBaseFields)
+	requestBody := make(map[string]any, len(request.Provider.ExtraBody)+requestBodyBaseFields)
 	requestBody["messages"] = request.Messages
 	requestBody["model"] = request.Model
 	requestBody["stream"] = true
 
-	maps.Copy(requestBody, request.ExtraBody)
+	maps.Copy(requestBody, request.Provider.ExtraBody)
 
 	return requestBody
 }
@@ -146,6 +151,14 @@ func buildChatCompletionURL(baseURL string, extraQuery map[string]any) (string, 
 
 func stringifyValue(value any) string {
 	return strings.TrimSpace(fmt.Sprint(value))
+}
+
+func openAIAPIKey(apiKey string) string {
+	if apiKey == "" {
+		return "sk-no-key-required"
+	}
+
+	return apiKey
 }
 
 func consumeServerSentEvents(reader io.Reader, handle func([]byte) error) error {

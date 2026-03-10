@@ -99,20 +99,23 @@ func TestOpenAIClientStreamChatCompletion(t *testing.T) {
 
 	client := newOpenAIClient(server.Client())
 	request := chatCompletionRequest{
-		BaseURL: server.URL + "/v1",
-		APIKey:  "test-key",
-		Model:   "gpt-test",
+		Provider: providerRequestConfig{
+			APIKind: providerAPIKindOpenAI,
+			BaseURL: server.URL + "/v1",
+			APIKey:  "test-key",
+			ExtraHeaders: map[string]any{
+				"X-Test": "present",
+			},
+			ExtraQuery: map[string]any{
+				"api-version": "2024-12-01-preview",
+			},
+			ExtraBody: map[string]any{
+				"temperature": 0.2,
+			},
+		},
+		Model: "gpt-test",
 		Messages: []chatMessage{
 			{Role: "user", Content: "hello"},
-		},
-		ExtraHeaders: map[string]any{
-			"X-Test": "present",
-		},
-		ExtraQuery: map[string]any{
-			"api-version": "2024-12-01-preview",
-		},
-		ExtraBody: map[string]any{
-			"temperature": 0.2,
 		},
 	}
 
@@ -156,13 +159,16 @@ func TestOpenAIClientStreamChatCompletionReturnsStatusErrors(t *testing.T) {
 
 	client := newOpenAIClient(server.Client())
 	request := chatCompletionRequest{
-		BaseURL:      server.URL,
-		APIKey:       "test-key",
-		Model:        "gpt-test",
-		Messages:     []chatMessage{{Role: "user", Content: "hello"}},
-		ExtraHeaders: nil,
-		ExtraQuery:   nil,
-		ExtraBody:    nil,
+		Provider: providerRequestConfig{
+			APIKind:      providerAPIKindOpenAI,
+			BaseURL:      server.URL,
+			APIKey:       "test-key",
+			ExtraHeaders: nil,
+			ExtraQuery:   nil,
+			ExtraBody:    nil,
+		},
+		Model:    "gpt-test",
+		Messages: []chatMessage{{Role: "user", Content: "hello"}},
 	}
 
 	err := client.streamChatCompletion(context.Background(), request, func(streamDelta) error {

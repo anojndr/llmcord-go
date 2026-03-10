@@ -69,9 +69,9 @@ func newStubWebSearchClient(
 	return client
 }
 
-func newSearchTestBot(openAI chatCompletionClient, webSearch webSearchClient) *bot {
+func newSearchTestBot(chatCompletions chatCompletionClient, webSearch webSearchClient) *bot {
 	instance := new(bot)
-	instance.openAI = openAI
+	instance.chatCompletions = chatCompletions
 	instance.webSearch = webSearch
 
 	return instance

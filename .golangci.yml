@@ -15,6 +15,7 @@ linters:
             - $gostd
             - github.com/bwmarrin/discordgo
             - github.com/modelcontextprotocol/go-sdk/mcp
+            - google.golang.org/genai
             - gopkg.in/yaml.v3
     funlen:
       lines: 90

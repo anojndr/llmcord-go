@@ -37,8 +37,12 @@ providers:
       api-version: 2024-12-01-preview
 
   google:
-    base_url: https://generativelanguage.googleapis.com/v1beta/openai
+    type: gemini
     api_key: 
+    # Optional:
+    # base_url: https://generativelanguage.googleapis.com
+    # extra_query:
+    #   version: v1beta
 
   groq:
     base_url: https://api.groq.com/openai/v1
@@ -71,6 +75,9 @@ providers:
     base_url: http://localhost:8000/v1
 
 models:
+  google/gemini-3-flash-preview:
+    temperature: 0.2
+
   openai/gpt-5:
     reasoning_effort: high
     verbosity: medium
@@ -79,7 +86,7 @@ models:
 
   ollama/llama4:
 
-search_decider_model: openai/gpt-5
+search_decider_model: google/gemini-3-flash-preview
 
 system_prompt: |
   You are a snarky Discord chatbot. Be informative but harsh.

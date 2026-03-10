@@ -103,7 +103,7 @@ func newResponseTracker(
 
 func (tracker *responseTracker) release(fullText string) {
 	for _, pending := range tracker.pendingResponses {
-		pending.node.role = "assistant"
+		pending.node.role = messageRoleAssistant
 		pending.node.text = fullText
 		pending.node.parentMessage = tracker.sourceMessage
 		pending.node.initialized = true
@@ -136,7 +136,7 @@ func (instance *bot) generateAndSendResponse(
 
 	lastRenderTime := time.Time{}
 
-	streamErr := instance.openAI.streamChatCompletion(ctx, request, func(delta streamDelta) error {
+	streamErr := instance.chatCompletions.streamChatCompletion(ctx, request, func(delta streamDelta) error {
 		splitOccurred := false
 		if delta.Content != "" {
 			splitOccurred = accumulator.appendText(delta.Content)

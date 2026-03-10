@@ -16,7 +16,7 @@ type bot struct {
 	configPath                string
 	session                   *discordgo.Session
 	httpClient                *http.Client
-	openAI                    chatCompletionClient
+	chatCompletions           chatCompletionClient
 	webSearch                 webSearchClient
 	youtube                   youtubeContentClient
 	reddit                    redditContentClient
@@ -40,7 +40,7 @@ func newBot(configPath string, loadedConfig config) (*bot, error) {
 	instance.configPath = configPath
 	instance.session = discordSession
 	instance.httpClient = httpClient
-	instance.openAI = newOpenAIClient(httpClient)
+	instance.chatCompletions = newChatCompletionRouter(httpClient)
 	instance.webSearch = newExaSearchClient(httpClient)
 	instance.youtube = newYouTubeClient(httpClient)
 	instance.reddit = newRedditClient(httpClient)

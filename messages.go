@@ -259,14 +259,6 @@ func (instance *bot) augmentConversation(
 	return augmentedMessages, searchMetadata, warnings, nil
 }
 
-func providerAPIKey(apiKey string) string {
-	if apiKey == "" {
-		return "sk-no-key-required"
-	}
-
-	return apiKey
-}
-
 func mergeExtraBody(providerExtraBody map[string]any, modelParameters map[string]any) map[string]any {
 	if len(providerExtraBody) == 0 && len(modelParameters) == 0 {
 		return nil
@@ -305,12 +297,15 @@ func buildChatCompletionRequest(
 	modelParameters := loadedConfig.Models[providerSlashModel]
 
 	return chatCompletionRequest{
-		BaseURL:      provider.BaseURL,
-		APIKey:       providerAPIKey(provider.APIKey),
-		Model:        modelName,
-		Messages:     messages,
-		ExtraHeaders: provider.ExtraHeaders,
-		ExtraQuery:   provider.ExtraQuery,
-		ExtraBody:    mergeExtraBody(provider.ExtraBody, modelParameters),
+		Provider: providerRequestConfig{
+			APIKind:      provider.apiKind(),
+			BaseURL:      provider.BaseURL,
+			APIKey:       provider.APIKey,
+			ExtraHeaders: provider.ExtraHeaders,
+			ExtraQuery:   provider.ExtraQuery,
+			ExtraBody:    mergeExtraBody(provider.ExtraBody, modelParameters),
+		},
+		Model:    modelName,
+		Messages: messages,
 	}, nil
 }

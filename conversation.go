@@ -129,7 +129,7 @@ func (instance *bot) initializeNode(
 
 func messageRole(message *discordgo.Message, botUserID string) string {
 	if message.Author != nil && message.Author.ID == botUserID {
-		return "assistant"
+		return messageRoleAssistant
 	}
 
 	return "user"
