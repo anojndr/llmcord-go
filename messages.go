@@ -157,42 +157,27 @@ func (instance *bot) respondToMessage(
 	message *discordgo.Message,
 	providerSlashModel string,
 ) error {
-	contentOptions, err := messageContentOptionsForModel(
-		loadedConfig,
-		providerSlashModel,
-	)
-	if err != nil {
-		return fmt.Errorf("build message content options: %w", err)
-	}
-
-	useGeminiMediaAnalysis, err := canUseGeminiMediaAnalysis(
-		loadedConfig,
-		providerSlashModel,
-	)
-	if err != nil {
-		return fmt.Errorf("check gemini media analysis support: %w", err)
-	}
-
-	messages, warnings := instance.buildConversation(
+	messages, warnings, err := instance.buildMessageConversation(
 		ctx,
+		loadedConfig,
 		message,
-		loadedConfig.MaxText,
-		contentOptions,
-		loadedConfig.MaxMessages,
-		useGeminiMediaAnalysis,
+		providerSlashModel,
 	)
+	if err != nil {
+		return fmt.Errorf("build message conversation: %w", err)
+	}
 
-	slog.Info(
-		"message received",
-		"user_id",
-		message.Author.ID,
-		"attachments",
-		len(message.Attachments),
-		"conversation_length",
-		len(messages),
-		"content",
-		message.Content,
+	messages, tikTokWarnings, err := instance.maybeAugmentConversationWithTikTok(
+		ctx,
+		loadedConfig,
+		providerSlashModel,
+		messages,
 	)
+	if err != nil {
+		return fmt.Errorf("augment conversation with tiktok: %w", err)
+	}
+
+	warnings = append(warnings, tikTokWarnings...)
 
 	messages, err = instance.maybeAugmentConversationWithGeminiMedia(
 		ctx,
@@ -241,6 +226,52 @@ func (instance *bot) respondToMessage(
 	}
 
 	return nil
+}
+
+func (instance *bot) buildMessageConversation(
+	ctx context.Context,
+	loadedConfig config,
+	message *discordgo.Message,
+	providerSlashModel string,
+) ([]chatMessage, []string, error) {
+	contentOptions, err := messageContentOptionsForModel(
+		loadedConfig,
+		providerSlashModel,
+	)
+	if err != nil {
+		return nil, nil, fmt.Errorf("build message content options: %w", err)
+	}
+
+	useGeminiMediaAnalysis, err := canUseGeminiMediaAnalysis(
+		loadedConfig,
+		providerSlashModel,
+	)
+	if err != nil {
+		return nil, nil, fmt.Errorf("check gemini media analysis support: %w", err)
+	}
+
+	messages, warnings := instance.buildConversation(
+		ctx,
+		message,
+		loadedConfig.MaxText,
+		contentOptions,
+		loadedConfig.MaxMessages,
+		useGeminiMediaAnalysis,
+	)
+
+	slog.Info(
+		"message received",
+		"user_id",
+		message.Author.ID,
+		"attachments",
+		len(message.Attachments),
+		"conversation_length",
+		len(messages),
+		"content",
+		message.Content,
+	)
+
+	return messages, warnings, nil
 }
 
 func messageContentOptionsForModel(

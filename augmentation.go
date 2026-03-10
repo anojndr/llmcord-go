@@ -156,6 +156,38 @@ func appendMediaAnalysesToConversation(
 	})
 }
 
+func appendMediaPartsToConversation(
+	conversation []chatMessage,
+	mediaParts []contentPart,
+) ([]chatMessage, error) {
+	if len(mediaParts) == 0 {
+		return conversation, nil
+	}
+
+	augmentedConversation := make([]chatMessage, len(conversation))
+	copy(augmentedConversation, conversation)
+
+	for index := len(augmentedConversation) - 1; index >= 0; index-- {
+		if augmentedConversation[index].Role != messageRoleUser {
+			continue
+		}
+
+		updatedContent, err := appendMediaPartsToMessageContent(
+			augmentedConversation[index].Content,
+			mediaParts,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("append media parts to latest user message: %w", err)
+		}
+
+		augmentedConversation[index].Content = updatedContent
+
+		return augmentedConversation, nil
+	}
+
+	return nil, fmt.Errorf("find latest user message: %w", os.ErrNotExist)
+}
+
 func appendContextToConversation(
 	conversation []chatMessage,
 	transform func(*augmentedUserPrompt),
@@ -221,6 +253,41 @@ func appendContextToMessageContent(
 
 			updatedContent = append(updatedContent, part)
 		}
+
+		return updatedContent, nil
+	default:
+		return nil, fmt.Errorf("unsupported message content type %T: %w", content, os.ErrInvalid)
+	}
+}
+
+func appendMediaPartsToMessageContent(
+	content any,
+	mediaParts []contentPart,
+) (any, error) {
+	clonedMediaParts := make([]contentPart, 0, len(mediaParts))
+	for _, part := range mediaParts {
+		clonedMediaParts = append(clonedMediaParts, cloneContentPart(part))
+	}
+
+	switch typedContent := content.(type) {
+	case nil:
+		return clonedMediaParts, nil
+	case string:
+		updatedContent := make([]contentPart, 0, len(clonedMediaParts)+1)
+		updatedContent = append(updatedContent, contentPart{
+			"type": contentTypeText,
+			"text": typedContent,
+		})
+		updatedContent = append(updatedContent, clonedMediaParts...)
+
+		return updatedContent, nil
+	case []contentPart:
+		updatedContent := make([]contentPart, 0, len(typedContent)+len(clonedMediaParts))
+		for _, part := range typedContent {
+			updatedContent = append(updatedContent, cloneContentPart(part))
+		}
+
+		updatedContent = append(updatedContent, clonedMediaParts...)
 
 		return updatedContent, nil
 	default:

@@ -38,6 +38,9 @@ const (
 	geminiFilePollInterval               = 500 * time.Millisecond
 	geminiFileProcessingTimeout          = 2 * time.Minute
 	searchDeciderTimeout                 = 30 * time.Second
+	tikTokRenderPollInterval             = 500 * time.Millisecond
+	tikTokRenderTimeout                  = 2 * time.Minute
+	tikTokRequestTimeout                 = 30 * time.Second
 	webSearchTimeout                     = 30 * time.Second
 	redditRequestTimeout                 = 30 * time.Second
 	youtubeRequestTimeout                = 30 * time.Second
