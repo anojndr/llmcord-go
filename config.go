@@ -73,6 +73,7 @@ type permissionsConfig struct {
 }
 
 type rawProviderConfig struct {
+	Type         scalarString   `yaml:"type"`
 	BaseURL      scalarString   `yaml:"base_url"`
 	APIKey       scalarString   `yaml:"api_key"`
 	ExtraHeaders map[string]any `yaml:"extra_headers"`
@@ -81,12 +82,20 @@ type rawProviderConfig struct {
 }
 
 type providerConfig struct {
+	Type         string
 	BaseURL      string
 	APIKey       string
 	ExtraHeaders map[string]any
 	ExtraQuery   map[string]any
 	ExtraBody    map[string]any
 }
+
+type providerAPIKind string
+
+const (
+	providerAPIKindOpenAI providerAPIKind = "openai"
+	providerAPIKindGemini providerAPIKind = "gemini"
+)
 
 type rawConfig struct {
 	BotToken           scalarString                 `yaml:"bot_token"`
@@ -149,6 +158,7 @@ func loadConfig(filename string) (config, error) {
 	loadedProviders := make(map[string]providerConfig, len(rawLoadedConfig.Providers))
 	for providerName, rawProvider := range rawLoadedConfig.Providers {
 		loadedProviders[providerName] = providerConfig{
+			Type:         string(rawProvider.Type),
 			BaseURL:      string(rawProvider.BaseURL),
 			APIKey:       string(rawProvider.APIKey),
 			ExtraHeaders: rawProvider.ExtraHeaders,
@@ -265,8 +275,9 @@ func validateConfig(loadedConfig config) error {
 			return fmt.Errorf("model %q references unknown provider %q: %w", modelName, providerName, os.ErrNotExist)
 		}
 
-		if strings.TrimSpace(provider.BaseURL) == "" {
-			return fmt.Errorf("provider %q is missing base_url: %w", providerName, os.ErrInvalid)
+		err = provider.validate(providerName)
+		if err != nil {
+			return err
 		}
 	}
 
@@ -293,4 +304,46 @@ func (loadedConfig config) hasModel(modelName string) bool {
 	_, ok := loadedConfig.Models[modelName]
 
 	return ok
+}
+
+func (provider providerConfig) apiKind() providerAPIKind {
+	switch strings.ToLower(strings.TrimSpace(provider.Type)) {
+	case "", string(providerAPIKindOpenAI):
+		if looksLikeGeminiCompatibilityBaseURL(provider.BaseURL) {
+			return providerAPIKindGemini
+		}
+
+		return providerAPIKindOpenAI
+	case string(providerAPIKindGemini):
+		return providerAPIKindGemini
+	default:
+		return providerAPIKind(strings.ToLower(strings.TrimSpace(provider.Type)))
+	}
+}
+
+func (provider providerConfig) validate(providerName string) error {
+	switch provider.apiKind() {
+	case providerAPIKindOpenAI:
+		if strings.TrimSpace(provider.BaseURL) == "" {
+			return fmt.Errorf("provider %q is missing base_url: %w", providerName, os.ErrInvalid)
+		}
+
+		return nil
+	case providerAPIKindGemini:
+		return nil
+	default:
+		return fmt.Errorf(
+			"provider %q has unsupported type %q: %w",
+			providerName,
+			strings.TrimSpace(provider.Type),
+			os.ErrInvalid,
+		)
+	}
+}
+
+func looksLikeGeminiCompatibilityBaseURL(baseURL string) bool {
+	return strings.Contains(
+		strings.ToLower(strings.TrimSpace(baseURL)),
+		"generativelanguage.googleapis.com",
+	)
 }

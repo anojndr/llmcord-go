@@ -130,6 +130,62 @@ search_decider_model: openai/second-model
 	}
 }
 
+func TestLoadConfigAllowsGeminiProviderWithoutBaseURL(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	configText := `
+bot_token: discord-token
+providers:
+  google:
+    type: gemini
+    api_key: gemini-key
+models:
+  google/gemini-3-flash-preview:
+`
+
+	err := os.WriteFile(configPath, []byte(configText), 0o600)
+	if err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	loadedConfig, err := loadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	if loadedConfig.Providers["google"].apiKind() != providerAPIKindGemini {
+		t.Fatalf("unexpected provider API kind: %q", loadedConfig.Providers["google"].apiKind())
+	}
+}
+
+func TestLoadConfigRejectsUnsupportedProviderType(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	configText := `
+bot_token: discord-token
+providers:
+  provider:
+    type: unsupported
+    base_url: https://api.example.com/v1
+models:
+  provider/model:
+`
+
+	err := os.WriteFile(configPath, []byte(configText), 0o600)
+	if err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	_, err = loadConfig(configPath)
+	if err == nil {
+		t.Fatal("expected unsupported provider type to fail validation")
+	}
+}
+
 func TestSystemPromptNowReplacesDateAndTime(t *testing.T) {
 	t.Parallel()
 

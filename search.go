@@ -27,7 +27,9 @@ User query:
 
 Web search results:
 %s`
-	searchDeciderPrompt = `You are a search decider. Your job is to decide whether the assistant needs web search to answer the user's request.
+	searchDeciderPrompt = `You are a search decider.
+Your job is to decide whether the assistant needs web search
+to answer the user's request.
 
 Return only valid JSON, with no extra text.
 
@@ -56,8 +58,10 @@ Rules:
    - the request refers to content in an image that needs to be identified or looked up
 4. When search is needed, generate the smallest useful set of queries.
 5. Use only 1 query if 1 query is enough.
-6. Use multiple queries only when the request clearly contains multiple distinct facts/subquestions that should be searched separately.
-7. Make queries concrete and directly searchable. Do not copy vague follow-up phrasing like "verify this" or "search that".
+6. Use multiple queries only when the request clearly contains
+multiple distinct facts/subquestions that should be searched separately.
+7. Make queries concrete and directly searchable.
+Do not copy vague follow-up phrasing like "verify this" or "search that".
 8. Resolve pronouns and follow-ups using conversation context.
 9. If the user refers to an image, convert the actual things mentioned or shown into search queries.
 10. Prefer short, high-signal queries. Avoid filler words.
@@ -234,7 +238,7 @@ func (instance *bot) decideWebSearch(
 	searchContext, cancel := context.WithTimeout(ctx, searchDeciderTimeout)
 	defer cancel()
 
-	responseText, err := collectChatCompletionText(searchContext, instance.openAI, request)
+	responseText, err := collectChatCompletionText(searchContext, instance.chatCompletions, request)
 	if err != nil {
 		return searchDecision{}, fmt.Errorf("collect search decider response: %w", err)
 	}

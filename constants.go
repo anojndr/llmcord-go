@@ -28,6 +28,8 @@ const (
 	searchDeciderModelOptionDescription  = "Search decider model to view or use"
 	showSourcesButtonCustomID            = "show_sources"
 	showSourcesButtonLabel               = "Show Sources"
+	messageRoleAssistant                 = "assistant"
+	finishReasonStop                     = "stop"
 	maxSearchQueries                     = 5
 	maxSourcesPerQuery                   = 3
 	maxYouTubeComments                   = 50
