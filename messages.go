@@ -181,30 +181,15 @@ func (instance *bot) respondToMessage(
 		message.Content,
 	)
 
-	youtubeMessages, youtubeWarnings, err := instance.maybeAugmentConversationWithYouTube(
-		ctx,
-		messages,
-	)
-	if err != nil {
-		return fmt.Errorf("augment conversation with youtube: %w", err)
-	}
-
-	messages = youtubeMessages
-
-	warnings = append(warnings, youtubeWarnings...)
-
-	searchMessages, searchMetadata, searchWarnings, err := instance.maybeAugmentConversationWithWebSearch(
+	messages, searchMetadata, warnings, err := instance.augmentConversation(
 		ctx,
 		loadedConfig,
 		messages,
+		warnings,
 	)
 	if err != nil {
-		return fmt.Errorf("augment conversation with web search: %w", err)
+		return fmt.Errorf("augment conversation: %w", err)
 	}
-
-	messages = searchMessages
-
-	warnings = append(warnings, searchWarnings...)
 
 	if loadedConfig.SystemPrompt != "" {
 		systemMessage := chatMessage{
@@ -232,6 +217,46 @@ func (instance *bot) respondToMessage(
 	}
 
 	return nil
+}
+
+func (instance *bot) augmentConversation(
+	ctx context.Context,
+	loadedConfig config,
+	messages []chatMessage,
+	warnings []string,
+) ([]chatMessage, *searchMetadata, []string, error) {
+	augmentedMessages, youtubeWarnings, err := instance.maybeAugmentConversationWithYouTube(
+		ctx,
+		messages,
+	)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("augment conversation with youtube: %w", err)
+	}
+
+	warnings = append(warnings, youtubeWarnings...)
+
+	augmentedMessages, redditWarnings, err := instance.maybeAugmentConversationWithReddit(
+		ctx,
+		augmentedMessages,
+	)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("augment conversation with reddit: %w", err)
+	}
+
+	warnings = append(warnings, redditWarnings...)
+
+	augmentedMessages, searchMetadata, searchWarnings, err := instance.maybeAugmentConversationWithWebSearch(
+		ctx,
+		loadedConfig,
+		augmentedMessages,
+	)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("augment conversation with web search: %w", err)
+	}
+
+	warnings = append(warnings, searchWarnings...)
+
+	return augmentedMessages, searchMetadata, warnings, nil
 }
 
 func providerAPIKey(apiKey string) string {
