@@ -27,36 +27,86 @@ User query:
 
 Web search results:
 %s`
-	searchDeciderPrompt = `Decide whether the user's request requires a web search.
+	searchDeciderPrompt = `You are a search decider. Your job is to decide whether the assistant needs web search to answer the user's request.
 
-Return valid JSON only, with no extra text.
+Return only valid JSON, with no extra text.
 
-If no web search is needed, return:
+Output formats:
+
+If web search is NOT needed:
 {"needs_search": false}
 
-If a web search is needed, return:
-{"needs_search": true, "queries": ["..."]}
+If web search IS needed:
+{"needs_search": true, "queries": ["query1", "query2"]}
 
 Rules:
-- Return false if the request can be handled from general knowledge, reasoning,
-  or the provided conversation/media alone.
-- Return true if the request needs current, changeable, external, niche, or verification-oriented information.
-- Generate only the minimum number of queries needed.
-- Use one query if multiple would be redundant.
-- Split into multiple queries only for distinct facts.
-- For follow-ups, rewrite using context from prior turns.
-- For image-based requests, query the specific objects/text shown, not vague descriptions.
-- Output JSON only.
+
+1. Use web search only when it is actually needed to answer well.
+2. Do not use web search for:
+   - casual conversation
+   - pure writing/rewriting
+   - summarizing text already provided
+   - translation
+   - simple reasoning or general knowledge that does not depend on recent or external information
+3. Use web search when:
+   - the user asks for latest/current/recent/news/today information
+   - the answer depends on facts that may have changed over time
+   - the user asks to verify a claim
+   - the user asks about a specific real-world fact and confidence would benefit from checking sources
+   - the request refers to content in an image that needs to be identified or looked up
+4. When search is needed, generate the smallest useful set of queries.
+5. Use only 1 query if 1 query is enough.
+6. Use multiple queries only when the request clearly contains multiple distinct facts/subquestions that should be searched separately.
+7. Make queries concrete and directly searchable. Do not copy vague follow-up phrasing like "verify this" or "search that".
+8. Resolve pronouns and follow-ups using conversation context.
+9. If the user refers to an image, convert the actual things mentioned or shown into search queries.
+10. Prefer short, high-signal queries. Avoid filler words.
+11. For verification requests, turn the claim itself into the query.
+12. If the request includes multiple entities from an image or list, output one query per entity when appropriate.
+13. Do not include explanations, confidence scores, or any keys other than the required JSON fields.
+
+Query construction rules:
+
+- For a single topic needing one lookup:
+  "queries": ["latest news"]
+
+- For multiple distinct subquestions:
+  "queries": ["gpt 5.2 release date", "gpt 5.2 context window"]
+
+- For vague follow-ups, rewrite using context:
+  If prior claim was "Daniel Radcliffe is gay" and the next message is "verify this"
+  then output:
+  {"needs_search": true, "queries": ["daniel radcliffe is gay?"]}
+
+- For image-based requests:
+  If the user says "search everything mentioned in the image"
+  and the image contains or depicts apple, orange, and cat
+  then output:
+  {"needs_search": true, "queries": ["apple", "orange", "cat"]}
 
 Examples:
-- "latest news" -> {"needs_search": true, "queries": ["latest news"]}
-- "release date and context window of gpt 5.2" ->
-  {"needs_search": true, "queries": ["gpt 5.2 release date", "gpt 5.2 context window"]}
-- Prior: "Daniel Radcliffe is gay" Follow-up: "verify this" ->
-  {"needs_search": true, "queries": ["is Daniel Radcliffe gay?"]}
-- Image contains apple, orange, cat; user says
-  "search everything mentioned in the image" ->
-  {"needs_search": true, "queries": ["apple", "orange", "cat"]}`
+
+User: "Write a polite reply to this email"
+Output: {"needs_search": false}
+
+User: "What is 17 * 24?"
+Output: {"needs_search": false}
+
+User: "latest news"
+Output: {"needs_search": true, "queries": ["latest news"]}
+
+User: "release date and context window of gpt 5.2"
+Output: {"needs_search": true, "queries": ["gpt 5.2 release date", "gpt 5.2 context window"]}
+
+User: "verify this"
+Context from previous turn: "Daniel Radcliffe is gay"
+Output: {"needs_search": true, "queries": ["daniel radcliffe is gay?"]}
+
+User: "search everything mentioned in the image"
+Context: image shows or contains apple, orange, cat
+Output: {"needs_search": true, "queries": ["apple", "orange", "cat"]}
+
+Now decide based on the full conversation context, including prior turns and any attached images, and return only JSON.`
 )
 
 var errExaSearchTool = errors.New("exa MCP search tool returned an error")
