@@ -199,7 +199,7 @@ func appendContextToMessageContent(
 		})
 
 		for _, part := range typedContent {
-			if partType, _ := part["type"].(string); partType != contentTypeImageURL {
+			if partType, _ := part["type"].(string); partType == contentTypeText {
 				continue
 			}
 

@@ -18,8 +18,13 @@ const (
 	exaSearchToolName    = "web_search_exa"
 	searchWarningText    = "Warning: web search unavailable"
 	messageRoleUser      = "user"
+	contentTypeAudioData = "audio_data"
 	contentTypeImageURL  = "image_url"
 	contentTypeText      = "text"
+	contentTypeVideoData = "video_data"
+	contentFieldBytes    = "data"
+	contentFieldFilename = "filename"
+	contentFieldMIMEType = "mime_type"
 	searchAnswerTemplate = `Answer the user query based on the web search results.
 
 User query:
@@ -216,7 +221,11 @@ func (instance *bot) decideWebSearch(
 ) (searchDecision, error) {
 	searchDeciderModel := instance.currentSearchDeciderModelForConfig(loadedConfig)
 
-	searchDeciderMessages, err := searchDeciderConversation(conversation, searchDeciderModel)
+	searchDeciderMessages, err := searchDeciderConversation(
+		conversation,
+		loadedConfig,
+		searchDeciderModel,
+	)
 	if err != nil {
 		return searchDecision{}, fmt.Errorf("prepare search decider conversation: %w", err)
 	}
@@ -253,13 +262,22 @@ func (instance *bot) decideWebSearch(
 
 func searchDeciderConversation(
 	conversation []chatMessage,
+	loadedConfig config,
 	configuredModel string,
 ) ([]chatMessage, error) {
-	allowImages := isVisionModel(configuredModel)
+	contentOptions, err := messageContentOptionsForModel(loadedConfig, configuredModel)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"build content options for %q: %w",
+			configuredModel,
+			err,
+		)
+	}
+
 	sanitizedConversation := make([]chatMessage, len(conversation))
 
 	for index, message := range conversation {
-		sanitizedContent, err := sanitizeMessageContentForModel(message.Content, allowImages)
+		sanitizedContent, err := sanitizeMessageContentForModel(message.Content, contentOptions)
 		if err != nil {
 			return nil, fmt.Errorf("sanitize message %d: %w", index, err)
 		}
@@ -273,21 +291,25 @@ func searchDeciderConversation(
 	return sanitizedConversation, nil
 }
 
-func sanitizeMessageContentForModel(content any, allowImages bool) (any, error) {
+func sanitizeMessageContentForModel(
+	content any,
+	options messageContentOptions,
+) (any, error) {
 	switch typedContent := content.(type) {
 	case nil:
 		return "", nil
 	case string:
 		return typedContent, nil
 	case []contentPart:
-		if allowImages {
-			clonedContent := make([]contentPart, len(typedContent))
-			copy(clonedContent, typedContent)
-
-			return clonedContent, nil
+		filteredContent := filterContentPartsForOptions(typedContent, options)
+		if !contentPartsContainNonText(filteredContent) {
+			return contentPartsText(filteredContent), nil
 		}
 
-		return contentPartsText(typedContent), nil
+		clonedContent := make([]contentPart, len(filteredContent))
+		copy(clonedContent, filteredContent)
+
+		return clonedContent, nil
 	default:
 		return nil, fmt.Errorf("unsupported message content type %T: %w", content, os.ErrInvalid)
 	}
@@ -311,6 +333,17 @@ func contentPartsText(parts []contentPart) string {
 	}
 
 	return joinNonEmpty(textParts)
+}
+
+func contentPartsContainNonText(parts []contentPart) bool {
+	for _, part := range parts {
+		partType, _ := part["type"].(string)
+		if partType != contentTypeText {
+			return true
+		}
+	}
+
+	return false
 }
 
 func formatWebSearchResults(results []webSearchResult) string {
