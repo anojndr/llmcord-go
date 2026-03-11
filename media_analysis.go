@@ -169,6 +169,21 @@ func (instance *bot) audioVideoPartsForMessage(
 	ctx context.Context,
 	message *discordgo.Message,
 ) ([]contentPart, error) {
+	return instance.messagePartsForMessage(ctx, message, partNeedsGeminiMediaAnalysis)
+}
+
+func (instance *bot) imagePartsForMessage(
+	ctx context.Context,
+	message *discordgo.Message,
+) ([]contentPart, error) {
+	return instance.messagePartsForMessage(ctx, message, partIsImage)
+}
+
+func (instance *bot) messagePartsForMessage(
+	ctx context.Context,
+	message *discordgo.Message,
+	includePart func(contentPart) bool,
+) ([]contentPart, error) {
 	if message == nil {
 		return nil, nil
 	}
@@ -185,7 +200,7 @@ func (instance *bot) audioVideoPartsForMessage(
 	parts := make([]contentPart, 0, len(node.media))
 
 	for _, part := range node.media {
-		if !partNeedsGeminiMediaAnalysis(part) {
+		if !includePart(part) {
 			continue
 		}
 
@@ -199,6 +214,12 @@ func partNeedsGeminiMediaAnalysis(part contentPart) bool {
 	partType, _ := part["type"].(string)
 
 	return partType == contentTypeAudioData || partType == contentTypeVideoData
+}
+
+func partIsImage(part contentPart) bool {
+	partType, _ := part["type"].(string)
+
+	return partType == contentTypeImageURL
 }
 
 func cloneContentPart(part contentPart) contentPart {

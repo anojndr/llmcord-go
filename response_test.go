@@ -280,6 +280,7 @@ func TestGenerateAndSendResponseKeepsAssistantReplyInConversationHistory(t *test
 		contentOptions,
 		defaultMaxMessages,
 		false,
+		false,
 	)
 	if len(warnings) != 0 {
 		t.Fatalf("unexpected warnings: %#v", warnings)
