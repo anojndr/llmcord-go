@@ -117,6 +117,20 @@ func (instance *bot) handleModelCommand(
 		return fmt.Errorf("load config for model command: %w", err)
 	}
 
+	channelIDs, err := instance.interactionChannelIDs(interaction)
+	if err != nil {
+		slog.Warn("resolve interaction channel ids", "channel_id", interaction.ChannelID, "error", err)
+		channelIDs = []string{interaction.ChannelID}
+	}
+
+	if lockedModel, ok := loadedConfig.lockedModelForChannelIDs(channelIDs); ok {
+		return respondInteractionText(
+			session,
+			interaction.Interaction,
+			fmt.Sprintf("This channel is locked to `%s`. `/model` is disabled here.", lockedModel),
+		)
+	}
+
 	return handleConfiguredModelCommand(
 		session,
 		interaction,
@@ -192,6 +206,23 @@ func (instance *bot) handleModelAutocomplete(
 		return fmt.Errorf("load config for autocomplete: %w", err)
 	}
 
+	channelIDs, err := instance.interactionChannelIDs(interaction)
+	if err != nil {
+		slog.Warn("resolve interaction channel ids", "channel_id", interaction.ChannelID, "error", err)
+		channelIDs = []string{interaction.ChannelID}
+	}
+
+	if lockedModel, ok := loadedConfig.lockedModelForChannelIDs(channelIDs); ok {
+		return respondInteractionChoices(
+			session,
+			interaction.Interaction,
+			lockedModelAutocompleteChoices(
+				lockedModel,
+				interactionOptionString(interaction.ApplicationCommandData().Options),
+			),
+		)
+	}
+
 	return handleConfiguredModelAutocomplete(
 		session,
 		interaction,
@@ -254,6 +285,31 @@ func handleConfiguredModelAutocomplete(
 	}
 
 	return nil
+}
+
+func lockedModelAutocompleteChoices(
+	lockedModel string,
+	currentText string,
+) []*discordgo.ApplicationCommandOptionChoice {
+	if !containsFold(lockedModel, currentText) {
+		return nil
+	}
+
+	choice := new(discordgo.ApplicationCommandOptionChoice)
+	choice.Name = "x " + lockedModel + " (locked)"
+	choice.Value = lockedModel
+
+	return []*discordgo.ApplicationCommandOptionChoice{choice}
+}
+
+func (instance *bot) interactionChannelIDs(
+	interaction *discordgo.InteractionCreate,
+) ([]string, error) {
+	if interaction == nil || interaction.Interaction == nil {
+		return nil, fmt.Errorf("interaction is required: %w", os.ErrInvalid)
+	}
+
+	return instance.channelContextIDs(interaction.ChannelID, interaction.GuildID)
 }
 
 func interactionOptionString(options []*discordgo.ApplicationCommandInteractionDataOption) string {

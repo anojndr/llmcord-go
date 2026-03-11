@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -25,15 +26,15 @@ func TestHandleModelCommandAllowsNonAdminSwitch(t *testing.T) {
 	var response discordgo.InteractionResponse
 
 	session := newInteractionTestSession(t, &response)
-	instance := newModelTestBot(configPath, "openai/first-model")
-	interaction := newModelCommandInteraction("member-user", "openai/second-model")
+	instance := newModelTestBot(configPath)
+	interaction := newModelCommandInteraction("member-user", secondTestModel)
 
 	err := instance.handleModelCommand(session, interaction)
 	if err != nil {
 		t.Fatalf("handle model command: %v", err)
 	}
 
-	if instance.currentModel != "openai/second-model" {
+	if instance.currentModel != secondTestModel {
 		t.Fatalf("unexpected current model: %q", instance.currentModel)
 	}
 
@@ -41,7 +42,7 @@ func TestHandleModelCommandAllowsNonAdminSwitch(t *testing.T) {
 		t.Fatal("expected interaction response data")
 	}
 
-	expectedContent := "Model switched to: `openai/second-model`"
+	expectedContent := fmt.Sprintf("Model switched to: `%s`", secondTestModel)
 	if response.Data.Content != expectedContent {
 		t.Fatalf("unexpected response content: got %q want %q", response.Data.Content, expectedContent)
 	}
@@ -55,16 +56,16 @@ func TestHandleSearchDeciderModelCommandAllowsSwitch(t *testing.T) {
 	var response discordgo.InteractionResponse
 
 	session := newInteractionTestSession(t, &response)
-	instance := newModelTestBot(configPath, "openai/first-model")
-	instance.currentSearchDeciderModel = "openai/first-model"
-	interaction := newSearchDeciderModelCommandInteraction("member-user", "openai/second-model")
+	instance := newModelTestBot(configPath)
+	instance.currentSearchDeciderModel = firstTestModel
+	interaction := newSearchDeciderModelCommandInteraction("member-user", secondTestModel)
 
 	err := instance.handleSearchDeciderModelCommand(session, interaction)
 	if err != nil {
 		t.Fatalf("handle search decider model command: %v", err)
 	}
 
-	if instance.currentSearchDeciderModel != "openai/second-model" {
+	if instance.currentSearchDeciderModel != secondTestModel {
 		t.Fatalf("unexpected current search decider model: %q", instance.currentSearchDeciderModel)
 	}
 
@@ -72,9 +73,121 @@ func TestHandleSearchDeciderModelCommandAllowsSwitch(t *testing.T) {
 		t.Fatal("expected interaction response data")
 	}
 
-	expectedContent := "Search decider model switched to: `openai/second-model`"
+	expectedContent := fmt.Sprintf("Search decider model switched to: `%s`", secondTestModel)
 	if response.Data.Content != expectedContent {
 		t.Fatalf("unexpected response content: got %q want %q", response.Data.Content, expectedContent)
+	}
+}
+
+func TestHandleModelCommandRejectsLockedChannelSwitch(t *testing.T) {
+	t.Parallel()
+
+	configPath := writeModelConfigWithExtra(
+		t,
+		fmt.Sprintf(
+			`
+channel_model_locks:
+  locked-channel: %s
+`,
+			secondTestModel,
+		),
+	)
+
+	var response discordgo.InteractionResponse
+
+	session := newInteractionTestSession(t, &response)
+	instance := newModelTestBot(configPath)
+	interaction := newModelCommandInteractionInChannel(
+		"member-user",
+		firstTestModel,
+		"locked-channel",
+	)
+
+	err := instance.handleModelCommand(session, interaction)
+	if err != nil {
+		t.Fatalf("handle model command: %v", err)
+	}
+
+	if instance.currentModel != firstTestModel {
+		t.Fatalf("unexpected current model: %q", instance.currentModel)
+	}
+
+	if response.Data == nil {
+		t.Fatal("expected interaction response data")
+	}
+
+	expectedContent := fmt.Sprintf(
+		"This channel is locked to `%s`. `/model` is disabled here.",
+		secondTestModel,
+	)
+	if response.Data.Content != expectedContent {
+		t.Fatalf("unexpected response content: got %q want %q", response.Data.Content, expectedContent)
+	}
+}
+
+func TestHandleSearchDeciderModelCommandAllowsSwitchInLockedChannel(t *testing.T) {
+	t.Parallel()
+
+	configPath := writeModelConfigWithExtra(
+		t,
+		fmt.Sprintf(
+			`
+channel_model_locks:
+  locked-channel: %s
+`,
+			secondTestModel,
+		),
+	)
+
+	var response discordgo.InteractionResponse
+
+	session := newInteractionTestSession(t, &response)
+	instance := newModelTestBot(configPath)
+	instance.currentSearchDeciderModel = firstTestModel
+	interaction := newSearchDeciderModelCommandInteractionInChannel(
+		"member-user",
+		secondTestModel,
+		"locked-channel",
+	)
+
+	err := instance.handleSearchDeciderModelCommand(session, interaction)
+	if err != nil {
+		t.Fatalf("handle search decider model command: %v", err)
+	}
+
+	if instance.currentSearchDeciderModel != secondTestModel {
+		t.Fatalf("unexpected current search decider model: %q", instance.currentSearchDeciderModel)
+	}
+
+	if response.Data == nil {
+		t.Fatal("expected interaction response data")
+	}
+
+	expectedContent := fmt.Sprintf("Search decider model switched to: `%s`", secondTestModel)
+	if response.Data.Content != expectedContent {
+		t.Fatalf("unexpected response content: got %q want %q", response.Data.Content, expectedContent)
+	}
+}
+
+func TestLockedModelAutocompleteChoices(t *testing.T) {
+	t.Parallel()
+
+	choices := lockedModelAutocompleteChoices(secondTestModel, "second")
+	if len(choices) != 1 {
+		t.Fatalf("unexpected choice count: %d", len(choices))
+	}
+
+	if choices[0].Name != fmt.Sprintf("x %s (locked)", secondTestModel) {
+		t.Fatalf("unexpected choice name: %q", choices[0].Name)
+	}
+
+	if choices[0].Value != secondTestModel {
+		t.Fatalf("unexpected choice value: %#v", choices[0].Value)
+	}
+
+	choices = lockedModelAutocompleteChoices(secondTestModel, "first")
+	if len(choices) != 0 {
+		t.Fatalf("unexpected filtered choice count: %d", len(choices))
 	}
 }
 
@@ -125,8 +238,14 @@ func TestHandleInteractionCreateRespondsToShowSourcesButton(t *testing.T) {
 func writeModelConfig(t *testing.T) string {
 	t.Helper()
 
+	return writeModelConfigWithExtra(t, "")
+}
+
+func writeModelConfigWithExtra(t *testing.T, extraText string) string {
+	t.Helper()
+
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
-	configText := `
+	configText := fmt.Sprintf(`
 bot_token: discord-token
 permissions:
   users:
@@ -135,9 +254,9 @@ providers:
   openai:
     base_url: https://api.example.com/v1
 models:
-  openai/first-model:
-  openai/second-model:
-`
+  %s:
+  %s:
+`, firstTestModel, secondTestModel) + extraText
 
 	err := os.WriteFile(configPath, []byte(configText), 0o600)
 	if err != nil {
@@ -200,27 +319,50 @@ func newNoContentResponse(request *http.Request) *http.Response {
 	return response
 }
 
-func newModelTestBot(configPath string, currentModel string) *bot {
+func newModelTestBot(configPath string) *bot {
 	instance := new(bot)
 	instance.configPath = configPath
-	instance.currentModel = currentModel
+	instance.currentModel = firstTestModel
 
 	return instance
 }
 
 func newModelCommandInteraction(userID string, modelName string) *discordgo.InteractionCreate {
-	return newConfiguredModelCommandInteraction(userID, modelName, modelCommandName, modelOptionName)
+	return newModelCommandInteractionInChannel(userID, modelName, "")
+}
+
+func newModelCommandInteractionInChannel(
+	userID string,
+	modelName string,
+	channelID string,
+) *discordgo.InteractionCreate {
+	return newConfiguredModelCommandInteraction(
+		userID,
+		modelName,
+		modelCommandName,
+		modelOptionName,
+		channelID,
+	)
 }
 
 func newSearchDeciderModelCommandInteraction(
 	userID string,
 	modelName string,
 ) *discordgo.InteractionCreate {
+	return newSearchDeciderModelCommandInteractionInChannel(userID, modelName, "")
+}
+
+func newSearchDeciderModelCommandInteractionInChannel(
+	userID string,
+	modelName string,
+	channelID string,
+) *discordgo.InteractionCreate {
 	return newConfiguredModelCommandInteraction(
 		userID,
 		modelName,
 		searchDeciderModelCommandName,
 		searchDeciderModelOptionName,
+		channelID,
 	)
 }
 
@@ -229,6 +371,7 @@ func newConfiguredModelCommandInteraction(
 	modelName string,
 	commandName string,
 	optionName string,
+	channelID string,
 ) *discordgo.InteractionCreate {
 	user := new(discordgo.User)
 	user.ID = userID
@@ -250,6 +393,7 @@ func newConfiguredModelCommandInteraction(
 	interaction.ID = "interaction-id"
 	interaction.Token = "interaction-token"
 	interaction.Type = discordgo.InteractionApplicationCommand
+	interaction.ChannelID = channelID
 	interaction.Member = member
 	interaction.Data = commandData
 
