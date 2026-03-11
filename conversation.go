@@ -18,9 +18,10 @@ type attachmentPayload struct {
 }
 
 type messageContentOptions struct {
-	maxImages  int
-	allowAudio bool
-	allowVideo bool
+	maxImages      int
+	allowAudio     bool
+	allowDocuments bool
+	allowVideo     bool
 }
 
 type messageContentSummary struct {
@@ -159,6 +160,14 @@ func selectMessageMedia(
 			imageCount++
 		case contentTypeAudioData:
 			if !options.allowAudio {
+				summary.unsupportedAttachmentCnt++
+
+				continue
+			}
+
+			selectedMedia = append(selectedMedia, part)
+		case contentTypeDocument:
+			if !options.allowDocuments {
 				summary.unsupportedAttachmentCnt++
 
 				continue
@@ -350,6 +359,8 @@ func attachmentPayloadToContentPart(payload attachmentPayload) (contentPart, boo
 		return part, true
 	case strings.HasPrefix(contentType, "audio/"):
 		return binaryAttachmentContentPart(contentTypeAudioData, payload), true
+	case attachmentIsDocument(contentType):
+		return binaryAttachmentContentPart(contentTypeDocument, payload), true
 	case strings.HasPrefix(contentType, "video/"):
 		return binaryAttachmentContentPart(contentTypeVideoData, payload), true
 	default:
@@ -443,6 +454,7 @@ func (instance *bot) fetchSupportedAttachments(
 
 func attachmentIsSupported(contentType string) bool {
 	return attachmentIsText(contentType) ||
+		attachmentIsDocument(contentType) ||
 		strings.HasPrefix(strings.TrimSpace(contentType), "image/") ||
 		strings.HasPrefix(strings.TrimSpace(contentType), "audio/") ||
 		strings.HasPrefix(strings.TrimSpace(contentType), "video/")
@@ -450,6 +462,10 @@ func attachmentIsSupported(contentType string) bool {
 
 func attachmentIsText(contentType string) bool {
 	return strings.HasPrefix(strings.TrimSpace(contentType), "text/")
+}
+
+func attachmentIsDocument(contentType string) bool {
+	return strings.HasPrefix(strings.TrimSpace(contentType), mimeTypePDF)
 }
 
 func filterContentPartsForOptions(
@@ -474,6 +490,10 @@ func filterContentPartsForOptions(
 			imageCount++
 		case contentTypeAudioData:
 			if options.allowAudio {
+				filteredParts = append(filteredParts, part)
+			}
+		case contentTypeDocument:
+			if options.allowDocuments {
 				filteredParts = append(filteredParts, part)
 			}
 		case contentTypeVideoData:

@@ -113,6 +113,11 @@ func TestSearchDeciderConversationStripsImagesForTextOnlyModels(t *testing.T) {
 					contentFieldMIMEType: "audio/mpeg",
 				},
 				{
+					"type":               contentTypeDocument,
+					contentFieldBytes:    []byte("document-bytes"),
+					contentFieldMIMEType: mimeTypePDF,
+				},
+				{
 					"type":               contentTypeVideoData,
 					contentFieldBytes:    []byte("video-bytes"),
 					contentFieldMIMEType: "video/mp4",
@@ -155,6 +160,11 @@ func TestSearchDeciderConversationPreservesGeminiMedia(t *testing.T) {
 					contentFieldMIMEType: "audio/mpeg",
 				},
 				{
+					"type":               contentTypeDocument,
+					contentFieldBytes:    []byte("document-bytes"),
+					contentFieldMIMEType: mimeTypePDF,
+				},
+				{
 					"type":               contentTypeVideoData,
 					contentFieldBytes:    []byte("video-bytes"),
 					contentFieldMIMEType: "video/mp4",
@@ -177,12 +187,16 @@ func TestSearchDeciderConversationPreservesGeminiMedia(t *testing.T) {
 		t.Fatalf("unexpected sanitized content type: %T", sanitizedConversation[0].Content)
 	}
 
-	if len(parts) != 4 {
+	if len(parts) != 5 {
 		t.Fatalf("unexpected part count: %d", len(parts))
 	}
 
-	if parts[3]["type"] != contentTypeVideoData {
-		t.Fatalf("expected video to be preserved: %#v", parts[3])
+	if parts[3]["type"] != contentTypeDocument {
+		t.Fatalf("expected document to be preserved: %#v", parts[3])
+	}
+
+	if parts[4]["type"] != contentTypeVideoData {
+		t.Fatalf("expected video to be preserved: %#v", parts[4])
 	}
 }
 

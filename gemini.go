@@ -533,7 +533,7 @@ func geminiPartsFromMessageContent(
 				}
 
 				parts = append(parts, genai.NewPartFromBytes(imageBytes, mimeType))
-			case contentTypeAudioData, contentTypeVideoData:
+			case contentTypeAudioData, contentTypeDocument, contentTypeVideoData:
 				uploadedPart, err := geminiUploadedMediaPart(ctx, files, part)
 				if err != nil {
 					return nil, err
