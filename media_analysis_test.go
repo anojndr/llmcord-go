@@ -209,6 +209,80 @@ func TestMaybeAugmentConversationWithGeminiMediaAppendsReplyTargetAnalysesForNon
 	}
 }
 
+func TestMaybeAugmentConversationWithGeminiMediaUsesAssistantReplyTargetSource(t *testing.T) {
+	t.Parallel()
+
+	expectedAnalyses := []string{
+		"Audio transcription per timestamp:\n\n0s to 10s: original source hello there",
+	}
+
+	chatClient, callIndex := newGeminiMediaAnalysisChatClient(t, expectedAnalyses)
+	instance, sourceMessage := newMediaAnalysisTestBot(
+		chatClient,
+		"message-1-assistant-reply",
+		nil,
+	)
+
+	assistantMessage := new(discordgo.Message)
+	assistantMessage.ID = "message-1-assistant"
+
+	originalSourceMessage := new(discordgo.Message)
+	originalSourceMessage.ID = "message-1-original"
+
+	sourceMessage.MessageReference = assistantMessage.Reference()
+
+	sourceNode := instance.nodes.getOrCreate(sourceMessage.ID)
+	sourceNode.parentMessage = assistantMessage
+	sourceNode.role = messageRoleUser
+	sourceNode.text = "<@123>: summarize that original audio"
+
+	assistantNode := instance.nodes.getOrCreate(assistantMessage.ID)
+	assistantNode.initialized = true
+	assistantNode.role = messageRoleAssistant
+	assistantNode.text = "Earlier answer"
+	assistantNode.parentMessage = originalSourceMessage
+
+	originalSourceNode := instance.nodes.getOrCreate(originalSourceMessage.ID)
+	originalSourceNode.initialized = true
+	originalSourceNode.role = messageRoleUser
+	originalSourceNode.media = []contentPart{
+		{
+			"type":               contentTypeAudioData,
+			contentFieldBytes:    []byte("audio-bytes"),
+			contentFieldMIMEType: "audio/mpeg",
+			contentFieldFilename: "original.mp3",
+		},
+	}
+
+	augmentedConversation, err := instance.maybeAugmentConversationWithGeminiMedia(
+		context.Background(),
+		testMediaAnalysisConfig(),
+		"openai/gpt-5",
+		sourceMessage,
+		[]chatMessage{{Role: messageRoleUser, Content: "<@123>: summarize that original audio"}},
+	)
+	if err != nil {
+		t.Fatalf("augment conversation with assistant reply target media: %v", err)
+	}
+
+	if *callIndex != 1 {
+		t.Fatalf("unexpected gemini analysis call count: %d", *callIndex)
+	}
+
+	content, ok := augmentedConversation[0].Content.(string)
+	if !ok {
+		t.Fatalf("unexpected augmented content type: %T", augmentedConversation[0].Content)
+	}
+
+	expectedText := expectedMediaAnalysisUserText(
+		"<@123>: summarize that original audio",
+		expectedAnalyses,
+	)
+	if content != expectedText {
+		t.Fatalf("unexpected augmented text: %q", content)
+	}
+}
+
 func TestMaybeAugmentConversationWithGeminiMediaSkipsGeminiModel(t *testing.T) {
 	t.Parallel()
 
