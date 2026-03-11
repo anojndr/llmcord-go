@@ -81,6 +81,15 @@ type rawProviderConfig struct {
 	ExtraBody    map[string]any   `yaml:"extra_body"`
 }
 
+type rawTavilySearchConfig struct {
+	APIKey scalarStringList `yaml:"api_key"`
+}
+
+type rawWebSearchConfig struct {
+	PrimaryProvider scalarString          `yaml:"primary_provider"`
+	Tavily          rawTavilySearchConfig `yaml:"tavily"`
+}
+
 type providerConfig struct {
 	Type         string
 	BaseURL      string
@@ -89,6 +98,23 @@ type providerConfig struct {
 	ExtraHeaders map[string]any
 	ExtraQuery   map[string]any
 	ExtraBody    map[string]any
+}
+
+type tavilySearchConfig struct {
+	APIKey  string
+	APIKeys []string
+}
+
+type webSearchProviderKind string
+
+const (
+	webSearchProviderKindMCP    webSearchProviderKind = "mcp"
+	webSearchProviderKindTavily webSearchProviderKind = "tavily"
+)
+
+type webSearchConfig struct {
+	PrimaryProvider webSearchProviderKind
+	Tavily          tavilySearchConfig
 }
 
 type providerAPIKind string
@@ -110,6 +136,7 @@ type rawConfig struct {
 	AllowDMs           *bool                        `yaml:"allow_dms"`
 	Permissions        permissionsConfig            `yaml:"permissions"`
 	Providers          map[string]rawProviderConfig `yaml:"providers"`
+	WebSearch          rawWebSearchConfig           `yaml:"web_search"`
 	Models             map[string]map[string]any    `yaml:"models"`
 	ChannelModelLocks  map[string]scalarString      `yaml:"channel_model_locks"`
 	SearchDeciderModel scalarString                 `yaml:"search_decider_model"`
@@ -128,6 +155,7 @@ type config struct {
 	AllowDMs           bool
 	Permissions        permissionsConfig
 	Providers          map[string]providerConfig
+	WebSearch          webSearchConfig
 	Models             map[string]map[string]any
 	ModelOrder         []string
 	ChannelModelLocks  map[string]string
@@ -176,6 +204,9 @@ func loadConfig(filename string) (config, error) {
 		}
 	}
 
+	tavilyAPIKeys := normalizeAPIKeys([]string(rawLoadedConfig.WebSearch.Tavily.APIKey))
+	primarySearchProvider := normalizeWebSearchProvider(rawLoadedConfig.WebSearch.PrimaryProvider)
+
 	allowDMs := true
 	if rawLoadedConfig.AllowDMs != nil {
 		allowDMs = *rawLoadedConfig.AllowDMs
@@ -190,16 +221,23 @@ func loadConfig(filename string) (config, error) {
 	channelModelLocks := normalizeStringScalarMap(rawLoadedConfig.ChannelModelLocks)
 
 	loadedConfig := config{
-		BotToken:           string(rawLoadedConfig.BotToken),
-		ClientID:           string(rawLoadedConfig.ClientID),
-		StatusMessage:      rawLoadedConfig.StatusMessage,
-		MaxText:            intValueOrDefault(rawLoadedConfig.MaxText, defaultMaxText),
-		MaxImages:          intValueOrDefault(rawLoadedConfig.MaxImages, defaultMaxImages),
-		MaxMessages:        intValueOrDefault(rawLoadedConfig.MaxMessages, defaultMaxMessages),
-		UsePlainResponses:  rawLoadedConfig.UsePlainResponses,
-		AllowDMs:           allowDMs,
-		Permissions:        rawLoadedConfig.Permissions,
-		Providers:          loadedProviders,
+		BotToken:          string(rawLoadedConfig.BotToken),
+		ClientID:          string(rawLoadedConfig.ClientID),
+		StatusMessage:     rawLoadedConfig.StatusMessage,
+		MaxText:           intValueOrDefault(rawLoadedConfig.MaxText, defaultMaxText),
+		MaxImages:         intValueOrDefault(rawLoadedConfig.MaxImages, defaultMaxImages),
+		MaxMessages:       intValueOrDefault(rawLoadedConfig.MaxMessages, defaultMaxMessages),
+		UsePlainResponses: rawLoadedConfig.UsePlainResponses,
+		AllowDMs:          allowDMs,
+		Permissions:       rawLoadedConfig.Permissions,
+		Providers:         loadedProviders,
+		WebSearch: webSearchConfig{
+			PrimaryProvider: primarySearchProvider,
+			Tavily: tavilySearchConfig{
+				APIKey:  firstAPIKey(tavilyAPIKeys),
+				APIKeys: tavilyAPIKeys,
+			},
+		},
 		Models:             rawLoadedConfig.Models,
 		ModelOrder:         modelOrder,
 		ChannelModelLocks:  channelModelLocks,
@@ -270,6 +308,15 @@ func normalizeStringScalarMap(rawValues map[string]scalarString) map[string]stri
 	return values
 }
 
+func normalizeWebSearchProvider(rawValue scalarString) webSearchProviderKind {
+	trimmedValue := strings.ToLower(strings.TrimSpace(string(rawValue)))
+	if trimmedValue == "" {
+		return webSearchProviderKindMCP
+	}
+
+	return webSearchProviderKind(trimmedValue)
+}
+
 func validateConfig(loadedConfig config) error {
 	if strings.TrimSpace(loadedConfig.BotToken) == "" {
 		return fmt.Errorf("bot_token is required: %w", os.ErrInvalid)
@@ -289,6 +336,11 @@ func validateConfig(loadedConfig config) error {
 
 	if loadedConfig.MaxMessages <= 0 {
 		return fmt.Errorf("max_messages must be greater than zero: %w", os.ErrInvalid)
+	}
+
+	err := validateWebSearchConfig(loadedConfig.WebSearch)
+	if err != nil {
+		return err
 	}
 
 	for _, modelName := range loadedConfig.ModelOrder {
@@ -316,7 +368,7 @@ func validateConfig(loadedConfig config) error {
 		)
 	}
 
-	err := validateChannelModelLocks(loadedConfig)
+	err = validateChannelModelLocks(loadedConfig)
 	if err != nil {
 		return err
 	}
@@ -352,6 +404,19 @@ func validateConfig(loadedConfig config) error {
 	}
 
 	return nil
+}
+
+func validateWebSearchConfig(loadedConfig webSearchConfig) error {
+	switch loadedConfig.PrimaryProvider {
+	case webSearchProviderKindMCP, webSearchProviderKindTavily:
+		return nil
+	default:
+		return fmt.Errorf(
+			"web_search.primary_provider %q is unsupported: %w",
+			loadedConfig.PrimaryProvider,
+			os.ErrInvalid,
+		)
+	}
 }
 
 func validateChannelModelLocks(loadedConfig config) error {

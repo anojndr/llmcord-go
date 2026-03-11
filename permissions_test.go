@@ -67,6 +67,14 @@ func TestMessageAllowed(t *testing.T) {
 }
 
 func testPermissionsConfig() config {
+	searchConfig := webSearchConfig{
+		PrimaryProvider: webSearchProviderKindMCP,
+		Tavily: tavilySearchConfig{
+			APIKey:  "",
+			APIKeys: nil,
+		},
+	}
+
 	return config{
 		BotToken:          "",
 		ClientID:          "",
@@ -92,6 +100,7 @@ func testPermissionsConfig() config {
 			},
 		},
 		Providers:          nil,
+		WebSearch:          searchConfig,
 		Models:             nil,
 		ModelOrder:         nil,
 		ChannelModelLocks:  nil,

@@ -121,3 +121,11 @@ func (provider providerRequestConfig) withSingleAPIKey(apiKey string) providerRe
 
 	return provider
 }
+
+func (settings tavilySearchConfig) apiKeys() []string {
+	return providerAPIKeys(settings.APIKey, settings.APIKeys)
+}
+
+func (settings tavilySearchConfig) apiKeysForAttempts() []string {
+	return settings.apiKeys()
+}

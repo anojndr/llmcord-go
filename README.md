@@ -15,7 +15,7 @@ This bot turns Discord into a reply-chain frontend for OpenAI-compatible LLM API
 - Automatic TikTok URL handling that resolves short links, converts videos to MP4 through SnapTik, and either sends the MP4 to Gemini models or preprocesses it with Gemini for non-Gemini replies
 - Automatic YouTube URL enrichment that fetches transcripts, titles, channel names, and up to 50 top comments without an API key
 - Automatic Reddit URL enrichment that fetches thread metadata, post bodies, and nested comments from Reddit's `.json` endpoint without an API key
-- Search-decider flow that can skip search or call Exa MCP web search when current information is needed
+- Search-decider flow that can skip search or use Exa MCP and Tavily in configurable primary/fallback order when current information is needed
 - `Show Sources` button on searched replies that reveals the queries and parsed source URLs used
 - Hot-reloaded `config.yaml`
 - Permission controls for users, roles, and channels
@@ -85,6 +85,13 @@ The config schema stays close to the original Python project.
 | `media_analysis_model` | Optional `<provider>/<model>` entry used for Gemini preprocessing of audio/video attachments before non-Gemini replies. Must reference a configured Gemini model. If omitted, the bot falls back to `search_decider_model` when that model is Gemini, or the first configured Gemini model. |
 | `system_prompt` | Optional prompt prepended to every request. `{date}` and `{time}` are expanded using the host time zone. |
 
+### Search settings
+
+| Setting | Description |
+| --- | --- |
+| `web_search.primary_provider` | Which search backend to try first. Supported values: `mcp` and `tavily`. Default: `mcp`. The other backend is used as fallback automatically. |
+| `web_search.tavily.api_key` | Tavily API key configuration. Required if Tavily is selected as the primary backend and optional when it is used only as fallback. Accepts either a single string or a YAML list of strings, and the bot retries the keys in order on auth/quota-style failures before giving up. |
+
 ## Development
 
 Run the full repository checklist from the project root:
@@ -109,7 +116,9 @@ golangci-lint run --default=all
 - When a user message contains one or more TikTok URLs, the bot resolves short links, downloads each video as MP4 through SnapTik, and then either appends the MP4s to the latest user message for Gemini models or runs those MP4s through the same Gemini media-analysis path before non-Gemini replies. If the reply model is Gemini but the search decider is not, the bot also appends Gemini-generated TikTok analysis text so the search decider still receives the video context.
 - When a user message contains one or more YouTube URLs, the bot fetches each video concurrently over plain HTTP and appends the extracted transcript, title, channel name, and top comments to the latest user message before the main completion request.
 - When a user message contains one or more Reddit thread URLs, the bot fetches each thread concurrently from the corresponding `.json` URL over a dedicated HTTP/1.1 transport, then appends the post metadata, post body, and nested comments to the latest user message before the main completion request.
-- When the search decider requires web search, the bot queries Exa MCP at `https://mcp.exa.ai/mcp` without requiring an API key by default.
+- When the search decider requires web search, the bot uses `web_search.primary_provider` to decide whether Exa MCP or Tavily runs first, and automatically falls back to the other backend on failure.
+- Exa MCP uses `https://mcp.exa.ai/mcp` and does not require an API key by default.
+- Tavily uses `https://api.tavily.com/search`, requests `include_raw_content: "text"`, and includes the full raw page text for each returned URL in the search context. If multiple Tavily keys are configured, the bot retries them in order on auth/quota-style failures before moving on.
 - OpenAI Codex providers stream through the ChatGPT Codex Responses API. If `extra_headers.chatgpt-account-id` is not set, the bot derives it from the JWT in `api_key`.
 - If a provider has multiple `api_key` entries, the router retries the request with the next configured key when the current key is rejected or rate-limited before any response is streamed.
 - The implementation targets chat-completions-style OpenAI-compatible APIs, OpenAI Codex Responses streaming, and native Gemini GenerateContent streaming.

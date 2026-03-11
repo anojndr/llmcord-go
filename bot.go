@@ -42,7 +42,7 @@ func newBot(configPath string, loadedConfig config) (*bot, error) {
 	instance.session = discordSession
 	instance.httpClient = httpClient
 	instance.chatCompletions = newChatCompletionRouter(httpClient)
-	instance.webSearch = newExaSearchClient(httpClient)
+	instance.webSearch = newWebSearchClient(httpClient)
 	instance.tiktok = newTikTokClient(httpClient)
 	instance.youtube = newYouTubeClient(httpClient)
 	instance.reddit = newRedditClient(httpClient)

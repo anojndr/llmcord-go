@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,124 @@ import (
 )
 
 var errSearchBackendUnavailable = errors.New("search backend unavailable")
+
+const (
+	testTavilyPrimaryAPIKey     = "primary-key"
+	testTavilyBackupAPIKey      = "backup-key"
+	testTavilyPrimaryAuthHeader = "Bearer " + testTavilyPrimaryAPIKey
+	testTavilyBackupAuthHeader  = "Bearer " + testTavilyBackupAPIKey
+)
+
+func testTavilySearchConfig() config {
+	loadedConfig := testSearchConfig()
+	loadedConfig.WebSearch.PrimaryProvider = webSearchProviderKindMCP
+	loadedConfig.WebSearch.Tavily = tavilySearchConfig{
+		APIKey:  testTavilyPrimaryAPIKey,
+		APIKeys: []string{testTavilyPrimaryAPIKey, testTavilyBackupAPIKey},
+	}
+
+	return loadedConfig
+}
+
+func newTavilySearchTestClient(handler http.HandlerFunc) (tavilySearchClient, func()) {
+	httpServer := httptest.NewServer(handler)
+
+	return tavilySearchClient{
+		endpoint:   httpServer.URL,
+		httpClient: httpServer.Client(),
+	}, httpServer.Close
+}
+
+func writeTavilySearchResponse(
+	t *testing.T,
+	responseWriter http.ResponseWriter,
+	response tavilySearchResponse,
+) {
+	t.Helper()
+
+	responseWriter.Header().Set("Content-Type", "application/json")
+
+	err := json.NewEncoder(responseWriter).Encode(response)
+	if err != nil {
+		t.Errorf("encode Tavily response: %v", err)
+	}
+}
+
+func assertTavilyAuthHeaders(t *testing.T, authHeaders []string) {
+	t.Helper()
+
+	if len(authHeaders) != 2 {
+		t.Fatalf("unexpected Tavily attempt count: %d", len(authHeaders))
+	}
+
+	if authHeaders[0] != testTavilyPrimaryAuthHeader || authHeaders[1] != testTavilyBackupAuthHeader {
+		t.Fatalf("unexpected Tavily auth headers: %#v", authHeaders)
+	}
+}
+
+func testTavilySearchSuccessResponse() tavilySearchResponse {
+	return tavilySearchResponse{
+		Results: []tavilySearchResponseResult{
+			{
+				Title:   "Example Source",
+				URL:     "https://example.com/source",
+				Content: "A relevant snippet",
+				RawContent: "Full article text\n" +
+					"URL: https://example.com/not-a-source\n" +
+					"Title: Embedded heading",
+			},
+		},
+	}
+}
+
+func assertTavilySearchRequest(t *testing.T, request tavilySearchRequest) {
+	t.Helper()
+
+	if request.SearchDepth != "advanced" {
+		t.Fatalf("unexpected Tavily search depth: %q", request.SearchDepth)
+	}
+
+	if request.MaxResults != maxSourcesPerQuery {
+		t.Fatalf("unexpected Tavily max results: %d", request.MaxResults)
+	}
+
+	if request.IncludeRawContent != "text" {
+		t.Fatalf("unexpected Tavily raw content setting: %q", request.IncludeRawContent)
+	}
+}
+
+func assertTavilyRawContentResult(t *testing.T, result webSearchResult) {
+	t.Helper()
+
+	if !containsFold(result.Text, "Example Source") {
+		t.Fatalf("expected Tavily result title in text: %q", result.Text)
+	}
+
+	if !containsFold(result.Text, "https://example.com/source") {
+		t.Fatalf("expected Tavily result URL in text: %q", result.Text)
+	}
+
+	if !containsFold(result.Text, "Raw Content") {
+		t.Fatalf("expected Tavily raw content in text: %q", result.Text)
+	}
+
+	if !containsFold(result.Text, "| Full article text") {
+		t.Fatalf("expected Tavily raw content block in text: %q", result.Text)
+	}
+
+	if !containsFold(result.Text, "| URL: https://example.com/not-a-source") {
+		t.Fatalf("expected Tavily raw content line to be escaped: %q", result.Text)
+	}
+
+	sources := extractSearchSources(result.Text)
+	if len(sources) != 1 {
+		t.Fatalf("unexpected source count parsed from Tavily text: %d", len(sources))
+	}
+
+	if sources[0].URL != "https://example.com/source" {
+		t.Fatalf("unexpected source parsed from Tavily text: %#v", sources[0])
+	}
+}
 
 type stubChatCompletionClient struct {
 	mu       sync.Mutex
@@ -36,11 +155,12 @@ func (client *stubChatCompletionClient) streamChatCompletion(
 type stubWebSearchClient struct {
 	mu       sync.Mutex
 	calls    [][]string
-	searchFn func(context.Context, []string) ([]webSearchResult, error)
+	searchFn func(context.Context, config, []string) ([]webSearchResult, error)
 }
 
 func (client *stubWebSearchClient) search(
 	ctx context.Context,
+	loadedConfig config,
 	queries []string,
 ) ([]webSearchResult, error) {
 	client.mu.Lock()
@@ -49,7 +169,7 @@ func (client *stubWebSearchClient) search(
 	client.calls = append(client.calls, copiedQueries)
 	client.mu.Unlock()
 
-	return client.searchFn(ctx, queries)
+	return client.searchFn(ctx, loadedConfig, queries)
 }
 
 func newStubChatClient(
@@ -62,7 +182,7 @@ func newStubChatClient(
 }
 
 func newStubWebSearchClient(
-	searchFn func(context.Context, []string) ([]webSearchResult, error),
+	searchFn func(context.Context, config, []string) ([]webSearchResult, error),
 ) *stubWebSearchClient {
 	client := new(stubWebSearchClient)
 	client.searchFn = searchFn
@@ -346,6 +466,7 @@ func TestMaybeAugmentConversationWithWebSearchAddsResultsWhenNeeded(t *testing.T
 
 	webSearch := newStubWebSearchClient(func(
 		_ context.Context,
+		_ config,
 		queries []string,
 	) ([]webSearchResult, error) {
 		return []webSearchResult{
@@ -435,6 +556,7 @@ func TestMaybeAugmentConversationWithWebSearchSkipsWhenNotNeeded(t *testing.T) {
 
 	webSearch := newStubWebSearchClient(func(
 		_ context.Context,
+		_ config,
 		_ []string,
 	) ([]webSearchResult, error) {
 		t.Fatal("expected web search to be skipped")
@@ -486,6 +608,7 @@ func TestMaybeAugmentConversationWithWebSearchFallsBackOnSearchError(t *testing.
 
 	webSearch := newStubWebSearchClient(func(
 		_ context.Context,
+		_ config,
 		_ []string,
 	) ([]webSearchResult, error) {
 		return nil, errSearchBackendUnavailable
@@ -581,7 +704,7 @@ func TestExaSearchClientSearchRunsQueriesConcurrentlyAndKeepsOrder(t *testing.T)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	results, err := client.search(ctx, []string{"alpha", "beta"})
+	results, err := client.search(ctx, testSearchConfig(), []string{"alpha", "beta"})
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
@@ -597,6 +720,246 @@ func TestExaSearchClientSearchRunsQueriesConcurrentlyAndKeepsOrder(t *testing.T)
 	if results[1].Query != "beta" || results[1].Text != "result for beta" {
 		t.Fatalf("unexpected second result: %#v", results[1])
 	}
+}
+
+func TestRoutedWebSearchClientFallsBackToTavilyWhenMCPFails(t *testing.T) {
+	t.Parallel()
+
+	exaClient := newStubWebSearchClient(func(
+		_ context.Context,
+		_ config,
+		_ []string,
+	) ([]webSearchResult, error) {
+		return nil, errSearchBackendUnavailable
+	})
+	tavilyClient := newStubWebSearchClient(func(
+		_ context.Context,
+		_ config,
+		queries []string,
+	) ([]webSearchResult, error) {
+		return []webSearchResult{
+			{
+				Query: queries[0],
+				Text:  "Title: Tavily Source\nURL: https://example.com/fallback\nText: fallback result",
+			},
+		}, nil
+	})
+
+	client := routedWebSearchClient{
+		mcp:    exaClient,
+		tavily: tavilyClient,
+	}
+
+	results, err := client.search(context.Background(), testSearchConfig(), []string{"latest ai news"})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+
+	if len(exaClient.calls) != 1 {
+		t.Fatalf("unexpected Exa call count: %d", len(exaClient.calls))
+	}
+
+	if len(tavilyClient.calls) != 1 {
+		t.Fatalf("unexpected Tavily call count: %d", len(tavilyClient.calls))
+	}
+
+	if len(results) != 1 || results[0].Query != "latest ai news" {
+		t.Fatalf("unexpected fallback results: %#v", results)
+	}
+}
+
+func TestRoutedWebSearchClientUsesTavilyAsPrimaryWhenConfigured(t *testing.T) {
+	t.Parallel()
+
+	mcpClient := newStubWebSearchClient(func(
+		_ context.Context,
+		_ config,
+		_ []string,
+	) ([]webSearchResult, error) {
+		return []webSearchResult{{Query: "latest ai news", Text: "mcp result"}}, nil
+	})
+	tavilyClient := newStubWebSearchClient(func(
+		_ context.Context,
+		_ config,
+		queries []string,
+	) ([]webSearchResult, error) {
+		return []webSearchResult{{Query: queries[0], Text: "tavily result"}}, nil
+	})
+
+	loadedConfig := testTavilySearchConfig()
+	loadedConfig.WebSearch.PrimaryProvider = webSearchProviderKindTavily
+
+	client := routedWebSearchClient{
+		mcp:    mcpClient,
+		tavily: tavilyClient,
+	}
+
+	results, err := client.search(context.Background(), loadedConfig, []string{"latest ai news"})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+
+	if len(tavilyClient.calls) != 1 {
+		t.Fatalf("unexpected Tavily call count: %d", len(tavilyClient.calls))
+	}
+
+	if len(mcpClient.calls) != 0 {
+		t.Fatalf("expected MCP to be skipped, got %d calls", len(mcpClient.calls))
+	}
+
+	if len(results) != 1 || results[0].Text != "tavily result" {
+		t.Fatalf("unexpected primary Tavily results: %#v", results)
+	}
+}
+
+func TestRoutedWebSearchClientFallsBackToMCPWhenTavilyFails(t *testing.T) {
+	t.Parallel()
+
+	mcpClient := newStubWebSearchClient(func(
+		_ context.Context,
+		_ config,
+		queries []string,
+	) ([]webSearchResult, error) {
+		return []webSearchResult{{Query: queries[0], Text: "mcp fallback result"}}, nil
+	})
+	tavilyClient := newStubWebSearchClient(func(
+		_ context.Context,
+		_ config,
+		_ []string,
+	) ([]webSearchResult, error) {
+		return nil, errSearchBackendUnavailable
+	})
+
+	loadedConfig := testTavilySearchConfig()
+	loadedConfig.WebSearch.PrimaryProvider = webSearchProviderKindTavily
+
+	client := routedWebSearchClient{
+		mcp:    mcpClient,
+		tavily: tavilyClient,
+	}
+
+	results, err := client.search(context.Background(), loadedConfig, []string{"latest ai news"})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+
+	if len(tavilyClient.calls) != 1 {
+		t.Fatalf("unexpected Tavily call count: %d", len(tavilyClient.calls))
+	}
+
+	if len(mcpClient.calls) != 1 {
+		t.Fatalf("unexpected MCP call count: %d", len(mcpClient.calls))
+	}
+
+	if len(results) != 1 || results[0].Text != "mcp fallback result" {
+		t.Fatalf("unexpected MCP fallback results: %#v", results)
+	}
+}
+
+func TestTavilySearchClientSearchRetriesConfiguredAPIKeys(t *testing.T) {
+	t.Parallel()
+
+	var (
+		requestsMu   sync.Mutex
+		authHeaders  []string
+		searchBodies []tavilySearchRequest
+	)
+
+	client, closeServer := newTavilySearchTestClient(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		request *http.Request,
+	) {
+		var body tavilySearchRequest
+
+		err := json.NewDecoder(request.Body).Decode(&body)
+		if err != nil {
+			t.Errorf("decode request body: %v", err)
+			responseWriter.WriteHeader(http.StatusBadRequest)
+
+			return
+		}
+
+		authHeader := request.Header.Get("Authorization")
+
+		requestsMu.Lock()
+
+		defer requestsMu.Unlock()
+
+		authHeaders = append(authHeaders, authHeader)
+		searchBodies = append(searchBodies, body)
+
+		switch authHeader {
+		case testTavilyPrimaryAuthHeader:
+			http.Error(responseWriter, "rate limited", http.StatusTooManyRequests)
+		case testTavilyBackupAuthHeader:
+			writeTavilySearchResponse(t, responseWriter, testTavilySearchSuccessResponse())
+		default:
+			http.Error(responseWriter, "unexpected api key", http.StatusUnauthorized)
+		}
+	}))
+	defer closeServer()
+
+	results, err := client.search(context.Background(), testTavilySearchConfig(), []string{"latest ai news"})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+
+	assertTavilyAuthHeaders(t, authHeaders)
+
+	if len(searchBodies) != 2 {
+		t.Fatalf("unexpected Tavily request count: %d", len(searchBodies))
+	}
+
+	assertTavilySearchRequest(t, searchBodies[0])
+
+	if len(results) != 1 {
+		t.Fatalf("unexpected result count: %d", len(results))
+	}
+
+	assertTavilyRawContentResult(t, results[0])
+}
+
+func TestTavilySearchClientSearchAttemptsAllKeysBeforeFailure(t *testing.T) {
+	t.Parallel()
+
+	var (
+		requestsMu  sync.Mutex
+		authHeaders []string
+	)
+
+	client, closeServer := newTavilySearchTestClient(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		request *http.Request,
+	) {
+		authHeader := request.Header.Get("Authorization")
+
+		requestsMu.Lock()
+
+		defer requestsMu.Unlock()
+
+		authHeaders = append(authHeaders, authHeader)
+
+		switch authHeader {
+		case testTavilyPrimaryAuthHeader:
+			http.Error(responseWriter, "invalid key", http.StatusUnauthorized)
+		case testTavilyBackupAuthHeader:
+			http.Error(responseWriter, "rate limited", http.StatusTooManyRequests)
+		default:
+			http.Error(responseWriter, "unexpected api key", http.StatusUnauthorized)
+		}
+	}))
+	defer closeServer()
+
+	_, err := client.search(context.Background(), testTavilySearchConfig(), []string{"latest ai news"})
+	if err == nil {
+		t.Fatal("expected Tavily search to fail after exhausting keys")
+	}
+
+	if !strings.Contains(err.Error(), "all configured Tavily API keys failed") {
+		t.Fatalf("unexpected Tavily error: %v", err)
+	}
+
+	assertTavilyAuthHeaders(t, authHeaders)
 }
 
 func TestFormatSearchSourcesMessageIncludesQueriesAndSources(t *testing.T) {
@@ -643,6 +1006,7 @@ func testSearchConfig() config {
 		"openai/main-model":    nil,
 		"openai/decider-model": nil,
 	}
+	loadedConfig.WebSearch.PrimaryProvider = webSearchProviderKindMCP
 	loadedConfig.ModelOrder = []string{"openai/main-model", "openai/decider-model"}
 	loadedConfig.SearchDeciderModel = "openai/decider-model"
 
@@ -652,6 +1016,7 @@ func testSearchConfig() config {
 func testGeminiSearchConfig() config {
 	loadedConfig := new(config)
 	loadedConfig.MaxImages = defaultMaxImages
+	loadedConfig.WebSearch.PrimaryProvider = webSearchProviderKindMCP
 
 	googleProvider := new(providerConfig)
 	googleProvider.Type = string(providerAPIKindGemini)

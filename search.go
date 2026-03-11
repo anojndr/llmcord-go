@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -133,7 +135,7 @@ type chatCompletionClient interface {
 }
 
 type webSearchClient interface {
-	search(ctx context.Context, queries []string) ([]webSearchResult, error)
+	search(ctx context.Context, loadedConfig config, queries []string) ([]webSearchResult, error)
 }
 
 type searchDecision struct {
@@ -161,10 +163,79 @@ type exaSearchClient struct {
 	httpClient *http.Client
 }
 
+type tavilySearchClient struct {
+	endpoint   string
+	httpClient *http.Client
+}
+
+type routedWebSearchClient struct {
+	mcp    webSearchClient
+	tavily webSearchClient
+}
+
+type tavilySearchRequest struct {
+	Query             string `json:"query"`
+	SearchDepth       string `json:"search_depth"`
+	MaxResults        int    `json:"max_results"`
+	IncludeRawContent string `json:"include_raw_content"`
+}
+
+type tavilySearchResponse struct {
+	Results []tavilySearchResponseResult `json:"results"`
+}
+
+type tavilySearchResponseResult struct {
+	Title      string `json:"title"`
+	URL        string `json:"url"`
+	Content    string `json:"content"`
+	RawContent string `json:"raw_content"`
+}
+
+type tavilyStatusError struct {
+	StatusCode int
+	Message    string
+	Err        error
+}
+
 func newExaSearchClient(httpClient *http.Client) exaSearchClient {
 	return exaSearchClient{
 		endpoint:   defaultExaMCPEndpoint,
 		httpClient: httpClient,
+	}
+}
+
+func newTavilySearchClient(httpClient *http.Client) tavilySearchClient {
+	return tavilySearchClient{
+		endpoint:   defaultTavilySearchEndpoint,
+		httpClient: httpClient,
+	}
+}
+
+func newWebSearchClient(httpClient *http.Client) routedWebSearchClient {
+	return routedWebSearchClient{
+		mcp:    newExaSearchClient(httpClient),
+		tavily: newTavilySearchClient(httpClient),
+	}
+}
+
+func (err tavilyStatusError) Error() string {
+	return err.Message
+}
+
+func (err tavilyStatusError) Unwrap() error {
+	if err.Err == nil {
+		return os.ErrInvalid
+	}
+
+	return err.Err
+}
+
+func (err tavilyStatusError) retryWithNextAPIKey() bool {
+	switch err.StatusCode {
+	case http.StatusUnauthorized, http.StatusForbidden, http.StatusTooManyRequests:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -192,7 +263,7 @@ func (instance *bot) maybeAugmentConversationWithWebSearch(
 		return conversation, nil, nil, nil
 	}
 
-	results, err := instance.webSearch.search(ctx, decision.Queries)
+	results, err := instance.webSearch.search(ctx, loadedConfig, decision.Queries)
 	if err != nil {
 		slog.Warn("run web search", "queries", decision.Queries, "error", err)
 
@@ -224,6 +295,52 @@ func cloneSearchMetadata(metadata *searchMetadata) *searchMetadata {
 	}
 
 	return newSearchMetadata(metadata.Queries, metadata.Results)
+}
+
+func (client routedWebSearchClient) search(
+	ctx context.Context,
+	loadedConfig config,
+	queries []string,
+) ([]webSearchResult, error) {
+	primaryProvider, fallbackProvider := loadedConfig.WebSearch.providersInOrder()
+
+	results, err := client.searchWithProvider(ctx, loadedConfig, primaryProvider, queries)
+	if err == nil {
+		return results, nil
+	}
+
+	fallbackResults, fallbackErr := client.searchWithProvider(
+		ctx,
+		loadedConfig,
+		fallbackProvider,
+		queries,
+	)
+	if fallbackErr == nil {
+		return fallbackResults, nil
+	}
+
+	return nil, fmt.Errorf(
+		"search with %s failed, and %s fallback failed: %w",
+		primaryProvider.displayName(),
+		fallbackProvider.displayName(),
+		errors.Join(err, fallbackErr),
+	)
+}
+
+func (client routedWebSearchClient) searchWithProvider(
+	ctx context.Context,
+	loadedConfig config,
+	provider webSearchProviderKind,
+	queries []string,
+) ([]webSearchResult, error) {
+	switch provider {
+	case webSearchProviderKindMCP:
+		return client.mcp.search(ctx, loadedConfig, queries)
+	case webSearchProviderKindTavily:
+		return client.tavily.search(ctx, loadedConfig, queries)
+	default:
+		return nil, fmt.Errorf("unsupported web search provider %q: %w", provider, os.ErrInvalid)
+	}
 }
 
 func (instance *bot) decideWebSearch(
@@ -772,11 +889,42 @@ func extractSearchSources(resultText string) []searchSource {
 
 func (client exaSearchClient) search(
 	ctx context.Context,
+	_ config,
 	queries []string,
 ) ([]webSearchResult, error) {
 	searchContext, cancel := context.WithTimeout(ctx, webSearchTimeout)
 	defer cancel()
 
+	return searchQueriesConcurrently(searchContext, cancel, queries, client.searchQuery)
+}
+
+func (client tavilySearchClient) search(
+	ctx context.Context,
+	loadedConfig config,
+	queries []string,
+) ([]webSearchResult, error) {
+	apiKeys := loadedConfig.WebSearch.Tavily.apiKeysForAttempts()
+	if len(apiKeys) == 0 {
+		return nil, fmt.Errorf("tavily fallback is not configured: %w", os.ErrNotExist)
+	}
+
+	searchContext, cancel := context.WithTimeout(ctx, webSearchTimeout)
+	defer cancel()
+
+	return searchQueriesConcurrently(searchContext, cancel, queries, func(
+		queryContext context.Context,
+		query string,
+	) (webSearchResult, error) {
+		return client.searchQuery(queryContext, apiKeys, query)
+	})
+}
+
+func searchQueriesConcurrently(
+	ctx context.Context,
+	cancel context.CancelFunc,
+	queries []string,
+	searchQuery func(context.Context, string) (webSearchResult, error),
+) ([]webSearchResult, error) {
 	results := make([]webSearchResult, len(queries))
 	errorChannel := make(chan error, len(queries))
 
@@ -788,7 +936,7 @@ func (client exaSearchClient) search(
 		go func(index int, query string) {
 			defer waitGroup.Done()
 
-			result, err := client.searchQuery(searchContext, query)
+			result, err := searchQuery(ctx, query)
 			if err != nil {
 				cancel()
 
@@ -856,6 +1004,185 @@ func (client exaSearchClient) searchQuery(
 		Query: query,
 		Text:  resultText,
 	}, nil
+}
+
+func (client tavilySearchClient) searchQuery(
+	ctx context.Context,
+	apiKeys []string,
+	query string,
+) (webSearchResult, error) {
+	attemptErrors := make([]error, 0, len(apiKeys))
+
+	for index, apiKey := range apiKeys {
+		result, err := client.searchQueryOnce(ctx, query, apiKey)
+		if err == nil {
+			return result, nil
+		}
+
+		attemptErrors = append(attemptErrors, err)
+		if !shouldRetryWithNextAPIKey(err) || index == len(apiKeys)-1 {
+			if len(attemptErrors) == 1 {
+				return webSearchResult{}, err
+			}
+
+			if !shouldRetryWithNextAPIKey(err) {
+				return webSearchResult{}, err
+			}
+
+			return webSearchResult{}, fmt.Errorf(
+				"all configured Tavily API keys failed for %q: %w",
+				query,
+				errors.Join(attemptErrors...),
+			)
+		}
+	}
+
+	return webSearchResult{}, fmt.Errorf("missing Tavily API key attempt for %q: %w", query, os.ErrInvalid)
+}
+
+func (client tavilySearchClient) searchQueryOnce(
+	ctx context.Context,
+	query string,
+	apiKey string,
+) (webSearchResult, error) {
+	requestBody := tavilySearchRequest{
+		Query:             query,
+		SearchDepth:       "advanced",
+		MaxResults:        maxSourcesPerQuery,
+		IncludeRawContent: "text",
+	}
+
+	requestBytes, err := json.Marshal(requestBody)
+	if err != nil {
+		return webSearchResult{}, fmt.Errorf("marshal Tavily search request for %q: %w", query, err)
+	}
+
+	httpRequest, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodPost,
+		client.endpoint,
+		bytes.NewReader(requestBytes),
+	)
+	if err != nil {
+		return webSearchResult{}, fmt.Errorf("create Tavily search request for %q: %w", query, err)
+	}
+
+	httpRequest.Header.Set("Accept", "application/json")
+	httpRequest.Header.Set("Authorization", "Bearer "+strings.TrimSpace(apiKey))
+	httpRequest.Header.Set("Content-Type", "application/json")
+
+	httpResponse, err := client.httpClient.Do(httpRequest)
+	if err != nil {
+		return webSearchResult{}, fmt.Errorf("send Tavily search request for %q: %w", query, err)
+	}
+
+	defer func() {
+		_ = httpResponse.Body.Close()
+	}()
+
+	if httpResponse.StatusCode < http.StatusOK || httpResponse.StatusCode >= http.StatusMultipleChoices {
+		responseBody, readErr := io.ReadAll(httpResponse.Body)
+		if readErr != nil {
+			return webSearchResult{}, fmt.Errorf(
+				"read Tavily error response for %q after status %d: %w",
+				query,
+				httpResponse.StatusCode,
+				readErr,
+			)
+		}
+
+		return webSearchResult{}, tavilyStatusError{
+			StatusCode: httpResponse.StatusCode,
+			Message: fmt.Sprintf(
+				"Tavily search request failed for %q with status %d: %s",
+				query,
+				httpResponse.StatusCode,
+				strings.TrimSpace(string(responseBody)),
+			),
+			Err: os.ErrInvalid,
+		}
+	}
+
+	var response tavilySearchResponse
+
+	err = json.NewDecoder(httpResponse.Body).Decode(&response)
+	if err != nil {
+		return webSearchResult{}, fmt.Errorf("decode Tavily search response for %q: %w", query, err)
+	}
+
+	return webSearchResult{
+		Query: query,
+		Text:  formatTavilySearchResultText(response.Results),
+	}, nil
+}
+
+func formatTavilySearchResultText(results []tavilySearchResponseResult) string {
+	formattedResults := make([]string, 0, len(results))
+
+	for _, result := range results {
+		lines := make([]string, 0, tavilyResultFieldCapacity)
+
+		title := strings.TrimSpace(result.Title)
+		if title != "" {
+			lines = append(lines, "Title: "+title)
+		}
+
+		url := strings.TrimSpace(result.URL)
+		if url != "" {
+			lines = append(lines, "URL: "+url)
+		}
+
+		snippet := formatTavilyMultilineField("Text", result.Content)
+		if snippet != "" {
+			lines = append(lines, snippet)
+		}
+
+		rawContent := formatTavilyMultilineField("Raw Content", result.RawContent)
+		if rawContent != "" {
+			lines = append(lines, rawContent)
+		}
+
+		if len(lines) == 0 {
+			continue
+		}
+
+		formattedResults = append(formattedResults, strings.Join(lines, "\n"))
+	}
+
+	return strings.Join(formattedResults, "\n\n")
+}
+
+func formatTavilyMultilineField(label string, value string) string {
+	trimmedValue := strings.TrimSpace(value)
+	if trimmedValue == "" {
+		return ""
+	}
+
+	lines := strings.Split(trimmedValue, "\n")
+	for index, line := range lines {
+		lines[index] = "| " + strings.TrimSpace(line)
+	}
+
+	return label + ":\n" + strings.Join(lines, "\n")
+}
+
+func (settings webSearchConfig) providersInOrder() (webSearchProviderKind, webSearchProviderKind) {
+	if settings.PrimaryProvider == webSearchProviderKindTavily {
+		return webSearchProviderKindTavily, webSearchProviderKindMCP
+	}
+
+	return webSearchProviderKindMCP, webSearchProviderKindTavily
+}
+
+func (provider webSearchProviderKind) displayName() string {
+	switch provider {
+	case webSearchProviderKindTavily:
+		return "Tavily"
+	case webSearchProviderKindMCP:
+		return "Exa MCP"
+	default:
+		return string(provider)
+	}
 }
 
 func mcpResultText(result *mcp.CallToolResult) string {
