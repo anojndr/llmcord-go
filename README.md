@@ -2,7 +2,7 @@
 
 `llmcord-go` is a Go rewrite of [`jakobdylanc/llmcord`](https://github.com/jakobdylanc/llmcord). Credit for the original design, behavior, and workflow goes to that project.
 
-This bot turns Discord into a reply-chain frontend for OpenAI-compatible LLM APIs plus native Gemini models via `google.golang.org/genai`, including hosted providers and local servers such as Ollama, LM Studio, and vLLM.
+This bot turns Discord into a reply-chain frontend for OpenAI-compatible LLM APIs, OpenAI Codex Responses providers, plus native Gemini models via `google.golang.org/genai`, including hosted providers and local servers such as Ollama, LM Studio, and vLLM.
 
 ## Features
 
@@ -36,7 +36,7 @@ This bot turns Discord into a reply-chain frontend for OpenAI-compatible LLM API
    cp config-example.yaml config.yaml
    ```
 
-3. Configure your Discord bot token, client ID, providers, and models in `config.yaml`. Use `type: gemini` for Gemini providers.
+3. Configure your Discord bot token, client ID, providers, and models in `config.yaml`. Use `type: gemini` for Gemini providers and `type: openai-codex` for ChatGPT Codex providers.
 
 4. Run the bot.
 
@@ -49,6 +49,12 @@ This bot turns Discord into a reply-chain frontend for OpenAI-compatible LLM API
    ```bash
    docker compose up --build
    ```
+
+To log in to ChatGPT and print a copyable Codex API key for `providers.<name>.api_key`, run:
+
+```bash
+go run ./cmd/chatgpt-api-key
+```
 
 ## Configuration
 
@@ -72,7 +78,7 @@ The config schema stays close to the original Python project.
 
 | Setting | Description |
 | --- | --- |
-| `providers` | Provider definitions keyed by provider name. OpenAI-compatible providers use `base_url`. Gemini providers use `type: gemini` and the native `google.golang.org/genai` client; `base_url` is optional and can override the Gemini API endpoint or version. Supports optional `api_key`, `extra_headers`, `extra_query`, and `extra_body`. |
+| `providers` | Provider definitions keyed by provider name. OpenAI-compatible providers use `base_url`. Gemini providers use `type: gemini` and the native `google.golang.org/genai` client; `base_url` is optional and can override the Gemini API endpoint or version. OpenAI Codex providers use `type: openai-codex`; `base_url` is optional and defaults to `https://chatgpt.com/backend-api`. Supports optional `api_key`, `extra_headers`, `extra_query`, and `extra_body`. |
 | `models` | Ordered list of `<provider>/<model>` entries. The first entry is the startup default. Append `:vision` to enable image support heuristics. |
 | `search_decider_model` | Optional `<provider>/<model>` entry used for deciding whether web search is required. Defaults to the first configured model. |
 | `media_analysis_model` | Optional `<provider>/<model>` entry used for Gemini preprocessing of audio/video attachments before non-Gemini replies. Must reference a configured Gemini model. If omitted, the bot falls back to `search_decider_model` when that model is Gemini, or the first configured Gemini model. |
@@ -101,5 +107,6 @@ golangci-lint run --default=all
 - When a user message contains one or more YouTube URLs, the bot fetches each video concurrently over plain HTTP and appends the extracted transcript, title, channel name, and top comments to the latest user message before the main completion request.
 - When a user message contains one or more Reddit thread URLs, the bot fetches each thread concurrently from the corresponding `.json` URL over a dedicated HTTP/1.1 transport, then appends the post metadata, post body, and nested comments to the latest user message before the main completion request.
 - When the search decider requires web search, the bot queries Exa MCP at `https://mcp.exa.ai/mcp` without requiring an API key by default.
-- The implementation targets chat-completions-style OpenAI-compatible APIs and native Gemini GenerateContent streaming.
+- OpenAI Codex providers stream through the ChatGPT Codex Responses API. If `extra_headers.chatgpt-account-id` is not set, the bot derives it from the JWT in `api_key`.
+- The implementation targets chat-completions-style OpenAI-compatible APIs, OpenAI Codex Responses streaming, and native Gemini GenerateContent streaming.
 - If you need the original single-file Python implementation, use [`jakobdylanc/llmcord`](https://github.com/jakobdylanc/llmcord).

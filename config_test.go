@@ -195,6 +195,36 @@ models:
 	}
 }
 
+func TestLoadConfigAllowsOpenAICodexProviderWithoutBaseURL(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	configText := `
+bot_token: discord-token
+providers:
+  codex:
+    type: openai-codex
+    api_key: test-token
+models:
+  codex/gpt-5.2-codex:
+`
+
+	err := os.WriteFile(configPath, []byte(configText), 0o600)
+	if err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	loadedConfig, err := loadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	if loadedConfig.Providers["codex"].apiKind() != providerAPIKindOpenAICodex {
+		t.Fatalf("unexpected provider API kind: %q", loadedConfig.Providers["codex"].apiKind())
+	}
+}
+
 func TestLoadConfigRejectsUnsupportedProviderType(t *testing.T) {
 	t.Parallel()
 
