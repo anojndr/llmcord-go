@@ -56,6 +56,12 @@ providers:
     base_url: https://api.openai.com/v1
     api_key: 
 
+  openai-codex:
+    type: openai-codex
+    # Optional:
+    # base_url: https://chatgpt.com/backend-api
+    api_key:
+
   openrouter:
     base_url: https://openrouter.ai/api/v1
     api_key: 
@@ -78,6 +84,10 @@ models:
   google/gemini-3.1-flash-lite-preview:
 
   openai/gpt-5:
+    reasoning_effort: high
+    verbosity: medium
+
+  openai-codex/gpt-5.2-codex:
     reasoning_effort: high
     verbosity: medium
 
