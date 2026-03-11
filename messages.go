@@ -167,6 +167,9 @@ func (instance *bot) respondToMessage(
 	message *discordgo.Message,
 	providerSlashModel string,
 ) error {
+	stopTyping := instance.startTyping(ctx, message.ChannelID)
+	defer stopTyping()
+
 	messages, warnings, err := instance.buildMessageConversation(
 		ctx,
 		loadedConfig,

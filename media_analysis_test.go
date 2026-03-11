@@ -9,7 +9,10 @@ import (
 	"github.com/bwmarrin/discordgo"
 )
 
-const testOpenAIBaseURL = "https://api.example.com/v1"
+const (
+	testOpenAIBaseURL       = "https://api.example.com/v1"
+	testSearchDeciderModel2 = "openai/decider-model"
+)
 
 func TestAppendMediaAnalysesToConversationPreservesImages(t *testing.T) {
 	t.Parallel()
@@ -268,16 +271,16 @@ func testMediaAnalysisConfig() config {
 		"google": *geminiProvider,
 	}
 	loadedConfig.Models = map[string]map[string]any{
-		"openai/gpt-5":         nil,
-		"openai/decider-model": nil,
-		testMediaAnalysisModel: nil,
+		"openai/gpt-5":          nil,
+		testSearchDeciderModel2: nil,
+		testMediaAnalysisModel:  nil,
 	}
 	loadedConfig.ModelOrder = []string{
 		"openai/gpt-5",
 		testMediaAnalysisModel,
-		"openai/decider-model",
+		testSearchDeciderModel2,
 	}
-	loadedConfig.SearchDeciderModel = "openai/decider-model"
+	loadedConfig.SearchDeciderModel = testSearchDeciderModel2
 	loadedConfig.MediaAnalysisModel = testMediaAnalysisModel
 
 	return *loadedConfig
