@@ -111,6 +111,7 @@ type rawConfig struct {
 	Permissions        permissionsConfig            `yaml:"permissions"`
 	Providers          map[string]rawProviderConfig `yaml:"providers"`
 	Models             map[string]map[string]any    `yaml:"models"`
+	ChannelModelLocks  map[string]scalarString      `yaml:"channel_model_locks"`
 	SearchDeciderModel scalarString                 `yaml:"search_decider_model"`
 	MediaAnalysisModel scalarString                 `yaml:"media_analysis_model"`
 	SystemPrompt       string                       `yaml:"system_prompt"`
@@ -129,6 +130,7 @@ type config struct {
 	Providers          map[string]providerConfig
 	Models             map[string]map[string]any
 	ModelOrder         []string
+	ChannelModelLocks  map[string]string
 	SearchDeciderModel string
 	MediaAnalysisModel string
 	SystemPrompt       string
@@ -185,6 +187,7 @@ func loadConfig(filename string) (config, error) {
 	}
 
 	mediaAnalysisModel := strings.TrimSpace(string(rawLoadedConfig.MediaAnalysisModel))
+	channelModelLocks := normalizeStringScalarMap(rawLoadedConfig.ChannelModelLocks)
 
 	loadedConfig := config{
 		BotToken:           string(rawLoadedConfig.BotToken),
@@ -199,6 +202,7 @@ func loadConfig(filename string) (config, error) {
 		Providers:          loadedProviders,
 		Models:             rawLoadedConfig.Models,
 		ModelOrder:         modelOrder,
+		ChannelModelLocks:  channelModelLocks,
 		SearchDeciderModel: searchDeciderModel,
 		MediaAnalysisModel: mediaAnalysisModel,
 		SystemPrompt:       rawLoadedConfig.SystemPrompt,
@@ -253,6 +257,19 @@ func intValueOrDefault(value *int, fallback int) int {
 	return *value
 }
 
+func normalizeStringScalarMap(rawValues map[string]scalarString) map[string]string {
+	if len(rawValues) == 0 {
+		return nil
+	}
+
+	values := make(map[string]string, len(rawValues))
+	for key, value := range rawValues {
+		values[strings.TrimSpace(key)] = strings.TrimSpace(string(value))
+	}
+
+	return values
+}
+
 func validateConfig(loadedConfig config) error {
 	if strings.TrimSpace(loadedConfig.BotToken) == "" {
 		return fmt.Errorf("bot_token is required: %w", os.ErrInvalid)
@@ -299,6 +316,11 @@ func validateConfig(loadedConfig config) error {
 		)
 	}
 
+	err := validateChannelModelLocks(loadedConfig)
+	if err != nil {
+		return err
+	}
+
 	if strings.TrimSpace(loadedConfig.MediaAnalysisModel) != "" {
 		if !loadedConfig.hasModel(loadedConfig.MediaAnalysisModel) {
 			return fmt.Errorf(
@@ -332,6 +354,25 @@ func validateConfig(loadedConfig config) error {
 	return nil
 }
 
+func validateChannelModelLocks(loadedConfig config) error {
+	for channelID, modelName := range loadedConfig.ChannelModelLocks {
+		if channelID == "" {
+			return fmt.Errorf("channel_model_locks contains an empty channel id: %w", os.ErrInvalid)
+		}
+
+		if !loadedConfig.hasModel(modelName) {
+			return fmt.Errorf(
+				"channel_model_locks %q references undefined model %q: %w",
+				channelID,
+				modelName,
+				os.ErrNotExist,
+			)
+		}
+	}
+
+	return nil
+}
+
 func (loadedConfig config) firstModel() string {
 	if len(loadedConfig.ModelOrder) == 0 {
 		return ""
@@ -344,6 +385,17 @@ func (loadedConfig config) hasModel(modelName string) bool {
 	_, ok := loadedConfig.Models[modelName]
 
 	return ok
+}
+
+func (loadedConfig config) lockedModelForChannelIDs(channelIDs []string) (string, bool) {
+	for _, channelID := range channelIDs {
+		modelName, ok := loadedConfig.ChannelModelLocks[channelID]
+		if ok {
+			return modelName, true
+		}
+	}
+
+	return "", false
 }
 
 func (provider providerConfig) apiKind() providerAPIKind {

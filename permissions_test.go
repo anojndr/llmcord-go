@@ -94,6 +94,7 @@ func testPermissionsConfig() config {
 		Providers:          nil,
 		Models:             nil,
 		ModelOrder:         nil,
+		ChannelModelLocks:  nil,
 		SearchDeciderModel: "",
 		MediaAnalysisModel: "",
 		SystemPrompt:       "",

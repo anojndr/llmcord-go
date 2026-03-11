@@ -54,7 +54,7 @@ func (instance *bot) handleMessageCreate(
 		return
 	}
 
-	currentModel := instance.currentModelForConfig(loadedConfig)
+	currentModel := instance.currentModelForChannelIDs(loadedConfig, channelIDs)
 
 	err = instance.respondToMessage(
 		context.Background(),
@@ -111,44 +111,54 @@ func messageRoleIDs(message *discordgo.Message) []string {
 }
 
 func (instance *bot) messageChannelIDs(message *discordgo.Message) ([]string, error) {
+	return instance.channelContextIDs(message.ChannelID, message.GuildID)
+}
+
+func (instance *bot) channelContextIDs(channelID string, guildID string) ([]string, error) {
+	channelIDs := make([]string, 0, smallMapCapacity)
 	channelIDSet := make(map[string]struct{}, smallMapCapacity)
-	channelIDSet[message.ChannelID] = struct{}{}
+	channelIDs = appendUniqueChannelID(channelIDs, channelIDSet, channelID)
 
-	if isDirectMessage(message) {
-		return channelIDSetKeys(channelIDSet), nil
+	if guildID == "" {
+		return channelIDs, nil
 	}
 
-	channel, err := instance.channelByID(message.ChannelID)
+	channel, err := instance.channelByID(channelID)
 	if err != nil {
-		return channelIDSetKeys(channelIDSet), fmt.Errorf("load channel %s: %w", message.ChannelID, err)
+		return channelIDs, fmt.Errorf("load channel %s: %w", channelID, err)
 	}
 
-	channelIDSet[channel.ID] = struct{}{}
-	if channel.ParentID != "" {
-		channelIDSet[channel.ParentID] = struct{}{}
-	}
+	channelIDs = appendUniqueChannelID(channelIDs, channelIDSet, channel.ID)
+	channelIDs = appendUniqueChannelID(channelIDs, channelIDSet, channel.ParentID)
 
 	if channel.IsThread() && channel.ParentID != "" {
 		parentChannel, parentErr := instance.channelByID(channel.ParentID)
 		if parentErr != nil {
-			return channelIDSetKeys(channelIDSet), fmt.Errorf("load parent channel %s: %w", channel.ParentID, parentErr)
+			return channelIDs, fmt.Errorf("load parent channel %s: %w", channel.ParentID, parentErr)
 		}
 
-		if parentChannel.ParentID != "" {
-			channelIDSet[parentChannel.ParentID] = struct{}{}
-		}
+		channelIDs = appendUniqueChannelID(channelIDs, channelIDSet, parentChannel.ParentID)
 	}
 
-	return channelIDSetKeys(channelIDSet), nil
+	return channelIDs, nil
 }
 
-func channelIDSetKeys(channelIDSet map[string]struct{}) []string {
-	channelIDs := make([]string, 0, len(channelIDSet))
-	for channelID := range channelIDSet {
-		channelIDs = append(channelIDs, channelID)
+func appendUniqueChannelID(
+	channelIDs []string,
+	channelIDSet map[string]struct{},
+	channelID string,
+) []string {
+	if channelID == "" {
+		return channelIDs
 	}
 
-	return channelIDs
+	if _, ok := channelIDSet[channelID]; ok {
+		return channelIDs
+	}
+
+	channelIDSet[channelID] = struct{}{}
+
+	return append(channelIDs, channelID)
 }
 
 func (instance *bot) respondToMessage(
