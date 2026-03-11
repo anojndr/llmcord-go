@@ -1,11 +1,19 @@
 package main
 
 import (
+	"context"
+	"io"
+	"net/http"
 	"slices"
+	"strings"
+	"sync/atomic"
 	"testing"
 
+	"github.com/bwmarrin/discordgo"
 	"google.golang.org/genai"
 )
+
+const testSearchDeciderModel = "openai/decider-model"
 
 func TestBuildChatCompletionRequestPreservesConfiguredModelForDisplay(t *testing.T) {
 	t.Parallel()
@@ -247,4 +255,254 @@ func TestBuildChatCompletionRequestNormalizesOpenAICodexReasoningAlias(t *testin
 	if originalReasoningConfig["effort"] != "high" {
 		t.Fatalf("unexpected mutation of original reasoning config: %#v", originalReasoningConfig)
 	}
+}
+
+func TestRespondToMessageStartsTypingBeforeAttachmentProcessing(t *testing.T) {
+	t.Parallel()
+
+	const (
+		botUserID          = "bot-user"
+		channelID          = "channel-1"
+		userID             = "user-1"
+		sourceMessageID    = "user-message-1"
+		assistantMessageID = "assistant-message-1"
+		attachmentURL      = "https://attachments.example.com/context.txt"
+	)
+
+	assistantMessage := newAssistantResponseMessage(
+		assistantMessageID,
+		channelID,
+		botUserID,
+		nil,
+	)
+	fixture := newRespondToMessageTypingFixture(
+		t,
+		channelID,
+		botUserID,
+		userID,
+		sourceMessageID,
+		attachmentURL,
+		assistantMessage,
+	)
+
+	err := fixture.instance.respondToMessage(
+		context.Background(),
+		fixture.loadedConfig,
+		fixture.sourceMessage,
+		"openai/main-model",
+	)
+	if err != nil {
+		t.Fatalf("respond to message: %v", err)
+	}
+
+	if !fixture.typingSent.Load() {
+		t.Fatal("expected typing indicator to be sent")
+	}
+
+	if !fixture.attachmentFetched.Load() {
+		t.Fatal("expected attachment download during conversation preprocessing")
+	}
+}
+
+type respondToMessageTypingFixture struct {
+	instance          *bot
+	loadedConfig      config
+	sourceMessage     *discordgo.Message
+	typingSent        *atomic.Bool
+	attachmentFetched *atomic.Bool
+}
+
+func newRespondToMessageTypingFixture(
+	t *testing.T,
+	channelID string,
+	botUserID string,
+	userID string,
+	sourceMessageID string,
+	attachmentURL string,
+	assistantMessage *discordgo.Message,
+) respondToMessageTypingFixture {
+	t.Helper()
+
+	sourceMessage := newPromptMessage(sourceMessageID, channelID, userID, botUserID)
+	sourceMessage.Attachments = []*discordgo.MessageAttachment{
+		{
+			ContentType: "text/plain",
+			Filename:    "context.txt",
+			URL:         attachmentURL,
+		},
+	}
+	assistantMessage.MessageReference = sourceMessage.Reference()
+
+	typingSent := new(atomic.Bool)
+	attachmentFetched := new(atomic.Bool)
+	probe := typingPreprocessingProbe{
+		typingSent:        typingSent,
+		attachmentFetched: attachmentFetched,
+	}
+
+	session := newRespondToMessageTypingSession(
+		t,
+		channelID,
+		botUserID,
+		assistantMessage,
+		probe,
+	)
+	chatClient := newRespondToMessageTypingChatClient(t, probe)
+	attachmentClient := newRespondToMessageAttachmentClient(t, attachmentURL, probe)
+
+	instance := new(bot)
+	instance.session = session
+	instance.httpClient = attachmentClient
+	instance.nodes = newMessageNodeStore(10)
+	instance.chatCompletions = chatClient
+
+	loadedConfig := testSearchConfig()
+	loadedConfig.MaxText = defaultMaxText
+	loadedConfig.MaxImages = defaultMaxImages
+	loadedConfig.MaxMessages = defaultMaxMessages
+	loadedConfig.UsePlainResponses = true
+
+	return respondToMessageTypingFixture{
+		instance:          instance,
+		loadedConfig:      loadedConfig,
+		sourceMessage:     sourceMessage,
+		typingSent:        typingSent,
+		attachmentFetched: attachmentFetched,
+	}
+}
+
+type typingPreprocessingProbe struct {
+	typingSent        *atomic.Bool
+	attachmentFetched *atomic.Bool
+}
+
+func newRespondToMessageTypingSession(
+	t *testing.T,
+	channelID string,
+	botUserID string,
+	assistantMessage *discordgo.Message,
+	probe typingPreprocessingProbe,
+) *discordgo.Session {
+	t.Helper()
+
+	session, err := discordgo.New("Bot discord-token")
+	if err != nil {
+		t.Fatalf("create discord session: %v", err)
+	}
+
+	session.State.User = newDiscordUser(botUserID, true)
+
+	channel := new(discordgo.Channel)
+	channel.ID = channelID
+	channel.Type = discordgo.ChannelTypeDM
+
+	err = session.State.ChannelAdd(channel)
+	if err != nil {
+		t.Fatalf("add channel to state: %v", err)
+	}
+
+	client := new(http.Client)
+	client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		t.Helper()
+
+		if request.Method == http.MethodPost &&
+			request.URL.Path == "/api/v9/channels/"+channelID+"/typing" {
+			probe.typingSent.Store(true)
+
+			return newNoContentResponse(request), nil
+		}
+
+		if request.Method == http.MethodPost &&
+			request.URL.Path == "/api/v9/channels/"+channelID+"/messages" {
+			if !probe.typingSent.Load() {
+				t.Fatal("expected typing indicator before sending the response message")
+			}
+
+			return newJSONResponse(t, request, assistantMessage), nil
+		}
+
+		t.Fatalf("unexpected request: %s %s", request.Method, request.URL.Path)
+
+		return nil, errUnexpectedTestRequest
+	})
+	session.Client = client
+
+	return session
+}
+
+func newRespondToMessageTypingChatClient(
+	t *testing.T,
+	probe typingPreprocessingProbe,
+) *stubChatCompletionClient {
+	t.Helper()
+
+	return newStubChatClient(func(
+		_ context.Context,
+		request chatCompletionRequest,
+		handle func(streamDelta) error,
+	) error {
+		t.Helper()
+
+		if !probe.typingSent.Load() {
+			t.Fatal("expected typing indicator before chat completion")
+		}
+
+		if request.ConfiguredModel == testSearchDeciderModel {
+			return handle(newStreamDelta(`{"needs_search":false}`, ""))
+		}
+
+		if request.ConfiguredModel != "openai/main-model" {
+			t.Fatalf("unexpected configured model: %q", request.ConfiguredModel)
+		}
+
+		if !probe.attachmentFetched.Load() {
+			t.Fatal("expected attachment preprocessing before the main completion request")
+		}
+
+		err := handle(newStreamDelta("assistant reply", ""))
+		if err != nil {
+			return err
+		}
+
+		return handle(newStreamDelta("", finishReasonStop))
+	})
+}
+
+func newRespondToMessageAttachmentClient(
+	t *testing.T,
+	attachmentURL string,
+	probe typingPreprocessingProbe,
+) *http.Client {
+	t.Helper()
+
+	client := new(http.Client)
+	client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		t.Helper()
+
+		if request.Method != http.MethodGet || request.URL.String() != attachmentURL {
+			t.Fatalf("unexpected attachment request: %s %s", request.Method, request.URL.String())
+		}
+
+		probe.attachmentFetched.Store(true)
+
+		if !probe.typingSent.Load() {
+			t.Fatal("expected typing indicator before attachment download")
+		}
+
+		return newTextResponse(request, "attachment context"), nil
+	})
+
+	return client
+}
+
+func newTextResponse(request *http.Request, body string) *http.Response {
+	response := new(http.Response)
+	response.Status = "200 OK"
+	response.StatusCode = http.StatusOK
+	response.Body = io.NopCloser(strings.NewReader(body))
+	response.ContentLength = int64(len(body))
+	response.Header = make(http.Header)
+	response.Request = request
+
+	return response
 }

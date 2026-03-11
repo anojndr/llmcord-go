@@ -136,9 +136,6 @@ func (instance *bot) generateAndSendResponse(
 	tracker := newResponseTracker(sourceMessage, searchMetadata, request.ConfiguredModel)
 	defer tracker.releaseJoined(&accumulator)
 
-	stopTyping := instance.startTyping(ctx, sourceMessage.ChannelID)
-	defer stopTyping()
-
 	var finishReason string
 
 	lastRenderTime := time.Time{}
