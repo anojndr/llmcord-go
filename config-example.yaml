@@ -32,6 +32,10 @@ providers:
   # Remote providers:
   azure-openai:
     base_url: https://<resource name>.openai.azure.com/openai/deployments/<deployment name>
+    # `api_key` also accepts a YAML list. Keys are tried in order until one works.
+    # api_key:
+    #   - primary-key
+    #   - backup-key
     api_key: 
     extra_query:
       api-version: 2024-12-01-preview

@@ -31,6 +31,7 @@ type providerRequestConfig struct {
 	APIKind      providerAPIKind
 	BaseURL      string
 	APIKey       string
+	APIKeys      []string
 	ExtraHeaders map[string]any
 	ExtraQuery   map[string]any
 	ExtraBody    map[string]any
@@ -77,7 +78,7 @@ func (client openAIClient) streamChatCompletion(
 	}
 
 	httpRequest.Header.Set("Accept", "text/event-stream")
-	httpRequest.Header.Set("Authorization", "Bearer "+openAIAPIKey(request.Provider.APIKey))
+	httpRequest.Header.Set("Authorization", "Bearer "+openAIAPIKey(request.Provider.primaryAPIKey()))
 	httpRequest.Header.Set("Content-Type", "application/json")
 
 	for key, value := range request.Provider.ExtraHeaders {
@@ -103,12 +104,15 @@ func (client openAIClient) streamChatCompletion(
 			)
 		}
 
-		return fmt.Errorf(
-			"chat completion request failed with status %d: %s: %w",
-			httpResponse.StatusCode,
-			strings.TrimSpace(string(responseBody)),
-			os.ErrInvalid,
-		)
+		return providerStatusError{
+			StatusCode: httpResponse.StatusCode,
+			Message: fmt.Sprintf(
+				"chat completion request failed with status %d: %s",
+				httpResponse.StatusCode,
+				strings.TrimSpace(string(responseBody)),
+			),
+			Err: os.ErrInvalid,
+		}
 	}
 
 	err = consumeServerSentEvents(httpResponse.Body, func(payload []byte) error {

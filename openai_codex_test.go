@@ -113,6 +113,7 @@ func newOpenAICodexProviderRequestConfig(
 		APIKind:      providerAPIKindOpenAICodex,
 		BaseURL:      baseURL,
 		APIKey:       apiKey,
+		APIKeys:      nil,
 		ExtraHeaders: extraHeaders,
 		ExtraQuery:   extraQuery,
 		ExtraBody:    extraBody,

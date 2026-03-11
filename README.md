@@ -78,7 +78,7 @@ The config schema stays close to the original Python project.
 
 | Setting | Description |
 | --- | --- |
-| `providers` | Provider definitions keyed by provider name. OpenAI-compatible providers use `base_url`. Gemini providers use `type: gemini` and the native `google.golang.org/genai` client; `base_url` is optional and can override the Gemini API endpoint or version. OpenAI Codex providers use `type: openai-codex`; `base_url` is optional and defaults to `https://chatgpt.com/backend-api`. Supports optional `api_key`, `extra_headers`, `extra_query`, and `extra_body`. |
+| `providers` | Provider definitions keyed by provider name. OpenAI-compatible providers use `base_url`. Gemini providers use `type: gemini` and the native `google.golang.org/genai` client; `base_url` is optional and can override the Gemini API endpoint or version. OpenAI Codex providers use `type: openai-codex`; `base_url` is optional and defaults to `https://chatgpt.com/backend-api`. `api_key` accepts either a single string or a YAML list of strings. When multiple keys are configured, the bot tries them in order on auth/quota-style failures before surfacing an error. Providers also support optional `extra_headers`, `extra_query`, and `extra_body`. |
 | `models` | Ordered list of `<provider>/<model>` entries. The first entry is the startup default. Append `:vision` to enable image support heuristics. |
 | `search_decider_model` | Optional `<provider>/<model>` entry used for deciding whether web search is required. Defaults to the first configured model. |
 | `media_analysis_model` | Optional `<provider>/<model>` entry used for Gemini preprocessing of audio/video attachments before non-Gemini replies. Must reference a configured Gemini model. If omitted, the bot falls back to `search_decider_model` when that model is Gemini, or the first configured Gemini model. |
@@ -108,5 +108,6 @@ golangci-lint run --default=all
 - When a user message contains one or more Reddit thread URLs, the bot fetches each thread concurrently from the corresponding `.json` URL over a dedicated HTTP/1.1 transport, then appends the post metadata, post body, and nested comments to the latest user message before the main completion request.
 - When the search decider requires web search, the bot queries Exa MCP at `https://mcp.exa.ai/mcp` without requiring an API key by default.
 - OpenAI Codex providers stream through the ChatGPT Codex Responses API. If `extra_headers.chatgpt-account-id` is not set, the bot derives it from the JWT in `api_key`.
+- If a provider has multiple `api_key` entries, the router retries the request with the next configured key when the current key is rejected or rate-limited before any response is streamed.
 - The implementation targets chat-completions-style OpenAI-compatible APIs, OpenAI Codex Responses streaming, and native Gemini GenerateContent streaming.
 - If you need the original single-file Python implementation, use [`jakobdylanc/llmcord`](https://github.com/jakobdylanc/llmcord).

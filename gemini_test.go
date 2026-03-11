@@ -327,6 +327,7 @@ func newGeminiBuildTestRequest() chatCompletionRequest {
 			APIKind: providerAPIKindGemini,
 			BaseURL: "https://generativelanguage.googleapis.com/v1beta/openai",
 			APIKey:  "",
+			APIKeys: nil,
 			ExtraHeaders: map[string]any{
 				"X-Test": testHeaderPresent,
 			},
@@ -360,6 +361,7 @@ func newSimpleGeminiStreamRequest() chatCompletionRequest {
 			APIKind:      providerAPIKindGemini,
 			BaseURL:      "",
 			APIKey:       "gemini-key",
+			APIKeys:      nil,
 			ExtraHeaders: nil,
 			ExtraQuery:   nil,
 			ExtraBody:    nil,

@@ -91,12 +91,15 @@ func (client openAICodexClient) streamChatCompletion(
 			)
 		}
 
-		return fmt.Errorf(
-			"codex request failed with status %d: %s: %w",
-			httpResponse.StatusCode,
-			strings.TrimSpace(string(responseBody)),
-			os.ErrInvalid,
-		)
+		return providerStatusError{
+			StatusCode: httpResponse.StatusCode,
+			Message: fmt.Sprintf(
+				"codex request failed with status %d: %s",
+				httpResponse.StatusCode,
+				strings.TrimSpace(string(responseBody)),
+			),
+			Err: os.ErrInvalid,
+		}
 	}
 
 	err = consumeServerSentEvents(httpResponse.Body, func(payload []byte) error {
@@ -391,8 +394,8 @@ func populateOpenAICodexHeaders(httpRequest *http.Request, provider providerRequ
 	httpRequest.Header.Set("User-Agent", openAICodexUserAgent)
 	httpRequest.Header.Set(openAICodexHeaderOrigin, openAICodexOriginator)
 
-	if strings.TrimSpace(provider.APIKey) != "" {
-		httpRequest.Header.Set("Authorization", "Bearer "+strings.TrimSpace(provider.APIKey))
+	if provider.primaryAPIKey() != "" {
+		httpRequest.Header.Set("Authorization", "Bearer "+provider.primaryAPIKey())
 	}
 
 	for key, value := range provider.ExtraHeaders {
@@ -400,7 +403,9 @@ func populateOpenAICodexHeaders(httpRequest *http.Request, provider providerRequ
 	}
 
 	if strings.TrimSpace(httpRequest.Header.Get("Authorization")) == "" {
-		return fmt.Errorf("missing codex authorization token: %w", os.ErrInvalid)
+		return providerAPIKeyError{
+			Err: fmt.Errorf("missing codex authorization token: %w", os.ErrInvalid),
+		}
 	}
 
 	if strings.TrimSpace(httpRequest.Header.Get(openAICodexHeaderAccount)) != "" {
@@ -409,7 +414,7 @@ func populateOpenAICodexHeaders(httpRequest *http.Request, provider providerRequ
 
 	accountID, err := openAICodexAccountIDFromAuthorization(httpRequest.Header.Get("Authorization"))
 	if err != nil {
-		return err
+		return providerAPIKeyError{Err: err}
 	}
 
 	httpRequest.Header.Set(openAICodexHeaderAccount, accountID)
