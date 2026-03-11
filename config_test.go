@@ -195,6 +195,46 @@ models:
 	}
 }
 
+func TestLoadConfigAllowsProviderAPIKeyLists(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	configText := `
+bot_token: discord-token
+providers:
+  openai:
+    base_url: https://api.example.com/v1
+    api_key:
+      - primary-key
+      - backup-key
+      - primary-key
+models:
+  openai/first-model:
+`
+
+	err := os.WriteFile(configPath, []byte(configText), 0o600)
+	if err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	loadedConfig, err := loadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	if loadedConfig.Providers["openai"].APIKey != "primary-key" {
+		t.Fatalf("unexpected primary provider API key: %q", loadedConfig.Providers["openai"].APIKey)
+	}
+
+	if !slices.Equal(
+		loadedConfig.Providers["openai"].APIKeys,
+		[]string{"primary-key", "backup-key"},
+	) {
+		t.Fatalf("unexpected provider API keys: %#v", loadedConfig.Providers["openai"].APIKeys)
+	}
+}
+
 func TestLoadConfigAllowsOpenAICodexProviderWithoutBaseURL(t *testing.T) {
 	t.Parallel()
 

@@ -427,7 +427,8 @@ func buildChatCompletionRequest(
 		Provider: providerRequestConfig{
 			APIKind:      provider.apiKind(),
 			BaseURL:      provider.BaseURL,
-			APIKey:       provider.APIKey,
+			APIKey:       provider.primaryAPIKey(),
+			APIKeys:      provider.apiKeys(),
 			ExtraHeaders: provider.ExtraHeaders,
 			ExtraQuery:   provider.ExtraQuery,
 			ExtraBody:    mergeExtraBody(provider.ExtraBody, modelParameters),

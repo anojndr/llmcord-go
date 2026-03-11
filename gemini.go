@@ -205,7 +205,7 @@ func buildGeminiClientConfig(
 	}
 
 	return &genai.ClientConfig{
-		APIKey:      strings.TrimSpace(provider.APIKey),
+		APIKey:      provider.primaryAPIKey(),
 		Backend:     genai.BackendGeminiAPI,
 		Project:     "",
 		Location:    "",
