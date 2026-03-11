@@ -394,9 +394,19 @@ func (instance *bot) augmentConversation(
 	messages []chatMessage,
 	warnings []string,
 ) ([]chatMessage, *searchMetadata, []string, error) {
-	augmentedMessages, youtubeWarnings, err := instance.maybeAugmentConversationWithYouTube(
+	augmentedMessages, websiteWarnings, err := instance.maybeAugmentConversationWithWebsite(
 		ctx,
 		messages,
+	)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("augment conversation with website: %w", err)
+	}
+
+	warnings = append(warnings, websiteWarnings...)
+
+	augmentedMessages, youtubeWarnings, err := instance.maybeAugmentConversationWithYouTube(
+		ctx,
+		augmentedMessages,
 	)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("augment conversation with youtube: %w", err)

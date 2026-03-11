@@ -22,6 +22,7 @@ type bot struct {
 	tiktok                    tiktokContentClient
 	youtube                   youtubeContentClient
 	reddit                    redditContentClient
+	website                   websiteContentClient
 	nodes                     *messageNodeStore
 	currentModel              string
 	currentSearchDeciderModel string
@@ -48,6 +49,7 @@ func newBot(configPath string, loadedConfig config) (*bot, error) {
 	instance.tiktok = newTikTokClient(httpClient)
 	instance.youtube = newYouTubeClient(httpClient)
 	instance.reddit = newRedditClient(httpClient)
+	instance.website = newWebsiteClient(httpClient)
 	instance.nodes = newMessageNodeStore(maxMessageNodes)
 	instance.currentModel = loadedConfig.firstModel()
 	instance.currentSearchDeciderModel = loadedConfig.SearchDeciderModel

@@ -19,6 +19,8 @@ linters:
             - github.com/pdfcpu/pdfcpu/pkg/api
             - github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model
             - github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types
+            - golang.org/x/net/html
+            - golang.org/x/net/html/atom
             - google.golang.org/genai
             - gopkg.in/yaml.v3
     funlen:
