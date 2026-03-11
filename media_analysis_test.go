@@ -9,6 +9,8 @@ import (
 	"github.com/bwmarrin/discordgo"
 )
 
+const testOpenAIBaseURL = "https://api.example.com/v1"
+
 func TestAppendMediaAnalysesToConversationPreservesImages(t *testing.T) {
 	t.Parallel()
 
@@ -256,7 +258,7 @@ func testMediaAnalysisConfig() config {
 	loadedConfig := new(config)
 
 	openAIProvider := new(providerConfig)
-	openAIProvider.BaseURL = "https://api.example.com/v1"
+	openAIProvider.BaseURL = testOpenAIBaseURL
 
 	geminiProvider := new(providerConfig)
 	geminiProvider.Type = string(providerAPIKindGemini)

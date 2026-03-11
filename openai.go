@@ -21,9 +21,10 @@ type chatMessage struct {
 }
 
 type chatCompletionRequest struct {
-	Provider providerRequestConfig
-	Model    string
-	Messages []chatMessage
+	Provider        providerRequestConfig
+	Model           string
+	ConfiguredModel string
+	Messages        []chatMessage
 }
 
 type providerRequestConfig struct {

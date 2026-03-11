@@ -9,7 +9,7 @@ This bot turns Discord into a reply-chain frontend for OpenAI-compatible LLM API
 - Reply-chain conversations in guilds, DMs, and public threads
 - Reply-chain responses without pinging the replied author
 - `/model` and `/searchdecidermodel` autocomplete and model switching for all users
-- Streaming embed responses with automatic message splitting
+- Streaming embed responses with automatic message splitting and model labels in the embed author
 - Plain-response mode using Discord text display components
 - Text attachment ingestion, image attachment support for vision models, Gemini audio/video understanding via the native Files API, and Gemini sidecar audio/video preprocessing for non-Gemini models
 - Automatic TikTok URL handling that resolves short links, converts videos to MP4 through SnapTik, and either sends the MP4 to Gemini models or preprocesses it with Gemini for non-Gemini replies
