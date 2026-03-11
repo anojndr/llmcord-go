@@ -102,6 +102,52 @@ func TestOpenAICodexClientRejectsInvalidTokenWithoutAccountHeader(t *testing.T) 
 	}
 }
 
+func TestBuildOpenAICodexRequestBodyPreservesNestedReasoningConfig(t *testing.T) {
+	t.Parallel()
+
+	request := chatCompletionRequest{
+		Provider: newOpenAICodexProviderRequestConfig(
+			"",
+			"",
+			nil,
+			nil,
+			map[string]any{
+				"reasoning": map[string]any{
+					"effort":  "none",
+					"summary": "concise",
+				},
+			},
+		),
+		Model:           "gpt-5.4",
+		ConfiguredModel: "",
+		Messages: []chatMessage{
+			{Role: messageRoleUser, Content: testOpenAICodexHelloText},
+		},
+	}
+
+	requestBody, err := buildOpenAICodexRequestBody(request)
+	if err != nil {
+		t.Fatalf("build codex request body: %v", err)
+	}
+
+	if requestBody["model"] != "gpt-5.4" {
+		t.Fatalf("unexpected model: %#v", requestBody["model"])
+	}
+
+	reasoningConfig, ok := requestBody["reasoning"].(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected reasoning config type: %T", requestBody["reasoning"])
+	}
+
+	if reasoningConfig["effort"] != "none" {
+		t.Fatalf("unexpected reasoning effort: %#v", reasoningConfig["effort"])
+	}
+
+	if reasoningConfig["summary"] != "concise" {
+		t.Fatalf("unexpected reasoning summary: %#v", reasoningConfig["summary"])
+	}
+}
+
 func newOpenAICodexProviderRequestConfig(
 	apiKey string,
 	baseURL string,
