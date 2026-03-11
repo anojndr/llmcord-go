@@ -51,6 +51,7 @@ func TestAugmentedUserPromptRenderUsesRedditTemplate(t *testing.T) {
 		UserQuery:        "<@123>: summarize this thread",
 		YouTubeContent:   "",
 		RedditContent:    "Thread URL: https://www.reddit.com/r/testing/comments/abc123/thread-title/",
+		WebsiteContent:   "",
 		WebSearchResults: "",
 	}
 

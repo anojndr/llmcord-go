@@ -15,6 +15,7 @@ This bot turns Discord into a reply-chain frontend for OpenAI-compatible LLM API
 - Automatic TikTok URL handling that resolves short links, converts videos to MP4 through SnapTik, and either sends the MP4 to Gemini models or preprocesses it with Gemini for non-Gemini replies
 - Automatic YouTube URL enrichment that fetches transcripts, titles, channel names, and up to 50 top comments without an API key
 - Automatic Reddit URL enrichment that fetches thread metadata, post bodies, and nested comments from Reddit's `.json` endpoint without an API key
+- Automatic website URL enrichment for non-TikTok/YouTube/Reddit links that fetches page titles, descriptions, and extracted main text from pages such as Wikipedia
 - Search-decider flow that can skip search or use Exa MCP and Tavily in configurable primary/fallback order when current information is needed
 - Guild messages containing `at ai` are treated like an explicit bot mention and stripped from the prompt text, which is useful for speech-to-text style prompts
 - `View on Rentry` button on final replies that publishes the assistant response to Rentry on demand for easier reading, plus a `Show Sources` button on searched replies that reveals the queries and parsed source URLs used
@@ -117,6 +118,7 @@ golangci-lint run --default=all
 - When a user message contains one or more TikTok URLs, the bot resolves short links, downloads each video as MP4 through SnapTik, and then either appends the MP4s to the latest user message for Gemini models or runs those MP4s through the same Gemini media-analysis path before non-Gemini replies. If the reply model is Gemini but the search decider is not, the bot also appends Gemini-generated TikTok analysis text so the search decider still receives the video context.
 - When a user message contains one or more YouTube URLs, the bot fetches each video concurrently over plain HTTP and appends the extracted transcript, title, channel name, and top comments to the latest user message before the main completion request.
 - When a user message contains one or more Reddit thread URLs, the bot fetches each thread concurrently from the corresponding `.json` URL over a dedicated HTTP/1.1 transport, then appends the post metadata, post body, and nested comments to the latest user message before the main completion request.
+- When a user message contains one or more non-TikTok/YouTube/Reddit website URLs, the bot fetches each page concurrently and appends the extracted title, meta description, and main visible page text to the latest user message before the main completion request.
 - When the search decider requires web search, the bot uses `web_search.primary_provider` to decide whether Exa MCP or Tavily runs first, and automatically falls back to the other backend on failure.
 - Exa MCP uses `https://mcp.exa.ai/mcp` and does not require an API key by default.
 - Tavily uses `https://api.tavily.com/search`, requests `include_raw_content: "text"`, and includes the full raw page text for each returned URL in the search context. If multiple Tavily keys are configured, the bot retries them in order on auth/quota-style failures before moving on.
