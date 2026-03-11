@@ -141,17 +141,80 @@ func TestBuildGeminiGenerateContentRequestIncludesThinkingAliasLevel(t *testing.
 		t.Fatalf("unexpected gemini contents: %#v", contents)
 	}
 
-	if config == nil || config.HTTPOptions == nil {
+	if config == nil || config.ThinkingConfig == nil {
 		t.Fatalf("unexpected gemini config: %#v", config)
 	}
 
-	thinkingConfig, ok := config.HTTPOptions.ExtraBody["thinkingConfig"].(map[string]any)
-	if !ok {
-		t.Fatalf("unexpected thinking config: %#v", config.HTTPOptions.ExtraBody)
+	if config.ThinkingConfig.ThinkingLevel != genai.ThinkingLevelMinimal {
+		t.Fatalf("unexpected thinking level: %#v", config.ThinkingConfig.ThinkingLevel)
 	}
 
-	if thinkingConfig["thinkingLevel"] != genai.ThinkingLevelMinimal {
-		t.Fatalf("unexpected thinking level: %#v", thinkingConfig["thinkingLevel"])
+	if config.HTTPOptions != nil {
+		t.Fatalf("unexpected gemini HTTP options: %#v", config.HTTPOptions)
+	}
+}
+
+func TestBuildGeminiGenerateContentRequestPromotesThinkingConfigFromExtraBody(t *testing.T) {
+	t.Parallel()
+
+	request := newSimpleGeminiStreamRequest()
+	request.Provider.ExtraBody = map[string]any{
+		"temperature": 0.2,
+		"thinkingConfig": map[string]any{
+			"includeThoughts": true,
+			"thinkingBudget":  int32(64),
+		},
+	}
+
+	_, config, err := buildGeminiGenerateContentRequest(
+		context.Background(),
+		request,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("build gemini generate content request: %v", err)
+	}
+
+	if config == nil || config.ThinkingConfig == nil {
+		t.Fatalf("unexpected gemini config: %#v", config)
+	}
+
+	if !config.ThinkingConfig.IncludeThoughts {
+		t.Fatalf("unexpected thinking config: %#v", config.ThinkingConfig)
+	}
+
+	if config.ThinkingConfig.ThinkingBudget == nil || *config.ThinkingConfig.ThinkingBudget != 64 {
+		t.Fatalf("unexpected thinking budget: %#v", config.ThinkingConfig.ThinkingBudget)
+	}
+
+	if config.HTTPOptions == nil {
+		t.Fatalf("expected gemini HTTP options: %#v", config)
+	}
+
+	if got, ok := config.HTTPOptions.ExtraBody["temperature"].(float64); !ok || got != 0.2 {
+		t.Fatalf("unexpected gemini extra body: %#v", config.HTTPOptions.ExtraBody)
+	}
+
+	if _, ok := config.HTTPOptions.ExtraBody["thinkingConfig"]; ok {
+		t.Fatalf("unexpected thinkingConfig in extra body: %#v", config.HTTPOptions.ExtraBody)
+	}
+}
+
+func TestBuildGeminiGenerateContentRequestRejectsInvalidThinkingConfig(t *testing.T) {
+	t.Parallel()
+
+	request := newSimpleGeminiStreamRequest()
+	request.Provider.ExtraBody = map[string]any{
+		"thinkingConfig": "invalid",
+	}
+
+	_, _, err := buildGeminiGenerateContentRequest(
+		context.Background(),
+		request,
+		nil,
+	)
+	if err == nil {
+		t.Fatal("expected invalid thinkingConfig to fail")
 	}
 }
 
