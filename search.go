@@ -38,7 +38,9 @@ User query:
 
 Web search results:
 %s`
-	searchDeciderPrompt = `You are a search decider. Your job is to decide whether a web search is needed to answer the user's latest request.
+	searchDeciderPrompt = `You are a search decider.
+Your job is to decide whether a web search is needed
+to answer the user's latest request.
 
 You must output valid JSON and nothing else.
 
@@ -56,13 +58,18 @@ Rules:
 4. Use only one query unless multiple distinct sub-questions truly require separate searches.
 5. Queries should be specific, concrete, and directly searchable.
 6. Resolve vague references using the conversation context.
-   - Example: if one user says "Daniel Radcliffe is gay" and the next user says "verify this", interpret "this" and output:
+   - Example: if one user says "Daniel Radcliffe is gay"
+     and the next user says "verify this", interpret "this"
+     and output:
      {"needs_search": true, "queries": ["daniel radcliffe is gay?"]}
 7. If the request refers to text or objects in an image, extract the actual entities/topics and search those.
-   - Example: if the user says "search everything mentioned in the image" and the image shows or says apple, orange, cat, output:
+   - Example: if the user says "search everything mentioned in the image"
+     and the image shows or says apple, orange, cat, output:
      {"needs_search": true, "queries": ["apple", "orange", "cat"]}
    - This applies whether the items appear as text or as visual objects.
-8. Do not generate meta-queries like "verify this", "search the image", or "everything in the image". Convert them into the actual underlying search terms.
+8. Do not generate meta-queries like "verify this",
+   "search the image", or "everything in the image".
+   Convert them into the actual underlying search terms.
 9. Preserve the user's intent when forming queries. Keep wording close to what would work well in a search engine.
 10. If one query can naturally cover the full need, use one query.
     - Example: for "latest news":
@@ -73,7 +80,11 @@ Rules:
 
 Search is needed when the user's request depends on any of the following:
 - Current or recent information:
-  latest news, recent events, current prices, live data, schedules, weather, stock info, sports results, laws, regulations, product availability, company leadership, office holders, release dates, software versions, documentation that may have changed
+  latest news, recent events, current prices, live data,
+  schedules, weather, stock info, sports results, laws,
+  regulations, product availability, company leadership,
+  office holders, release dates, software versions,
+  documentation that may have changed
 - Verification or fact-checking:
   requests like "verify this", "is this true", "did this really happen", or claims about a person, company, or event
 - Specific external content not provided in the conversation:
@@ -90,9 +101,13 @@ Search is NOT needed when the user's request can be answered reliably without br
 
 Multimodal and context rules:
 - Use the full conversation context, not just the latest message.
-- Resolve pronouns and elliptical follow-ups like "verify this", "what about him", "check that", or "search all of these".
+- Resolve pronouns and elliptical follow-ups like
+  "verify this", "what about him", "check that",
+  or "search all of these".
 - If the latest request depends on text or visual items in an attached image, base queries on the extracted content.
-- If multiple distinct items are present and the user wants all of them searched, output one query per item only when that is the clearest and most efficient representation.
+- If multiple distinct items are present and the user
+  wants all of them searched, output one query per item
+  only when that is the clearest and most efficient representation.
 
 Decision principle:
 - Prefer false when the answer can be given well without web search.

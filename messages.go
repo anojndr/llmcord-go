@@ -297,6 +297,15 @@ func (instance *bot) buildMessageConversation(
 		useGeminiMediaAnalysis,
 		usePDFExtraction,
 	)
+	if message.MessageReference != nil && len(messages) >= 2 {
+		messages, err = appendReplyTargetToConversation(
+			messages,
+			messages[len(messages)-2],
+		)
+		if err != nil {
+			return nil, nil, fmt.Errorf("append reply target to latest user message: %w", err)
+		}
+	}
 
 	slog.Info(
 		"message received",
