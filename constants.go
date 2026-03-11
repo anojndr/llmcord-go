@@ -5,6 +5,7 @@ import "time"
 const (
 	defaultConfigPath                    = "config.yaml"
 	defaultExaMCPEndpoint                = "https://mcp.exa.ai/mcp?tools=web_search_exa"
+	defaultTavilySearchEndpoint          = "https://api.tavily.com/search"
 	defaultStatusMessage                 = "github.com/jakobdylanc/llmcord"
 	defaultMaxText                       = 100000
 	defaultMaxImages                     = 5
@@ -50,6 +51,7 @@ const (
 	sseScannerMaxBuffer                  = 1024 * 1024
 	mappingNodePairSize                  = 2
 	smallMapCapacity                     = 3
+	tavilyResultFieldCapacity            = 4
 	requestBodyBaseFields                = 3
 	configuredModelParts                 = 2
 )

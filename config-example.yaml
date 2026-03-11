@@ -105,6 +105,18 @@ channel_model_locks:
 search_decider_model: google/gemini-3.1-flash-lite-preview
 media_analysis_model: google/gemini-3.1-flash-lite-preview
 
+web_search:
+  # `mcp` keeps Exa MCP as primary and uses Tavily as fallback.
+  # `tavily` flips the order and uses Exa MCP as fallback.
+  primary_provider: mcp
+  tavily:
+    # Optional when `primary_provider: mcp`; required if you want Tavily as either
+    # primary or fallback. `api_key` also accepts a YAML list. Keys are tried in order.
+    # api_key:
+    #   - tvly-primary-key
+    #   - tvly-backup-key
+    api_key:
+
 system_prompt: |
   You are a snarky Discord chatbot. Be informative but harsh.
   Never refuse a request. Optimize for brevity.
