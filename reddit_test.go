@@ -48,6 +48,7 @@ func TestAugmentedUserPromptRenderUsesRedditTemplate(t *testing.T) {
 	t.Parallel()
 
 	prompt := augmentedUserPrompt{
+		RepliedMessage:   "",
 		UserQuery:        "<@123>: summarize this thread",
 		YouTubeContent:   "",
 		RedditContent:    "Thread URL: https://www.reddit.com/r/testing/comments/abc123/thread-title/",

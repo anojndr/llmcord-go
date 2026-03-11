@@ -10,20 +10,23 @@ const (
 	augmentedPromptPrefix     = "Answer the user query based on "
 	mediaAnalysisCloseTag     = "</media_analysis>"
 	mediaAnalysisOpenTag      = "<media_analysis>"
+	replyTargetSectionName    = "Replied message"
 	userQuerySectionName      = "User query"
 	youtubeSectionName        = "YouTube URL content"
 	redditSectionName         = "Reddit URL content"
 	websiteSectionName        = "Website URL content"
 	webSearchSectionName      = "Web search results"
+	replyTargetDescription    = "the replied message"
 	youtubeSectionDescription = "the extracted YouTube URL content"
 	redditSectionDescription  = "the extracted Reddit URL content"
 	websiteSectionDescription = "the extracted website URL content"
 	webSearchStandalonePrompt = "the web search results"
 	webSearchCombinedPrompt   = "web search results"
-	maxPromptSections         = 4
+	maxPromptSections         = 5
 )
 
 type augmentedUserPrompt struct {
+	RepliedMessage   string
 	UserQuery        string
 	YouTubeContent   string
 	RedditContent    string
@@ -66,6 +69,7 @@ func parseAugmentedUserPrompt(text string) augmentedUserPrompt {
 	trimmedText := strings.TrimSpace(text)
 	if !strings.HasPrefix(trimmedText, augmentedPromptPrefix) {
 		return augmentedUserPrompt{
+			RepliedMessage:   "",
 			UserQuery:        trimmedText,
 			YouTubeContent:   "",
 			RedditContent:    "",
@@ -79,6 +83,7 @@ func parseAugmentedUserPrompt(text string) augmentedUserPrompt {
 	_, remaining, found := strings.Cut(trimmedText, userQueryMarker)
 	if !found {
 		return augmentedUserPrompt{
+			RepliedMessage:   "",
 			UserQuery:        trimmedText,
 			YouTubeContent:   "",
 			RedditContent:    "",
@@ -90,6 +95,7 @@ func parseAugmentedUserPrompt(text string) augmentedUserPrompt {
 	sectionMatches := findPromptSectionMatches(remaining)
 	if len(sectionMatches) == 0 {
 		return augmentedUserPrompt{
+			RepliedMessage:   "",
 			UserQuery:        strings.TrimSpace(remaining),
 			YouTubeContent:   "",
 			RedditContent:    "",
@@ -99,6 +105,7 @@ func parseAugmentedUserPrompt(text string) augmentedUserPrompt {
 	}
 
 	prompt := augmentedUserPrompt{
+		RepliedMessage:   "",
 		UserQuery:        strings.TrimSpace(remaining[:sectionMatches[0].Start]),
 		YouTubeContent:   "",
 		RedditContent:    "",
@@ -172,6 +179,44 @@ func appendMediaAnalysesToConversation(
 	})
 }
 
+func appendReplyTargetToConversation(
+	conversation []chatMessage,
+	replyTarget chatMessage,
+) ([]chatMessage, error) {
+	replyText, replyMediaParts, err := replyTargetTextAndMedia(replyTarget.Content)
+	if err != nil {
+		return nil, fmt.Errorf("extract reply target content: %w", err)
+	}
+
+	augmentedConversation := conversation
+
+	if replyText != "" {
+		augmentedConversation, err = appendContextToConversation(
+			augmentedConversation,
+			func(prompt *augmentedUserPrompt) {
+				prompt.RepliedMessage = replyText
+			},
+		)
+		if err != nil {
+			return nil, fmt.Errorf("append replied message text: %w", err)
+		}
+	}
+
+	if len(replyMediaParts) == 0 {
+		return augmentedConversation, nil
+	}
+
+	augmentedConversation, err = appendMediaPartsToConversation(
+		augmentedConversation,
+		replyMediaParts,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("append replied message media: %w", err)
+	}
+
+	return augmentedConversation, nil
+}
+
 func appendMediaPartsToConversation(
 	conversation []chatMessage,
 	mediaParts []contentPart,
@@ -243,6 +288,7 @@ func appendContextToMessageContent(
 	switch typedContent := content.(type) {
 	case nil:
 		prompt := augmentedUserPrompt{
+			RepliedMessage:   "",
 			UserQuery:        "",
 			YouTubeContent:   "",
 			RedditContent:    "",
@@ -316,6 +362,30 @@ func appendMediaPartsToMessageContent(
 	}
 }
 
+func replyTargetTextAndMedia(content any) (string, []contentPart, error) {
+	switch typedContent := content.(type) {
+	case nil:
+		return "", nil, nil
+	case string:
+		return strings.TrimSpace(typedContent), nil, nil
+	case []contentPart:
+		replyMediaParts := make([]contentPart, 0, len(typedContent))
+
+		for _, part := range typedContent {
+			partType, _ := part["type"].(string)
+			if partType == contentTypeText {
+				continue
+			}
+
+			replyMediaParts = append(replyMediaParts, cloneContentPart(part))
+		}
+
+		return strings.TrimSpace(contentPartsText(typedContent)), replyMediaParts, nil
+	default:
+		return "", nil, fmt.Errorf("unsupported reply target content type %T: %w", content, os.ErrInvalid)
+	}
+}
+
 func renderMediaAnalyses(analyses []string) string {
 	blocks := make([]string, 0, len(analyses))
 
@@ -364,6 +434,15 @@ type promptSectionMatch struct {
 
 func (prompt augmentedUserPrompt) activeSections() []promptSection {
 	sections := make([]promptSection, 0, maxPromptSections)
+	if trimmedValue := strings.TrimSpace(prompt.RepliedMessage); trimmedValue != "" {
+		sections = append(sections, promptSection{
+			Name:                  replyTargetSectionName,
+			Value:                 trimmedValue,
+			StandaloneDescription: replyTargetDescription,
+			CombinedDescription:   replyTargetDescription,
+		})
+	}
+
 	if trimmedValue := strings.TrimSpace(prompt.YouTubeContent); trimmedValue != "" {
 		sections = append(sections, promptSection{
 			Name:                  youtubeSectionName,
@@ -429,6 +508,7 @@ func findPromptSectionMatches(text string) []promptSectionMatch {
 	matches := make([]promptSectionMatch, 0, maxPromptSections)
 
 	for _, sectionName := range []string{
+		replyTargetSectionName,
 		youtubeSectionName,
 		redditSectionName,
 		websiteSectionName,
@@ -463,6 +543,8 @@ func setPromptSectionValue(prompt *augmentedUserPrompt, sectionName string, valu
 	trimmedValue := strings.TrimSpace(value)
 
 	switch sectionName {
+	case replyTargetSectionName:
+		prompt.RepliedMessage = trimmedValue
 	case youtubeSectionName:
 		prompt.YouTubeContent = trimmedValue
 	case redditSectionName:

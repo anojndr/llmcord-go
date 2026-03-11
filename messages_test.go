@@ -304,6 +304,99 @@ func TestRespondToMessageStartsTypingBeforeAttachmentProcessing(t *testing.T) {
 	}
 }
 
+func TestBuildMessageConversationAddsReplyTargetForRepliedTextAttachment(t *testing.T) {
+	t.Parallel()
+
+	const (
+		botUserID       = "bot-user"
+		channelID       = "channel-1"
+		userID          = "user-1"
+		parentMessageID = "user-message-1"
+		sourceMessageID = "user-message-2"
+		attachmentURL   = "https://attachments.example.com/context.txt"
+	)
+
+	session, err := discordgo.New("Bot discord-token")
+	if err != nil {
+		t.Fatalf("create discord session: %v", err)
+	}
+
+	session.State.User = newDiscordUser(botUserID, true)
+
+	channel := new(discordgo.Channel)
+	channel.ID = channelID
+	channel.Type = discordgo.ChannelTypeDM
+
+	err = session.State.ChannelAdd(channel)
+	if err != nil {
+		t.Fatalf("add channel to state: %v", err)
+	}
+
+	parentMessage := new(discordgo.Message)
+	parentMessage.ID = parentMessageID
+	parentMessage.ChannelID = channelID
+	parentMessage.Author = newDiscordUser(userID, false)
+	parentMessage.Attachments = []*discordgo.MessageAttachment{
+		{
+			Filename: "context.txt",
+			URL:      attachmentURL,
+		},
+	}
+
+	sourceMessage := new(discordgo.Message)
+	sourceMessage.ID = sourceMessageID
+	sourceMessage.ChannelID = channelID
+	sourceMessage.Author = newDiscordUser(userID, false)
+	sourceMessage.Content = "at ai what is the text inside this file"
+	sourceMessage.MessageReference = parentMessage.Reference()
+	sourceMessage.ReferencedMessage = parentMessage
+
+	instance := new(bot)
+	instance.session = session
+	instance.httpClient = newTextAttachmentDownloadClient(t, attachmentURL, "jandron")
+	instance.nodes = newMessageNodeStore(10)
+
+	loadedConfig := testSearchConfig()
+	loadedConfig.MaxText = defaultMaxText
+	loadedConfig.MaxImages = defaultMaxImages
+	loadedConfig.MaxMessages = defaultMaxMessages
+
+	messages, _, err := instance.buildMessageConversation(
+		context.Background(),
+		loadedConfig,
+		sourceMessage,
+		"openai/main-model",
+	)
+	if err != nil {
+		t.Fatalf("build message conversation: %v", err)
+	}
+
+	if len(messages) != 2 {
+		t.Fatalf("unexpected conversation length: %d", len(messages))
+	}
+
+	if messages[0].Content != "<@"+userID+">: jandron" {
+		t.Fatalf("unexpected replied message content: %#v", messages[0].Content)
+	}
+
+	latestContent, ok := messages[1].Content.(string)
+	if !ok {
+		t.Fatalf("unexpected latest message content type: %T", messages[1].Content)
+	}
+
+	if !containsFold(latestContent, replyTargetSectionName+":") {
+		t.Fatalf("expected replied message section in latest content: %q", latestContent)
+	}
+
+	if !containsFold(latestContent, "jandron") {
+		t.Fatalf("expected replied attachment text in latest content: %q", latestContent)
+	}
+
+	if !containsFold(latestContent, "what is the text inside this file") {
+		t.Fatalf("expected user question in latest content: %q", latestContent)
+	}
+}
+
 type respondToMessageTypingFixture struct {
 	instance          *bot
 	loadedConfig      config
@@ -505,4 +598,21 @@ func newTextResponse(request *http.Request, body string) *http.Response {
 	response.Request = request
 
 	return response
+}
+
+func newTextAttachmentDownloadClient(t *testing.T, attachmentURL string, body string) *http.Client {
+	t.Helper()
+
+	client := new(http.Client)
+	client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		t.Helper()
+
+		if request.Method != http.MethodGet || request.URL.String() != attachmentURL {
+			t.Fatalf("unexpected attachment request: %s %s", request.Method, request.URL.String())
+		}
+
+		return newTextResponse(request, body), nil
+	})
+
+	return client
 }

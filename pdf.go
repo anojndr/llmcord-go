@@ -49,7 +49,10 @@ func (instance *bot) maybeAugmentConversationWithPDFContents(
 		return conversation, nil
 	}
 
-	documentParts, err := instance.documentPartsForMessage(ctx, sourceMessage)
+	documentParts, err := instance.documentPartsForMessages(
+		ctx,
+		instance.attachmentAugmentationMessages(ctx, sourceMessage),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("load pdf parts for extraction: %w", err)
 	}
@@ -128,6 +131,13 @@ func (instance *bot) documentPartsForMessage(
 	message *discordgo.Message,
 ) ([]contentPart, error) {
 	return instance.messagePartsForMessage(ctx, message, partNeedsPDFExtraction)
+}
+
+func (instance *bot) documentPartsForMessages(
+	ctx context.Context,
+	messages []*discordgo.Message,
+) ([]contentPart, error) {
+	return instance.messagePartsForMessages(ctx, messages, partNeedsPDFExtraction)
 }
 
 func partNeedsPDFExtraction(part contentPart) bool {
