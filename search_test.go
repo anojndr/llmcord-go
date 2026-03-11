@@ -985,12 +985,41 @@ func TestFormatSearchSourcesMessageIncludesQueriesAndSources(t *testing.T) {
 		t.Fatalf("unexpected queries section: %q", message)
 	}
 
-	if !containsFold(message, "Example Source") {
-		t.Fatalf("expected first source title in message: %q", message)
+	if !strings.Contains(
+		message,
+		"Sources for \"latest ai news\":\n"+
+			"1. Example Source <https://example.com/source>\n"+
+			"2. Second Source <https://example.com/second>",
+	) {
+		t.Fatalf("unexpected sources section: %q", message)
+	}
+}
+
+func TestFormatSearchSourcesMessageUsesAngleBracketURLWithoutDuplicateTitle(t *testing.T) {
+	t.Parallel()
+
+	metadata := &searchMetadata{
+		Queries: []string{"latest ai news"},
+		Results: []webSearchResult{
+			{
+				Query: "latest ai news",
+				Text:  "URL: https://example.com/source\n",
+			},
+		},
 	}
 
-	if !containsFold(message, "https://example.com/source") {
-		t.Fatalf("expected first source URL in message: %q", message)
+	message := formatSearchSourcesMessage(metadata)
+
+	if !strings.Contains(message, "<https://example.com/source>") {
+		t.Fatalf("expected angle-bracketed URL in message: %q", message)
+	}
+
+	if !strings.Contains(message, "1. <https://example.com/source>") {
+		t.Fatalf("expected numbered source line in message: %q", message)
+	}
+
+	if strings.Contains(message, "https://example.com/source <https://example.com/source>") {
+		t.Fatalf("expected source URL to be shown once when title is unavailable: %q", message)
 	}
 }
 

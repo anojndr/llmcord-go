@@ -828,8 +828,7 @@ func formatSearchSourcesMessage(metadata *searchMetadata) string {
 		}
 
 		for index, source := range sources[:minInt(len(sources), maxSourcesPerQuery)] {
-			_, _ = fmt.Fprintf(&builder, "%d. %s\n", index+1, source.Title)
-			_, _ = fmt.Fprintf(&builder, "   %s\n", source.URL)
+			_, _ = fmt.Fprintf(&builder, "%d. %s\n", index+1, formatSearchSourceLine(source))
 		}
 	}
 
@@ -841,6 +840,14 @@ func formatSearchSourcesMessage(metadata *searchMetadata) string {
 	truncatedMessage := truncateRunes(message, showSourcesMessageMaxLength-len("\n\n... truncated"))
 
 	return strings.TrimSpace(truncatedMessage) + "\n\n... truncated"
+}
+
+func formatSearchSourceLine(source searchSource) string {
+	if strings.EqualFold(strings.TrimSpace(source.Title), strings.TrimSpace(source.URL)) {
+		return "<" + source.URL + ">"
+	}
+
+	return source.Title + " <" + source.URL + ">"
 }
 
 func extractSearchSources(resultText string) []searchSource {
