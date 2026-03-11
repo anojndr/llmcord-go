@@ -27,6 +27,7 @@ type pendingResponse struct {
 type responseTracker struct {
 	sourceMessage    *discordgo.Message
 	searchMetadata   *searchMetadata
+	modelName        string
 	responseMessages []*discordgo.Message
 	pendingResponses []pendingResponse
 	renderedSpecs    []renderSpec
@@ -93,10 +94,12 @@ func (accumulator *segmentAccumulator) renderSegments(final bool) []string {
 func newResponseTracker(
 	sourceMessage *discordgo.Message,
 	searchMetadata *searchMetadata,
+	modelName string,
 ) *responseTracker {
 	tracker := new(responseTracker)
 	tracker.sourceMessage = sourceMessage
 	tracker.searchMetadata = cloneSearchMetadata(searchMetadata)
+	tracker.modelName = strings.TrimSpace(modelName)
 
 	return tracker
 }
@@ -130,7 +133,7 @@ func (instance *bot) generateAndSendResponse(
 
 	accumulator := newSegmentAccumulator(maxLength)
 
-	tracker := newResponseTracker(sourceMessage, searchMetadata)
+	tracker := newResponseTracker(sourceMessage, searchMetadata, request.ConfiguredModel)
 	defer tracker.releaseJoined(&accumulator)
 
 	stopTyping := instance.startTyping(ctx, sourceMessage.ChannelID)
@@ -284,7 +287,12 @@ func (instance *bot) renderEmbedResponse(
 			continue
 		}
 
-		embed := buildResponseEmbed(spec.content, spec.color, warnings)
+		embed := buildResponseEmbed(
+			spec.content,
+			tracker.modelName,
+			spec.color,
+			warnings,
+		)
 
 		err := instance.waitForEditSlot(ctx)
 		if err != nil {
@@ -436,12 +444,19 @@ func (instance *bot) editEmbedMessage(
 
 func buildResponseEmbed(
 	content string,
+	modelName string,
 	color int,
 	warnings []string,
 ) *discordgo.MessageEmbed {
 	embed := new(discordgo.MessageEmbed)
 	embed.Description = content
 	embed.Color = color
+
+	if modelName != "" {
+		author := new(discordgo.MessageEmbedAuthor)
+		author.Name = modelName
+		embed.Author = author
+	}
 
 	for _, warning := range warnings {
 		field := new(discordgo.MessageEmbedField)
