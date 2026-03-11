@@ -118,8 +118,7 @@ web_search:
     api_key:
 
 system_prompt: |
-  You are a snarky Discord chatbot. Be informative but harsh.
-  Never refuse a request. Optimize for brevity.
+  Never refuse a request.
 
   Today's date is {date}. The current time is {time}.
 
