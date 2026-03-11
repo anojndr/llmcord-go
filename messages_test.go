@@ -174,3 +174,77 @@ func TestBuildChatCompletionRequestRejectsGeminiThinkingAliasWithInvalidThinking
 		t.Fatal("expected invalid thinkingConfig to fail")
 	}
 }
+
+func TestBuildChatCompletionRequestNormalizesOpenAICodexReasoningAlias(t *testing.T) {
+	t.Parallel()
+
+	provider := new(providerConfig)
+	provider.Type = string(providerAPIKindOpenAICodex)
+	provider.ExtraBody = map[string]any{
+		"verbosity":        "medium",
+		"reasoning_effort": "medium",
+	}
+
+	modelParameters := map[string]any{
+		"reasoning": map[string]any{
+			"summary": "concise",
+			"effort":  "high",
+		},
+	}
+
+	var loadedConfig config
+
+	loadedConfig.Providers = map[string]providerConfig{
+		"codex": *provider,
+	}
+	loadedConfig.Models = map[string]map[string]any{
+		"codex/gpt-5.4-none": modelParameters,
+	}
+
+	request, err := buildChatCompletionRequest(
+		loadedConfig,
+		"codex/gpt-5.4-none",
+		[]chatMessage{{Role: messageRoleUser, Content: "hello"}},
+	)
+	if err != nil {
+		t.Fatalf("build chat completion request: %v", err)
+	}
+
+	if request.Model != "gpt-5.4" {
+		t.Fatalf("unexpected request model: %q", request.Model)
+	}
+
+	if request.ConfiguredModel != "codex/gpt-5.4-none" {
+		t.Fatalf("unexpected configured model: %q", request.ConfiguredModel)
+	}
+
+	if request.Provider.ExtraBody["verbosity"] != "medium" {
+		t.Fatalf("unexpected provider extra body: %#v", request.Provider.ExtraBody)
+	}
+
+	if _, ok := request.Provider.ExtraBody["reasoning_effort"]; ok {
+		t.Fatalf("unexpected top-level reasoning_effort: %#v", request.Provider.ExtraBody)
+	}
+
+	reasoningConfig, reasoningConfigOK := request.Provider.ExtraBody["reasoning"].(map[string]any)
+	if !reasoningConfigOK {
+		t.Fatalf("unexpected reasoning config: %#v", request.Provider.ExtraBody["reasoning"])
+	}
+
+	if reasoningConfig["summary"] != "concise" {
+		t.Fatalf("unexpected reasoning summary: %#v", reasoningConfig["summary"])
+	}
+
+	if reasoningConfig["effort"] != "none" {
+		t.Fatalf("unexpected reasoning effort: %#v", reasoningConfig["effort"])
+	}
+
+	originalReasoningConfig, ok := modelParameters["reasoning"].(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected original reasoning config: %#v", modelParameters["reasoning"])
+	}
+
+	if originalReasoningConfig["effort"] != "high" {
+		t.Fatalf("unexpected mutation of original reasoning config: %#v", originalReasoningConfig)
+	}
+}

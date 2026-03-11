@@ -469,6 +469,10 @@ func buildChatCompletionRequest(
 		extraBody = normalizedExtraBody
 	}
 
+	if providerAPIKind == providerAPIKindOpenAICodex {
+		modelName, extraBody = normalizeOpenAICodexModelAlias(modelName, extraBody)
+	}
+
 	return chatCompletionRequest{
 		Provider: providerRequestConfig{
 			APIKind:      providerAPIKind,

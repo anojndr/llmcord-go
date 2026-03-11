@@ -16,17 +16,18 @@ import (
 )
 
 const (
-	defaultOpenAICodexBaseURL = "https://chatgpt.com/backend-api"
-	openAICodexJWTClaimPath   = "https://api.openai.com/auth"
-	openAICodexOriginator     = "pi"
-	openAICodexUserAgent      = "llmcord-go"
-	openAICodexHeaderBeta     = "Openai-Beta"
-	openAICodexHeaderAccount  = "Chatgpt-Account-Id"
-	openAICodexHeaderOrigin   = "Originator"
-	openAICodexRequestFields  = 4
-	openAICodexJWTPartCount   = 3
-	openAICodexRoleSystem     = "system"
-	openAICodexEventError     = "error"
+	defaultOpenAICodexBaseURL  = "https://chatgpt.com/backend-api"
+	openAICodexJWTClaimPath    = "https://api.openai.com/auth"
+	openAICodexOriginator      = "pi"
+	openAICodexUserAgent       = "llmcord-go"
+	openAICodexHeaderBeta      = "Openai-Beta"
+	openAICodexHeaderAccount   = "Chatgpt-Account-Id"
+	openAICodexHeaderOrigin    = "Originator"
+	openAICodexRequestFields   = 4
+	openAICodexJWTPartCount    = 3
+	openAICodexRoleSystem      = "system"
+	openAICodexEventError      = "error"
+	openAICodexVerbosityMedium = "medium"
 )
 
 type openAICodexClient struct {
@@ -134,6 +135,66 @@ func buildOpenAICodexRequestBody(request chatCompletionRequest) (map[string]any,
 	return requestBody, nil
 }
 
+func normalizeOpenAICodexModelAlias(model string, extraBody map[string]any) (string, map[string]any) {
+	resolvedModel, reasoningEffort, hasAlias := openAICodexReasoningEffortAlias(model)
+	if !hasAlias {
+		return model, extraBody
+	}
+
+	normalizedExtraBody := maps.Clone(extraBody)
+	if normalizedExtraBody == nil {
+		normalizedExtraBody = make(map[string]any, 1)
+	}
+
+	reasoningConfig := openAICodexReasoningConfigExtraBody(normalizedExtraBody)
+	reasoningConfig["effort"] = reasoningEffort
+	normalizedExtraBody["reasoning"] = reasoningConfig
+	delete(normalizedExtraBody, "reasoning_effort")
+
+	return resolvedModel, normalizedExtraBody
+}
+
+func openAICodexReasoningEffortAlias(model string) (string, string, bool) {
+	lowerModel := strings.ToLower(model)
+	for _, alias := range []struct {
+		suffix          string
+		reasoningEffort string
+	}{
+		{
+			suffix:          "-none",
+			reasoningEffort: "none",
+		},
+		{
+			suffix:          "-minimal",
+			reasoningEffort: "minimal",
+		},
+		{
+			suffix:          "-low",
+			reasoningEffort: "low",
+		},
+		{
+			suffix:          "-medium",
+			reasoningEffort: "medium",
+		},
+		{
+			suffix:          "-high",
+			reasoningEffort: "high",
+		},
+		{
+			suffix:          "-xhigh",
+			reasoningEffort: "xhigh",
+		},
+	} {
+		if !strings.HasSuffix(lowerModel, alias.suffix) || len(model) <= len(alias.suffix) {
+			continue
+		}
+
+		return model[:len(model)-len(alias.suffix)], alias.reasoningEffort, true
+	}
+
+	return "", "", false
+}
+
 func normalizeOpenAICodexRequestBody(requestBody map[string]any) {
 	if verbosity, ok := requestBody["verbosity"]; ok {
 		textConfig := nestedRequestBodyMap(requestBody, "text")
@@ -144,7 +205,7 @@ func normalizeOpenAICodexRequestBody(requestBody map[string]any) {
 
 	textConfig := nestedRequestBodyMap(requestBody, "text")
 	if _, exists := textConfig["verbosity"]; !exists {
-		textConfig["verbosity"] = "medium"
+		textConfig["verbosity"] = openAICodexVerbosityMedium
 	}
 
 	if reasoningEffort, ok := requestBody["reasoning_effort"]; ok {
@@ -164,6 +225,20 @@ func normalizeOpenAICodexRequestBody(requestBody map[string]any) {
 
 		delete(requestBody, "reasoning_summary")
 	}
+}
+
+func openAICodexReasoningConfigExtraBody(extraBody map[string]any) map[string]any {
+	existingReasoningConfig, reasoningConfigExists := extraBody["reasoning"]
+	if !reasoningConfigExists || existingReasoningConfig == nil {
+		return make(map[string]any, 1)
+	}
+
+	reasoningConfig, ok := existingReasoningConfig.(map[string]any)
+	if !ok {
+		return make(map[string]any, 1)
+	}
+
+	return maps.Clone(reasoningConfig)
 }
 
 func nestedRequestBodyMap(requestBody map[string]any, key string) map[string]any {
