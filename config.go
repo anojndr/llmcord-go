@@ -73,18 +73,19 @@ type permissionsConfig struct {
 }
 
 type rawProviderConfig struct {
-	Type         scalarString   `yaml:"type"`
-	BaseURL      scalarString   `yaml:"base_url"`
-	APIKey       scalarString   `yaml:"api_key"`
-	ExtraHeaders map[string]any `yaml:"extra_headers"`
-	ExtraQuery   map[string]any `yaml:"extra_query"`
-	ExtraBody    map[string]any `yaml:"extra_body"`
+	Type         scalarString     `yaml:"type"`
+	BaseURL      scalarString     `yaml:"base_url"`
+	APIKey       scalarStringList `yaml:"api_key"`
+	ExtraHeaders map[string]any   `yaml:"extra_headers"`
+	ExtraQuery   map[string]any   `yaml:"extra_query"`
+	ExtraBody    map[string]any   `yaml:"extra_body"`
 }
 
 type providerConfig struct {
 	Type         string
 	BaseURL      string
 	APIKey       string
+	APIKeys      []string
 	ExtraHeaders map[string]any
 	ExtraQuery   map[string]any
 	ExtraBody    map[string]any
@@ -160,10 +161,13 @@ func loadConfig(filename string) (config, error) {
 
 	loadedProviders := make(map[string]providerConfig, len(rawLoadedConfig.Providers))
 	for providerName, rawProvider := range rawLoadedConfig.Providers {
+		apiKeys := normalizeAPIKeys([]string(rawProvider.APIKey))
+
 		loadedProviders[providerName] = providerConfig{
 			Type:         string(rawProvider.Type),
 			BaseURL:      string(rawProvider.BaseURL),
-			APIKey:       string(rawProvider.APIKey),
+			APIKey:       firstAPIKey(apiKeys),
+			APIKeys:      apiKeys,
 			ExtraHeaders: rawProvider.ExtraHeaders,
 			ExtraQuery:   rawProvider.ExtraQuery,
 			ExtraBody:    rawProvider.ExtraBody,

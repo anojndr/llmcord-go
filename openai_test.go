@@ -103,6 +103,7 @@ func TestOpenAIClientStreamChatCompletion(t *testing.T) {
 			APIKind: providerAPIKindOpenAI,
 			BaseURL: server.URL + "/v1",
 			APIKey:  "test-key",
+			APIKeys: nil,
 			ExtraHeaders: map[string]any{
 				"X-Test": "present",
 			},
@@ -164,6 +165,7 @@ func TestOpenAIClientStreamChatCompletionReturnsStatusErrors(t *testing.T) {
 			APIKind:      providerAPIKindOpenAI,
 			BaseURL:      server.URL,
 			APIKey:       "test-key",
+			APIKeys:      nil,
 			ExtraHeaders: nil,
 			ExtraQuery:   nil,
 			ExtraBody:    nil,
