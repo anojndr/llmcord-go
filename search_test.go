@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -200,6 +201,72 @@ func TestSearchDeciderConversationPreservesGeminiMedia(t *testing.T) {
 	}
 }
 
+func TestBuildSearchDeciderConversationAppendsPDFImagesForVisionDecider(t *testing.T) {
+	t.Parallel()
+
+	instance, sourceMessage := newPDFExtractionTestBot(
+		"message-search-pdf",
+		"<@123>: summarize the report",
+		[]contentPart{
+			testPDFDocumentPart(t, "Quarterly revenue grew by 12 percent.", true),
+		},
+	)
+
+	loadedConfig := testSearchConfig()
+	loadedConfig.MaxImages = 1
+	loadedConfig.SearchDeciderModel = "openai/decider-model:vision"
+
+	mainConversation, err := instance.maybeAugmentConversationWithPDFContents(
+		context.Background(),
+		loadedConfig,
+		"openai/main-model",
+		sourceMessage,
+		[]chatMessage{{Role: messageRoleUser, Content: "<@123>: summarize the report"}},
+	)
+	if err != nil {
+		t.Fatalf("augment main conversation with pdf contents: %v", err)
+	}
+
+	mainContent, contentOK := mainConversation[0].Content.(string)
+	if !contentOK {
+		t.Fatalf("unexpected main content type: %T", mainConversation[0].Content)
+	}
+
+	if !strings.Contains(mainContent, pdfContentOpenTag) {
+		t.Fatalf("expected extracted pdf text in main conversation: %q", mainContent)
+	}
+
+	searchConversation, err := instance.buildSearchDeciderConversation(
+		context.Background(),
+		loadedConfig,
+		"openai/main-model",
+		loadedConfig.SearchDeciderModel,
+		sourceMessage,
+		mainConversation,
+	)
+	if err != nil {
+		t.Fatalf("build search decider conversation: %v", err)
+	}
+
+	parts, ok := searchConversation[0].Content.([]contentPart)
+	if !ok {
+		t.Fatalf("unexpected search decider content type: %T", searchConversation[0].Content)
+	}
+
+	if len(parts) != 2 {
+		t.Fatalf("unexpected search decider part count: %d", len(parts))
+	}
+
+	textValue, _ := parts[0]["text"].(string)
+	if !strings.Contains(textValue, "Extracted images: 1 total.") {
+		t.Fatalf("expected extracted pdf image summary in decider prompt: %q", textValue)
+	}
+
+	if parts[1]["type"] != contentTypeImageURL {
+		t.Fatalf("expected extracted pdf image part for vision decider: %#v", parts[1])
+	}
+}
+
 func TestAppendWebSearchResultsToConversationPreservesMultimodalParts(t *testing.T) {
 	t.Parallel()
 
@@ -297,6 +364,8 @@ func TestMaybeAugmentConversationWithWebSearchAddsResultsWhenNeeded(t *testing.T
 	augmentedConversation, searchMetadata, warnings, err := instance.maybeAugmentConversationWithWebSearch(
 		context.Background(),
 		testSearchConfig(),
+		"openai/main-model",
+		nil,
 		conversation,
 	)
 	if err != nil {
@@ -380,6 +449,8 @@ func TestMaybeAugmentConversationWithWebSearchSkipsWhenNotNeeded(t *testing.T) {
 	augmentedConversation, searchMetadata, warnings, err := instance.maybeAugmentConversationWithWebSearch(
 		context.Background(),
 		testSearchConfig(),
+		"openai/main-model",
+		nil,
 		conversation,
 	)
 	if err != nil {
@@ -427,6 +498,8 @@ func TestMaybeAugmentConversationWithWebSearchFallsBackOnSearchError(t *testing.
 	augmentedConversation, searchMetadata, warnings, err := instance.maybeAugmentConversationWithWebSearch(
 		context.Background(),
 		testSearchConfig(),
+		"openai/main-model",
+		nil,
 		conversation,
 	)
 	if err != nil {

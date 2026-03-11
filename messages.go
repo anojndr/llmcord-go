@@ -179,6 +179,17 @@ func (instance *bot) respondToMessage(
 
 	warnings = append(warnings, tikTokWarnings...)
 
+	messages, err = instance.maybeAugmentConversationWithPDFContents(
+		ctx,
+		loadedConfig,
+		providerSlashModel,
+		message,
+		messages,
+	)
+	if err != nil {
+		return fmt.Errorf("augment conversation with extracted pdf content: %w", err)
+	}
+
 	messages, err = instance.maybeAugmentConversationWithGeminiMedia(
 		ctx,
 		loadedConfig,
@@ -193,6 +204,8 @@ func (instance *bot) respondToMessage(
 	messages, searchMetadata, warnings, err := instance.augmentConversation(
 		ctx,
 		loadedConfig,
+		providerSlashModel,
+		message,
 		messages,
 		warnings,
 	)
@@ -250,6 +263,14 @@ func (instance *bot) buildMessageConversation(
 		return nil, nil, fmt.Errorf("check gemini media analysis support: %w", err)
 	}
 
+	usePDFExtraction, err := canExtractPDFContents(
+		loadedConfig,
+		providerSlashModel,
+	)
+	if err != nil {
+		return nil, nil, fmt.Errorf("check pdf extraction support: %w", err)
+	}
+
 	messages, warnings := instance.buildConversation(
 		ctx,
 		message,
@@ -257,6 +278,7 @@ func (instance *bot) buildMessageConversation(
 		contentOptions,
 		loadedConfig.MaxMessages,
 		useGeminiMediaAnalysis,
+		usePDFExtraction,
 	)
 
 	slog.Info(
@@ -350,6 +372,8 @@ func configuredModelProvider(
 func (instance *bot) augmentConversation(
 	ctx context.Context,
 	loadedConfig config,
+	providerSlashModel string,
+	sourceMessage *discordgo.Message,
 	messages []chatMessage,
 	warnings []string,
 ) ([]chatMessage, *searchMetadata, []string, error) {
@@ -376,6 +400,8 @@ func (instance *bot) augmentConversation(
 	augmentedMessages, searchMetadata, searchWarnings, err := instance.maybeAugmentConversationWithWebSearch(
 		ctx,
 		loadedConfig,
+		providerSlashModel,
+		sourceMessage,
 		augmentedMessages,
 	)
 	if err != nil {

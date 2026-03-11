@@ -572,7 +572,7 @@ func geminiUploadedMediaPart(
 		return nil, fmt.Errorf("missing gemini file client: %w", os.ErrInvalid)
 	}
 
-	mediaBytes, mimeType, filename, err := geminiBinaryAttachment(part)
+	mediaBytes, mimeType, filename, err := attachmentBinaryData(part)
 	if err != nil {
 		return nil, err
 	}
@@ -597,24 +597,6 @@ func geminiUploadedMediaPart(
 	}
 
 	return genai.NewPartFromFile(*activeFile), nil
-}
-
-func geminiBinaryAttachment(part contentPart) ([]byte, string, string, error) {
-	mediaBytes, ok := part[contentFieldBytes].([]byte)
-	if !ok {
-		return nil, "", "", fmt.Errorf("decode gemini media bytes: %w", os.ErrInvalid)
-	}
-
-	mimeType, _ := part[contentFieldMIMEType].(string)
-
-	mimeType = strings.TrimSpace(mimeType)
-	if mimeType == "" {
-		return nil, "", "", fmt.Errorf("decode gemini media mime type: %w", os.ErrInvalid)
-	}
-
-	filename, _ := part[contentFieldFilename].(string)
-
-	return mediaBytes, mimeType, filename, nil
 }
 
 func geminiImageURL(part contentPart) (string, error) {

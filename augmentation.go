@@ -167,25 +167,22 @@ func appendMediaPartsToConversation(
 	augmentedConversation := make([]chatMessage, len(conversation))
 	copy(augmentedConversation, conversation)
 
-	for index := len(augmentedConversation) - 1; index >= 0; index-- {
-		if augmentedConversation[index].Role != messageRoleUser {
-			continue
-		}
-
-		updatedContent, err := appendMediaPartsToMessageContent(
-			augmentedConversation[index].Content,
-			mediaParts,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("append media parts to latest user message: %w", err)
-		}
-
-		augmentedConversation[index].Content = updatedContent
-
-		return augmentedConversation, nil
+	index, err := latestUserMessageIndex(augmentedConversation)
+	if err != nil {
+		return nil, fmt.Errorf("find latest user message: %w", err)
 	}
 
-	return nil, fmt.Errorf("find latest user message: %w", os.ErrNotExist)
+	updatedContent, err := appendMediaPartsToMessageContent(
+		augmentedConversation[index].Content,
+		mediaParts,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("append media parts to latest user message: %w", err)
+	}
+
+	augmentedConversation[index].Content = updatedContent
+
+	return augmentedConversation, nil
 }
 
 func appendContextToConversation(
@@ -195,25 +192,32 @@ func appendContextToConversation(
 	augmentedConversation := make([]chatMessage, len(conversation))
 	copy(augmentedConversation, conversation)
 
-	for index := len(augmentedConversation) - 1; index >= 0; index-- {
-		if augmentedConversation[index].Role != messageRoleUser {
-			continue
-		}
-
-		updatedContent, err := appendContextToMessageContent(
-			augmentedConversation[index].Content,
-			transform,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("update latest user message: %w", err)
-		}
-
-		augmentedConversation[index].Content = updatedContent
-
-		return augmentedConversation, nil
+	index, err := latestUserMessageIndex(augmentedConversation)
+	if err != nil {
+		return nil, fmt.Errorf("find latest user message: %w", err)
 	}
 
-	return nil, fmt.Errorf("find latest user message: %w", os.ErrNotExist)
+	updatedContent, err := appendContextToMessageContent(
+		augmentedConversation[index].Content,
+		transform,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("update latest user message: %w", err)
+	}
+
+	augmentedConversation[index].Content = updatedContent
+
+	return augmentedConversation, nil
+}
+
+func latestUserMessageIndex(conversation []chatMessage) (int, error) {
+	for index := len(conversation) - 1; index >= 0; index-- {
+		if conversation[index].Role == messageRoleUser {
+			return index, nil
+		}
+	}
+
+	return 0, os.ErrNotExist
 }
 
 func appendContextToMessageContent(
