@@ -82,11 +82,15 @@ func shouldIgnoreIncomingMessage(message *discordgo.Message, botUserID string) b
 		return true
 	}
 
-	return !messageMentionsUser(message, botUserID)
+	return !messageMentionsBot(message, botUserID)
 }
 
 func isDirectMessage(message *discordgo.Message) bool {
 	return message.GuildID == ""
+}
+
+func messageMentionsBot(message *discordgo.Message, botUserID string) bool {
+	return messageMentionsUser(message, botUserID) || hasAtAIMention(message.Content)
 }
 
 func messageMentionsUser(message *discordgo.Message, userID string) bool {

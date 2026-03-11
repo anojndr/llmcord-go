@@ -3,11 +3,18 @@ package main
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
 )
+
+var atAIMentionRegexp = regexp.MustCompile(`(?i)\bat\s+ai\b`)
+var atAIMentionPrefixRegexp = regexp.MustCompile(`(?i)^\s*at\s+ai(?:$|[\s,.:;!?-]+)`)
+var atAIMentionStripRegexp = regexp.MustCompile(`(?i)\bat\s+ai\b(?:[^\S\n]*[,.:;!?-]+)?`)
+var horizontalWhitespaceRegexp = regexp.MustCompile(`[^\S\n]+`)
+var whitespaceBeforePunctuationRegexp = regexp.MustCompile(`([^\S\n]+)([,.:;!?])`)
 
 func runeCount(text string) int {
 	return utf8.RuneCountInString(text)
@@ -90,7 +97,30 @@ func trimBotMention(text string, botID string) string {
 		}
 	}
 
-	return text
+	prefixStripped := false
+
+	if loc := atAIMentionPrefixRegexp.FindStringIndex(text); loc != nil {
+		text = text[loc[1]:]
+		prefixStripped = true
+	}
+
+	if !hasAtAIMention(text) {
+		if prefixStripped {
+			return strings.TrimSpace(text)
+		}
+
+		return text
+	}
+
+	text = atAIMentionStripRegexp.ReplaceAllString(text, " ")
+	text = horizontalWhitespaceRegexp.ReplaceAllString(text, " ")
+	text = whitespaceBeforePunctuationRegexp.ReplaceAllString(text, "$2")
+
+	return strings.TrimSpace(text)
+}
+
+func hasAtAIMention(text string) bool {
+	return atAIMentionRegexp.FindStringIndex(text) != nil
 }
 
 func systemPromptNow(template string, now time.Time) string {
