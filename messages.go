@@ -449,16 +449,35 @@ func buildChatCompletionRequest(
 	}
 
 	modelParameters := loadedConfig.Models[providerSlashModel]
+	providerAPIKind := provider.apiKind()
+	extraBody := mergeExtraBody(provider.ExtraBody, modelParameters)
+
+	if providerAPIKind == providerAPIKindGemini {
+		resolvedModelName, normalizedExtraBody, normalizeErr := normalizeGeminiModelAlias(
+			modelName,
+			extraBody,
+		)
+		if normalizeErr != nil {
+			return chatCompletionRequest{}, fmt.Errorf(
+				"normalize gemini model alias %q: %w",
+				modelName,
+				normalizeErr,
+			)
+		}
+
+		modelName = resolvedModelName
+		extraBody = normalizedExtraBody
+	}
 
 	return chatCompletionRequest{
 		Provider: providerRequestConfig{
-			APIKind:      provider.apiKind(),
+			APIKind:      providerAPIKind,
 			BaseURL:      provider.BaseURL,
 			APIKey:       provider.primaryAPIKey(),
 			APIKeys:      provider.apiKeys(),
 			ExtraHeaders: provider.ExtraHeaders,
 			ExtraQuery:   provider.ExtraQuery,
-			ExtraBody:    mergeExtraBody(provider.ExtraBody, modelParameters),
+			ExtraBody:    extraBody,
 		},
 		Model:           modelName,
 		ConfiguredModel: providerSlashModel,

@@ -14,6 +14,7 @@ import (
 const (
 	testStreamedHelloText = "Hello"
 	testHeaderPresent     = "present"
+	testGeminiHelloPrompt = "hello"
 )
 
 type stubGeminiAPIClient struct {
@@ -99,6 +100,59 @@ func TestBuildGeminiGenerateContentRequestConvertsMessagesAndHTTPOptions(t *test
 
 	assertGeminiConvertedContents(t, contents)
 	assertGeminiGenerateContentConfig(t, config)
+}
+
+func TestBuildGeminiGenerateContentRequestIncludesThinkingAliasLevel(t *testing.T) {
+	t.Parallel()
+
+	provider := new(providerConfig)
+	provider.Type = string(providerAPIKindGemini)
+
+	var loadedConfig config
+
+	loadedConfig.Providers = map[string]providerConfig{
+		"google": *provider,
+	}
+	loadedConfig.Models = map[string]map[string]any{
+		"google/gemini-3.1-flash-lite-preview-minimal": nil,
+	}
+
+	request, err := buildChatCompletionRequest(
+		loadedConfig,
+		"google/gemini-3.1-flash-lite-preview-minimal",
+		[]chatMessage{{Role: messageRoleUser, Content: testGeminiHelloPrompt}},
+	)
+	if err != nil {
+		t.Fatalf("build chat completion request: %v", err)
+	}
+
+	contents, config, err := buildGeminiGenerateContentRequest(
+		context.Background(),
+		request,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("build gemini generate content request: %v", err)
+	}
+
+	if len(contents) != 1 ||
+		len(contents[0].Parts) != 1 ||
+		contents[0].Parts[0].Text != testGeminiHelloPrompt {
+		t.Fatalf("unexpected gemini contents: %#v", contents)
+	}
+
+	if config == nil || config.HTTPOptions == nil {
+		t.Fatalf("unexpected gemini config: %#v", config)
+	}
+
+	thinkingConfig, ok := config.HTTPOptions.ExtraBody["thinkingConfig"].(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected thinking config: %#v", config.HTTPOptions.ExtraBody)
+	}
+
+	if thinkingConfig["thinkingLevel"] != genai.ThinkingLevelMinimal {
+		t.Fatalf("unexpected thinking level: %#v", thinkingConfig["thinkingLevel"])
+	}
 }
 
 func TestGeminiClientStreamChatCompletionEmitsTextAndFinishReason(t *testing.T) {

@@ -195,6 +195,81 @@ func buildGeminiGenerateContentRequest(
 	return contents, config, nil
 }
 
+func normalizeGeminiModelAlias(
+	model string,
+	extraBody map[string]any,
+) (string, map[string]any, error) {
+	resolvedModel, thinkingLevel, hasAlias := geminiThinkingLevelAlias(model)
+	if !hasAlias {
+		return model, extraBody, nil
+	}
+
+	normalizedExtraBody := maps.Clone(extraBody)
+	if normalizedExtraBody == nil {
+		normalizedExtraBody = make(map[string]any, 1)
+	}
+
+	thinkingConfig, err := geminiThinkingConfigExtraBody(normalizedExtraBody)
+	if err != nil {
+		return "", nil, err
+	}
+
+	thinkingConfig["thinkingLevel"] = thinkingLevel
+	normalizedExtraBody["thinkingConfig"] = thinkingConfig
+
+	return resolvedModel, normalizedExtraBody, nil
+}
+
+func geminiThinkingLevelAlias(model string) (string, genai.ThinkingLevel, bool) {
+	lowerModel := strings.ToLower(model)
+	for _, alias := range []struct {
+		suffix        string
+		thinkingLevel genai.ThinkingLevel
+	}{
+		{
+			suffix:        "-minimal",
+			thinkingLevel: genai.ThinkingLevelMinimal,
+		},
+		{
+			suffix:        "-low",
+			thinkingLevel: genai.ThinkingLevelLow,
+		},
+		{
+			suffix:        "-medium",
+			thinkingLevel: genai.ThinkingLevelMedium,
+		},
+		{
+			suffix:        "-high",
+			thinkingLevel: genai.ThinkingLevelHigh,
+		},
+	} {
+		if !strings.HasSuffix(lowerModel, alias.suffix) || len(model) <= len(alias.suffix) {
+			continue
+		}
+
+		return model[:len(model)-len(alias.suffix)], alias.thinkingLevel, true
+	}
+
+	return "", genai.ThinkingLevelUnspecified, false
+}
+
+func geminiThinkingConfigExtraBody(extraBody map[string]any) (map[string]any, error) {
+	existingThinkingConfig, thinkingConfigExists := extraBody["thinkingConfig"]
+	if !thinkingConfigExists || existingThinkingConfig == nil {
+		return make(map[string]any, 1), nil
+	}
+
+	thinkingConfig, ok := existingThinkingConfig.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf(
+			"gemini extra_body thinkingConfig must be an object when using model aliases: %w",
+			os.ErrInvalid,
+		)
+	}
+
+	return maps.Clone(thinkingConfig), nil
+}
+
 func buildGeminiClientConfig(
 	provider providerRequestConfig,
 	httpClient *http.Client,
