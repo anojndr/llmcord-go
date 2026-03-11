@@ -187,6 +187,73 @@ func TestMaybeAugmentConversationWithPDFContentsAppendsReplyTargetPDFForNonGemin
 	}
 }
 
+func TestMaybeAugmentConversationWithPDFContentsAppendsAssistantReplyTargetSourcePDFForNonGeminiModel(t *testing.T) {
+	t.Parallel()
+
+	instance, sourceMessage := newPDFExtractionTestBot(
+		"message-1-assistant-reply",
+		"<@123>: what does the report say?",
+		nil,
+	)
+
+	assistantMessage := new(discordgo.Message)
+	assistantMessage.ID = "message-1-assistant"
+
+	originalSourceMessage := new(discordgo.Message)
+	originalSourceMessage.ID = "message-1-original"
+
+	sourceMessage.MessageReference = assistantMessage.Reference()
+
+	sourceNode := instance.nodes.getOrCreate(sourceMessage.ID)
+	sourceNode.parentMessage = assistantMessage
+
+	assistantNode := instance.nodes.getOrCreate(assistantMessage.ID)
+	assistantNode.initialized = true
+	assistantNode.role = messageRoleAssistant
+	assistantNode.text = "Earlier answer"
+	assistantNode.parentMessage = originalSourceMessage
+
+	originalSourceNode := instance.nodes.getOrCreate(originalSourceMessage.ID)
+	originalSourceNode.initialized = true
+	originalSourceNode.role = messageRoleUser
+	originalSourceNode.text = "<@123>: here is the original report"
+	originalSourceNode.media = []contentPart{
+		testPDFDocumentPart(t, "Reply-chain quarterly revenue grew by 18 percent.", true),
+	}
+
+	loadedConfig := testMediaAnalysisConfig()
+	loadedConfig.MaxImages = 2
+
+	augmentedConversation, err := instance.maybeAugmentConversationWithPDFContents(
+		context.Background(),
+		loadedConfig,
+		"openai/gpt-5",
+		sourceMessage,
+		[]chatMessage{{Role: messageRoleUser, Content: "<@123>: what does the report say?"}},
+	)
+	if err != nil {
+		t.Fatalf("augment conversation with assistant reply target pdf: %v", err)
+	}
+
+	parts, ok := augmentedConversation[0].Content.([]contentPart)
+	if !ok {
+		t.Fatalf("unexpected content type: %T", augmentedConversation[0].Content)
+	}
+
+	if len(parts) != 2 {
+		t.Fatalf("unexpected part count: %d", len(parts))
+	}
+
+	textValue, _ := parts[0]["text"].(string)
+	if !strings.Contains(textValue, "Reply-chain quarterly revenue grew by 18 percent.") {
+		t.Fatalf("expected original pdf text in prompt: %q", textValue)
+	}
+
+	if parts[1]["type"] != contentTypeImageURL {
+		t.Fatalf("expected extracted original pdf image part: %#v", parts[1])
+	}
+}
+
 func TestMaybeAugmentConversationWithPDFContentsHonorsImageLimit(t *testing.T) {
 	t.Parallel()
 
@@ -359,6 +426,64 @@ func TestBuildConversationSuppressesUnsupportedWarningForReplyTargetPDFs(t *test
 	)
 
 	if len(conversation) != 1 {
+		t.Fatalf("unexpected conversation length: %d", len(conversation))
+	}
+
+	if len(warnings) != 0 {
+		t.Fatalf("unexpected warnings: %#v", warnings)
+	}
+}
+
+func TestBuildConversationSuppressesUnsupportedWarningForAssistantReplyTargetSourcePDFs(t *testing.T) {
+	t.Parallel()
+
+	instance, sourceMessage := newPDFExtractionTestBot(
+		"message-6",
+		"<@123>: summarize the report again",
+		nil,
+	)
+
+	assistantMessage := new(discordgo.Message)
+	assistantMessage.ID = "message-6-assistant"
+
+	originalSourceMessage := new(discordgo.Message)
+	originalSourceMessage.ID = "message-6-original"
+
+	sourceMessage.MessageReference = assistantMessage.Reference()
+
+	sourceNode := instance.nodes.getOrCreate(sourceMessage.ID)
+	sourceNode.parentMessage = assistantMessage
+
+	assistantNode := instance.nodes.getOrCreate(assistantMessage.ID)
+	assistantNode.initialized = true
+	assistantNode.role = messageRoleAssistant
+	assistantNode.text = "Here is the summary."
+	assistantNode.parentMessage = originalSourceMessage
+
+	originalSourceNode := instance.nodes.getOrCreate(originalSourceMessage.ID)
+	originalSourceNode.initialized = true
+	originalSourceNode.role = messageRoleUser
+	originalSourceNode.text = "<@123>: here is the report"
+	originalSourceNode.media = []contentPart{
+		testPDFDocumentPart(t, "Quarterly revenue grew by 12 percent.", true),
+	}
+
+	conversation, warnings := instance.buildConversation(
+		context.Background(),
+		sourceMessage,
+		defaultMaxText,
+		messageContentOptions{
+			maxImages:      0,
+			allowAudio:     false,
+			allowDocuments: false,
+			allowVideo:     false,
+		},
+		defaultMaxMessages,
+		false,
+		true,
+	)
+
+	if len(conversation) != 3 {
 		t.Fatalf("unexpected conversation length: %d", len(conversation))
 	}
 
