@@ -19,12 +19,14 @@ const (
 	searchWarningText    = "Warning: web search unavailable"
 	messageRoleUser      = "user"
 	contentTypeAudioData = "audio_data"
+	contentTypeDocument  = "document_data"
 	contentTypeImageURL  = "image_url"
 	contentTypeText      = "text"
 	contentTypeVideoData = "video_data"
 	contentFieldBytes    = "data"
 	contentFieldFilename = "filename"
 	contentFieldMIMEType = "mime_type"
+	mimeTypePDF          = "application/pdf"
 	searchAnswerTemplate = `Answer the user query based on the web search results.
 
 User query:

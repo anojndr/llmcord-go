@@ -33,7 +33,7 @@ func TestBuildMessageTextReadsTextDisplayInsideSection(t *testing.T) {
 	}
 }
 
-func TestBuildMediaPartsSupportsAudioAndVideoAttachments(t *testing.T) {
+func TestBuildMediaPartsSupportsGeminiBinaryAttachments(t *testing.T) {
 	t.Parallel()
 
 	imageAttachment := new(discordgo.MessageAttachment)
@@ -43,6 +43,10 @@ func TestBuildMediaPartsSupportsAudioAndVideoAttachments(t *testing.T) {
 	audioAttachment := new(discordgo.MessageAttachment)
 	audioAttachment.ContentType = "audio/mpeg"
 	audioAttachment.Filename = "clip.mp3"
+
+	documentAttachment := new(discordgo.MessageAttachment)
+	documentAttachment.ContentType = mimeTypePDF
+	documentAttachment.Filename = "report.pdf"
 
 	videoAttachment := new(discordgo.MessageAttachment)
 	videoAttachment.ContentType = testVideoMIMEType
@@ -58,13 +62,17 @@ func TestBuildMediaPartsSupportsAudioAndVideoAttachments(t *testing.T) {
 			body:       []byte("audio-bytes"),
 		},
 		{
+			attachment: documentAttachment,
+			body:       []byte("document-bytes"),
+		},
+		{
 			attachment: videoAttachment,
 			body:       []byte("video-bytes"),
 		},
 	}
 
 	parts := buildMediaParts(payloads)
-	if len(parts) != 3 {
+	if len(parts) != 4 {
 		t.Fatalf("unexpected part count: %d", len(parts))
 	}
 
@@ -89,14 +97,24 @@ func TestBuildMediaPartsSupportsAudioAndVideoAttachments(t *testing.T) {
 		t.Fatalf("unexpected audio part: %#v", parts[1])
 	}
 
-	videoBytes, videoOK := parts[2][contentFieldBytes].([]byte)
-	if !videoOK {
-		t.Fatalf("unexpected video bytes: %#v", parts[2][contentFieldBytes])
+	documentBytes, documentOK := parts[2][contentFieldBytes].([]byte)
+	if !documentOK {
+		t.Fatalf("unexpected document bytes: %#v", parts[2][contentFieldBytes])
 	}
 
-	if parts[2]["type"] != contentTypeVideoData ||
+	if parts[2]["type"] != contentTypeDocument ||
+		string(documentBytes) != "document-bytes" {
+		t.Fatalf("unexpected document part: %#v", parts[2])
+	}
+
+	videoBytes, videoOK := parts[3][contentFieldBytes].([]byte)
+	if !videoOK {
+		t.Fatalf("unexpected video bytes: %#v", parts[3][contentFieldBytes])
+	}
+
+	if parts[3]["type"] != contentTypeVideoData ||
 		string(videoBytes) != "video-bytes" {
-		t.Fatalf("unexpected video part: %#v", parts[2])
+		t.Fatalf("unexpected video part: %#v", parts[3])
 	}
 }
 
@@ -112,6 +130,11 @@ func TestBuildMessageContentFiltersUnsupportedMedia(t *testing.T) {
 			"type":               contentTypeAudioData,
 			contentFieldBytes:    []byte("audio-bytes"),
 			contentFieldMIMEType: "audio/mpeg",
+		},
+		{
+			"type":               contentTypeDocument,
+			contentFieldBytes:    []byte("document-bytes"),
+			contentFieldMIMEType: mimeTypePDF,
 		},
 		{
 			"type":               contentTypeVideoData,
@@ -139,7 +162,7 @@ func TestBuildMessageContentFiltersUnsupportedMedia(t *testing.T) {
 		t.Fatalf("unexpected image count: %d", summary.imageCount)
 	}
 
-	if summary.unsupportedAttachmentCnt != 2 {
+	if summary.unsupportedAttachmentCnt != 3 {
 		t.Fatalf("unexpected unsupported count: %d", summary.unsupportedAttachmentCnt)
 	}
 
@@ -147,6 +170,7 @@ func TestBuildMessageContentFiltersUnsupportedMedia(t *testing.T) {
 
 	geminiOptions.maxImages = 1
 	geminiOptions.allowAudio = true
+	geminiOptions.allowDocuments = true
 	geminiOptions.allowVideo = true
 
 	content, summary = buildMessageContent(node, defaultMaxText, geminiOptions)
@@ -156,7 +180,7 @@ func TestBuildMessageContentFiltersUnsupportedMedia(t *testing.T) {
 		t.Fatalf("unexpected content type: %T", content)
 	}
 
-	if len(contentParts) != 4 {
+	if len(contentParts) != 5 {
 		t.Fatalf("unexpected part count with gemini media: %d", len(contentParts))
 	}
 
