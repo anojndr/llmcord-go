@@ -152,7 +152,7 @@ func TestGeminiClientStreamChatCompletionEmitsTextAndFinishReason(t *testing.T) 
 	assertGeminiClientConfig(t, capturedConfig)
 }
 
-func TestBuildGeminiGenerateContentRequestUploadsAudioAndVideoFiles(t *testing.T) {
+func TestBuildGeminiGenerateContentRequestUploadsBinaryFiles(t *testing.T) {
 	t.Parallel()
 
 	state := new(geminiUploadState)
@@ -219,8 +219,14 @@ func newGeminiMediaUploadStub(t *testing.T, state *geminiUploadState) stubGemini
 		uploadedFile.MIMEType = config.MIMEType
 		uploadedFile.State = genai.FileStateActive
 
+		if config.MIMEType == mimeTypePDF {
+			uploadedFile.Name = "files/document"
+			uploadedFile.URI = "https://example.com/files/document"
+		}
+
 		if config.MIMEType == testVideoMIMEType {
 			uploadedFile.Name = "files/video"
+			uploadedFile.URI = "https://example.com/files/video"
 			uploadedFile.State = genai.FileStateProcessing
 		}
 
@@ -266,6 +272,12 @@ func newGeminiMediaUploadRequest() chatCompletionRequest {
 						contentFieldFilename: "clip.mp3",
 					},
 					{
+						"type":               contentTypeDocument,
+						contentFieldBytes:    []byte("document-bytes"),
+						contentFieldMIMEType: mimeTypePDF,
+						contentFieldFilename: "report.pdf",
+					},
+					{
 						"type":               contentTypeVideoData,
 						contentFieldBytes:    []byte("video-bytes"),
 						contentFieldMIMEType: "video/mp4",
@@ -280,7 +292,7 @@ func newGeminiMediaUploadRequest() chatCompletionRequest {
 func assertGeminiMediaUploadCalls(t *testing.T, uploadCalls []geminiUploadCall) {
 	t.Helper()
 
-	if len(uploadCalls) != 2 {
+	if len(uploadCalls) != 3 {
 		t.Fatalf("unexpected upload count: %d", len(uploadCalls))
 	}
 
@@ -290,17 +302,23 @@ func assertGeminiMediaUploadCalls(t *testing.T, uploadCalls []geminiUploadCall) 
 		t.Fatalf("unexpected audio upload call: %#v", uploadCalls[0])
 	}
 
-	if uploadCalls[1].mimeType != "video/mp4" ||
-		uploadCalls[1].displayName != "clip.mp4" ||
-		string(uploadCalls[1].body) != "video-bytes" {
-		t.Fatalf("unexpected video upload call: %#v", uploadCalls[1])
+	if uploadCalls[1].mimeType != mimeTypePDF ||
+		uploadCalls[1].displayName != "report.pdf" ||
+		string(uploadCalls[1].body) != "document-bytes" {
+		t.Fatalf("unexpected document upload call: %#v", uploadCalls[1])
+	}
+
+	if uploadCalls[2].mimeType != "video/mp4" ||
+		uploadCalls[2].displayName != "clip.mp4" ||
+		string(uploadCalls[2].body) != "video-bytes" {
+		t.Fatalf("unexpected video upload call: %#v", uploadCalls[2])
 	}
 }
 
 func assertGeminiUploadedMediaParts(t *testing.T, contents []*genai.Content) {
 	t.Helper()
 
-	if len(contents) != 1 || len(contents[0].Parts) != 3 {
+	if len(contents) != 1 || len(contents[0].Parts) != 4 {
 		t.Fatalf("unexpected gemini contents: %#v", contents)
 	}
 
@@ -313,11 +331,19 @@ func assertGeminiUploadedMediaParts(t *testing.T, contents []*genai.Content) {
 	}
 
 	if contents[0].Parts[2].FileData == nil {
+		t.Fatal("expected uploaded document file part")
+	}
+
+	if contents[0].Parts[2].FileData.FileURI != "https://example.com/files/document" {
+		t.Fatalf("unexpected document URI: %#v", contents[0].Parts[2].FileData)
+	}
+
+	if contents[0].Parts[3].FileData == nil {
 		t.Fatal("expected uploaded video file part")
 	}
 
-	if contents[0].Parts[2].FileData.FileURI != "https://example.com/files/video" {
-		t.Fatalf("unexpected video URI: %#v", contents[0].Parts[2].FileData)
+	if contents[0].Parts[3].FileData.FileURI != "https://example.com/files/video" {
+		t.Fatalf("unexpected video URI: %#v", contents[0].Parts[3].FileData)
 	}
 }
 

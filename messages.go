@@ -290,6 +290,7 @@ func messageContentOptionsForModel(
 
 	if provider.apiKind() == providerAPIKindGemini {
 		options.allowAudio = true
+		options.allowDocuments = true
 		options.allowVideo = true
 	}
 
