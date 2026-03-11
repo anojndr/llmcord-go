@@ -69,7 +69,10 @@ func (instance *bot) maybeAugmentConversationWithGeminiMedia(
 		return conversation, nil
 	}
 
-	mediaParts, err := instance.audioVideoPartsForMessage(ctx, sourceMessage)
+	mediaParts, err := instance.audioVideoPartsForMessages(
+		ctx,
+		instance.attachmentAugmentationMessages(ctx, sourceMessage),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("load media parts for gemini analysis: %w", err)
 	}
@@ -165,11 +168,15 @@ func configuredGeminiMediaModel(loadedConfig config) (string, error) {
 	return "", fmt.Errorf("find configured gemini model: %w", os.ErrNotExist)
 }
 
-func (instance *bot) audioVideoPartsForMessage(
+func (instance *bot) audioVideoPartsForMessages(
 	ctx context.Context,
-	message *discordgo.Message,
+	messages []*discordgo.Message,
 ) ([]contentPart, error) {
-	return instance.messagePartsForMessage(ctx, message, partNeedsGeminiMediaAnalysis)
+	return instance.messagePartsForMessages(
+		ctx,
+		messages,
+		partNeedsGeminiMediaAnalysis,
+	)
 }
 
 func (instance *bot) imagePartsForMessage(
@@ -208,6 +215,75 @@ func (instance *bot) messagePartsForMessage(
 	}
 
 	return parts, nil
+}
+
+func (instance *bot) messagePartsForMessages(
+	ctx context.Context,
+	messages []*discordgo.Message,
+	includePart func(contentPart) bool,
+) ([]contentPart, error) {
+	parts := make([]contentPart, 0)
+
+	for _, message := range messages {
+		messageParts, err := instance.messagePartsForMessage(
+			ctx,
+			message,
+			includePart,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		parts = append(parts, messageParts...)
+	}
+
+	return parts, nil
+}
+
+func (instance *bot) attachmentAugmentationMessages(
+	ctx context.Context,
+	sourceMessage *discordgo.Message,
+) []*discordgo.Message {
+	if sourceMessage == nil {
+		return nil
+	}
+
+	messages := []*discordgo.Message{sourceMessage}
+
+	replyTarget := instance.immediateReplyTargetMessage(ctx, sourceMessage)
+	if replyTarget != nil {
+		messages = append(messages, replyTarget)
+	}
+
+	return messages
+}
+
+func (instance *bot) immediateReplyTargetMessage(
+	ctx context.Context,
+	sourceMessage *discordgo.Message,
+) *discordgo.Message {
+	if sourceMessage == nil || sourceMessage.MessageReference == nil {
+		return nil
+	}
+
+	node := instance.nodes.getOrCreate(sourceMessage.ID)
+
+	node.mu.Lock()
+	defer node.mu.Unlock()
+
+	if !node.initialized {
+		instance.initializeNode(ctx, sourceMessage, node)
+	}
+
+	if node.parentMessage == nil {
+		return nil
+	}
+
+	if node.parentMessage.ID != strings.TrimSpace(sourceMessage.MessageReference.MessageID) {
+		return nil
+	}
+
+	return node.parentMessage
 }
 
 func partNeedsGeminiMediaAnalysis(part contentPart) bool {

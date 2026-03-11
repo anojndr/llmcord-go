@@ -130,6 +130,63 @@ func TestMaybeAugmentConversationWithPDFContentsAppendsTextAndImagesForNonGemini
 	}
 }
 
+func TestMaybeAugmentConversationWithPDFContentsAppendsReplyTargetPDFForNonGeminiModel(t *testing.T) {
+	t.Parallel()
+
+	instance, sourceMessage := newPDFExtractionTestBot(
+		"message-1-reply",
+		"<@123>: summarize the replied report",
+		nil,
+	)
+
+	replyTargetMessage := new(discordgo.Message)
+	replyTargetMessage.ID = "message-1-parent"
+
+	sourceMessage.MessageReference = replyTargetMessage.Reference()
+
+	sourceNode := instance.nodes.getOrCreate(sourceMessage.ID)
+	sourceNode.parentMessage = replyTargetMessage
+
+	replyTargetNode := instance.nodes.getOrCreate(replyTargetMessage.ID)
+	replyTargetNode.initialized = true
+	replyTargetNode.role = messageRoleUser
+	replyTargetNode.media = []contentPart{
+		testPDFDocumentPart(t, "Reply-target quarterly revenue grew by 18 percent.", true),
+	}
+
+	loadedConfig := testMediaAnalysisConfig()
+	loadedConfig.MaxImages = 2
+
+	augmentedConversation, err := instance.maybeAugmentConversationWithPDFContents(
+		context.Background(),
+		loadedConfig,
+		"openai/gpt-5",
+		sourceMessage,
+		[]chatMessage{{Role: messageRoleUser, Content: "<@123>: summarize the replied report"}},
+	)
+	if err != nil {
+		t.Fatalf("augment conversation with replied pdf content: %v", err)
+	}
+
+	parts, ok := augmentedConversation[0].Content.([]contentPart)
+	if !ok {
+		t.Fatalf("unexpected content type: %T", augmentedConversation[0].Content)
+	}
+
+	if len(parts) != 2 {
+		t.Fatalf("unexpected part count: %d", len(parts))
+	}
+
+	textValue, _ := parts[0]["text"].(string)
+	if !strings.Contains(textValue, "Reply-target quarterly revenue grew by 18 percent.") {
+		t.Fatalf("expected replied pdf text in prompt: %q", textValue)
+	}
+
+	if parts[1]["type"] != contentTypeImageURL {
+		t.Fatalf("expected extracted replied pdf image part: %#v", parts[1])
+	}
+}
+
 func TestMaybeAugmentConversationWithPDFContentsHonorsImageLimit(t *testing.T) {
 	t.Parallel()
 
@@ -232,6 +289,59 @@ func TestBuildConversationSuppressesUnsupportedWarningForExtractedPDFs(t *testin
 			},
 		},
 	)
+
+	conversation, warnings := instance.buildConversation(
+		context.Background(),
+		sourceMessage,
+		defaultMaxText,
+		messageContentOptions{
+			maxImages:      0,
+			allowAudio:     false,
+			allowDocuments: false,
+			allowVideo:     false,
+		},
+		defaultMaxMessages,
+		false,
+		true,
+	)
+
+	if len(conversation) != 1 {
+		t.Fatalf("unexpected conversation length: %d", len(conversation))
+	}
+
+	if len(warnings) != 0 {
+		t.Fatalf("unexpected warnings: %#v", warnings)
+	}
+}
+
+func TestBuildConversationSuppressesUnsupportedWarningForReplyTargetPDFs(t *testing.T) {
+	t.Parallel()
+
+	instance, sourceMessage := newPDFExtractionTestBot(
+		"message-5",
+		"<@123>: summarize the replied report",
+		nil,
+	)
+
+	replyTargetMessage := new(discordgo.Message)
+	replyTargetMessage.ID = "message-5-parent"
+
+	sourceMessage.MessageReference = replyTargetMessage.Reference()
+
+	sourceNode := instance.nodes.getOrCreate(sourceMessage.ID)
+	sourceNode.parentMessage = replyTargetMessage
+
+	replyTargetNode := instance.nodes.getOrCreate(replyTargetMessage.ID)
+	replyTargetNode.initialized = true
+	replyTargetNode.role = messageRoleUser
+	replyTargetNode.media = []contentPart{
+		{
+			"type":               contentTypeDocument,
+			contentFieldBytes:    []byte("document-bytes"),
+			contentFieldMIMEType: mimeTypePDF,
+			contentFieldFilename: testPDFFilename,
+		},
+	}
 
 	conversation, warnings := instance.buildConversation(
 		context.Background(),

@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"mime"
 	"net/http"
+	"net/url"
+	"path"
 	"strings"
 
 	"github.com/bwmarrin/discordgo"
@@ -51,7 +54,10 @@ func (instance *bot) buildConversation(
 		}
 
 		content, summary := buildMessageContent(node, maxText, contentOptions)
-		if currentMessage.ID == sourceMessage.ID &&
+		if messageUsesAttachmentPreprocessing(
+			sourceMessage,
+			currentMessage.ID,
+		) &&
 			(useGeminiMediaAnalysis || usePDFExtraction) {
 			summary.unsupportedAttachmentCnt -= unsupportedPreprocessedPartCount(
 				node.media,
@@ -232,7 +238,7 @@ func supportedAttachmentCount(attachments []*discordgo.MessageAttachment) int {
 			continue
 		}
 
-		if attachmentIsSupported(attachment.ContentType) {
+		if attachmentIsSupported(attachmentContentType(attachment)) {
 			count++
 		}
 	}
@@ -275,7 +281,7 @@ func buildMessageText(
 	}
 
 	for _, payload := range payloads {
-		if attachmentIsText(payload.attachment.ContentType) {
+		if attachmentIsText(attachmentContentType(payload.attachment)) {
 			textParts = append(textParts, string(payload.body))
 		}
 	}
@@ -346,7 +352,7 @@ func buildMediaParts(payloads []attachmentPayload) []contentPart {
 }
 
 func attachmentPayloadToContentPart(payload attachmentPayload) (contentPart, bool) {
-	contentType := strings.TrimSpace(payload.attachment.ContentType)
+	contentType := attachmentContentType(payload.attachment)
 
 	switch {
 	case strings.HasPrefix(contentType, "image/"):
@@ -362,21 +368,25 @@ func attachmentPayloadToContentPart(payload attachmentPayload) (contentPart, boo
 
 		return part, true
 	case strings.HasPrefix(contentType, "audio/"):
-		return binaryAttachmentContentPart(contentTypeAudioData, payload), true
+		return binaryAttachmentContentPart(contentTypeAudioData, payload, contentType), true
 	case attachmentIsDocument(contentType):
-		return binaryAttachmentContentPart(contentTypeDocument, payload), true
+		return binaryAttachmentContentPart(contentTypeDocument, payload, contentType), true
 	case strings.HasPrefix(contentType, "video/"):
-		return binaryAttachmentContentPart(contentTypeVideoData, payload), true
+		return binaryAttachmentContentPart(contentTypeVideoData, payload, contentType), true
 	default:
 		return nil, false
 	}
 }
 
-func binaryAttachmentContentPart(partType string, payload attachmentPayload) contentPart {
+func binaryAttachmentContentPart(
+	partType string,
+	payload attachmentPayload,
+	contentType string,
+) contentPart {
 	part := make(contentPart)
 	part["type"] = partType
 	part[contentFieldBytes] = payload.body
-	part[contentFieldMIMEType] = strings.TrimSpace(payload.attachment.ContentType)
+	part[contentFieldMIMEType] = strings.TrimSpace(contentType)
 
 	if payload.attachment.Filename != "" {
 		part[contentFieldFilename] = payload.attachment.Filename
@@ -399,7 +409,7 @@ func (instance *bot) fetchSupportedAttachments(
 			continue
 		}
 
-		if !attachmentIsSupported(attachment.ContentType) {
+		if !attachmentIsSupported(attachmentContentType(attachment)) {
 			continue
 		}
 
@@ -472,6 +482,50 @@ func attachmentIsDocument(contentType string) bool {
 	return strings.HasPrefix(strings.TrimSpace(contentType), mimeTypePDF)
 }
 
+func attachmentContentType(attachment *discordgo.MessageAttachment) string {
+	if attachment == nil {
+		return ""
+	}
+
+	contentType := strings.TrimSpace(attachment.ContentType)
+	if contentType != "" {
+		return contentType
+	}
+
+	if inferredContentType := inferredAttachmentContentType(
+		attachment.Filename,
+		attachment.URL,
+	); inferredContentType != "" {
+		return inferredContentType
+	}
+
+	return ""
+}
+
+func inferredAttachmentContentType(filename string, rawURL string) string {
+	for _, candidate := range []string{filename, attachmentURLPath(rawURL)} {
+		extension := strings.ToLower(strings.TrimSpace(path.Ext(candidate)))
+		if extension == "" {
+			continue
+		}
+
+		if inferredContentType := strings.TrimSpace(mime.TypeByExtension(extension)); inferredContentType != "" {
+			return inferredContentType
+		}
+	}
+
+	return ""
+}
+
+func attachmentURLPath(rawURL string) string {
+	parsedURL, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return rawURL
+	}
+
+	return parsedURL.Path
+}
+
 func filterContentPartsForOptions(
 	parts []contentPart,
 	options messageContentOptions,
@@ -538,6 +592,25 @@ func unsupportedPreprocessedPartCount(
 	}
 
 	return count
+}
+
+func messageUsesAttachmentPreprocessing(
+	sourceMessage *discordgo.Message,
+	messageID string,
+) bool {
+	if sourceMessage == nil || strings.TrimSpace(messageID) == "" {
+		return false
+	}
+
+	if messageID == sourceMessage.ID {
+		return true
+	}
+
+	if sourceMessage.MessageReference == nil {
+		return false
+	}
+
+	return messageID == strings.TrimSpace(sourceMessage.MessageReference.MessageID)
 }
 
 func (instance *bot) resolveParentMessage(message *discordgo.Message) (*discordgo.Message, bool) {

@@ -137,6 +137,78 @@ func TestMaybeAugmentConversationWithGeminiMediaAppendsAnalysesForNonGeminiModel
 	}
 }
 
+func TestMaybeAugmentConversationWithGeminiMediaAppendsReplyTargetAnalysesForNonGeminiModel(t *testing.T) {
+	t.Parallel()
+
+	expectedAnalyses := []string{
+		"Audio transcription per timestamp:\n\n0s to 10s: reply target hello there",
+		"Video description per timestamp:\n\n0s to 10s: reply target somebody waves",
+	}
+
+	chatClient, callIndex := newGeminiMediaAnalysisChatClient(t, expectedAnalyses)
+	instance, sourceMessage := newMediaAnalysisTestBot(
+		chatClient,
+		"message-1-reply",
+		nil,
+	)
+
+	replyTargetMessage := new(discordgo.Message)
+	replyTargetMessage.ID = "message-1-parent"
+
+	sourceMessage.MessageReference = replyTargetMessage.Reference()
+
+	sourceNode := instance.nodes.getOrCreate(sourceMessage.ID)
+	sourceNode.parentMessage = replyTargetMessage
+	sourceNode.role = messageRoleUser
+	sourceNode.text = "<@123>: summarize the replied media"
+
+	replyTargetNode := instance.nodes.getOrCreate(replyTargetMessage.ID)
+	replyTargetNode.initialized = true
+	replyTargetNode.role = messageRoleUser
+	replyTargetNode.media = []contentPart{
+		{
+			"type":               contentTypeAudioData,
+			contentFieldBytes:    []byte("audio-bytes"),
+			contentFieldMIMEType: "audio/mpeg",
+			contentFieldFilename: "reply.mp3",
+		},
+		{
+			"type":               contentTypeVideoData,
+			contentFieldBytes:    []byte("video-bytes"),
+			contentFieldMIMEType: testVideoMIMEType,
+			contentFieldFilename: "reply.mp4",
+		},
+	}
+
+	augmentedConversation, err := instance.maybeAugmentConversationWithGeminiMedia(
+		context.Background(),
+		testMediaAnalysisConfig(),
+		"openai/gpt-5",
+		sourceMessage,
+		[]chatMessage{{Role: messageRoleUser, Content: "<@123>: summarize the replied media"}},
+	)
+	if err != nil {
+		t.Fatalf("augment conversation with replied gemini media: %v", err)
+	}
+
+	if *callIndex != 2 {
+		t.Fatalf("unexpected gemini analysis call count: %d", *callIndex)
+	}
+
+	content, ok := augmentedConversation[0].Content.(string)
+	if !ok {
+		t.Fatalf("unexpected augmented content type: %T", augmentedConversation[0].Content)
+	}
+
+	expectedText := expectedMediaAnalysisUserText(
+		"<@123>: summarize the replied media",
+		expectedAnalyses,
+	)
+	if content != expectedText {
+		t.Fatalf("unexpected augmented text: %q", content)
+	}
+}
+
 func TestMaybeAugmentConversationWithGeminiMediaSkipsGeminiModel(t *testing.T) {
 	t.Parallel()
 
@@ -223,6 +295,68 @@ func TestMaybeAugmentConversationWithGeminiMediaRequiresGeminiModel(t *testing.T
 
 	if !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestBuildConversationSuppressesUnsupportedWarningForReplyTargetGeminiMedia(t *testing.T) {
+	t.Parallel()
+
+	instance, sourceMessage := newMediaAnalysisTestBot(
+		newStubChatClient(func(
+			_ context.Context,
+			_ chatCompletionRequest,
+			_ func(streamDelta) error,
+		) error {
+			t.Fatal("unexpected chat completion request")
+
+			return nil
+		}),
+		"message-4",
+		nil,
+	)
+
+	replyTargetMessage := new(discordgo.Message)
+	replyTargetMessage.ID = "message-4-parent"
+
+	sourceMessage.MessageReference = replyTargetMessage.Reference()
+
+	sourceNode := instance.nodes.getOrCreate(sourceMessage.ID)
+	sourceNode.parentMessage = replyTargetMessage
+	sourceNode.role = messageRoleUser
+	sourceNode.text = "<@123>: summarize the replied media"
+
+	replyTargetNode := instance.nodes.getOrCreate(replyTargetMessage.ID)
+	replyTargetNode.initialized = true
+	replyTargetNode.role = messageRoleUser
+	replyTargetNode.media = []contentPart{
+		{
+			"type":               contentTypeAudioData,
+			contentFieldBytes:    []byte("audio-bytes"),
+			contentFieldMIMEType: "audio/mpeg",
+		},
+	}
+
+	conversation, warnings := instance.buildConversation(
+		context.Background(),
+		sourceMessage,
+		defaultMaxText,
+		messageContentOptions{
+			maxImages:      0,
+			allowAudio:     false,
+			allowDocuments: false,
+			allowVideo:     false,
+		},
+		defaultMaxMessages,
+		true,
+		false,
+	)
+
+	if len(conversation) != 1 {
+		t.Fatalf("unexpected conversation length: %d", len(conversation))
+	}
+
+	if len(warnings) != 0 {
+		t.Fatalf("unexpected warnings: %#v", warnings)
 	}
 }
 
