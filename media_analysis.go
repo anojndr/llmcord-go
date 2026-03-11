@@ -248,14 +248,50 @@ func (instance *bot) attachmentAugmentationMessages(
 		return nil
 	}
 
-	messages := []*discordgo.Message{sourceMessage}
+	messages := make([]*discordgo.Message, 0, smallMapCapacity)
+	messageIDs := make(map[string]struct{}, smallMapCapacity)
+	messages = appendUniqueAttachmentContextMessage(
+		messages,
+		messageIDs,
+		sourceMessage,
+	)
 
 	replyTarget := instance.immediateReplyTargetMessage(ctx, sourceMessage)
-	if replyTarget != nil {
-		messages = append(messages, replyTarget)
-	}
+	messages = appendUniqueAttachmentContextMessage(
+		messages,
+		messageIDs,
+		replyTarget,
+	)
+	messages = appendUniqueAttachmentContextMessage(
+		messages,
+		messageIDs,
+		instance.replyTargetAttachmentSourceMessage(ctx, replyTarget),
+	)
 
 	return messages
+}
+
+func (instance *bot) attachmentPreprocessingMessageIDSet(
+	ctx context.Context,
+	sourceMessage *discordgo.Message,
+) map[string]struct{} {
+	messages := instance.attachmentAugmentationMessages(ctx, sourceMessage)
+	messageIDs := make(map[string]struct{}, len(messages))
+
+	for _, message := range messages {
+		if message == nil {
+			continue
+		}
+
+		messageID := strings.TrimSpace(message.ID)
+		if messageID == "" {
+			continue
+		}
+
+		messageIDs[messageID] = struct{}{}
+	}
+
+	return messageIDs
 }
 
 func (instance *bot) immediateReplyTargetMessage(
@@ -280,6 +316,53 @@ func (instance *bot) immediateReplyTargetMessage(
 	}
 
 	if node.parentMessage.ID != strings.TrimSpace(sourceMessage.MessageReference.MessageID) {
+		return nil
+	}
+
+	return node.parentMessage
+}
+
+func appendUniqueAttachmentContextMessage(
+	messages []*discordgo.Message,
+	messageIDs map[string]struct{},
+	message *discordgo.Message,
+) []*discordgo.Message {
+	if message == nil {
+		return messages
+	}
+
+	messageID := strings.TrimSpace(message.ID)
+	if messageID == "" {
+		return messages
+	}
+
+	if _, ok := messageIDs[messageID]; ok {
+		return messages
+	}
+
+	messageIDs[messageID] = struct{}{}
+
+	return append(messages, message)
+}
+
+func (instance *bot) replyTargetAttachmentSourceMessage(
+	ctx context.Context,
+	replyTarget *discordgo.Message,
+) *discordgo.Message {
+	if replyTarget == nil {
+		return nil
+	}
+
+	node := instance.nodes.getOrCreate(replyTarget.ID)
+
+	node.mu.Lock()
+	defer node.mu.Unlock()
+
+	if !node.initialized {
+		instance.initializeNode(ctx, replyTarget, node)
+	}
+
+	if node.role != messageRoleAssistant {
 		return nil
 	}
 

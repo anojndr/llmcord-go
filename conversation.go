@@ -43,6 +43,10 @@ func (instance *bot) buildConversation(
 ) ([]chatMessage, []string) {
 	messages := make([]chatMessage, 0, maxMessages)
 	warningSet := make(map[string]struct{})
+	preprocessedMessageIDs := instance.attachmentPreprocessingMessageIDSet(
+		ctx,
+		sourceMessage,
+	)
 
 	currentMessage := sourceMessage
 	for currentMessage != nil && len(messages) < maxMessages {
@@ -54,10 +58,7 @@ func (instance *bot) buildConversation(
 		}
 
 		content, summary := buildMessageContent(node, maxText, contentOptions)
-		if messageUsesAttachmentPreprocessing(
-			sourceMessage,
-			currentMessage.ID,
-		) &&
+		if _, ok := preprocessedMessageIDs[strings.TrimSpace(currentMessage.ID)]; ok &&
 			(useGeminiMediaAnalysis || usePDFExtraction) {
 			summary.unsupportedAttachmentCnt -= unsupportedPreprocessedPartCount(
 				node.media,
@@ -592,25 +593,6 @@ func unsupportedPreprocessedPartCount(
 	}
 
 	return count
-}
-
-func messageUsesAttachmentPreprocessing(
-	sourceMessage *discordgo.Message,
-	messageID string,
-) bool {
-	if sourceMessage == nil || strings.TrimSpace(messageID) == "" {
-		return false
-	}
-
-	if messageID == sourceMessage.ID {
-		return true
-	}
-
-	if sourceMessage.MessageReference == nil {
-		return false
-	}
-
-	return messageID == strings.TrimSpace(sourceMessage.MessageReference.MessageID)
 }
 
 func (instance *bot) resolveParentMessage(message *discordgo.Message) (*discordgo.Message, bool) {
