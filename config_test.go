@@ -78,6 +78,10 @@ models:
 	if loadedConfig.MediaAnalysisModel != "" {
 		t.Fatalf("unexpected default media analysis model: %q", loadedConfig.MediaAnalysisModel)
 	}
+
+	if loadedConfig.WebSearch.PrimaryProvider != webSearchProviderKindMCP {
+		t.Fatalf("unexpected default web search primary provider: %q", loadedConfig.WebSearch.PrimaryProvider)
+	}
 }
 
 func TestLoadConfigRejectsMissingModels(t *testing.T) {
@@ -267,6 +271,79 @@ models:
 	}
 }
 
+func TestLoadConfigAllowsTavilyWebSearchAPIKeyLists(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	configText := `
+bot_token: discord-token
+providers:
+  openai:
+    base_url: https://api.example.com/v1
+models:
+  openai/first-model:
+web_search:
+  tavily:
+    api_key:
+      - tavily-primary
+      - tavily-backup
+      - tavily-primary
+`
+
+	err := os.WriteFile(configPath, []byte(configText), 0o600)
+	if err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	loadedConfig, err := loadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	if loadedConfig.WebSearch.Tavily.APIKey != "tavily-primary" {
+		t.Fatalf("unexpected primary Tavily API key: %q", loadedConfig.WebSearch.Tavily.APIKey)
+	}
+
+	if !slices.Equal(
+		loadedConfig.WebSearch.Tavily.APIKeys,
+		[]string{"tavily-primary", "tavily-backup"},
+	) {
+		t.Fatalf("unexpected Tavily API keys: %#v", loadedConfig.WebSearch.Tavily.APIKeys)
+	}
+}
+
+func TestLoadConfigUsesConfiguredPrimaryWebSearchProvider(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	configText := `
+bot_token: discord-token
+providers:
+  openai:
+    base_url: https://api.example.com/v1
+models:
+  openai/first-model:
+web_search:
+  primary_provider: tavily
+`
+
+	err := os.WriteFile(configPath, []byte(configText), 0o600)
+	if err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	loadedConfig, err := loadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	if loadedConfig.WebSearch.PrimaryProvider != webSearchProviderKindTavily {
+		t.Fatalf("unexpected web search primary provider: %q", loadedConfig.WebSearch.PrimaryProvider)
+	}
+}
+
 func TestLoadConfigAllowsOpenAICodexProviderWithoutBaseURL(t *testing.T) {
 	t.Parallel()
 
@@ -320,6 +397,33 @@ models:
 	_, err = loadConfig(configPath)
 	if err == nil {
 		t.Fatal("expected unsupported provider type to fail validation")
+	}
+}
+
+func TestLoadConfigRejectsUnsupportedWebSearchPrimaryProvider(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	configText := `
+bot_token: discord-token
+providers:
+  openai:
+    base_url: https://api.example.com/v1
+models:
+  openai/first-model:
+web_search:
+  primary_provider: unsupported
+`
+
+	err := os.WriteFile(configPath, []byte(configText), 0o600)
+	if err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	_, err = loadConfig(configPath)
+	if err == nil {
+		t.Fatal("expected unsupported web search primary provider to fail validation")
 	}
 }
 
