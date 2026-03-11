@@ -13,18 +13,21 @@ const (
 	userQuerySectionName      = "User query"
 	youtubeSectionName        = "YouTube URL content"
 	redditSectionName         = "Reddit URL content"
+	websiteSectionName        = "Website URL content"
 	webSearchSectionName      = "Web search results"
 	youtubeSectionDescription = "the extracted YouTube URL content"
 	redditSectionDescription  = "the extracted Reddit URL content"
+	websiteSectionDescription = "the extracted website URL content"
 	webSearchStandalonePrompt = "the web search results"
 	webSearchCombinedPrompt   = "web search results"
-	maxPromptSections         = 3
+	maxPromptSections         = 4
 )
 
 type augmentedUserPrompt struct {
 	UserQuery        string
 	YouTubeContent   string
 	RedditContent    string
+	WebsiteContent   string
 	WebSearchResults string
 }
 
@@ -66,6 +69,7 @@ func parseAugmentedUserPrompt(text string) augmentedUserPrompt {
 			UserQuery:        trimmedText,
 			YouTubeContent:   "",
 			RedditContent:    "",
+			WebsiteContent:   "",
 			WebSearchResults: "",
 		}
 	}
@@ -78,6 +82,7 @@ func parseAugmentedUserPrompt(text string) augmentedUserPrompt {
 			UserQuery:        trimmedText,
 			YouTubeContent:   "",
 			RedditContent:    "",
+			WebsiteContent:   "",
 			WebSearchResults: "",
 		}
 	}
@@ -88,6 +93,7 @@ func parseAugmentedUserPrompt(text string) augmentedUserPrompt {
 			UserQuery:        strings.TrimSpace(remaining),
 			YouTubeContent:   "",
 			RedditContent:    "",
+			WebsiteContent:   "",
 			WebSearchResults: "",
 		}
 	}
@@ -96,6 +102,7 @@ func parseAugmentedUserPrompt(text string) augmentedUserPrompt {
 		UserQuery:        strings.TrimSpace(remaining[:sectionMatches[0].Start]),
 		YouTubeContent:   "",
 		RedditContent:    "",
+		WebsiteContent:   "",
 		WebSearchResults: "",
 	}
 
@@ -130,6 +137,15 @@ func appendRedditContentToConversation(
 ) ([]chatMessage, error) {
 	return appendContextToConversation(conversation, func(prompt *augmentedUserPrompt) {
 		prompt.RedditContent = strings.TrimSpace(formattedContent)
+	})
+}
+
+func appendWebsiteContentToConversation(
+	conversation []chatMessage,
+	formattedContent string,
+) ([]chatMessage, error) {
+	return appendContextToConversation(conversation, func(prompt *augmentedUserPrompt) {
+		prompt.WebsiteContent = strings.TrimSpace(formattedContent)
 	})
 }
 
@@ -230,6 +246,7 @@ func appendContextToMessageContent(
 			UserQuery:        "",
 			YouTubeContent:   "",
 			RedditContent:    "",
+			WebsiteContent:   "",
 			WebSearchResults: "",
 		}
 		transform(&prompt)
@@ -365,6 +382,15 @@ func (prompt augmentedUserPrompt) activeSections() []promptSection {
 		})
 	}
 
+	if trimmedValue := strings.TrimSpace(prompt.WebsiteContent); trimmedValue != "" {
+		sections = append(sections, promptSection{
+			Name:                  websiteSectionName,
+			Value:                 trimmedValue,
+			StandaloneDescription: websiteSectionDescription,
+			CombinedDescription:   websiteSectionDescription,
+		})
+	}
+
 	if trimmedValue := strings.TrimSpace(prompt.WebSearchResults); trimmedValue != "" {
 		sections = append(sections, promptSection{
 			Name:                  webSearchSectionName,
@@ -405,6 +431,7 @@ func findPromptSectionMatches(text string) []promptSectionMatch {
 	for _, sectionName := range []string{
 		youtubeSectionName,
 		redditSectionName,
+		websiteSectionName,
 		webSearchSectionName,
 	} {
 		marker := "\n\n" + sectionName + ":\n"
@@ -440,6 +467,8 @@ func setPromptSectionValue(prompt *augmentedUserPrompt, sectionName string, valu
 		prompt.YouTubeContent = trimmedValue
 	case redditSectionName:
 		prompt.RedditContent = trimmedValue
+	case websiteSectionName:
+		prompt.WebsiteContent = trimmedValue
 	case webSearchSectionName:
 		prompt.WebSearchResults = trimmedValue
 	}

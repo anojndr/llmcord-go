@@ -48,6 +48,7 @@ const (
 	webSearchTimeout                     = 30 * time.Second
 	rentryRequestTimeout                 = 30 * time.Second
 	redditRequestTimeout                 = 30 * time.Second
+	websiteRequestTimeout                = 30 * time.Second
 	youtubeRequestTimeout                = 30 * time.Second
 	typingRefreshInterval                = 8 * time.Second
 	editDelay                            = time.Second
