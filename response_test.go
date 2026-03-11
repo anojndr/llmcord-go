@@ -160,6 +160,77 @@ func TestBuildPlainComponentsAddsShowSourcesButton(t *testing.T) {
 	}
 }
 
+func TestBuildResponseEmbedSetsConfiguredModelAsAuthor(t *testing.T) {
+	t.Parallel()
+
+	embed := buildResponseEmbed("hello", "openai/gpt-5.1", embedColorComplete, nil)
+	if embed.Author == nil {
+		t.Fatal("expected embed author to be set")
+	}
+
+	if embed.Author.Name != "openai/gpt-5.1" {
+		t.Fatalf("unexpected embed author: %#v", embed.Author)
+	}
+}
+
+func TestRenderEmbedResponseIncludesConfiguredModelAsAuthor(t *testing.T) {
+	t.Parallel()
+
+	const (
+		channelID    = "channel-1"
+		sourceID     = "source-message"
+		modelName    = "openai/gpt-5.1"
+		responseID   = "assistant-message"
+		responseBody = "hello"
+	)
+
+	sourceMessage := new(discordgo.Message)
+	sourceMessage.ID = sourceID
+	sourceMessage.ChannelID = channelID
+
+	session, err := discordgo.New("Bot discord-token")
+	if err != nil {
+		t.Fatalf("create discord session: %v", err)
+	}
+
+	client := new(http.Client)
+	client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		t.Helper()
+
+		if request.Method != http.MethodPost ||
+			request.URL.Path != "/api/v9/channels/"+channelID+"/messages" {
+			t.Fatalf("unexpected request: %s %s", request.Method, request.URL.Path)
+		}
+
+		assertRequestEmbedAuthor(t, request, modelName, responseBody)
+
+		sentMessage := new(discordgo.Message)
+		sentMessage.ID = responseID
+		sentMessage.ChannelID = channelID
+
+		return newJSONResponse(t, request, sentMessage), nil
+	})
+	session.Client = client
+
+	instance := new(bot)
+	instance.session = session
+	instance.nodes = newMessageNodeStore(10)
+
+	tracker := newResponseTracker(sourceMessage, nil, modelName)
+
+	err = instance.renderEmbedResponse(
+		context.Background(),
+		tracker,
+		nil,
+		[]string{responseBody},
+		finishReasonStop,
+		true,
+	)
+	if err != nil {
+		t.Fatalf("render embed response: %v", err)
+	}
+}
+
 var errUnexpectedTestRequest = errors.New("unexpected test request")
 
 func TestGenerateAndSendResponseKeepsAssistantReplyInConversationHistory(t *testing.T) {
@@ -285,6 +356,45 @@ func newJSONResponse(t *testing.T, request *http.Request, payload any) *http.Res
 	response.Request = request
 
 	return response
+}
+
+func assertRequestEmbedAuthor(
+	t *testing.T,
+	request *http.Request,
+	expectedModelName string,
+	expectedDescription string,
+) {
+	t.Helper()
+
+	var payload map[string]any
+
+	err := json.NewDecoder(request.Body).Decode(&payload)
+	if err != nil {
+		t.Fatalf("decode request body: %v", err)
+	}
+
+	embeds, embedsOK := payload["embeds"].([]any)
+	if !embedsOK || len(embeds) != 1 {
+		t.Fatalf("unexpected embeds payload: %#v", payload["embeds"])
+	}
+
+	embed, embedOK := embeds[0].(map[string]any)
+	if !embedOK {
+		t.Fatalf("unexpected embed payload: %#v", embeds[0])
+	}
+
+	author, authorOK := embed["author"].(map[string]any)
+	if !authorOK {
+		t.Fatalf("unexpected embed author payload: %#v", embed["author"])
+	}
+
+	if author["name"] != expectedModelName {
+		t.Fatalf("unexpected embed author name: %#v", author["name"])
+	}
+
+	if embed["description"] != expectedDescription {
+		t.Fatalf("unexpected embed description: %#v", embed["description"])
+	}
 }
 
 func newResponseHistoryTestBot(session *discordgo.Session, assistantReplyText string) *bot {

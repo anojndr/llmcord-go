@@ -35,7 +35,8 @@ func TestOpenAICodexClientStreamChatCompletion(t *testing.T) {
 			map[string]any{"feature": "enabled"},
 			map[string]any{"verbosity": "high", "reasoning_effort": "medium"},
 		),
-		Model: testOpenAICodexModel,
+		Model:           testOpenAICodexModel,
+		ConfiguredModel: "",
 		Messages: []chatMessage{
 			{Role: openAICodexRoleSystem, Content: "Be brief."},
 			{
@@ -81,8 +82,9 @@ func TestOpenAICodexClientRejectsInvalidTokenWithoutAccountHeader(t *testing.T) 
 
 	client := newOpenAICodexClient(new(http.Client))
 	request := chatCompletionRequest{
-		Provider: newOpenAICodexProviderRequestConfig("not-a-jwt", "", nil, nil, nil),
-		Model:    testOpenAICodexModel,
+		Provider:        newOpenAICodexProviderRequestConfig("not-a-jwt", "", nil, nil, nil),
+		Model:           testOpenAICodexModel,
+		ConfiguredModel: "",
 		Messages: []chatMessage{
 			{Role: messageRoleUser, Content: testOpenAICodexHelloText},
 		},

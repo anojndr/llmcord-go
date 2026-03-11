@@ -432,7 +432,8 @@ func buildChatCompletionRequest(
 			ExtraQuery:   provider.ExtraQuery,
 			ExtraBody:    mergeExtraBody(provider.ExtraBody, modelParameters),
 		},
-		Model:    modelName,
-		Messages: messages,
+		Model:           modelName,
+		ConfiguredModel: providerSlashModel,
+		Messages:        messages,
 	}, nil
 }

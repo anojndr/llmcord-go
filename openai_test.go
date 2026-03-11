@@ -113,7 +113,8 @@ func TestOpenAIClientStreamChatCompletion(t *testing.T) {
 				"temperature": 0.2,
 			},
 		},
-		Model: "gpt-test",
+		Model:           "gpt-test",
+		ConfiguredModel: "",
 		Messages: []chatMessage{
 			{Role: "user", Content: "hello"},
 		},
@@ -167,8 +168,9 @@ func TestOpenAIClientStreamChatCompletionReturnsStatusErrors(t *testing.T) {
 			ExtraQuery:   nil,
 			ExtraBody:    nil,
 		},
-		Model:    "gpt-test",
-		Messages: []chatMessage{{Role: "user", Content: "hello"}},
+		Model:           "gpt-test",
+		ConfiguredModel: "",
+		Messages:        []chatMessage{{Role: "user", Content: "hello"}},
 	}
 
 	err := client.streamChatCompletion(context.Background(), request, func(streamDelta) error {
