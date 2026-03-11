@@ -271,6 +271,17 @@ func (instance *bot) currentModelForConfig(loadedConfig config) string {
 	return instance.currentModel
 }
 
+func (instance *bot) currentModelForChannelIDs(
+	loadedConfig config,
+	channelIDs []string,
+) string {
+	if modelName, ok := loadedConfig.lockedModelForChannelIDs(channelIDs); ok {
+		return modelName
+	}
+
+	return instance.currentModelForConfig(loadedConfig)
+}
+
 func (instance *bot) setCurrentModel(modelName string) {
 	instance.modelMu.Lock()
 	defer instance.modelMu.Unlock()

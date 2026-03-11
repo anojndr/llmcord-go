@@ -99,6 +99,9 @@ models:
 
   ollama/llama4:
 
+channel_model_locks:
+  # "123456789012345678": google/gemini-3.1-flash-lite-preview
+
 search_decider_model: google/gemini-3.1-flash-lite-preview
 media_analysis_model: google/gemini-3.1-flash-lite-preview
 

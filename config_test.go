@@ -135,6 +135,38 @@ search_decider_model: openai/second-model
 	}
 }
 
+func TestLoadConfigUsesConfiguredChannelModelLocks(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	configText := `
+bot_token: discord-token
+providers:
+  openai:
+    base_url: https://api.example.com/v1
+models:
+  openai/first-model:
+  openai/second-model:
+channel_model_locks:
+  channel-1: openai/second-model
+`
+
+	err := os.WriteFile(configPath, []byte(configText), 0o600)
+	if err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	loadedConfig, err := loadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	if lockedModel, ok := loadedConfig.ChannelModelLocks["channel-1"]; !ok || lockedModel != secondTestModel {
+		t.Fatalf("unexpected channel model locks: %#v", loadedConfig.ChannelModelLocks)
+	}
+}
+
 func TestLoadConfigUsesConfiguredMediaAnalysisModel(t *testing.T) {
 	t.Parallel()
 
@@ -314,6 +346,33 @@ media_analysis_model: openai/first-model
 	_, err = loadConfig(configPath)
 	if err == nil {
 		t.Fatal("expected non-gemini media analysis model to fail validation")
+	}
+}
+
+func TestLoadConfigRejectsUnknownChannelModelLock(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	configText := `
+bot_token: discord-token
+providers:
+  openai:
+    base_url: https://api.example.com/v1
+models:
+  openai/first-model:
+channel_model_locks:
+  channel-1: openai/second-model
+`
+
+	err := os.WriteFile(configPath, []byte(configText), 0o600)
+	if err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	_, err = loadConfig(configPath)
+	if err == nil {
+		t.Fatal("expected unknown channel lock model to fail validation")
 	}
 }
 

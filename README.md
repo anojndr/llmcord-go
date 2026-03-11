@@ -8,7 +8,7 @@ This bot turns Discord into a reply-chain frontend for OpenAI-compatible LLM API
 
 - Reply-chain conversations in guilds, DMs, and public threads
 - Reply-chain responses without pinging the replied author
-- `/model` and `/searchdecidermodel` autocomplete and model switching for all users
+- `/model` and `/searchdecidermodel` autocomplete and model switching for all users, with optional per-channel main-model locks
 - Streaming embed responses with automatic message splitting and model labels in the embed author
 - Plain-response mode using Discord text display components
 - Text attachment ingestion, image attachment support for vision models, Gemini PDF/audio/video understanding via the native Files API, local PDF text and image extraction for non-Gemini models, and Gemini sidecar audio/video preprocessing for non-Gemini models
@@ -80,6 +80,7 @@ The config schema stays close to the original Python project.
 | --- | --- |
 | `providers` | Provider definitions keyed by provider name. OpenAI-compatible providers use `base_url`. Gemini providers use `type: gemini` and the native `google.golang.org/genai` client; `base_url` is optional and can override the Gemini API endpoint or version. OpenAI Codex providers use `type: openai-codex`; `base_url` is optional and defaults to `https://chatgpt.com/backend-api`. `api_key` accepts either a single string or a YAML list of strings. When multiple keys are configured, the bot tries them in order on auth/quota-style failures before surfacing an error. Providers also support optional `extra_headers`, `extra_query`, and `extra_body`. |
 | `models` | Ordered list of `<provider>/<model>` entries. The first entry is the startup default. Append `:vision` to enable image support heuristics. Gemini models also accept `-minimal`, `-low`, `-medium`, or `-high` suffix aliases to send the base model with `thinkingConfig.thinkingLevel` set accordingly. OpenAI Codex models also accept `-none`, `-minimal`, `-low`, `-medium`, `-high`, or `-xhigh` suffix aliases to send the base model with `reasoning.effort` set accordingly. |
+| `channel_model_locks` | Optional map of Discord channel IDs to configured reply models. Messages in those channels always use the locked model, and `/model` is disabled there. This affects only the main reply model; `search_decider_model` still works independently. |
 | `search_decider_model` | Optional `<provider>/<model>` entry used for deciding whether web search is required. Defaults to the first configured model. |
 | `media_analysis_model` | Optional `<provider>/<model>` entry used for Gemini preprocessing of audio/video attachments before non-Gemini replies. Must reference a configured Gemini model. If omitted, the bot falls back to `search_decider_model` when that model is Gemini, or the first configured Gemini model. |
 | `system_prompt` | Optional prompt prepended to every request. `{date}` and `{time}` are expanded using the host time zone. |
@@ -100,6 +101,7 @@ golangci-lint run --default=all
 ## Notes
 
 - The bot reads `config.yaml` on each message and `/model` autocomplete request, so configuration changes apply without restarting.
+- `channel_model_locks` matches the current channel first, then its parent thread/forum context when applicable. Locked channels only affect reply generation; `/searchdecidermodel` and search-decider execution are unchanged.
 - Gemini providers use the official `google.golang.org/genai` SDK. Existing configs that still point at `https://generativelanguage.googleapis.com/.../openai` are detected and routed through the native Gemini client automatically.
 - Gemini requests can include Discord PDF, audio, and video attachments. Those attachments are uploaded through the Gemini Files API before `GenerateContent`, so Gemini models can inspect them without relying on inline request blobs. Gemini's document vision meaningfully applies to PDFs; other text-like attachments continue to be ingested as plain text when Discord reports them as `text/*`.
 - When the selected reply model is not Gemini, Discord PDF attachments from the triggering user message are extracted locally. The bot appends the extracted PDF text to the latest user message and, for vision-capable models, also appends extracted PDF images up to `max_images`.
