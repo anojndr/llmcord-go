@@ -16,7 +16,7 @@ This bot turns Discord into a reply-chain frontend for OpenAI-compatible LLM API
 - Automatic YouTube URL enrichment that fetches transcripts, titles, channel names, and up to 50 top comments without an API key
 - Automatic Reddit URL enrichment that fetches thread metadata, post bodies, and nested comments from Reddit's `.json` endpoint without an API key
 - Search-decider flow that can skip search or use Exa MCP and Tavily in configurable primary/fallback order when current information is needed
-- `Show Sources` button on searched replies that reveals the queries and parsed source URLs used
+- `View on Rentry` button on final replies that publishes the assistant response to Rentry on demand for easier reading, plus a `Show Sources` button on searched replies that reveals the queries and parsed source URLs used
 - Hot-reloaded `config.yaml`
 - Permission controls for users, roles, and channels
 - Bounded, mutex-protected message cache to avoid unbounded growth
@@ -119,6 +119,7 @@ golangci-lint run --default=all
 - When the search decider requires web search, the bot uses `web_search.primary_provider` to decide whether Exa MCP or Tavily runs first, and automatically falls back to the other backend on failure.
 - Exa MCP uses `https://mcp.exa.ai/mcp` and does not require an API key by default.
 - Tavily uses `https://api.tavily.com/search`, requests `include_raw_content: "text"`, and includes the full raw page text for each returned URL in the search context. If multiple Tavily keys are configured, the bot retries them in order on auth/quota-style failures before moving on.
+- Clicking `View on Rentry` sends only that assistant reply to `https://rentry.co/` at click time, then returns the generated Rentry URL in an ephemeral Discord response. The bot caches that URL per Discord message while the in-memory message node is retained.
 - OpenAI Codex providers stream through the ChatGPT Codex Responses API. If `extra_headers.chatgpt-account-id` is not set, the bot derives it from the JWT in `api_key`.
 - If a provider has multiple `api_key` entries, the router retries the request with the next configured key when the current key is rejected or rate-limited before any response is streamed.
 - The implementation targets chat-completions-style OpenAI-compatible APIs, OpenAI Codex Responses streaming, and native Gemini GenerateContent streaming.

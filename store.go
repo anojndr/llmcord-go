@@ -14,6 +14,7 @@ type contentPart map[string]any
 type messageNode struct {
 	role              string
 	text              string
+	rentryURL         string
 	media             []contentPart
 	searchMetadata    *searchMetadata
 	hasBadAttachments bool

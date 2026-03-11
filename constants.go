@@ -6,6 +6,7 @@ const (
 	defaultConfigPath                    = "config.yaml"
 	defaultExaMCPEndpoint                = "https://mcp.exa.ai/mcp?tools=web_search_exa"
 	defaultTavilySearchEndpoint          = "https://api.tavily.com/search"
+	defaultRentryEndpoint                = "https://rentry.co/"
 	defaultStatusMessage                 = "github.com/jakobdylanc/llmcord"
 	defaultMaxText                       = 100000
 	defaultMaxImages                     = 5
@@ -29,6 +30,8 @@ const (
 	searchDeciderModelOptionDescription  = "Search decider model to view or use"
 	showSourcesButtonCustomID            = "show_sources"
 	showSourcesButtonLabel               = "Show Sources"
+	viewOnRentryButtonCustomID           = "view_on_rentry"
+	viewOnRentryButtonLabel              = "View on Rentry"
 	messageRoleAssistant                 = "assistant"
 	finishReasonStop                     = "stop"
 	maxSearchQueries                     = 5
@@ -43,6 +46,7 @@ const (
 	tikTokRenderTimeout                  = 2 * time.Minute
 	tikTokRequestTimeout                 = 30 * time.Second
 	webSearchTimeout                     = 30 * time.Second
+	rentryRequestTimeout                 = 30 * time.Second
 	redditRequestTimeout                 = 30 * time.Second
 	youtubeRequestTimeout                = 30 * time.Second
 	typingRefreshInterval                = 8 * time.Second

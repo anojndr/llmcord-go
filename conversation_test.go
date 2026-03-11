@@ -7,7 +7,10 @@ import (
 	"github.com/bwmarrin/discordgo"
 )
 
-const testVideoMIMEType = "video/mp4"
+const (
+	testAssistantReply = "assistant reply"
+	testVideoMIMEType  = "video/mp4"
+)
 
 func TestBuildMessageTextReadsTextDisplayInsideSection(t *testing.T) {
 	t.Parallel()
@@ -21,14 +24,14 @@ func TestBuildMessageTextReadsTextDisplayInsideSection(t *testing.T) {
 
 	section := new(discordgo.Section)
 	section.Components = []discordgo.MessageComponent{
-		discordgo.TextDisplay{Content: "assistant reply"},
+		discordgo.TextDisplay{Content: testAssistantReply},
 	}
 	section.Accessory = button
 
 	message.Components = []discordgo.MessageComponent{section}
 
 	text := buildMessageText(message, "", nil)
-	if text != "assistant reply" {
+	if text != testAssistantReply {
 		t.Fatalf("unexpected message text: %q", text)
 	}
 }

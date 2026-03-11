@@ -479,7 +479,7 @@ func assertGeminiConvertedContents(t *testing.T, contents []*genai.Content) {
 		t.Fatalf("unexpected image MIME type: %q", contents[0].Parts[1].InlineData.MIMEType)
 	}
 
-	if string(contents[0].Parts[1].InlineData.Data) != "hello" {
+	if string(contents[0].Parts[1].InlineData.Data) != testGeminiHelloPrompt {
 		t.Fatalf("unexpected image bytes: %q", string(contents[0].Parts[1].InlineData.Data))
 	}
 
