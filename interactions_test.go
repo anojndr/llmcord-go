@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -16,6 +17,20 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (function roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
 	return function(request)
+}
+
+type fakeRentryClient struct {
+	url       string
+	err       error
+	callCount int
+	texts     []string
+}
+
+func (client *fakeRentryClient) createEntry(_ context.Context, text string) (string, error) {
+	client.callCount++
+	client.texts = append(client.texts, text)
+
+	return client.url, client.err
 }
 
 func TestHandleModelCommandAllowsNonAdminSwitch(t *testing.T) {
@@ -235,6 +250,93 @@ func TestHandleInteractionCreateRespondsToShowSourcesButton(t *testing.T) {
 	}
 }
 
+func TestHandleInteractionCreateRespondsToViewOnRentryButton(t *testing.T) {
+	t.Parallel()
+
+	var response discordgo.InteractionResponse
+
+	session := newInteractionTestSession(t, &response)
+	rentry := new(fakeRentryClient)
+	rentry.url = "https://rentry.co/example"
+
+	instance := new(bot)
+	instance.nodes = newMessageNodeStore(10)
+	instance.rentry = rentry
+
+	node := instance.nodes.getOrCreate("response-message")
+	node.mu.Lock()
+	node.text = testAssistantReply
+	node.initialized = true
+	node.mu.Unlock()
+
+	interaction := newComponentInteraction("response-message", viewOnRentryButtonCustomID)
+
+	instance.handleInteractionCreate(session, interaction)
+
+	if response.Data == nil {
+		t.Fatal("expected interaction response data")
+	}
+
+	if response.Data.Flags != discordgo.MessageFlagsEphemeral {
+		t.Fatalf("unexpected response flags: %v", response.Data.Flags)
+	}
+
+	if !containsFold(response.Data.Content, rentry.url) {
+		t.Fatalf("expected Rentry url in response content: %q", response.Data.Content)
+	}
+
+	if rentry.callCount != 1 {
+		t.Fatalf("unexpected Rentry call count: %d", rentry.callCount)
+	}
+
+	if len(rentry.texts) != 1 || rentry.texts[0] != testAssistantReply {
+		t.Fatalf("unexpected Rentry request texts: %#v", rentry.texts)
+	}
+
+	node.mu.Lock()
+	defer node.mu.Unlock()
+
+	if node.rentryURL != rentry.url {
+		t.Fatalf("unexpected cached Rentry url: %q", node.rentryURL)
+	}
+}
+
+func TestHandleInteractionCreateReusesCachedRentryURL(t *testing.T) {
+	t.Parallel()
+
+	var response discordgo.InteractionResponse
+
+	session := newInteractionTestSession(t, &response)
+	rentry := new(fakeRentryClient)
+
+	instance := new(bot)
+	instance.nodes = newMessageNodeStore(10)
+	instance.rentry = rentry
+
+	node := instance.nodes.getOrCreate("response-message")
+	node.mu.Lock()
+	node.text = testAssistantReply
+	node.initialized = true
+	node.rentryURL = "https://rentry.co/cached"
+	node.mu.Unlock()
+
+	interaction := newComponentInteraction("response-message", viewOnRentryButtonCustomID)
+
+	instance.handleInteractionCreate(session, interaction)
+
+	if response.Data == nil {
+		t.Fatal("expected interaction response data")
+	}
+
+	if !containsFold(response.Data.Content, node.rentryURL) {
+		t.Fatalf("expected cached Rentry url in response content: %q", response.Data.Content)
+	}
+
+	if rentry.callCount != 0 {
+		t.Fatalf("expected cached Rentry url to skip creation, got %d calls", rentry.callCount)
+	}
+}
+
 func writeModelConfig(t *testing.T) string {
 	t.Helper()
 
@@ -404,6 +506,10 @@ func newConfiguredModelCommandInteraction(
 }
 
 func newShowSourcesInteraction(messageID string) *discordgo.InteractionCreate {
+	return newComponentInteraction(messageID, showSourcesButtonCustomID)
+}
+
+func newComponentInteraction(messageID string, customID string) *discordgo.InteractionCreate {
 	message := new(discordgo.Message)
 	message.ID = messageID
 
@@ -414,7 +520,7 @@ func newShowSourcesInteraction(messageID string) *discordgo.InteractionCreate {
 	interaction.Message = message
 
 	componentData := new(discordgo.MessageComponentInteractionData)
-	componentData.CustomID = showSourcesButtonCustomID
+	componentData.CustomID = customID
 	interaction.Data = *componentData
 
 	result := new(discordgo.InteractionCreate)

@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 
 	"github.com/bwmarrin/discordgo"
 )
@@ -73,6 +75,8 @@ func (instance *bot) handleMessageComponentInteraction(
 	switch componentData.CustomID {
 	case showSourcesButtonCustomID:
 		return instance.handleShowSourcesButton(session, interaction)
+	case viewOnRentryButtonCustomID:
+		return instance.handleViewOnRentryButton(session, interaction)
 	default:
 		return nil
 	}
@@ -104,6 +108,85 @@ func (instance *bot) handleShowSourcesButton(
 		session,
 		interaction.Interaction,
 		formatSearchSourcesMessage(searchMetadata),
+		discordgo.MessageFlagsEphemeral,
+	)
+}
+
+func (instance *bot) handleViewOnRentryButton(
+	session *discordgo.Session,
+	interaction *discordgo.InteractionCreate,
+) error {
+	if interaction == nil || interaction.Message == nil {
+		return fmt.Errorf("view on Rentry interaction without message: %w", os.ErrInvalid)
+	}
+
+	messageNode, ok := instance.nodes.get(interaction.Message.ID)
+	if !ok {
+		return respondInteractionTextWithFlags(
+			session,
+			interaction.Interaction,
+			"No response content available.",
+			discordgo.MessageFlagsEphemeral,
+		)
+	}
+
+	messageNode.mu.Lock()
+	cachedURL := strings.TrimSpace(messageNode.rentryURL)
+	responseText := messageNode.text
+	initialized := messageNode.initialized
+	messageNode.mu.Unlock()
+
+	if cachedURL != "" {
+		return respondInteractionTextWithFlags(
+			session,
+			interaction.Interaction,
+			"View on Rentry: "+cachedURL,
+			discordgo.MessageFlagsEphemeral,
+		)
+	}
+
+	if !initialized || strings.TrimSpace(responseText) == "" {
+		return respondInteractionTextWithFlags(
+			session,
+			interaction.Interaction,
+			"Response text is not ready yet.",
+			discordgo.MessageFlagsEphemeral,
+		)
+	}
+
+	if instance.rentry == nil {
+		return respondInteractionTextWithFlags(
+			session,
+			interaction.Interaction,
+			"Rentry is unavailable right now.",
+			discordgo.MessageFlagsEphemeral,
+		)
+	}
+
+	rentryURL, err := instance.rentry.createEntry(context.Background(), responseText)
+	if err != nil {
+		slog.Warn("create Rentry entry", "message_id", interaction.Message.ID, "error", err)
+
+		return respondInteractionTextWithFlags(
+			session,
+			interaction.Interaction,
+			"Couldn't create a Rentry page right now.",
+			discordgo.MessageFlagsEphemeral,
+		)
+	}
+
+	messageNode.mu.Lock()
+	if strings.TrimSpace(messageNode.rentryURL) == "" {
+		messageNode.rentryURL = rentryURL
+	} else {
+		rentryURL = messageNode.rentryURL
+	}
+	messageNode.mu.Unlock()
+
+	return respondInteractionTextWithFlags(
+		session,
+		interaction.Interaction,
+		"View on Rentry: "+rentryURL,
 		discordgo.MessageFlagsEphemeral,
 	)
 }
