@@ -86,12 +86,29 @@ func TestBuildRenderSpecsAddsSourcesButtonOnlyToFinalSearchedSegment(t *testing.
 		t.Fatalf("unexpected spec count: %#v", specs)
 	}
 
-	if specs[0].showSourcesButton {
-		t.Fatalf("expected no sources button on first segment: %#v", specs[0])
+	if specs[0].actions.showSources || specs[0].actions.showRentry {
+		t.Fatalf("expected no action buttons on first segment: %#v", specs[0])
 	}
 
-	if !specs[1].showSourcesButton {
-		t.Fatalf("expected sources button on final segment: %#v", specs[1])
+	if !specs[1].actions.showSources || !specs[1].actions.showRentry {
+		t.Fatalf("expected sources and Rentry buttons on final segment: %#v", specs[1])
+	}
+}
+
+func TestBuildRenderSpecsAddsRentryButtonToFinalNonSearchedSegment(t *testing.T) {
+	t.Parallel()
+
+	specs := buildRenderSpecs([]string{"only"}, "stop", true, false)
+	if len(specs) != 1 {
+		t.Fatalf("unexpected spec count: %#v", specs)
+	}
+
+	if specs[0].actions.showSources {
+		t.Fatalf("expected no sources button on non-searched response: %#v", specs[0])
+	}
+
+	if !specs[0].actions.showRentry {
+		t.Fatalf("expected Rentry button on final non-searched response: %#v", specs[0])
 	}
 }
 
@@ -137,26 +154,51 @@ func TestNewReplyMessageDisablesReplyAuthorMention(t *testing.T) {
 	}
 }
 
-func TestBuildPlainComponentsAddsShowSourcesButton(t *testing.T) {
+func TestBuildPlainComponentsAddsActionButtons(t *testing.T) {
 	t.Parallel()
 
-	components := buildPlainComponents("hello", true)
-	if len(components) != 1 {
+	components := buildPlainComponents("hello", responseActions{
+		showSources: true,
+		showRentry:  true,
+	})
+	if len(components) != 2 {
 		t.Fatalf("unexpected component count: %#v", components)
 	}
 
-	section, sectionOK := components[0].(*discordgo.Section)
-	if !sectionOK {
-		t.Fatalf("expected section component, got %T", components[0])
+	textDisplay, textDisplayOK := components[0].(*discordgo.TextDisplay)
+	if !textDisplayOK {
+		t.Fatalf("expected text display component, got %T", components[0])
 	}
 
-	button, buttonOK := section.Accessory.(*discordgo.Button)
-	if !buttonOK {
-		t.Fatalf("expected button accessory, got %T", section.Accessory)
+	if textDisplay.Content != "hello" {
+		t.Fatalf("unexpected text display content: %#v", textDisplay)
 	}
 
-	if button.CustomID != showSourcesButtonCustomID {
-		t.Fatalf("unexpected button custom id: %q", button.CustomID)
+	row, rowOK := components[1].(*discordgo.ActionsRow)
+	if !rowOK {
+		t.Fatalf("expected action row component, got %T", components[1])
+	}
+
+	if len(row.Components) != 2 {
+		t.Fatalf("unexpected action row button count: %#v", row.Components)
+	}
+
+	firstButton, firstButtonOK := row.Components[0].(*discordgo.Button)
+	if !firstButtonOK {
+		t.Fatalf("expected first row button, got %T", row.Components[0])
+	}
+
+	if firstButton.CustomID != showSourcesButtonCustomID {
+		t.Fatalf("unexpected first button custom id: %q", firstButton.CustomID)
+	}
+
+	secondButton, secondButtonOK := row.Components[1].(*discordgo.Button)
+	if !secondButtonOK {
+		t.Fatalf("expected second row button, got %T", row.Components[1])
+	}
+
+	if secondButton.CustomID != viewOnRentryButtonCustomID {
+		t.Fatalf("unexpected second button custom id: %q", secondButton.CustomID)
 	}
 }
 

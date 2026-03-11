@@ -18,6 +18,7 @@ type bot struct {
 	httpClient                *http.Client
 	chatCompletions           chatCompletionClient
 	webSearch                 webSearchClient
+	rentry                    rentryClient
 	tiktok                    tiktokContentClient
 	youtube                   youtubeContentClient
 	reddit                    redditContentClient
@@ -43,6 +44,7 @@ func newBot(configPath string, loadedConfig config) (*bot, error) {
 	instance.httpClient = httpClient
 	instance.chatCompletions = newChatCompletionRouter(httpClient)
 	instance.webSearch = newWebSearchClient(httpClient)
+	instance.rentry = newRentryClient(httpClient, defaultRentryEndpoint)
 	instance.tiktok = newTikTokClient(httpClient)
 	instance.youtube = newYouTubeClient(httpClient)
 	instance.reddit = newRedditClient(httpClient)
