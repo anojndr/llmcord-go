@@ -201,16 +201,13 @@ func newConfiguredModelCommand(
 func (instance *bot) startTyping(ctx context.Context, channelID string) func() {
 	stop := make(chan struct{})
 
+	instance.sendTypingIndicator(channelID)
+
 	go func() {
 		ticker := time.NewTicker(typingRefreshInterval)
 		defer ticker.Stop()
 
 		for {
-			err := instance.session.ChannelTyping(channelID)
-			if err != nil {
-				slog.Warn("send typing indicator", "channel_id", channelID, "error", err)
-			}
-
 			select {
 			case <-ctx.Done():
 				return
@@ -218,11 +215,20 @@ func (instance *bot) startTyping(ctx context.Context, channelID string) func() {
 				return
 			case <-ticker.C:
 			}
+
+			instance.sendTypingIndicator(channelID)
 		}
 	}()
 
 	return func() {
 		close(stop)
+	}
+}
+
+func (instance *bot) sendTypingIndicator(channelID string) {
+	err := instance.session.ChannelTyping(channelID)
+	if err != nil {
+		slog.Warn("send typing indicator", "channel_id", channelID, "error", err)
 	}
 }
 
