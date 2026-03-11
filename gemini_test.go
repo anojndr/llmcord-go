@@ -11,6 +11,11 @@ import (
 	"google.golang.org/genai"
 )
 
+const (
+	testStreamedHelloText = "Hello"
+	testHeaderPresent     = "present"
+)
+
 type stubGeminiAPIClient struct {
 	generateContentStream func(
 		context.Context,
@@ -136,7 +141,7 @@ func TestGeminiClientStreamChatCompletionEmitsTextAndFinishReason(t *testing.T) 
 		t.Fatalf("stream chat completion: %v", err)
 	}
 
-	if joinedText != "Hello" {
+	if joinedText != testStreamedHelloText {
 		t.Fatalf("unexpected streamed text: %q", joinedText)
 	}
 
@@ -322,7 +327,7 @@ func newGeminiBuildTestRequest() chatCompletionRequest {
 			BaseURL: "https://generativelanguage.googleapis.com/v1beta/openai",
 			APIKey:  "",
 			ExtraHeaders: map[string]any{
-				"X-Test": "present",
+				"X-Test": testHeaderPresent,
 			},
 			ExtraQuery: nil,
 			ExtraBody: map[string]any{
@@ -534,7 +539,7 @@ func TestBuildGeminiClientConfigUsesProviderHTTPOptions(t *testing.T) {
 		t.Fatalf("unexpected gemini API version: %q", clientConfig.HTTPOptions.APIVersion)
 	}
 
-	if clientConfig.HTTPOptions.Headers.Get("X-Test") != "present" {
+	if clientConfig.HTTPOptions.Headers.Get("X-Test") != testHeaderPresent {
 		t.Fatalf("unexpected gemini extra header: %q", clientConfig.HTTPOptions.Headers.Get("X-Test"))
 	}
 }

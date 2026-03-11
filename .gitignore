@@ -7,6 +7,9 @@
 
 !*.md
 !*.go
+!cmd/
+!cmd/*/
+!cmd/*/*.go
 
 !Dockerfile
 !config-example.yaml

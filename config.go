@@ -93,8 +93,9 @@ type providerConfig struct {
 type providerAPIKind string
 
 const (
-	providerAPIKindOpenAI providerAPIKind = "openai"
-	providerAPIKindGemini providerAPIKind = "gemini"
+	providerAPIKindOpenAI      providerAPIKind = "openai"
+	providerAPIKindOpenAICodex providerAPIKind = "openai-codex"
+	providerAPIKindGemini      providerAPIKind = "gemini"
 )
 
 type rawConfig struct {
@@ -349,6 +350,8 @@ func (provider providerConfig) apiKind() providerAPIKind {
 		}
 
 		return providerAPIKindOpenAI
+	case string(providerAPIKindOpenAICodex):
+		return providerAPIKindOpenAICodex
 	case string(providerAPIKindGemini):
 		return providerAPIKindGemini
 	default:
@@ -363,6 +366,8 @@ func (provider providerConfig) validate(providerName string) error {
 			return fmt.Errorf("provider %q is missing base_url: %w", providerName, os.ErrInvalid)
 		}
 
+		return nil
+	case providerAPIKindOpenAICodex:
 		return nil
 	case providerAPIKindGemini:
 		return nil
