@@ -36,6 +36,7 @@ func (instance *bot) buildConversation(
 	contentOptions messageContentOptions,
 	maxMessages int,
 	useGeminiMediaAnalysis bool,
+	usePDFExtraction bool,
 ) ([]chatMessage, []string) {
 	messages := make([]chatMessage, 0, maxMessages)
 	warningSet := make(map[string]struct{})
@@ -50,10 +51,13 @@ func (instance *bot) buildConversation(
 		}
 
 		content, summary := buildMessageContent(node, maxText, contentOptions)
-		if useGeminiMediaAnalysis && currentMessage.ID == sourceMessage.ID {
-			summary.unsupportedAttachmentCnt -= unsupportedGeminiMediaPartCount(
+		if currentMessage.ID == sourceMessage.ID &&
+			(useGeminiMediaAnalysis || usePDFExtraction) {
+			summary.unsupportedAttachmentCnt -= unsupportedPreprocessedPartCount(
 				node.media,
 				contentOptions,
+				useGeminiMediaAnalysis,
+				usePDFExtraction,
 			)
 			if summary.unsupportedAttachmentCnt < 0 {
 				summary.unsupportedAttachmentCnt = 0
@@ -506,9 +510,11 @@ func filterContentPartsForOptions(
 	return filteredParts
 }
 
-func unsupportedGeminiMediaPartCount(
+func unsupportedPreprocessedPartCount(
 	media []contentPart,
 	options messageContentOptions,
+	useGeminiMediaAnalysis bool,
+	usePDFExtraction bool,
 ) int {
 	count := 0
 
@@ -517,11 +523,15 @@ func unsupportedGeminiMediaPartCount(
 
 		switch partType {
 		case contentTypeAudioData:
-			if !options.allowAudio {
+			if useGeminiMediaAnalysis && !options.allowAudio {
 				count++
 			}
 		case contentTypeVideoData:
-			if !options.allowVideo {
+			if useGeminiMediaAnalysis && !options.allowVideo {
+				count++
+			}
+		case contentTypeDocument:
+			if usePDFExtraction && !options.allowDocuments {
 				count++
 			}
 		}

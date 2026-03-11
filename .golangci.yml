@@ -14,7 +14,11 @@ linters:
           allow:
             - $gostd
             - github.com/bwmarrin/discordgo
+            - github.com/ledongthuc/pdf
             - github.com/modelcontextprotocol/go-sdk/mcp
+            - github.com/pdfcpu/pdfcpu/pkg/api
+            - github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model
+            - github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types
             - google.golang.org/genai
             - gopkg.in/yaml.v3
     funlen:

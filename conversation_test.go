@@ -37,7 +37,7 @@ func TestBuildMediaPartsSupportsGeminiBinaryAttachments(t *testing.T) {
 	t.Parallel()
 
 	imageAttachment := new(discordgo.MessageAttachment)
-	imageAttachment.ContentType = "image/png"
+	imageAttachment.ContentType = mimeTypePNG
 	imageAttachment.Filename = "image.png"
 
 	audioAttachment := new(discordgo.MessageAttachment)
@@ -46,7 +46,7 @@ func TestBuildMediaPartsSupportsGeminiBinaryAttachments(t *testing.T) {
 
 	documentAttachment := new(discordgo.MessageAttachment)
 	documentAttachment.ContentType = mimeTypePDF
-	documentAttachment.Filename = "report.pdf"
+	documentAttachment.Filename = testPDFFilename
 
 	videoAttachment := new(discordgo.MessageAttachment)
 	videoAttachment.ContentType = testVideoMIMEType

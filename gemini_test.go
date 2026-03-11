@@ -275,7 +275,7 @@ func newGeminiMediaUploadRequest() chatCompletionRequest {
 						"type":               contentTypeDocument,
 						contentFieldBytes:    []byte("document-bytes"),
 						contentFieldMIMEType: mimeTypePDF,
-						contentFieldFilename: "report.pdf",
+						contentFieldFilename: testPDFFilename,
 					},
 					{
 						"type":               contentTypeVideoData,
@@ -303,7 +303,7 @@ func assertGeminiMediaUploadCalls(t *testing.T, uploadCalls []geminiUploadCall) 
 	}
 
 	if uploadCalls[1].mimeType != mimeTypePDF ||
-		uploadCalls[1].displayName != "report.pdf" ||
+		uploadCalls[1].displayName != testPDFFilename ||
 		string(uploadCalls[1].body) != "document-bytes" {
 		t.Fatalf("unexpected document upload call: %#v", uploadCalls[1])
 	}
@@ -421,7 +421,7 @@ func assertGeminiConvertedContents(t *testing.T, contents []*genai.Content) {
 		t.Fatal("expected inline image data")
 	}
 
-	if contents[0].Parts[1].InlineData.MIMEType != "image/png" {
+	if contents[0].Parts[1].InlineData.MIMEType != mimeTypePNG {
 		t.Fatalf("unexpected image MIME type: %q", contents[0].Parts[1].InlineData.MIMEType)
 	}
 

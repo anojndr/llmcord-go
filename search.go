@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/bwmarrin/discordgo"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -27,6 +28,7 @@ const (
 	contentFieldFilename = "filename"
 	contentFieldMIMEType = "mime_type"
 	mimeTypePDF          = "application/pdf"
+	mimeTypePNG          = "image/png"
 	searchAnswerTemplate = `Answer the user query based on the web search results.
 
 User query:
@@ -169,9 +171,17 @@ func newExaSearchClient(httpClient *http.Client) exaSearchClient {
 func (instance *bot) maybeAugmentConversationWithWebSearch(
 	ctx context.Context,
 	loadedConfig config,
+	providerSlashModel string,
+	sourceMessage *discordgo.Message,
 	conversation []chatMessage,
 ) ([]chatMessage, *searchMetadata, []string, error) {
-	decision, err := instance.decideWebSearch(ctx, loadedConfig, conversation)
+	decision, err := instance.decideWebSearch(
+		ctx,
+		loadedConfig,
+		providerSlashModel,
+		sourceMessage,
+		conversation,
+	)
 	if err != nil {
 		slog.Warn("decide web search", "error", err)
 
@@ -219,14 +229,19 @@ func cloneSearchMetadata(metadata *searchMetadata) *searchMetadata {
 func (instance *bot) decideWebSearch(
 	ctx context.Context,
 	loadedConfig config,
+	providerSlashModel string,
+	sourceMessage *discordgo.Message,
 	conversation []chatMessage,
 ) (searchDecision, error) {
 	searchDeciderModel := instance.currentSearchDeciderModelForConfig(loadedConfig)
 
-	searchDeciderMessages, err := searchDeciderConversation(
-		conversation,
+	searchDeciderMessages, err := instance.buildSearchDeciderConversation(
+		ctx,
 		loadedConfig,
+		providerSlashModel,
 		searchDeciderModel,
+		sourceMessage,
+		conversation,
 	)
 	if err != nil {
 		return searchDecision{}, fmt.Errorf("prepare search decider conversation: %w", err)
@@ -260,6 +275,186 @@ func (instance *bot) decideWebSearch(
 	}
 
 	return decision, nil
+}
+
+func (instance *bot) buildSearchDeciderConversation(
+	ctx context.Context,
+	loadedConfig config,
+	providerSlashModel string,
+	searchDeciderModel string,
+	sourceMessage *discordgo.Message,
+	conversation []chatMessage,
+) ([]chatMessage, error) {
+	searchDeciderConversationWithImages, err := instance.maybeAugmentConversationWithSearchDeciderImages(
+		ctx,
+		loadedConfig,
+		providerSlashModel,
+		searchDeciderModel,
+		sourceMessage,
+		conversation,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("append search decider images: %w", err)
+	}
+
+	sanitizedConversation, err := searchDeciderConversation(
+		searchDeciderConversationWithImages,
+		loadedConfig,
+		searchDeciderModel,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return sanitizedConversation, nil
+}
+
+func (instance *bot) maybeAugmentConversationWithSearchDeciderImages(
+	ctx context.Context,
+	loadedConfig config,
+	providerSlashModel string,
+	searchDeciderModel string,
+	sourceMessage *discordgo.Message,
+	conversation []chatMessage,
+) ([]chatMessage, error) {
+	searchContentOptions, err := messageContentOptionsForModel(
+		loadedConfig,
+		searchDeciderModel,
+	)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"build search decider content options for %q: %w",
+			searchDeciderModel,
+			err,
+		)
+	}
+
+	if searchContentOptions.maxImages <= 0 {
+		return conversation, nil
+	}
+
+	mainContentOptions, err := messageContentOptionsForModel(
+		loadedConfig,
+		providerSlashModel,
+	)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"build main model content options for %q: %w",
+			providerSlashModel,
+			err,
+		)
+	}
+
+	if searchContentOptions.maxImages <= mainContentOptions.maxImages {
+		return conversation, nil
+	}
+
+	remainingImageSlots, err := remainingImageSlotsForConversation(
+		conversation,
+		searchContentOptions.maxImages,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	if remainingImageSlots == 0 {
+		return conversation, nil
+	}
+
+	candidateImageParts, err := instance.searchDeciderImagePartsForMessage(
+		ctx,
+		sourceMessage,
+		conversation,
+		remainingImageSlots,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return appendMediaPartsToConversation(conversation, candidateImageParts)
+}
+
+func (instance *bot) searchDeciderImagePartsForMessage(
+	ctx context.Context,
+	sourceMessage *discordgo.Message,
+	conversation []chatMessage,
+	maxImageParts int,
+) ([]contentPart, error) {
+	if sourceMessage == nil || maxImageParts <= 0 {
+		return nil, nil
+	}
+
+	imageURLSet, err := latestUserImageURLSet(conversation)
+	if err != nil {
+		return nil, err
+	}
+
+	candidateImageParts := make([]contentPart, 0, maxImageParts)
+
+	appendImagePart := func(imagePart contentPart) error {
+		imageURL, imageErr := contentPartImageURL(imagePart)
+		if imageErr != nil {
+			return imageErr
+		}
+
+		if _, exists := imageURLSet[imageURL]; exists {
+			return nil
+		}
+
+		imageURLSet[imageURL] = struct{}{}
+
+		candidateImageParts = append(candidateImageParts, cloneContentPart(imagePart))
+
+		return nil
+	}
+
+	imageParts, err := instance.imagePartsForMessage(ctx, sourceMessage)
+	if err != nil {
+		return nil, fmt.Errorf("load image parts for search decider: %w", err)
+	}
+
+	for _, imagePart := range imageParts {
+		appendErr := appendImagePart(imagePart)
+		if appendErr != nil {
+			return nil, fmt.Errorf(
+				"append image attachment for search decider: %w",
+				appendErr,
+			)
+		}
+
+		if len(candidateImageParts) == maxImageParts {
+			return candidateImageParts, nil
+		}
+	}
+
+	documentParts, err := instance.documentPartsForMessage(ctx, sourceMessage)
+	if err != nil {
+		return nil, fmt.Errorf("load pdf parts for search decider: %w", err)
+	}
+
+	for index, documentPart := range documentParts {
+		extraction, extractionErr := extractPDFContent(documentPart)
+		if extractionErr != nil {
+			return nil, fmt.Errorf(
+				"extract pdf images for search decider file %d: %w",
+				index+1,
+				extractionErr,
+			)
+		}
+
+		for _, imagePart := range extraction.imageParts {
+			appendErr := appendImagePart(imagePart)
+			if appendErr != nil {
+				return nil, fmt.Errorf("append pdf image for search decider: %w", appendErr)
+			}
+
+			if len(candidateImageParts) == maxImageParts {
+				return candidateImageParts, nil
+			}
+		}
+	}
+
+	return candidateImageParts, nil
 }
 
 func searchDeciderConversation(
@@ -315,6 +510,52 @@ func sanitizeMessageContentForModel(
 	default:
 		return nil, fmt.Errorf("unsupported message content type %T: %w", content, os.ErrInvalid)
 	}
+}
+
+func latestUserImageURLSet(conversation []chatMessage) (map[string]struct{}, error) {
+	index, err := latestUserMessageIndex(conversation)
+	if err != nil {
+		return nil, err
+	}
+
+	imageURLSet := make(map[string]struct{})
+
+	parts, ok := conversation[index].Content.([]contentPart)
+	if !ok {
+		return imageURLSet, nil
+	}
+
+	for _, part := range parts {
+		partType, _ := part["type"].(string)
+		if partType != contentTypeImageURL {
+			continue
+		}
+
+		imageURL, imageErr := contentPartImageURL(part)
+		if imageErr != nil {
+			return nil, imageErr
+		}
+
+		imageURLSet[imageURL] = struct{}{}
+	}
+
+	return imageURLSet, nil
+}
+
+func contentPartImageURL(part contentPart) (string, error) {
+	stringMap, foundStringMap := part["image_url"].(map[string]string)
+	if foundStringMap {
+		return strings.TrimSpace(stringMap["url"]), nil
+	}
+
+	rawImageURL, foundMap := part["image_url"].(map[string]any)
+	if !foundMap {
+		return "", fmt.Errorf("decode image_url content part: %w", os.ErrInvalid)
+	}
+
+	imageURL, _ := rawImageURL["url"].(string)
+
+	return strings.TrimSpace(imageURL), nil
 }
 
 func contentPartsText(parts []contentPart) string {
