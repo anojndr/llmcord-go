@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"iter"
@@ -181,9 +182,18 @@ func buildGeminiGenerateContentRequest(
 		return nil, nil, err
 	}
 
+	thinkingConfig, extraBody, err := geminiThinkingConfig(extraBody)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	config := new(genai.GenerateContentConfig)
 	if systemInstruction != "" {
 		config.SystemInstruction = genai.NewContentFromText(systemInstruction, "")
+	}
+
+	if thinkingConfig != nil {
+		config.ThinkingConfig = thinkingConfig
 	}
 
 	if len(extraBody) > 0 {
@@ -268,6 +278,46 @@ func geminiThinkingConfigExtraBody(extraBody map[string]any) (map[string]any, er
 	}
 
 	return maps.Clone(thinkingConfig), nil
+}
+
+func geminiThinkingConfig(
+	extraBody map[string]any,
+) (*genai.ThinkingConfig, map[string]any, error) {
+	existingThinkingConfig, thinkingConfigExists := extraBody["thinkingConfig"]
+	if !thinkingConfigExists || existingThinkingConfig == nil {
+		return nil, extraBody, nil
+	}
+
+	thinkingConfigMap, ok := existingThinkingConfig.(map[string]any)
+	if !ok {
+		return nil, nil, fmt.Errorf(
+			"gemini extra_body thinkingConfig must be an object: %w",
+			os.ErrInvalid,
+		)
+	}
+
+	thinkingConfigJSON, err := json.Marshal(thinkingConfigMap)
+	if err != nil {
+		return nil, nil, fmt.Errorf(
+			"marshal gemini extra_body thinkingConfig: %w",
+			err,
+		)
+	}
+
+	var thinkingConfig genai.ThinkingConfig
+
+	err = json.Unmarshal(thinkingConfigJSON, &thinkingConfig)
+	if err != nil {
+		return nil, nil, fmt.Errorf(
+			"decode gemini extra_body thinkingConfig: %w",
+			err,
+		)
+	}
+
+	normalizedExtraBody := maps.Clone(extraBody)
+	delete(normalizedExtraBody, "thinkingConfig")
+
+	return &thinkingConfig, normalizedExtraBody, nil
 }
 
 func buildGeminiClientConfig(
