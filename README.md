@@ -16,6 +16,7 @@ This bot turns Discord into a reply-chain frontend for OpenAI-compatible LLM API
 - Automatic YouTube URL enrichment that fetches transcripts, titles, channel names, and up to 50 top comments without an API key
 - Automatic Reddit URL enrichment that fetches thread metadata, post bodies, and nested comments from Reddit's `.json` endpoint without an API key
 - Search-decider flow that can skip search or use Exa MCP and Tavily in configurable primary/fallback order when current information is needed
+- Guild messages containing `at ai` are treated like an explicit bot mention and stripped from the prompt text, which is useful for speech-to-text style prompts
 - `View on Rentry` button on final replies that publishes the assistant response to Rentry on demand for easier reading, plus a `Show Sources` button on searched replies that reveals the queries and parsed source URLs used
 - Hot-reloaded `config.yaml`
 - Permission controls for users, roles, and channels

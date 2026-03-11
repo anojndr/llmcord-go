@@ -541,7 +541,7 @@ func unsupportedPreprocessedPartCount(
 }
 
 func (instance *bot) resolveParentMessage(message *discordgo.Message) (*discordgo.Message, bool) {
-	if message.MessageReference == nil && !messageMentionsUser(message, instance.session.State.User.ID) {
+	if message.MessageReference == nil && !messageMentionsBot(message, instance.session.State.User.ID) {
 		previousMessage, found, err := instance.previousMessageInChannel(message)
 		if err != nil {
 			slog.Warn("fetch previous message", "channel_id", message.ChannelID, "error", err)
