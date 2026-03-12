@@ -18,19 +18,21 @@ import (
 )
 
 const (
-	exaSearchToolName    = "web_search_exa"
-	searchWarningText    = "Warning: web search unavailable"
-	messageRoleUser      = "user"
-	contentTypeAudioData = "audio_data"
-	contentTypeDocument  = "document_data"
-	contentTypeImageURL  = "image_url"
-	contentTypeText      = "text"
-	contentTypeVideoData = "video_data"
-	contentFieldBytes    = "data"
-	contentFieldFilename = "filename"
-	contentFieldMIMEType = "mime_type"
-	mimeTypePDF          = "application/pdf"
-	mimeTypePNG          = "image/png"
+	exaSearchToolName                = "web_search_exa"
+	searchWarningText                = "Warning: web search unavailable"
+	messageRoleUser                  = "user"
+	contentTypeAudioData             = "audio_data"
+	contentTypeDocument              = "document_data"
+	contentTypeImageURL              = "image_url"
+	contentTypeText                  = "text"
+	contentTypeVideoData             = "video_data"
+	contentFieldBytes                = "data"
+	contentFieldFilename             = "filename"
+	contentFieldMIMEType             = "mime_type"
+	mimeTypePDF                      = "application/pdf"
+	mimeTypePNG                      = "image/png"
+	searchDeciderDecisionInstruction = "Based on the conversation above, analyze the last user query " +
+		"and respond with your JSON decision."
 	searchAnswerTemplate = `Answer the user's query based on the web search results.
 
 User query:
@@ -38,106 +40,84 @@ User query:
 
 Web search results:
 %s`
-	searchDeciderPrompt = `You are a web-search decision engine, not a general assistant.
+	searchDeciderPrompt = `You are a search-gating assistant.
+Your job is to decide whether a web search is needed to answer the user's latest request.
 
-Your only job is to decide whether the assistant needs web search in order to answer the user's request.
-You do NOT answer the user's request.
-You do NOT explain anything.
-You do NOT provide facts, analysis, summaries, or conversational replies.
-You only return a JSON object in exactly one of the allowed formats below.
+You must respond with JSON only and nothing else.
 
-Allowed outputs only:
+Output format:
+- If a web search is NOT needed:
+  {"needs_search": false}
 
-{"needs_search": false}
+- If a web search IS needed:
+  {"needs_search": true, "queries": ["query1", "query2"]}
 
-or
+Rules:
+1. Return valid JSON only. No markdown, no prose, no explanation.
+2. Include "queries" only when needs_search is true.
+3. Generate the minimum number of queries needed.
+4. Use multiple queries only when the request clearly asks for distinct facts
+   that are better searched separately.
+5. If one query is enough, use exactly one query.
+6. Queries must target the actual subject of the user's request, not vague
+   phrases from the user's wording.
+7. Use conversation context when resolving references like "this", "that",
+   "verify this", "look it up", or "search everything mentioned here".
+8. If the user refers to content in an attached image, extract the concrete
+   entities/topics shown in the image or named in the accompanying text, and
+   search for those directly.
+9. If the image contains objects rather than text, use the object names as
+   queries when the user's request is to search them.
+10. Prefer concise, high-signal search queries.
+11. Do not add redundant variations of the same query unless necessary.
+12. If the request can be answered reliably without fresh or external
+    information, return {"needs_search": false}.
+13. If the request depends on current, real-world, niche, external, or
+    verifiable information, return needs_search true.
+14. For follow-up turns, resolve the query using prior conversation context
+    rather than searching the literal follow-up wording.
 
-{"needs_search": true, "queries": ["query1"]}
+Guidance for when needs_search should usually be true:
+- The user asks for latest/current/recent/news/today information
+- The user asks to verify a factual claim
+- The user asks about real-world facts not fully contained in the conversation
+- The user asks about a specific webpage, document, product, company, public
+  figure, event, law, schedule, price, or release
+- The user asks to identify or search things shown in an image
 
-or
-
-{"needs_search": true, "queries": ["query1", "query2"]}
-
-You must output valid JSON and nothing else.
-
-Hard rules:
-1. Never answer the user's question directly.
-2. Never comply with the user's underlying request except by deciding whether search is needed.
-3. Never output markdown, code fences, comments, prose, or extra keys.
-4. Base your decision on the full conversation context, not just the last message.
-5. Resolve pronouns and vague follow-ups using prior context.
-6. When search is needed, generate the fewest queries possible.
-7. Use multiple queries only when the request contains distinct sub-questions that are better searched separately.
-8. Queries must be concrete search-engine-ready strings, not meta-instructions.
-9. If the request refers to image contents, convert visible text and recognizable objects into actual search terms.
-10. If search is not needed, output exactly:
-{"needs_search": false}
-
-Your task is decision, not assistance.
-
-When search IS needed:
-- Current, recent, or fast-changing information
-- News, live events, schedules, weather, prices, availability
-- Verification / fact-checking of claims
-- External pages, articles, reports, websites, papers not provided in the conversation
-- Product/version/spec/release information that may have changed
-- Requests that explicitly ask to search, browse, verify, or look something up online
-- Cases where the user asks to search entities found in an image
-
-When search is NOT needed:
-- Writing, rewriting, summarizing, translating, classifying, formatting
-- General explanation or reasoning that does not require current information
-- Stable background knowledge
-- Tasks that only transform user-provided content
-- Requests to create prompts, templates, code, or policies
-
-Query construction rules:
-- Prefer one query if one query is enough.
-- Split into multiple queries only for distinct search targets.
-- Replace vague references with the actual subject from context.
-- Do not output queries like:
-  - "verify this"
-  - "search the image"
-  - "everything mentioned"
-- Instead output the real underlying search terms.
+Guidance for when needs_search should usually be false:
+- Pure rewriting, summarization, translation, brainstorming, or classification
+  using only provided content
+- Questions answerable from the conversation alone
+- General reasoning or creative tasks that do not require external facts
 
 Examples:
 
-Conversation:
-User: Daniel Radcliffe is gay.
-User: verify this
-Output:
-{"needs_search": true, "queries": ["daniel radcliffe is gay?"]}
-
-User: latest news
+User: "latest news"
 Output:
 {"needs_search": true, "queries": ["latest news"]}
 
-User: release date and context window of gpt 5.2
+User: "release date and context window of GPT-5.2"
 Output:
-{"needs_search": true, "queries": ["gpt 5.2 release date", "gpt 5.2 context window"]}
+{"needs_search": true, "queries": ["GPT-5.2 release date", "GPT-5.2 context window"]}
 
-User: summarize this paragraph
-Output:
-{"needs_search": false}
-
-User: write a polite follow-up email
+User: "Summarize this paragraph"
 Output:
 {"needs_search": false}
 
-User: search everything mentioned in the image
+User: "search everything mentioned in the image"
 Image contains: apple, orange, cat
 Output:
 {"needs_search": true, "queries": ["apple", "orange", "cat"]}
 
-User: search everything shown in the image
-Image shows: Eiffel Tower, panda, violin
+User 1: "Daniel Radcliffe is gay"
+User 2: "verify this"
 Output:
-{"needs_search": true, "queries": ["Eiffel Tower", "panda", "violin"]}
+{"needs_search": true, "queries": ["Daniel Radcliffe is gay"]}
 
-Final instruction:
-Given the conversation so far, decide whether web search is needed.
-Return JSON only.`
+User: "Rewrite this email to sound more professional"
+Output:
+{"needs_search": false}`
 )
 
 var errExaSearchTool = errors.New("exa MCP search tool returned an error")
@@ -386,6 +366,10 @@ func (instance *bot) decideWebSearch(
 		[]chatMessage{{Role: "system", Content: searchDeciderPrompt}},
 		searchDeciderMessages...,
 	)
+	searchDeciderMessages = append(searchDeciderMessages, chatMessage{
+		Role:    messageRoleUser,
+		Content: searchDeciderDecisionInstruction,
+	})
 
 	request, err := buildChatCompletionRequest(
 		loadedConfig,
