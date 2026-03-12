@@ -113,6 +113,7 @@ func (tracker *responseTracker) release(fullText string) {
 		pending.node.role = messageRoleAssistant
 		pending.node.text = fullText
 		pending.node.urlScanText = ""
+		pending.node.searchMetadata = cloneSearchMetadata(tracker.searchMetadata)
 		pending.node.parentMessage = tracker.sourceMessage
 		pending.node.initialized = true
 		pending.node.mu.Unlock()
