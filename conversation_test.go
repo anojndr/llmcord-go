@@ -9,6 +9,7 @@ import (
 
 const (
 	testAssistantReply = "assistant reply"
+	testVideoBody      = "video-bytes"
 	testVideoMIMEType  = "video/mp4"
 )
 
@@ -70,7 +71,7 @@ func TestBuildMediaPartsSupportsGeminiBinaryAttachments(t *testing.T) {
 		},
 		{
 			attachment: videoAttachment,
-			body:       []byte("video-bytes"),
+			body:       []byte(testVideoBody),
 		},
 	}
 
@@ -116,7 +117,7 @@ func TestBuildMediaPartsSupportsGeminiBinaryAttachments(t *testing.T) {
 	}
 
 	if parts[3]["type"] != contentTypeVideoData ||
-		string(videoBytes) != "video-bytes" {
+		string(videoBytes) != testVideoBody {
 		t.Fatalf("unexpected video part: %#v", parts[3])
 	}
 }
@@ -141,7 +142,7 @@ func TestBuildMessageContentFiltersUnsupportedMedia(t *testing.T) {
 		},
 		{
 			"type":               contentTypeVideoData,
-			contentFieldBytes:    []byte("video-bytes"),
+			contentFieldBytes:    []byte(testVideoBody),
 			contentFieldMIMEType: testVideoMIMEType,
 		},
 	}

@@ -278,7 +278,7 @@ func testTikTokConversationWithImage() []chatMessage {
 	}
 }
 
-func assertTikTokAugmentedParts(
+func assertAugmentedVideoParts(
 	t *testing.T,
 	conversation []chatMessage,
 	expectedText string,
@@ -334,7 +334,7 @@ func assertSearchDeciderTextContent(
 	}
 }
 
-func newTikTokGeminiAnalysisChatClient(
+func newGeminiVideoAnalysisChatClient(
 	t *testing.T,
 	expectedAnalysis string,
 ) (*stubChatCompletionClient, *int) {
@@ -454,7 +454,7 @@ func TestMaybeAugmentConversationWithTikTokAppendsVideoPartsAndAnalysesForNonGem
 	expectedAnalysis := []string{
 		"Video description per timestamp:\n\n0s to 10s: somebody waves",
 	}
-	chatClient, analysisCallCount := newTikTokGeminiAnalysisChatClient(t, expectedAnalysis[0])
+	chatClient, analysisCallCount := newGeminiVideoAnalysisChatClient(t, expectedAnalysis[0])
 
 	instance := newTikTokTestBot(
 		newStubTikTokContentClient(func(
@@ -494,7 +494,7 @@ func TestMaybeAugmentConversationWithTikTokAppendsVideoPartsAndAnalysesForNonGem
 		expectedAnalysis,
 	)
 
-	assertTikTokAugmentedParts(t, augmentedConversation, expectedText)
+	assertAugmentedVideoParts(t, augmentedConversation, expectedText)
 	assertSearchDeciderTextContent(
 		t,
 		augmentedConversation,
@@ -546,7 +546,7 @@ func TestMaybeAugmentConversationWithTikTokSkipsAnalysesForGeminiSearchDecider(t
 		t.Fatalf("unexpected warnings: %#v", warnings)
 	}
 
-	assertTikTokAugmentedParts(
+	assertAugmentedVideoParts(
 		t,
 		augmentedConversation,
 		"<@123>: summarize https://vt.tnktok.com/ZSuhvMpsr/",
