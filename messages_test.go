@@ -397,6 +397,97 @@ func TestBuildMessageConversationAddsReplyTargetForRepliedTextAttachment(t *test
 	}
 }
 
+func TestSourceMessageURLExtractionTextSkipsTextAttachmentURLs(t *testing.T) {
+	t.Parallel()
+
+	const (
+		botUserID            = "bot-user"
+		channelID            = "channel-1"
+		userID               = "user-1"
+		parentMessageID      = "user-message-1"
+		sourceMessageID      = "user-message-2"
+		parentAttachmentURL  = "https://attachments.example.com/replied-context.txt"
+		sourceAttachmentURL  = "https://attachments.example.com/source-context.txt"
+		parentTypedURL       = "https://example.com/manual"
+		sourceTypedURL       = "https://youtu.be/dQw4w9WgXcQ"
+		parentAttachmentText = "https://www.reddit.com/r/testing/comments/abc123/thread-title/"
+		sourceAttachmentText = "https://example.com/from-file"
+	)
+
+	session, err := discordgo.New("Bot discord-token")
+	if err != nil {
+		t.Fatalf("create discord session: %v", err)
+	}
+
+	session.State.User = newDiscordUser(botUserID, true)
+
+	channel := new(discordgo.Channel)
+	channel.ID = channelID
+	channel.Type = discordgo.ChannelTypeDM
+
+	err = session.State.ChannelAdd(channel)
+	if err != nil {
+		t.Fatalf("add channel to state: %v", err)
+	}
+
+	parentMessage := new(discordgo.Message)
+	parentMessage.ID = parentMessageID
+	parentMessage.ChannelID = channelID
+	parentMessage.Author = newDiscordUser(userID, false)
+	parentMessage.Content = parentTypedURL
+	parentMessage.Attachments = []*discordgo.MessageAttachment{
+		{
+			ContentType: "text/plain",
+			Filename:    "replied-context.txt",
+			URL:         parentAttachmentURL,
+		},
+	}
+
+	sourceMessage := new(discordgo.Message)
+	sourceMessage.ID = sourceMessageID
+	sourceMessage.ChannelID = channelID
+	sourceMessage.Author = newDiscordUser(userID, false)
+	sourceMessage.Content = "at ai summarize " + sourceTypedURL
+	sourceMessage.Attachments = []*discordgo.MessageAttachment{
+		{
+			ContentType: "text/plain",
+			Filename:    "source-context.txt",
+			URL:         sourceAttachmentURL,
+		},
+	}
+	sourceMessage.MessageReference = parentMessage.Reference()
+	sourceMessage.ReferencedMessage = parentMessage
+
+	instance := new(bot)
+	instance.session = session
+	instance.httpClient = newTextAttachmentDownloadClientMap(t, map[string]string{
+		parentAttachmentURL: parentAttachmentText,
+		sourceAttachmentURL: sourceAttachmentText,
+	})
+	instance.nodes = newMessageNodeStore(10)
+
+	urlExtractionText := instance.sourceMessageURLExtractionText(
+		context.Background(),
+		sourceMessage,
+	)
+
+	if !containsFold(urlExtractionText, parentTypedURL) {
+		t.Fatalf("expected replied message URL in extraction text: %q", urlExtractionText)
+	}
+
+	if !containsFold(urlExtractionText, sourceTypedURL) {
+		t.Fatalf("expected source message URL in extraction text: %q", urlExtractionText)
+	}
+
+	if containsFold(urlExtractionText, parentAttachmentText) {
+		t.Fatalf("unexpected replied attachment URL in extraction text: %q", urlExtractionText)
+	}
+
+	if containsFold(urlExtractionText, sourceAttachmentText) {
+		t.Fatalf("unexpected source attachment URL in extraction text: %q", urlExtractionText)
+	}
+}
+
 type respondToMessageTypingFixture struct {
 	instance          *bot
 	loadedConfig      config
@@ -608,6 +699,31 @@ func newTextAttachmentDownloadClient(t *testing.T, attachmentURL string, body st
 		t.Helper()
 
 		if request.Method != http.MethodGet || request.URL.String() != attachmentURL {
+			t.Fatalf("unexpected attachment request: %s %s", request.Method, request.URL.String())
+		}
+
+		return newTextResponse(request, body), nil
+	})
+
+	return client
+}
+
+func newTextAttachmentDownloadClientMap(
+	t *testing.T,
+	bodies map[string]string,
+) *http.Client {
+	t.Helper()
+
+	client := new(http.Client)
+	client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		t.Helper()
+
+		if request.Method != http.MethodGet {
+			t.Fatalf("unexpected attachment request method: %s", request.Method)
+		}
+
+		body, ok := bodies[request.URL.String()]
+		if !ok {
 			t.Fatalf("unexpected attachment request: %s %s", request.Method, request.URL.String())
 		}
 

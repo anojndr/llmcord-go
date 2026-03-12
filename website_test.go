@@ -140,6 +140,7 @@ func TestMaybeAugmentConversationWithWebsiteFetchesMultipleURLsConcurrentlyAndKe
 	augmentedConversation, warnings, err := instance.maybeAugmentConversationWithWebsite(
 		ctx,
 		conversation,
+		messageContentText(conversation[0].Content),
 	)
 	if err != nil {
 		t.Fatalf("augment conversation with website: %v", err)
@@ -162,6 +163,46 @@ func TestMaybeAugmentConversationWithWebsiteFetchesMultipleURLsConcurrentlyAndKe
 	}
 
 	if len(website.calls) != 2 {
+		t.Fatalf("unexpected fetch call count: %d", len(website.calls))
+	}
+}
+
+func TestMaybeAugmentConversationWithWebsiteIgnoresURLsOnlyPresentInPDFContent(t *testing.T) {
+	t.Parallel()
+
+	website := newStubWebsiteContentClient(func(
+		_ context.Context,
+		rawURL string,
+	) (websitePageContent, error) {
+		t.Fatalf("unexpected website fetch for %q", rawURL)
+
+		return websitePageContent{
+			URL:         "",
+			Title:       "",
+			Description: "",
+			Content:     "",
+		}, nil
+	})
+
+	instance := newWebsiteTestBot(website)
+
+	assertURLAugmentationIgnoresPDFOnlyURLs(
+		t,
+		"https://example.com/from-pdf",
+		func(
+			ctx context.Context,
+			conversation []chatMessage,
+			urlExtractionText string,
+		) ([]chatMessage, []string, error) {
+			return instance.maybeAugmentConversationWithWebsite(
+				ctx,
+				conversation,
+				urlExtractionText,
+			)
+		},
+	)
+
+	if len(website.calls) != 0 {
 		t.Fatalf("unexpected fetch call count: %d", len(website.calls))
 	}
 }

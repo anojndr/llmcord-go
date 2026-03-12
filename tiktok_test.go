@@ -475,6 +475,7 @@ func TestMaybeAugmentConversationWithTikTokAppendsVideoPartsAndAnalysesForNonGem
 		testMediaAnalysisConfig(),
 		testMediaAnalysisModel,
 		testTikTokConversationWithImage(),
+		"<@123>: summarize https://vt.tnktok.com/ZSuhvMpsr/",
 	)
 	if err != nil {
 		t.Fatalf("augment conversation with tiktok: %v", err)
@@ -535,6 +536,7 @@ func TestMaybeAugmentConversationWithTikTokSkipsAnalysesForGeminiSearchDecider(t
 		loadedConfig,
 		testMediaAnalysisModel,
 		testTikTokConversationWithImage(),
+		"<@123>: summarize https://vt.tnktok.com/ZSuhvMpsr/",
 	)
 	if err != nil {
 		t.Fatalf("augment conversation with tiktok: %v", err)
@@ -610,6 +612,7 @@ func TestMaybeAugmentConversationWithTikTokPreprocessesForNonGeminiModels(t *tes
 		testMediaAnalysisConfig(),
 		"openai/gpt-5",
 		conversation,
+		messageContentText(conversation[0].Content),
 	)
 	if err != nil {
 		t.Fatalf("augment conversation with tiktok: %v", err)
@@ -671,6 +674,7 @@ func TestMaybeAugmentConversationWithTikTokWarnsWithoutGeminiPreprocessor(t *tes
 		testSearchConfig(),
 		"openai/main-model",
 		conversation,
+		messageContentText(conversation[0].Content),
 	)
 	if err != nil {
 		t.Fatalf("augment conversation with tiktok: %v", err)
@@ -688,6 +692,44 @@ func TestMaybeAugmentConversationWithTikTokWarnsWithoutGeminiPreprocessor(t *tes
 	if content != "<@123>: summarize https://vt.tnktok.com/ZSuhvMpsr/" {
 		t.Fatalf("unexpected content: %q", content)
 	}
+}
+
+func TestMaybeAugmentConversationWithTikTokIgnoresURLsOnlyPresentInPDFContent(t *testing.T) {
+	t.Parallel()
+
+	instance := newTikTokTestBot(
+		newStubTikTokContentClient(func(
+			_ context.Context,
+			rawURL string,
+		) (tiktokVideoContent, error) {
+			t.Fatalf("unexpected tiktok fetch for %q", rawURL)
+
+			return tiktokVideoContent{
+				ResolvedURL: "",
+				DownloadURL: "",
+				MediaPart:   nil,
+			}, nil
+		}),
+		nil,
+	)
+
+	assertURLAugmentationIgnoresPDFOnlyURLs(
+		t,
+		"https://vt.tnktok.com/ZSuhvMpsr/",
+		func(
+			ctx context.Context,
+			conversation []chatMessage,
+			urlExtractionText string,
+		) ([]chatMessage, []string, error) {
+			return instance.maybeAugmentConversationWithTikTok(
+				ctx,
+				testSearchConfig(),
+				"openai/main-model",
+				conversation,
+				urlExtractionText,
+			)
+		},
+	)
 }
 
 func TestTikTokClientFetchUsesResolvedVideoIDWhenContentDispositionIsMissing(t *testing.T) {
@@ -779,6 +821,7 @@ func TestMaybeAugmentConversationWithTikTokKeepsFirstSuccessfulVideoPerResolvedU
 		loadedConfig,
 		testMediaAnalysisModel,
 		conversation,
+		messageContentText(conversation[0].Content),
 	)
 	if err != nil {
 		t.Fatalf("augment conversation with tiktok: %v", err)

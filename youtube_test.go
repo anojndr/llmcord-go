@@ -188,6 +188,7 @@ func TestMaybeAugmentConversationWithYouTubeFetchesMultipleURLsConcurrentlyAndKe
 	augmentedConversation, warnings, err := instance.maybeAugmentConversationWithYouTube(
 		ctx,
 		conversation,
+		messageContentText(conversation[0].Content),
 	)
 	if err != nil {
 		t.Fatalf("augment conversation with youtube: %v", err)
@@ -210,6 +211,48 @@ func TestMaybeAugmentConversationWithYouTubeFetchesMultipleURLsConcurrentlyAndKe
 	}
 
 	if len(youtube.calls) != 2 {
+		t.Fatalf("unexpected fetch call count: %d", len(youtube.calls))
+	}
+}
+
+func TestMaybeAugmentConversationWithYouTubeIgnoresURLsOnlyPresentInPDFContent(t *testing.T) {
+	t.Parallel()
+
+	youtube := newStubYouTubeContentClient(func(
+		_ context.Context,
+		rawURL string,
+	) (youtubeVideoContent, error) {
+		t.Fatalf("unexpected youtube fetch for %q", rawURL)
+
+		return youtubeVideoContent{
+			URL:         "",
+			VideoID:     "",
+			Title:       "",
+			ChannelName: "",
+			Transcript:  "",
+			Comments:    nil,
+		}, nil
+	})
+
+	instance := newYouTubeTestBot(youtube)
+
+	assertURLAugmentationIgnoresPDFOnlyURLs(
+		t,
+		"https://youtu.be/dQw4w9WgXcQ",
+		func(
+			ctx context.Context,
+			conversation []chatMessage,
+			urlExtractionText string,
+		) ([]chatMessage, []string, error) {
+			return instance.maybeAugmentConversationWithYouTube(
+				ctx,
+				conversation,
+				urlExtractionText,
+			)
+		},
+	)
+
+	if len(youtube.calls) != 0 {
 		t.Fatalf("unexpected fetch call count: %d", len(youtube.calls))
 	}
 }

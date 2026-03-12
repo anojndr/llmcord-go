@@ -56,17 +56,13 @@ func newWebsiteClient(httpClient *http.Client) websiteClient {
 func (instance *bot) maybeAugmentConversationWithWebsite(
 	ctx context.Context,
 	conversation []chatMessage,
+	urlExtractionText string,
 ) ([]chatMessage, []string, error) {
 	if instance.website == nil {
 		return conversation, nil, nil
 	}
 
-	latestUserQuery, err := latestUserPromptQuery(conversation)
-	if err != nil {
-		return nil, nil, fmt.Errorf("extract latest user prompt query: %w", err)
-	}
-
-	websiteURLs := extractWebsiteURLs(latestUserQuery)
+	websiteURLs := extractWebsiteURLs(urlExtractionText)
 	if len(websiteURLs) == 0 {
 		return conversation, nil, nil
 	}

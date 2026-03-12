@@ -218,6 +218,7 @@ func TestMaybeAugmentConversationWithRedditFetchesMultipleURLsConcurrentlyAndKee
 	augmentedConversation, warnings, err := instance.maybeAugmentConversationWithReddit(
 		ctx,
 		conversation,
+		messageContentText(conversation[0].Content),
 	)
 	if err != nil {
 		t.Fatalf("augment conversation with reddit: %v", err)
@@ -240,6 +241,54 @@ func TestMaybeAugmentConversationWithRedditFetchesMultipleURLsConcurrentlyAndKee
 	}
 
 	if len(reddit.calls) != 2 {
+		t.Fatalf("unexpected fetch call count: %d", len(reddit.calls))
+	}
+}
+
+func TestMaybeAugmentConversationWithRedditIgnoresURLsOnlyPresentInPDFContent(t *testing.T) {
+	t.Parallel()
+
+	reddit := newStubRedditContentClient(func(
+		_ context.Context,
+		rawURL string,
+	) (redditThreadContent, error) {
+		t.Fatalf("unexpected reddit fetch for %q", rawURL)
+
+		return redditThreadContent{
+			URL:         "",
+			JSONURL:     "",
+			Subreddit:   "",
+			Title:       "",
+			Author:      "",
+			Body:        "",
+			Score:       0,
+			UpvoteRatio: 0,
+			NumComments: 0,
+			CreatedUTC:  0,
+			LinkedURL:   "",
+			Comments:    nil,
+		}, nil
+	})
+
+	instance := newRedditTestBot(reddit)
+
+	assertURLAugmentationIgnoresPDFOnlyURLs(
+		t,
+		"https://www.reddit.com/r/testing/comments/abc123/thread-title/",
+		func(
+			ctx context.Context,
+			conversation []chatMessage,
+			urlExtractionText string,
+		) ([]chatMessage, []string, error) {
+			return instance.maybeAugmentConversationWithReddit(
+				ctx,
+				conversation,
+				urlExtractionText,
+			)
+		},
+	)
+
+	if len(reddit.calls) != 0 {
 		t.Fatalf("unexpected fetch call count: %d", len(reddit.calls))
 	}
 }

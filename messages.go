@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"maps"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
@@ -184,11 +185,14 @@ func (instance *bot) respondToMessage(
 		return fmt.Errorf("build message conversation: %w", err)
 	}
 
+	urlExtractionText := instance.sourceMessageURLExtractionText(ctx, message)
+
 	messages, tikTokWarnings, err := instance.maybeAugmentConversationWithTikTok(
 		ctx,
 		loadedConfig,
 		providerSlashModel,
 		messages,
+		urlExtractionText,
 	)
 	if err != nil {
 		return fmt.Errorf("augment conversation with tiktok: %w", err)
@@ -225,18 +229,13 @@ func (instance *bot) respondToMessage(
 		message,
 		messages,
 		warnings,
+		urlExtractionText,
 	)
 	if err != nil {
 		return fmt.Errorf("augment conversation: %w", err)
 	}
 
-	if loadedConfig.SystemPrompt != "" {
-		systemMessage := chatMessage{
-			Role:    "system",
-			Content: systemPromptNow(loadedConfig.SystemPrompt, time.Now()),
-		}
-		messages = append([]chatMessage{systemMessage}, messages...)
-	}
+	messages = prependSystemPrompt(messages, loadedConfig.SystemPrompt, time.Now())
 
 	request, err := buildChatCompletionRequest(loadedConfig, providerSlashModel, messages)
 	if err != nil {
@@ -402,6 +401,7 @@ func (instance *bot) augmentConversation(
 	sourceMessage *discordgo.Message,
 	messages []chatMessage,
 	warnings []string,
+	urlExtractionText string,
 ) ([]chatMessage, *searchMetadata, []string, error) {
 	augmentedMessages, visualSearchWarnings, err := instance.maybeAugmentConversationWithVisualSearch(
 		ctx,
@@ -417,6 +417,7 @@ func (instance *bot) augmentConversation(
 	augmentedMessages, websiteWarnings, err := instance.maybeAugmentConversationWithWebsite(
 		ctx,
 		augmentedMessages,
+		urlExtractionText,
 	)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("augment conversation with website: %w", err)
@@ -427,6 +428,7 @@ func (instance *bot) augmentConversation(
 	augmentedMessages, youtubeWarnings, err := instance.maybeAugmentConversationWithYouTube(
 		ctx,
 		augmentedMessages,
+		urlExtractionText,
 	)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("augment conversation with youtube: %w", err)
@@ -437,6 +439,7 @@ func (instance *bot) augmentConversation(
 	augmentedMessages, redditWarnings, err := instance.maybeAugmentConversationWithReddit(
 		ctx,
 		augmentedMessages,
+		urlExtractionText,
 	)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("augment conversation with reddit: %w", err)
@@ -458,6 +461,54 @@ func (instance *bot) augmentConversation(
 	warnings = append(warnings, searchWarnings...)
 
 	return augmentedMessages, searchMetadata, warnings, nil
+}
+
+func (instance *bot) sourceMessageURLExtractionText(
+	ctx context.Context,
+	sourceMessage *discordgo.Message,
+) string {
+	sourceText, parentMessage := instance.messageNodeURLExtractionText(ctx, sourceMessage)
+	if sourceMessage == nil || sourceMessage.MessageReference == nil {
+		return sourceText
+	}
+
+	replyTargetText, _ := instance.messageNodeURLExtractionText(ctx, parentMessage)
+
+	return joinNonEmpty([]string{replyTargetText, sourceText})
+}
+
+func (instance *bot) messageNodeURLExtractionText(
+	ctx context.Context,
+	message *discordgo.Message,
+) (string, *discordgo.Message) {
+	if message == nil {
+		return "", nil
+	}
+
+	node := instance.nodes.getOrCreate(message.ID)
+	node.mu.Lock()
+	defer node.mu.Unlock()
+
+	if !node.initialized {
+		instance.initializeNode(ctx, message, node)
+	}
+
+	return strings.TrimSpace(node.urlScanText), node.parentMessage
+}
+
+func prependSystemPrompt(
+	messages []chatMessage,
+	systemPrompt string,
+	now time.Time,
+) []chatMessage {
+	if systemPrompt == "" {
+		return messages
+	}
+
+	return append([]chatMessage{{
+		Role:    "system",
+		Content: systemPromptNow(systemPrompt, now),
+	}}, messages...)
 }
 
 func mergeExtraBody(providerExtraBody map[string]any, modelParameters map[string]any) map[string]any {

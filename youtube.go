@@ -130,17 +130,13 @@ func newYouTubeClient(httpClient *http.Client) youtubeClient {
 func (instance *bot) maybeAugmentConversationWithYouTube(
 	ctx context.Context,
 	conversation []chatMessage,
+	urlExtractionText string,
 ) ([]chatMessage, []string, error) {
 	if instance.youtube == nil {
 		return conversation, nil, nil
 	}
 
-	latestUserQuery, err := latestUserMessageText(conversation)
-	if err != nil {
-		return nil, nil, fmt.Errorf("extract latest user message text: %w", err)
-	}
-
-	youtubeURLs := extractYouTubeURLs(latestUserQuery)
+	youtubeURLs := extractYouTubeURLs(urlExtractionText)
 	if len(youtubeURLs) == 0 {
 		return conversation, nil, nil
 	}
