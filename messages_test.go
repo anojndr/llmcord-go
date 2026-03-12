@@ -491,6 +491,80 @@ func TestSourceMessageURLExtractionTextSkipsTextAttachmentURLs(t *testing.T) {
 	}
 }
 
+func TestSourceMessageURLExtractionTextIgnoresAssistantReplyURLs(t *testing.T) {
+	t.Parallel()
+
+	const (
+		botUserID        = "bot-user"
+		channelID        = "channel-1"
+		userID           = "user-1"
+		assistantMessage = "assistant-message-1"
+		sourceMessageID  = "user-message-1"
+		sourceTypedURL   = "https://example.com/manual"
+	)
+
+	session, err := discordgo.New("Bot discord-token")
+	if err != nil {
+		t.Fatalf("create discord session: %v", err)
+	}
+
+	session.State.User = newDiscordUser(botUserID, true)
+
+	channel := new(discordgo.Channel)
+	channel.ID = channelID
+	channel.Type = discordgo.ChannelTypeDM
+
+	err = session.State.ChannelAdd(channel)
+	if err != nil {
+		t.Fatalf("add channel to state: %v", err)
+	}
+
+	replyTarget := new(discordgo.Message)
+	replyTarget.ID = assistantMessage
+	replyTarget.ChannelID = channelID
+	replyTarget.Author = newDiscordUser(botUserID, true)
+	replyTarget.Content = strings.Join([]string{
+		"https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+		"https://www.reddit.com/r/testing/comments/abc123/thread-title/",
+		"https://www.tiktok.com/@mikemhan/video/7614735539660442893",
+		testFacebookURL,
+		"https://example.com/from-assistant",
+	}, " ")
+
+	sourceMessage := new(discordgo.Message)
+	sourceMessage.ID = sourceMessageID
+	sourceMessage.ChannelID = channelID
+	sourceMessage.Author = newDiscordUser(userID, false)
+	sourceMessage.Content = "at ai summarize " + sourceTypedURL
+	sourceMessage.MessageReference = replyTarget.Reference()
+	sourceMessage.ReferencedMessage = replyTarget
+
+	instance := new(bot)
+	instance.session = session
+	instance.nodes = newMessageNodeStore(10)
+
+	urlExtractionText := instance.sourceMessageURLExtractionText(
+		context.Background(),
+		sourceMessage,
+	)
+
+	if !containsFold(urlExtractionText, sourceTypedURL) {
+		t.Fatalf("expected source message URL in extraction text: %q", urlExtractionText)
+	}
+
+	for _, unexpectedURL := range []string{
+		"https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+		"https://www.reddit.com/r/testing/comments/abc123/thread-title/",
+		"https://www.tiktok.com/@mikemhan/video/7614735539660442893",
+		testFacebookURL,
+		"https://example.com/from-assistant",
+	} {
+		if containsFold(urlExtractionText, unexpectedURL) {
+			t.Fatalf("unexpected assistant reply URL in extraction text: %q", urlExtractionText)
+		}
+	}
+}
+
 type respondToMessageTypingFixture struct {
 	instance          *bot
 	loadedConfig      config

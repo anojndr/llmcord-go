@@ -200,6 +200,25 @@ func TestExtractFacebookURLsNormalizesAndDeduplicates(t *testing.T) {
 	}
 }
 
+func TestExtractFacebookURLsIgnoresURLsInAugmentedPromptSections(t *testing.T) {
+	t.Parallel()
+
+	text := augmentedUserPrompt{
+		RepliedMessage:   "",
+		UserQuery:        "<@123>: summarize this video",
+		YouTubeContent:   "Mirror: " + testFacebookURL,
+		RedditContent:    "Mirror: https://fb.watch/vhalCYi2ib/",
+		WebsiteContent:   "Source: https://www.facebook.com/watch/?v=823513456342882",
+		VisualSearch:     "Site match: https://www.facebook.com/share/v/19akxExample/",
+		WebSearchResults: "1. https://www.facebook.com/reel/923513456342883",
+	}.render()
+
+	urls := extractFacebookURLs(text)
+	if len(urls) != 0 {
+		t.Fatalf("unexpected urls: %#v", urls)
+	}
+}
+
 func TestFacebookClientFetchDownloadsHDVideo(t *testing.T) {
 	t.Parallel()
 

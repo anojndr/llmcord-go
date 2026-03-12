@@ -126,6 +126,8 @@ func (instance *bot) maybeAugmentConversationWithFacebook(
 }
 
 func extractFacebookURLs(text string) []string {
+	text = normalizedURLExtractionText(text)
+
 	matches := facebookURLRegexp.FindAllString(text, -1)
 	normalizedURLs := make([]string, 0, len(matches))
 	seenURLs := make(map[string]struct{}, len(matches))

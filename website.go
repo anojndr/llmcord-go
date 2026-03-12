@@ -193,6 +193,8 @@ func (client websiteClient) doRequest(
 }
 
 func extractWebsiteURLs(text string) []string {
+	text = normalizedURLExtractionText(text)
+
 	matches := websiteURLRegexp.FindAllString(text, -1)
 	normalizedURLs := make([]string, 0, len(matches))
 	seenURLs := make(map[string]struct{}, len(matches))

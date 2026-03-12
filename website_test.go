@@ -74,6 +74,25 @@ func TestExtractWebsiteURLsNormalizesDeduplicatesAndSkipsSpecializedHosts(t *tes
 	}
 }
 
+func TestExtractWebsiteURLsIgnoresURLsInAugmentedPromptSections(t *testing.T) {
+	t.Parallel()
+
+	text := augmentedUserPrompt{
+		RepliedMessage:   "",
+		UserQuery:        "<@123>: summarize these sources",
+		YouTubeContent:   "Transcript source: https://example.com/from-youtube",
+		RedditContent:    "Linked article: https://example.com/from-reddit",
+		WebsiteContent:   "URL: https://example.com/original",
+		VisualSearch:     "Site match: https://example.com/from-visual",
+		WebSearchResults: "1. https://example.com/from-search",
+	}.render()
+
+	urls := extractWebsiteURLs(text)
+	if len(urls) != 0 {
+		t.Fatalf("unexpected urls: %#v", urls)
+	}
+}
+
 func TestAppendWebsiteContentToConversationPreservesImages(t *testing.T) {
 	t.Parallel()
 

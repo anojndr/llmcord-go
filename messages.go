@@ -394,6 +394,10 @@ func retainedMessageText(text string) string {
 	return prompt.render()
 }
 
+func normalizedURLExtractionText(text string) string {
+	return strings.TrimSpace(parseAugmentedUserPrompt(text).UserQuery)
+}
+
 func (instance *bot) augmentConversationWithVideoURLs(
 	ctx context.Context,
 	loadedConfig config,
@@ -666,7 +670,11 @@ func (instance *bot) messageNodeURLExtractionText(
 		instance.initializeNode(ctx, message, node)
 	}
 
-	return strings.TrimSpace(node.urlScanText), node.parentMessage
+	if node.role != messageRoleUser {
+		return "", node.parentMessage
+	}
+
+	return normalizedURLExtractionText(node.urlScanText), node.parentMessage
 }
 
 func prependSystemPrompt(
