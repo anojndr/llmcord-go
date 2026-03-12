@@ -112,7 +112,7 @@ func (tracker *responseTracker) release(fullText string) {
 	for _, pending := range tracker.pendingResponses {
 		pending.node.role = messageRoleAssistant
 		pending.node.text = fullText
-		pending.node.urlScanText = fullText
+		pending.node.urlScanText = ""
 		pending.node.parentMessage = tracker.sourceMessage
 		pending.node.initialized = true
 		pending.node.mu.Unlock()

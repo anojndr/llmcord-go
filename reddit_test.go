@@ -97,6 +97,25 @@ func TestExtractRedditURLsNormalizesAndDeduplicates(t *testing.T) {
 	}
 }
 
+func TestExtractRedditURLsIgnoresURLsInAugmentedPromptSections(t *testing.T) {
+	t.Parallel()
+
+	text := augmentedUserPrompt{
+		RepliedMessage:   "",
+		UserQuery:        "<@123>: summarize this thread",
+		YouTubeContent:   "Thread URL: https://www.reddit.com/r/testing/comments/abc123/thread-title/",
+		RedditContent:    "Thread URL: https://www.reddit.com/r/testing/comments/def456/second-thread/",
+		WebsiteContent:   "Discussed on https://www.reddit.com/r/testing/comments/ghi789/third-thread/",
+		VisualSearch:     "Site match: old.reddit.com/r/testing/comments/jkl012/fourth-thread/",
+		WebSearchResults: "1. https://www.reddit.com/r/testing/comments/mno345/fifth-thread/",
+	}.render()
+
+	urls := extractRedditURLs(text)
+	if len(urls) != 0 {
+		t.Fatalf("unexpected urls: %#v", urls)
+	}
+}
+
 func TestAppendWebSearchResultsKeepsOriginalUserQueryAfterRedditAugmentation(t *testing.T) {
 	t.Parallel()
 

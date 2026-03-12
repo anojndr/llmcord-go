@@ -274,6 +274,8 @@ func (client redditClient) doRequest(ctx context.Context, requestURL string) ([]
 }
 
 func extractRedditURLs(text string) []string {
+	text = normalizedURLExtractionText(text)
+
 	matches := redditURLRegexp.FindAllString(text, -1)
 	normalizedURLs := make([]string, 0, len(matches))
 	seenJSONPaths := make(map[string]struct{}, len(matches))

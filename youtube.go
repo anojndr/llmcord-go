@@ -537,6 +537,8 @@ func messageContentText(content any) string {
 }
 
 func extractYouTubeURLs(text string) []string {
+	text = normalizedURLExtractionText(text)
+
 	matches := youtubeURLRegexp.FindAllString(text, -1)
 	normalizedURLs := make([]string, 0, len(matches))
 	seenVideoIDs := make(map[string]struct{}, len(matches))
