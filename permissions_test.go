@@ -69,6 +69,7 @@ func TestMessageAllowed(t *testing.T) {
 func testPermissionsConfig() config {
 	searchConfig := webSearchConfig{
 		PrimaryProvider: webSearchProviderKindMCP,
+		MaxURLs:         defaultWebSearchMaxURLs,
 		Tavily: tavilySearchConfig{
 			APIKey:  "",
 			APIKeys: nil,

@@ -82,6 +82,10 @@ models:
 	if loadedConfig.WebSearch.PrimaryProvider != webSearchProviderKindMCP {
 		t.Fatalf("unexpected default web search primary provider: %q", loadedConfig.WebSearch.PrimaryProvider)
 	}
+
+	if loadedConfig.WebSearch.MaxURLs != defaultWebSearchMaxURLs {
+		t.Fatalf("unexpected default web search max URLs: %d", loadedConfig.WebSearch.MaxURLs)
+	}
 }
 
 func TestLoadConfigRejectsMissingModels(t *testing.T) {
@@ -344,6 +348,37 @@ web_search:
 	}
 }
 
+func TestLoadConfigUsesConfiguredWebSearchMaxURLs(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	configText := `
+bot_token: discord-token
+providers:
+  openai:
+    base_url: https://api.example.com/v1
+models:
+  openai/first-model:
+web_search:
+  max_urls: 9
+`
+
+	err := os.WriteFile(configPath, []byte(configText), 0o600)
+	if err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	loadedConfig, err := loadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	if loadedConfig.WebSearch.MaxURLs != 9 {
+		t.Fatalf("unexpected web search max URLs: %d", loadedConfig.WebSearch.MaxURLs)
+	}
+}
+
 func TestLoadConfigAllowsOpenAICodexProviderWithoutBaseURL(t *testing.T) {
 	t.Parallel()
 
@@ -424,6 +459,33 @@ web_search:
 	_, err = loadConfig(configPath)
 	if err == nil {
 		t.Fatal("expected unsupported web search primary provider to fail validation")
+	}
+}
+
+func TestLoadConfigRejectsNonPositiveWebSearchMaxURLs(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	configText := `
+bot_token: discord-token
+providers:
+  openai:
+    base_url: https://api.example.com/v1
+models:
+  openai/first-model:
+web_search:
+  max_urls: 0
+`
+
+	err := os.WriteFile(configPath, []byte(configText), 0o600)
+	if err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	_, err = loadConfig(configPath)
+	if err == nil {
+		t.Fatal("expected non-positive web search max URLs to fail validation")
 	}
 }
 
