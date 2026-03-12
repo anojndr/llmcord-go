@@ -226,6 +226,7 @@ func TestHandleInteractionCreateRespondsToShowSourcesButton(t *testing.T) {
 					"URL: https://example.com/source\n",
 			},
 		},
+		MaxURLs: defaultWebSearchMaxURLs,
 	}
 	node.mu.Unlock()
 

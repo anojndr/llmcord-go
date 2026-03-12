@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -21,11 +22,13 @@ const (
 	testTavilyBackupAPIKey      = "backup-key"
 	testTavilyPrimaryAuthHeader = "Bearer " + testTavilyPrimaryAPIKey
 	testTavilyBackupAuthHeader  = "Bearer " + testTavilyBackupAPIKey
+	testWebSearchMaxURLs        = 7
 )
 
 func testTavilySearchConfig() config {
 	loadedConfig := testSearchConfig()
 	loadedConfig.WebSearch.PrimaryProvider = webSearchProviderKindMCP
+	loadedConfig.WebSearch.MaxURLs = testWebSearchMaxURLs
 	loadedConfig.WebSearch.Tavily = tavilySearchConfig{
 		APIKey:  testTavilyPrimaryAPIKey,
 		APIKeys: []string{testTavilyPrimaryAPIKey, testTavilyBackupAPIKey},
@@ -92,12 +95,34 @@ func assertTavilySearchRequest(t *testing.T, request tavilySearchRequest) {
 		t.Fatalf("unexpected Tavily search depth: %q", request.SearchDepth)
 	}
 
-	if request.MaxResults != maxSourcesPerQuery {
+	if request.MaxResults != testWebSearchMaxURLs {
 		t.Fatalf("unexpected Tavily max results: %d", request.MaxResults)
 	}
 
 	if request.IncludeRawContent != "text" {
 		t.Fatalf("unexpected Tavily raw content setting: %q", request.IncludeRawContent)
+	}
+}
+
+func assertExaSearchRequest(t *testing.T, args map[string]any) {
+	t.Helper()
+
+	query, ok := args["query"].(string)
+	if !ok || strings.TrimSpace(query) == "" {
+		t.Fatalf("unexpected Exa query argument: %#v", args["query"])
+	}
+
+	switch value := args["numResults"].(type) {
+	case int:
+		if value != testWebSearchMaxURLs {
+			t.Fatalf("unexpected Exa numResults: %d", value)
+		}
+	case float64:
+		if value != float64(testWebSearchMaxURLs) {
+			t.Fatalf("unexpected Exa numResults: %v", value)
+		}
+	default:
+		t.Fatalf("unexpected Exa numResults type %T with value %#v", value, value)
 	}
 }
 
@@ -665,6 +690,8 @@ func TestExaSearchClientSearchRunsQueriesConcurrentlyAndKeepsOrder(t *testing.T)
 		_ *mcp.CallToolRequest,
 		args map[string]any,
 	) (*mcp.CallToolResult, any, error) {
+		assertExaSearchRequest(t, args)
+
 		query, _ := args["query"].(string)
 
 		startedMu.Lock()
@@ -704,7 +731,7 @@ func TestExaSearchClientSearchRunsQueriesConcurrentlyAndKeepsOrder(t *testing.T)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	results, err := client.search(ctx, testSearchConfig(), []string{"alpha", "beta"})
+	results, err := client.search(ctx, testTavilySearchConfig(), []string{"alpha", "beta"})
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
@@ -977,6 +1004,7 @@ func TestFormatSearchSourcesMessageIncludesQueriesAndSources(t *testing.T) {
 					"URL: https://example.com/second\n",
 			},
 		},
+		MaxURLs: defaultWebSearchMaxURLs,
 	}
 
 	message := formatSearchSourcesMessage(metadata)
@@ -1006,6 +1034,7 @@ func TestFormatSearchSourcesMessageUsesAngleBracketURLWithoutDuplicateTitle(t *t
 				Text:  "URL: https://example.com/source\n",
 			},
 		},
+		MaxURLs: defaultWebSearchMaxURLs,
 	}
 
 	message := formatSearchSourcesMessage(metadata)
@@ -1023,6 +1052,60 @@ func TestFormatSearchSourcesMessageUsesAngleBracketURLWithoutDuplicateTitle(t *t
 	}
 }
 
+func TestFormatSearchSourcesMessageLimitsSourcesPerQuery(t *testing.T) {
+	t.Parallel()
+
+	var resultText strings.Builder
+
+	for index := range 3 {
+		sourceNumber := index + 1
+		_, _ = fmt.Fprintf(
+			&resultText,
+			"Title: Source %d\nURL: https://example.com/source-%d\nText: body\n\n",
+			sourceNumber,
+			sourceNumber,
+		)
+	}
+
+	metadata := &searchMetadata{
+		Queries: []string{"latest ai news"},
+		Results: []webSearchResult{
+			{
+				Query: "latest ai news",
+				Text:  resultText.String(),
+			},
+		},
+		MaxURLs: 2,
+	}
+
+	message := formatSearchSourcesMessage(metadata)
+
+	for index := range metadata.MaxURLs {
+		sourceNumber := index + 1
+
+		expectedLine := fmt.Sprintf(
+			"%d. Source %d <https://example.com/source-%d>",
+			sourceNumber,
+			sourceNumber,
+			sourceNumber,
+		)
+		if !strings.Contains(message, expectedLine) {
+			t.Fatalf("expected source line %q in message: %q", expectedLine, message)
+		}
+	}
+
+	excludedSource := metadata.MaxURLs + 1
+	excludedLine := fmt.Sprintf(
+		"Source %d <https://example.com/source-%d>",
+		excludedSource,
+		excludedSource,
+	)
+
+	if strings.Contains(message, excludedLine) {
+		t.Fatalf("expected message to exclude source %d: %q", excludedSource, message)
+	}
+}
+
 func testSearchConfig() config {
 	loadedConfig := new(config)
 	provider := new(providerConfig)
@@ -1036,6 +1119,7 @@ func testSearchConfig() config {
 		"openai/decider-model": nil,
 	}
 	loadedConfig.WebSearch.PrimaryProvider = webSearchProviderKindMCP
+	loadedConfig.WebSearch.MaxURLs = defaultWebSearchMaxURLs
 	loadedConfig.ModelOrder = []string{"openai/main-model", "openai/decider-model"}
 	loadedConfig.SearchDeciderModel = "openai/decider-model"
 
@@ -1046,6 +1130,7 @@ func testGeminiSearchConfig() config {
 	loadedConfig := new(config)
 	loadedConfig.MaxImages = defaultMaxImages
 	loadedConfig.WebSearch.PrimaryProvider = webSearchProviderKindMCP
+	loadedConfig.WebSearch.MaxURLs = defaultWebSearchMaxURLs
 
 	googleProvider := new(providerConfig)
 	googleProvider.Type = string(providerAPIKindGemini)

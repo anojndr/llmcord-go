@@ -35,7 +35,7 @@ const (
 	messageRoleAssistant                 = "assistant"
 	finishReasonStop                     = "stop"
 	maxSearchQueries                     = 5
-	maxSourcesPerQuery                   = 3
+	defaultWebSearchMaxURLs              = 5
 	maxYouTubeComments                   = 50
 	showSourcesMessageMaxLength          = 1900
 	attachmentRequestTimeout             = 30 * time.Second

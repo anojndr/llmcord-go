@@ -95,6 +95,7 @@ The config schema stays close to the original Python project.
 | Setting | Description |
 | --- | --- |
 | `web_search.primary_provider` | Which search backend to try first. Supported values: `mcp` and `tavily`. Default: `mcp`. The other backend is used as fallback automatically. |
+| `web_search.max_urls` | Maximum number of URLs to request from Exa or Tavily for each search query and to show in the `Show Sources` button output. Default: `5`. Must be greater than zero. |
 | `web_search.tavily.api_key` | Tavily API key configuration. Required if Tavily is selected as the primary backend and optional when it is used only as fallback. Accepts either a single string or a YAML list of strings, and the bot retries the keys in order on auth/quota-style failures before giving up. |
 
 ## Development
@@ -127,8 +128,8 @@ golangci-lint run --default=all
 - When a user message contains one or more Reddit thread URLs, the bot fetches each thread concurrently from the corresponding `.json` URL over a dedicated HTTP/1.1 transport, then appends the post metadata, post body, and nested comments to the latest user message before the main completion request.
 - When a user message contains one or more non-TikTok/Facebook/YouTube/Reddit website URLs, the bot fetches each page concurrently and appends the extracted title, meta description, and main visible page text to the latest user message before the main completion request.
 - When the search decider requires web search, the bot uses `web_search.primary_provider` to decide whether Exa MCP or Tavily runs first, and automatically falls back to the other backend on failure.
-- Exa MCP uses `https://mcp.exa.ai/mcp` and does not require an API key by default.
-- Tavily uses `https://api.tavily.com/search`, requests `include_raw_content: "text"`, and includes the full raw page text for each returned URL in the search context. If multiple Tavily keys are configured, the bot retries them in order on auth/quota-style failures before moving on.
+- Exa MCP uses `https://mcp.exa.ai/mcp`, requests up to `web_search.max_urls` URLs per search query, and does not require an API key by default.
+- Tavily uses `https://api.tavily.com/search`, requests up to `web_search.max_urls` URLs per search query with `include_raw_content: "text"`, and includes the full raw page text for each returned URL in the search context. If multiple Tavily keys are configured, the bot retries them in order on auth/quota-style failures before moving on.
 - Clicking `View on Rentry` sends only that assistant reply to `https://rentry.co/` at click time, then returns the generated Rentry URL in an ephemeral Discord response. The bot caches that URL per Discord message while the in-memory message node is retained.
 - OpenAI Codex providers stream through the ChatGPT Codex Responses API. If `extra_headers.chatgpt-account-id` is not set, the bot derives it from the JWT in `api_key`.
 - If a provider has multiple `api_key` entries, the router retries the request with the next configured key when the current key is rejected or rate-limited before any response is streamed.

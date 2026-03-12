@@ -162,6 +162,7 @@ type searchDecision struct {
 type searchMetadata struct {
 	Queries []string
 	Results []webSearchResult
+	MaxURLs int
 }
 
 type webSearchResult struct {
@@ -294,13 +295,14 @@ func (instance *bot) maybeAugmentConversationWithWebSearch(
 		return nil, nil, nil, fmt.Errorf("append web search results to conversation: %w", err)
 	}
 
-	return augmentedConversation, newSearchMetadata(decision.Queries, results), nil, nil
+	return augmentedConversation, newSearchMetadata(decision.Queries, results, loadedConfig.WebSearch.maxURLs()), nil, nil
 }
 
-func newSearchMetadata(queries []string, results []webSearchResult) *searchMetadata {
+func newSearchMetadata(queries []string, results []webSearchResult, maxURLs int) *searchMetadata {
 	metadata := new(searchMetadata)
 	metadata.Queries = append(metadata.Queries, queries...)
 	metadata.Results = append(metadata.Results, results...)
+	metadata.MaxURLs = maxURLs
 
 	return metadata
 }
@@ -310,7 +312,7 @@ func cloneSearchMetadata(metadata *searchMetadata) *searchMetadata {
 		return nil
 	}
 
-	return newSearchMetadata(metadata.Queries, metadata.Results)
+	return newSearchMetadata(metadata.Queries, metadata.Results, metadata.MaxURLs)
 }
 
 func (client routedWebSearchClient) search(
@@ -843,7 +845,7 @@ func formatSearchSourcesMessage(metadata *searchMetadata) string {
 			continue
 		}
 
-		for index, source := range sources[:minInt(len(sources), maxSourcesPerQuery)] {
+		for index, source := range sources[:minInt(len(sources), metadata.maxURLs())] {
 			_, _ = fmt.Fprintf(&builder, "%d. %s\n", index+1, formatSearchSourceLine(source))
 		}
 	}
@@ -856,6 +858,14 @@ func formatSearchSourcesMessage(metadata *searchMetadata) string {
 	truncatedMessage := truncateRunes(message, showSourcesMessageMaxLength-len("\n\n... truncated"))
 
 	return strings.TrimSpace(truncatedMessage) + "\n\n... truncated"
+}
+
+func (metadata *searchMetadata) maxURLs() int {
+	if metadata == nil || metadata.MaxURLs <= 0 {
+		return defaultWebSearchMaxURLs
+	}
+
+	return metadata.MaxURLs
 }
 
 func formatSearchSourceLine(source searchSource) string {
@@ -912,13 +922,20 @@ func extractSearchSources(resultText string) []searchSource {
 
 func (client exaSearchClient) search(
 	ctx context.Context,
-	_ config,
+	loadedConfig config,
 	queries []string,
 ) ([]webSearchResult, error) {
 	searchContext, cancel := context.WithTimeout(ctx, webSearchTimeout)
 	defer cancel()
 
-	return searchQueriesConcurrently(searchContext, cancel, queries, client.searchQuery)
+	maxURLs := loadedConfig.WebSearch.maxURLs()
+
+	return searchQueriesConcurrently(searchContext, cancel, queries, func(
+		queryContext context.Context,
+		query string,
+	) (webSearchResult, error) {
+		return client.searchQuery(queryContext, query, maxURLs)
+	})
 }
 
 func (client tavilySearchClient) search(
@@ -934,11 +951,13 @@ func (client tavilySearchClient) search(
 	searchContext, cancel := context.WithTimeout(ctx, webSearchTimeout)
 	defer cancel()
 
+	maxURLs := loadedConfig.WebSearch.maxURLs()
+
 	return searchQueriesConcurrently(searchContext, cancel, queries, func(
 		queryContext context.Context,
 		query string,
 	) (webSearchResult, error) {
-		return client.searchQuery(queryContext, apiKeys, query)
+		return client.searchQuery(queryContext, apiKeys, query, maxURLs)
 	})
 }
 
@@ -985,6 +1004,7 @@ func searchQueriesConcurrently(
 func (client exaSearchClient) searchQuery(
 	ctx context.Context,
 	query string,
+	maxURLs int,
 ) (webSearchResult, error) {
 	implementation := new(mcp.Implementation)
 	implementation.Name = "llmcord-go"
@@ -1010,7 +1030,8 @@ func (client exaSearchClient) searchQuery(
 	params := new(mcp.CallToolParams)
 	params.Name = exaSearchToolName
 	params.Arguments = map[string]any{
-		"query": query,
+		"query":      query,
+		"numResults": maxURLs,
 	}
 
 	result, err := session.CallTool(ctx, params)
@@ -1033,11 +1054,12 @@ func (client tavilySearchClient) searchQuery(
 	ctx context.Context,
 	apiKeys []string,
 	query string,
+	maxURLs int,
 ) (webSearchResult, error) {
 	attemptErrors := make([]error, 0, len(apiKeys))
 
 	for index, apiKey := range apiKeys {
-		result, err := client.searchQueryOnce(ctx, query, apiKey)
+		result, err := client.searchQueryOnce(ctx, query, apiKey, maxURLs)
 		if err == nil {
 			return result, nil
 		}
@@ -1067,11 +1089,12 @@ func (client tavilySearchClient) searchQueryOnce(
 	ctx context.Context,
 	query string,
 	apiKey string,
+	maxURLs int,
 ) (webSearchResult, error) {
 	requestBody := tavilySearchRequest{
 		Query:             query,
 		SearchDepth:       "advanced",
-		MaxResults:        maxSourcesPerQuery,
+		MaxResults:        maxURLs,
 		IncludeRawContent: "text",
 	}
 
