@@ -187,7 +187,7 @@ func (instance *bot) respondToMessage(
 
 	urlExtractionText := instance.sourceMessageURLExtractionText(ctx, message)
 
-	messages, tikTokWarnings, err := instance.maybeAugmentConversationWithTikTok(
+	messages, videoWarnings, err := instance.augmentConversationWithVideoURLs(
 		ctx,
 		loadedConfig,
 		providerSlashModel,
@@ -195,10 +195,10 @@ func (instance *bot) respondToMessage(
 		urlExtractionText,
 	)
 	if err != nil {
-		return fmt.Errorf("augment conversation with tiktok: %w", err)
+		return fmt.Errorf("augment conversation with video urls: %w", err)
 	}
 
-	warnings = append(warnings, tikTokWarnings...)
+	warnings = append(warnings, videoWarnings...)
 
 	messages, err = instance.maybeAugmentConversationWithPDFContents(
 		ctx,
@@ -255,6 +255,42 @@ func (instance *bot) respondToMessage(
 	}
 
 	return nil
+}
+
+func (instance *bot) augmentConversationWithVideoURLs(
+	ctx context.Context,
+	loadedConfig config,
+	providerSlashModel string,
+	messages []chatMessage,
+	urlExtractionText string,
+) ([]chatMessage, []string, error) {
+	augmentedMessages, warnings, err := instance.maybeAugmentConversationWithTikTok(
+		ctx,
+		loadedConfig,
+		providerSlashModel,
+		messages,
+		urlExtractionText,
+	)
+	if err != nil {
+		return nil, nil, fmt.Errorf("augment conversation with tiktok: %w", err)
+	}
+
+	var facebookWarnings []string
+
+	augmentedMessages, facebookWarnings, err = instance.maybeAugmentConversationWithFacebook(
+		ctx,
+		loadedConfig,
+		providerSlashModel,
+		augmentedMessages,
+		urlExtractionText,
+	)
+	if err != nil {
+		return nil, nil, fmt.Errorf("augment conversation with facebook: %w", err)
+	}
+
+	warnings = append(warnings, facebookWarnings...)
+
+	return augmentedMessages, warnings, nil
 }
 
 func (instance *bot) buildMessageConversation(

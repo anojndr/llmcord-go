@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
 	"mime"
 	"net/http"
 	"net/url"
@@ -14,7 +13,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 	"unicode/utf8"
 )
@@ -83,6 +81,14 @@ type tiktokVideoContent struct {
 	MediaPart   contentPart
 }
 
+func (content tiktokVideoContent) resolvedURL() string {
+	return strings.TrimSpace(content.ResolvedURL)
+}
+
+func (content tiktokVideoContent) mediaPart() contentPart {
+	return content.MediaPart
+}
+
 func newTikTokClient(httpClient *http.Client) tiktokClient {
 	return tiktokClient{
 		httpClient:  httpClient,
@@ -110,236 +116,28 @@ func (instance *bot) maybeAugmentConversationWithTikTok(
 		return conversation, nil, nil
 	}
 
-	videoContents, warnings := instance.fetchTikTokVideos(ctx, tikTokURLs)
+	videoContents, warnings := fetchDownloadedVideos(
+		ctx,
+		tikTokURLs,
+		instance.tiktok.fetch,
+		"fetch tiktok content",
+		tikTokWarningText,
+	)
 	if len(videoContents) == 0 {
 		return conversation, warnings, nil
 	}
 
-	replyModelAPIKind, err := configuredModelAPIKind(loadedConfig, providerSlashModel)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	searchDeciderNeedsAnalysis, err := instance.searchDeciderNeedsTikTokAnalysis(
-		loadedConfig,
-	)
-	if err != nil {
-		return nil, nil, fmt.Errorf("check tiktok search decider support: %w", err)
-	}
-
-	if replyModelAPIKind == providerAPIKindGemini {
-		augmentedConversation, augmentedWarnings, appendErr := appendTikTokVideosToConversation(
-			conversation,
-			videoContents,
-			warnings,
-		)
-		if appendErr != nil {
-			return nil, nil, appendErr
-		}
-
-		if !searchDeciderNeedsAnalysis {
-			return augmentedConversation, augmentedWarnings, nil
-		}
-
-		return instance.appendTikTokVideoAnalysesWithGemini(
-			ctx,
-			loadedConfig,
-			augmentedConversation,
-			videoContents,
-			augmentedWarnings,
-		)
-	}
-
-	return instance.preprocessTikTokVideosWithGemini(
+	return augmentConversationWithDownloadedVideos(
 		ctx,
+		instance,
 		loadedConfig,
 		providerSlashModel,
 		conversation,
 		videoContents,
 		warnings,
+		tikTokWarningText,
+		"tiktok",
 	)
-}
-
-func appendTikTokVideosToConversation(
-	conversation []chatMessage,
-	videoContents []tiktokVideoContent,
-	warnings []string,
-) ([]chatMessage, []string, error) {
-	mediaParts := make([]contentPart, 0, len(videoContents))
-	for _, videoContent := range videoContents {
-		mediaParts = append(mediaParts, cloneContentPart(videoContent.MediaPart))
-	}
-
-	augmentedConversation, err := appendMediaPartsToConversation(
-		conversation,
-		mediaParts,
-	)
-	if err != nil {
-		return nil, nil, fmt.Errorf("append tiktok media to conversation: %w", err)
-	}
-
-	return augmentedConversation, warnings, nil
-}
-
-func (instance *bot) preprocessTikTokVideosWithGemini(
-	ctx context.Context,
-	loadedConfig config,
-	providerSlashModel string,
-	conversation []chatMessage,
-	videoContents []tiktokVideoContent,
-	warnings []string,
-) ([]chatMessage, []string, error) {
-	canUseMediaAnalysis, err := canUseGeminiMediaAnalysis(
-		loadedConfig,
-		providerSlashModel,
-	)
-	if err != nil {
-		return nil, nil, fmt.Errorf("check tiktok media analysis support: %w", err)
-	}
-
-	if !canUseMediaAnalysis {
-		return conversation, mergeTikTokWarnings(warnings), nil
-	}
-
-	return instance.appendTikTokVideoAnalysesWithGemini(
-		ctx,
-		loadedConfig,
-		conversation,
-		videoContents,
-		warnings,
-	)
-}
-
-func (instance *bot) appendTikTokVideoAnalysesWithGemini(
-	ctx context.Context,
-	loadedConfig config,
-	conversation []chatMessage,
-	videoContents []tiktokVideoContent,
-	warnings []string,
-) ([]chatMessage, []string, error) {
-	geminiModel, err := configuredGeminiMediaModel(loadedConfig)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	analyses := make([]string, 0, len(videoContents))
-	for index, videoContent := range videoContents {
-		analysis, analysisErr := instance.analyzeMediaWithGemini(
-			ctx,
-			loadedConfig,
-			geminiModel,
-			cloneContentPart(videoContent.MediaPart),
-		)
-		if analysisErr != nil {
-			return nil, nil, fmt.Errorf(
-				"analyze tiktok video %d with gemini: %w",
-				index+1,
-				analysisErr,
-			)
-		}
-
-		analyses = append(analyses, analysis)
-	}
-
-	augmentedConversation, err := appendMediaAnalysesToConversation(
-		conversation,
-		analyses,
-	)
-	if err != nil {
-		return nil, nil, fmt.Errorf("append tiktok media analyses: %w", err)
-	}
-
-	return augmentedConversation, warnings, nil
-}
-
-func (instance *bot) searchDeciderNeedsTikTokAnalysis(
-	loadedConfig config,
-) (bool, error) {
-	searchDeciderModel := instance.currentSearchDeciderModelForConfig(loadedConfig)
-
-	apiKind, err := configuredModelAPIKind(loadedConfig, searchDeciderModel)
-	if err != nil {
-		return false, err
-	}
-
-	return apiKind != providerAPIKindGemini, nil
-}
-
-func mergeTikTokWarnings(warnings []string) []string {
-	warningSet := make(map[string]struct{}, len(warnings)+1)
-	for _, warning := range warnings {
-		appendUniqueWarning(warningSet, warning)
-	}
-
-	appendUniqueWarning(warningSet, tikTokWarningText)
-
-	return sortedWarnings(warningSet)
-}
-
-func (instance *bot) fetchTikTokVideos(
-	ctx context.Context,
-	urls []string,
-) ([]tiktokVideoContent, []string) {
-	results := make([]tiktokVideoContent, len(urls))
-	successful := make([]bool, len(urls))
-
-	var (
-		failed    bool
-		failedMu  sync.Mutex
-		waitGroup sync.WaitGroup
-	)
-
-	for index, rawURL := range urls {
-		waitGroup.Add(1)
-
-		go func(index int, rawURL string) {
-			defer waitGroup.Done()
-
-			videoContent, err := instance.tiktok.fetch(ctx, rawURL)
-			if err != nil {
-				slog.Warn("fetch tiktok content", "url", rawURL, "error", err)
-				failedMu.Lock()
-				failed = true
-				failedMu.Unlock()
-
-				return
-			}
-
-			results[index] = videoContent
-			successful[index] = true
-		}(index, rawURL)
-	}
-
-	waitGroup.Wait()
-
-	videoContents := make([]tiktokVideoContent, 0, len(results))
-	seenResolvedURLs := make(map[string]struct{}, len(results))
-
-	for index, result := range results {
-		if !successful[index] {
-			continue
-		}
-
-		resolvedURL := strings.TrimSpace(result.ResolvedURL)
-		if resolvedURL == "" {
-			resolvedURL = urls[index]
-		}
-
-		if _, seen := seenResolvedURLs[resolvedURL]; seen {
-			continue
-		}
-
-		seenResolvedURLs[resolvedURL] = struct{}{}
-
-		videoContents = append(videoContents, result)
-	}
-
-	warnings := make([]string, 0, 1)
-	if failed {
-		warnings = append(warnings, tikTokWarningText)
-	}
-
-	return videoContents, warnings
 }
 
 func (client tiktokClient) fetch(

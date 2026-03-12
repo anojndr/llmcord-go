@@ -53,6 +53,7 @@ func TestExtractWebsiteURLsNormalizesDeduplicatesAndSkipsSpecializedHosts(t *tes
 		"ignore https://www.youtube.com/watch?v=dQw4w9WgXcQ",
 		"ignore https://www.reddit.com/r/testing/comments/abc123/thread-title/",
 		"ignore https://www.tiktok.com/@example/video/1234567890123456789",
+		"ignore https://www.facebook.com/reel/823513456342882",
 	}, " ")
 
 	urls := extractWebsiteURLs(text)

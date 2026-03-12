@@ -21,6 +21,7 @@ type bot struct {
 	visualSearch              visualSearchClient
 	rentry                    rentryClient
 	tiktok                    tiktokContentClient
+	facebook                  facebookContentClient
 	youtube                   youtubeContentClient
 	reddit                    redditContentClient
 	website                   websiteContentClient
@@ -49,6 +50,12 @@ func newBot(configPath string, loadedConfig config) (*bot, error) {
 	instance.visualSearch = newVisualSearchClient(httpClient)
 	instance.rentry = newRentryClient(httpClient, defaultRentryEndpoint)
 	instance.tiktok = newTikTokClient(httpClient)
+
+	instance.facebook, err = newFacebookClient(httpClient)
+	if err != nil {
+		return nil, fmt.Errorf("create facebook client: %w", err)
+	}
+
 	instance.youtube = newYouTubeClient(httpClient)
 	instance.reddit = newRedditClient(httpClient)
 	instance.website = newWebsiteClient(httpClient)
