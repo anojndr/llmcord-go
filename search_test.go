@@ -534,18 +534,7 @@ func TestMaybeAugmentConversationWithWebSearchAddsResultsWhenNeeded(t *testing.T
 		t.Fatalf("unexpected search metadata results: %#v", searchMetadata.Results)
 	}
 
-	if len(openAI.requests) != 1 {
-		t.Fatalf("unexpected decider request count: %d", len(openAI.requests))
-	}
-
-	requestMessages := openAI.requests[0].Messages
-	if len(requestMessages) != 3 {
-		t.Fatalf("unexpected decider message count: %d", len(requestMessages))
-	}
-
-	if requestMessages[0].Role != "system" {
-		t.Fatalf("expected search decider system prompt, got role %q", requestMessages[0].Role)
-	}
+	assertSearchDeciderRequestIncludesInstruction(t, openAI.requests)
 
 	if len(webSearch.calls) != 1 {
 		t.Fatalf("unexpected web search call count: %d", len(webSearch.calls))
@@ -562,6 +551,43 @@ func TestMaybeAugmentConversationWithWebSearchAddsResultsWhenNeeded(t *testing.T
 
 	if latestContent == conversation[1].Content {
 		t.Fatal("expected latest user message to be rewritten with search context")
+	}
+}
+
+func assertSearchDeciderRequestIncludesInstruction(
+	t *testing.T,
+	requests []chatCompletionRequest,
+) {
+	t.Helper()
+
+	if len(requests) != 1 {
+		t.Fatalf("unexpected decider request count: %d", len(requests))
+	}
+
+	requestMessages := requests[0].Messages
+	if len(requestMessages) != 4 {
+		t.Fatalf("unexpected decider message count: %d", len(requestMessages))
+	}
+
+	if requestMessages[0].Role != "system" {
+		t.Fatalf("expected search decider system prompt, got role %q", requestMessages[0].Role)
+	}
+
+	if requestMessages[2].Role != messageRoleUser {
+		t.Fatalf("expected latest query before decider instruction, got role %q", requestMessages[2].Role)
+	}
+
+	if requestMessages[3].Role != messageRoleUser {
+		t.Fatalf("expected decider instruction user role, got %q", requestMessages[3].Role)
+	}
+
+	instruction, instructionOK := requestMessages[3].Content.(string)
+	if !instructionOK {
+		t.Fatalf("unexpected decider instruction content type: %T", requestMessages[3].Content)
+	}
+
+	if instruction != searchDeciderDecisionInstruction {
+		t.Fatalf("unexpected decider instruction: %q", instruction)
 	}
 }
 
