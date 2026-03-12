@@ -211,11 +211,16 @@ func (instance *bot) initializeNode(
 
 	node.role = messageRole(message, instance.session.State.User.ID)
 	node.text = buildMessageText(message, cleanedContent, payloads)
+	node.urlScanText = buildMessageText(message, cleanedContent, nil)
 
 	node.media = buildMediaParts(payloads)
 
-	if node.role == "user" && (node.text != "" || len(node.media) > 0) {
+	if node.role == messageRoleUser && (node.text != "" || len(node.media) > 0) {
 		node.text = fmt.Sprintf("<@%s>: %s", message.Author.ID, node.text)
+	}
+
+	if node.role == messageRoleUser && node.urlScanText != "" {
+		node.urlScanText = fmt.Sprintf("<@%s>: %s", message.Author.ID, node.urlScanText)
 	}
 
 	node.hasBadAttachments = len(message.Attachments) > supportedAttachmentCount(message.Attachments)

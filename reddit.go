@@ -180,17 +180,13 @@ func forceHTTP1Transport(transport *http.Transport) *http.Transport {
 func (instance *bot) maybeAugmentConversationWithReddit(
 	ctx context.Context,
 	conversation []chatMessage,
+	urlExtractionText string,
 ) ([]chatMessage, []string, error) {
 	if instance.reddit == nil {
 		return conversation, nil, nil
 	}
 
-	latestUserQuery, err := latestUserMessageText(conversation)
-	if err != nil {
-		return nil, nil, fmt.Errorf("extract latest user message text: %w", err)
-	}
-
-	redditURLs := extractRedditURLs(latestUserQuery)
+	redditURLs := extractRedditURLs(urlExtractionText)
 	if len(redditURLs) == 0 {
 		return conversation, nil, nil
 	}

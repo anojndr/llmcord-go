@@ -99,17 +99,13 @@ func (instance *bot) maybeAugmentConversationWithTikTok(
 	loadedConfig config,
 	providerSlashModel string,
 	conversation []chatMessage,
+	urlExtractionText string,
 ) ([]chatMessage, []string, error) {
 	if instance.tiktok == nil {
 		return conversation, nil, nil
 	}
 
-	latestUserQuery, err := latestUserMessageText(conversation)
-	if err != nil {
-		return nil, nil, fmt.Errorf("extract latest user message text: %w", err)
-	}
-
-	tikTokURLs := extractTikTokURLs(latestUserQuery)
+	tikTokURLs := extractTikTokURLs(urlExtractionText)
 	if len(tikTokURLs) == 0 {
 		return conversation, nil, nil
 	}
