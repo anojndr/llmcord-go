@@ -82,6 +82,25 @@ func TestExtractTikTokURLsNormalizesAndDeduplicates(t *testing.T) {
 	}
 }
 
+func TestExtractTikTokURLsIgnoresURLsInAugmentedPromptSections(t *testing.T) {
+	t.Parallel()
+
+	text := augmentedUserPrompt{
+		RepliedMessage:   "",
+		UserQuery:        "<@123>: summarize this clip",
+		YouTubeContent:   "Mirror: https://www.tiktok.com/@mikemhan/video/7614735539660442893",
+		RedditContent:    "Mirror: https://vt.tnktok.com/ZSuhvMpsr/",
+		WebsiteContent:   "Source: https://www.tiktok.com/@example/video/1234567890123456789",
+		VisualSearch:     "Site match: https://www.tiktok.com/@another/video/2345678901234567890",
+		WebSearchResults: "1. https://www.tiktok.com/@third/video/3456789012345678901",
+	}.render()
+
+	urls := extractTikTokURLs(text)
+	if len(urls) != 0 {
+		t.Fatalf("unexpected urls: %#v", urls)
+	}
+}
+
 func TestDecodeSnaptikPackedScript(t *testing.T) {
 	t.Parallel()
 

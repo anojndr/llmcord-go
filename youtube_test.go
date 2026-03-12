@@ -73,6 +73,25 @@ func TestExtractYouTubeURLsNormalizesAndDeduplicates(t *testing.T) {
 	}
 }
 
+func TestExtractYouTubeURLsIgnoresURLsInAugmentedPromptSections(t *testing.T) {
+	t.Parallel()
+
+	text := augmentedUserPrompt{
+		RepliedMessage:   "",
+		UserQuery:        "<@123>: summarize this video",
+		YouTubeContent:   "URL: https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+		RedditContent:    "Linked video: https://www.youtube.com/watch?v=abc123def45",
+		WebsiteContent:   "URL: https://www.youtube.com/watch?v=5NV6Rdv1a3I",
+		VisualSearch:     "Site match: https://youtu.be/3JZ_D3ELwOQ",
+		WebSearchResults: "1. https://www.youtube.com/watch?v=oHg5SJYRHA0",
+	}.render()
+
+	urls := extractYouTubeURLs(text)
+	if len(urls) != 0 {
+		t.Fatalf("unexpected urls: %#v", urls)
+	}
+}
+
 func TestAppendWebSearchResultsKeepsOriginalUserQueryAfterYouTubeAugmentation(t *testing.T) {
 	t.Parallel()
 

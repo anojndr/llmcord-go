@@ -211,7 +211,13 @@ func (instance *bot) initializeNode(
 
 	node.role = messageRole(message, instance.session.State.User.ID)
 	node.text = buildMessageText(message, cleanedContent, payloads)
-	node.urlScanText = buildMessageText(message, cleanedContent, nil)
+	node.urlScanText = ""
+
+	if node.role == messageRoleUser {
+		node.urlScanText = normalizedURLExtractionText(
+			buildMessageText(message, cleanedContent, nil),
+		)
+	}
 
 	node.media = buildMediaParts(payloads)
 
