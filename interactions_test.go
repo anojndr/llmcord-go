@@ -251,6 +251,59 @@ func TestHandleInteractionCreateRespondsToShowSourcesButton(t *testing.T) {
 	}
 }
 
+func TestHandleInteractionCreateRespondsToShowSourcesButtonAfterPendingRelease(t *testing.T) {
+	t.Parallel()
+
+	var response discordgo.InteractionResponse
+
+	session := newInteractionTestSession(t, &response)
+	instance := new(bot)
+	instance.nodes = newMessageNodeStore(10)
+
+	sourceMessage := new(discordgo.Message)
+	sourceMessage.ID = "source-message"
+
+	tracker := newResponseTracker(sourceMessage, "")
+	tracker.searchMetadata = &searchMetadata{
+		Queries: []string{"latest ai news"},
+		Results: []webSearchResult{
+			{
+				Query: "latest ai news",
+				Text: "Title: Example Source\n" +
+					"URL: https://example.com/source\n",
+			},
+		},
+		MaxURLs: defaultWebSearchMaxURLs,
+	}
+	tracker.pendingResponses = []pendingResponse{
+		{
+			node: instance.nodes.addPending("response-message", sourceMessage),
+		},
+	}
+
+	tracker.release("assistant reply")
+
+	interaction := newShowSourcesInteraction("response-message")
+
+	instance.handleInteractionCreate(session, interaction)
+
+	if response.Data == nil {
+		t.Fatal("expected interaction response data")
+	}
+
+	if response.Data.Flags != discordgo.MessageFlagsEphemeral {
+		t.Fatalf("unexpected response flags: %v", response.Data.Flags)
+	}
+
+	if !containsFold(response.Data.Content, "latest ai news") {
+		t.Fatalf("expected query in response content: %q", response.Data.Content)
+	}
+
+	if !containsFold(response.Data.Content, "https://example.com/source") {
+		t.Fatalf("expected source URL in response content: %q", response.Data.Content)
+	}
+}
+
 func TestHandleInteractionCreateRespondsToViewOnRentryButton(t *testing.T) {
 	t.Parallel()
 
