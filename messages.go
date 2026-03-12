@@ -403,9 +403,20 @@ func (instance *bot) augmentConversation(
 	messages []chatMessage,
 	warnings []string,
 ) ([]chatMessage, *searchMetadata, []string, error) {
+	augmentedMessages, visualSearchWarnings, err := instance.maybeAugmentConversationWithVisualSearch(
+		ctx,
+		sourceMessage,
+		messages,
+	)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("augment conversation with visual search: %w", err)
+	}
+
+	warnings = append(warnings, visualSearchWarnings...)
+
 	augmentedMessages, websiteWarnings, err := instance.maybeAugmentConversationWithWebsite(
 		ctx,
-		messages,
+		augmentedMessages,
 	)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("augment conversation with website: %w", err)

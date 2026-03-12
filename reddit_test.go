@@ -53,13 +53,14 @@ func TestAugmentedUserPromptRenderUsesRedditTemplate(t *testing.T) {
 		YouTubeContent:   "",
 		RedditContent:    "Thread URL: https://www.reddit.com/r/testing/comments/abc123/thread-title/",
 		WebsiteContent:   "",
+		VisualSearch:     "",
 		WebSearchResults: "",
 	}
 
 	renderedPrompt := prompt.render()
 
 	expectedPrompt := strings.Join([]string{
-		"Answer the user query based on the extracted Reddit URL content.",
+		"Answer the user's query based on the extracted Reddit URL content.",
 		"User query:\n<@123>: summarize this thread",
 		"Reddit URL content:\nThread URL: https://www.reddit.com/r/testing/comments/abc123/thread-title/",
 	}, "\n\n")

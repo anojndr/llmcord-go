@@ -13,6 +13,7 @@ import (
 var atAIMentionRegexp = regexp.MustCompile(`(?i)\bat\s+ai\b`)
 var atAIMentionPrefixRegexp = regexp.MustCompile(`(?i)^\s*at\s+ai(?:$|[\s,.:;!?-]+)`)
 var atAIMentionStripRegexp = regexp.MustCompile(`(?i)\bat\s+ai\b(?:[^\S\n]*[,.:;!?-]+)?`)
+var userMessagePrefixRegexp = regexp.MustCompile(`^\s*(<@!?[^>]+>:\s*)`)
 var horizontalWhitespaceRegexp = regexp.MustCompile(`[^\S\n]+`)
 var whitespaceBeforePunctuationRegexp = regexp.MustCompile(`([^\S\n]+)([,.:;!?])`)
 
@@ -121,6 +122,17 @@ func trimBotMention(text string, botID string) string {
 
 func hasAtAIMention(text string) bool {
 	return atAIMentionRegexp.FindStringIndex(text) != nil
+}
+
+func splitUserMessagePrefix(text string) (string, string) {
+	match := userMessagePrefixRegexp.FindStringSubmatch(text)
+	if len(match) == 0 {
+		return "", text
+	}
+
+	prefix := match[1]
+
+	return prefix, text[len(match[0]):]
 }
 
 func systemPromptNow(template string, now time.Time) string {
