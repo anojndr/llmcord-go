@@ -20,6 +20,7 @@ const (
 	embedResponseMaxLength               = 4096 - len(streamingIndicator)
 	embedColorComplete                   = 0x006400
 	embedColorIncomplete                 = 0xffa500
+	embedColorFailure                    = 0x8b0000
 	modelCommandName                     = "model"
 	modelCommandDescription              = "View or switch the current model"
 	modelOptionName                      = "model"

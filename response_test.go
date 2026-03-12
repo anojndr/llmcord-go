@@ -258,7 +258,7 @@ func TestRenderEmbedResponseIncludesConfiguredModelAsAuthor(t *testing.T) {
 	instance.session = session
 	instance.nodes = newMessageNodeStore(10)
 
-	tracker := newResponseTracker(sourceMessage, nil, modelName)
+	tracker := newResponseTracker(sourceMessage, modelName)
 
 	err = instance.renderEmbedResponse(
 		context.Background(),
@@ -270,6 +270,70 @@ func TestRenderEmbedResponseIncludesConfiguredModelAsAuthor(t *testing.T) {
 	)
 	if err != nil {
 		t.Fatalf("render embed response: %v", err)
+	}
+}
+
+func TestSendPlainResponseEditsExistingProgressMessage(t *testing.T) {
+	t.Parallel()
+
+	const (
+		channelID        = "channel-1"
+		sourceID         = "source-message"
+		progressID       = "progress-message"
+		plainContent     = "hello from plain response"
+		expectedPatchURL = "/api/v9/channels/" + channelID + "/messages/" + progressID
+	)
+
+	sourceMessage := new(discordgo.Message)
+	sourceMessage.ID = sourceID
+	sourceMessage.ChannelID = channelID
+
+	progressMessage := new(discordgo.Message)
+	progressMessage.ID = progressID
+	progressMessage.ChannelID = channelID
+
+	session, err := discordgo.New("Bot discord-token")
+	if err != nil {
+		t.Fatalf("create discord session: %v", err)
+	}
+
+	client := new(http.Client)
+	client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		t.Helper()
+
+		if request.Method == http.MethodPost &&
+			request.URL.Path == "/api/v9/channels/"+channelID+"/messages" {
+			t.Fatalf("unexpected additional message send: %s %s", request.Method, request.URL.Path)
+		}
+
+		if request.Method != http.MethodPatch || request.URL.Path != expectedPatchURL {
+			t.Fatalf("unexpected request: %s %s", request.Method, request.URL.Path)
+		}
+
+		assertPlainEditRequest(t, request, plainContent)
+
+		return newJSONResponse(t, request, progressMessage), nil
+	})
+	session.Client = client
+
+	instance := new(bot)
+	instance.session = session
+
+	tracker := newResponseTracker(sourceMessage, "")
+	tracker.responseMessages = []*discordgo.Message{progressMessage}
+	tracker.progressActive = true
+
+	err = instance.sendPlainResponse(
+		context.Background(),
+		tracker,
+		[]string{plainContent},
+	)
+	if err != nil {
+		t.Fatalf("send plain response: %v", err)
+	}
+
+	if tracker.progressActive {
+		t.Fatal("expected progress placeholder to be cleared after plain response edit")
 	}
 }
 
@@ -299,11 +363,12 @@ func TestGenerateAndSendResponseKeepsAssistantReplyInConversationHistory(t *test
 
 	var request chatCompletionRequest
 
+	tracker := newResponseTracker(sourceMessage, "")
+
 	err := instance.generateAndSendResponse(
 		context.Background(),
 		request,
-		sourceMessage,
-		nil,
+		tracker,
 		nil,
 		true,
 	)
@@ -437,6 +502,47 @@ func assertRequestEmbedAuthor(
 
 	if embed["description"] != expectedDescription {
 		t.Fatalf("unexpected embed description: %#v", embed["description"])
+	}
+}
+
+func assertPlainEditRequest(
+	t *testing.T,
+	request *http.Request,
+	expectedContent string,
+) {
+	t.Helper()
+
+	var payload map[string]any
+
+	err := json.NewDecoder(request.Body).Decode(&payload)
+	if err != nil {
+		t.Fatalf("decode request body: %v", err)
+	}
+
+	if flags, ok := payload["flags"].(float64); !ok ||
+		discordgo.MessageFlags(int(flags)) !=
+			(discordgo.MessageFlagsIsComponentsV2|
+				discordgo.MessageFlagsSuppressNotifications) {
+		t.Fatalf("unexpected flags payload: %#v", payload["flags"])
+	}
+
+	embeds, embedsOK := payload["embeds"].([]any)
+	if !embedsOK || len(embeds) != 0 {
+		t.Fatalf("unexpected embeds payload: %#v", payload["embeds"])
+	}
+
+	components, componentsOK := payload["components"].([]any)
+	if !componentsOK || len(components) != 2 {
+		t.Fatalf("unexpected components payload: %#v", payload["components"])
+	}
+
+	textDisplay, textDisplayOK := components[0].(map[string]any)
+	if !textDisplayOK {
+		t.Fatalf("unexpected text display payload: %#v", components[0])
+	}
+
+	if textDisplay["content"] != expectedContent {
+		t.Fatalf("unexpected text display content: %#v", textDisplay["content"])
 	}
 }
 

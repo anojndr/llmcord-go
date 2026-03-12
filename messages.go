@@ -172,9 +172,45 @@ func (instance *bot) respondToMessage(
 	message *discordgo.Message,
 	providerSlashModel string,
 ) error {
+	progress := instance.startRequestProgress(message, providerSlashModel)
+
 	stopTyping := instance.startTyping(ctx, message.ChannelID)
 	defer stopTyping()
 
+	request, tracker, warnings, err := instance.prepareMessageResponse(
+		ctx,
+		loadedConfig,
+		message,
+		providerSlashModel,
+		progress,
+	)
+	if err != nil {
+		return err
+	}
+
+	err = instance.generateAndSendResponse(
+		ctx,
+		request,
+		tracker,
+		warnings,
+		loadedConfig.UsePlainResponses,
+	)
+	if err != nil {
+		instance.renderProgressFailure(tracker)
+
+		return fmt.Errorf("generate and send response: %w", err)
+	}
+
+	return nil
+}
+
+func (instance *bot) prepareMessageResponse(
+	ctx context.Context,
+	loadedConfig config,
+	message *discordgo.Message,
+	providerSlashModel string,
+	progress *requestProgress,
+) (chatCompletionRequest, *responseTracker, []string, error) {
 	messages, warnings, err := instance.buildMessageConversation(
 		ctx,
 		loadedConfig,
@@ -182,9 +218,53 @@ func (instance *bot) respondToMessage(
 		providerSlashModel,
 	)
 	if err != nil {
-		return fmt.Errorf("build message conversation: %w", err)
+		progress.fail()
+
+		return chatCompletionRequest{}, nil, nil,
+			fmt.Errorf("build message conversation: %w", err)
 	}
 
+	progress.advance(requestProgressStageGatheringContext)
+
+	messages, searchMetadata, warnings, err := instance.augmentPreparedMessageResponse(
+		ctx,
+		loadedConfig,
+		message,
+		providerSlashModel,
+		messages,
+		warnings,
+	)
+	if err != nil {
+		progress.fail()
+
+		return chatCompletionRequest{}, nil, nil,
+			fmt.Errorf("augment prepared message response: %w", err)
+	}
+
+	messages = prependSystemPrompt(messages, loadedConfig.SystemPrompt, time.Now())
+
+	request, err := buildChatCompletionRequest(loadedConfig, providerSlashModel, messages)
+	if err != nil {
+		progress.fail()
+
+		return chatCompletionRequest{}, nil, nil,
+			fmt.Errorf("build chat completion request: %w", err)
+	}
+
+	progress.advance(requestProgressStageGeneratingResponse)
+	tracker := progress.handoff(request.ConfiguredModel, searchMetadata)
+
+	return request, tracker, warnings, nil
+}
+
+func (instance *bot) augmentPreparedMessageResponse(
+	ctx context.Context,
+	loadedConfig config,
+	message *discordgo.Message,
+	providerSlashModel string,
+	messages []chatMessage,
+	warnings []string,
+) ([]chatMessage, *searchMetadata, []string, error) {
 	urlExtractionText := instance.sourceMessageURLExtractionText(ctx, message)
 
 	messages, videoWarnings, err := instance.augmentConversationWithVideoURLs(
@@ -195,7 +275,8 @@ func (instance *bot) respondToMessage(
 		urlExtractionText,
 	)
 	if err != nil {
-		return fmt.Errorf("augment conversation with video urls: %w", err)
+		return nil, nil, nil,
+			fmt.Errorf("augment conversation with video urls: %w", err)
 	}
 
 	warnings = append(warnings, videoWarnings...)
@@ -208,7 +289,8 @@ func (instance *bot) respondToMessage(
 		messages,
 	)
 	if err != nil {
-		return fmt.Errorf("augment conversation with extracted pdf content: %w", err)
+		return nil, nil, nil,
+			fmt.Errorf("augment conversation with extracted pdf content: %w", err)
 	}
 
 	messages, err = instance.maybeAugmentConversationWithGeminiMedia(
@@ -219,7 +301,8 @@ func (instance *bot) respondToMessage(
 		messages,
 	)
 	if err != nil {
-		return fmt.Errorf("augment conversation with gemini media: %w", err)
+		return nil, nil, nil,
+			fmt.Errorf("augment conversation with gemini media: %w", err)
 	}
 
 	messages, searchMetadata, warnings, err := instance.augmentConversation(
@@ -232,29 +315,10 @@ func (instance *bot) respondToMessage(
 		urlExtractionText,
 	)
 	if err != nil {
-		return fmt.Errorf("augment conversation: %w", err)
+		return nil, nil, nil, fmt.Errorf("augment conversation: %w", err)
 	}
 
-	messages = prependSystemPrompt(messages, loadedConfig.SystemPrompt, time.Now())
-
-	request, err := buildChatCompletionRequest(loadedConfig, providerSlashModel, messages)
-	if err != nil {
-		return fmt.Errorf("build chat completion request: %w", err)
-	}
-
-	err = instance.generateAndSendResponse(
-		ctx,
-		request,
-		message,
-		searchMetadata,
-		warnings,
-		loadedConfig.UsePlainResponses,
-	)
-	if err != nil {
-		return fmt.Errorf("generate and send response: %w", err)
-	}
-
-	return nil
+	return messages, searchMetadata, warnings, nil
 }
 
 func (instance *bot) augmentConversationWithVideoURLs(

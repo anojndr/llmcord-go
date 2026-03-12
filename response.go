@@ -36,6 +36,7 @@ type responseTracker struct {
 	responseMessages []*discordgo.Message
 	pendingResponses []pendingResponse
 	renderedSpecs    []renderSpec
+	progressActive   bool
 }
 
 func newSegmentAccumulator(maxLength int) segmentAccumulator {
@@ -98,12 +99,10 @@ func (accumulator *segmentAccumulator) renderSegments(final bool) []string {
 
 func newResponseTracker(
 	sourceMessage *discordgo.Message,
-	searchMetadata *searchMetadata,
 	modelName string,
 ) *responseTracker {
 	tracker := new(responseTracker)
 	tracker.sourceMessage = sourceMessage
-	tracker.searchMetadata = cloneSearchMetadata(searchMetadata)
 	tracker.modelName = strings.TrimSpace(modelName)
 
 	return tracker
@@ -127,8 +126,7 @@ func (tracker *responseTracker) releaseJoined(accumulator *segmentAccumulator) {
 func (instance *bot) generateAndSendResponse(
 	ctx context.Context,
 	request chatCompletionRequest,
-	sourceMessage *discordgo.Message,
-	searchMetadata *searchMetadata,
+	tracker *responseTracker,
 	warnings []string,
 	usePlainResponses bool,
 ) error {
@@ -139,7 +137,7 @@ func (instance *bot) generateAndSendResponse(
 
 	accumulator := newSegmentAccumulator(maxLength)
 
-	tracker := newResponseTracker(sourceMessage, searchMetadata, request.ConfiguredModel)
+	tracker.modelName = strings.TrimSpace(request.ConfiguredModel)
 	defer tracker.releaseJoined(&accumulator)
 
 	var finishReason string
@@ -314,6 +312,10 @@ func (instance *bot) renderEmbedResponse(
 			if err != nil {
 				return fmt.Errorf("edit embed message: %w", err)
 			}
+
+			if index == 0 {
+				tracker.progressActive = false
+			}
 		} else {
 			sentMessage, pending, err := instance.sendEmbedMessage(
 				tracker,
@@ -347,6 +349,23 @@ func (instance *bot) sendPlainResponse(
 		actions := responseActions{
 			showSources: tracker.searchMetadata != nil && index == len(segments)-1,
 			showRentry:  index == len(segments)-1,
+		}
+
+		if index < len(tracker.responseMessages) {
+			err := instance.editPlainMessage(
+				tracker.responseMessages[index],
+				segment,
+				actions,
+			)
+			if err != nil {
+				return fmt.Errorf("edit plain message: %w", err)
+			}
+
+			if index == 0 {
+				tracker.progressActive = false
+			}
+
+			continue
 		}
 
 		sentMessage, pending, err := instance.sendPlainMessage(
@@ -442,6 +461,27 @@ func (instance *bot) editEmbedMessage(
 	edit := discordgo.NewMessageEdit(message.ChannelID, message.ID)
 	edit.SetEmbeds([]*discordgo.MessageEmbed{embed})
 	edit.Components = &components
+
+	_, err := instance.session.ChannelMessageEditComplex(edit)
+	if err != nil {
+		return fmt.Errorf("edit message %s: %w", message.ID, err)
+	}
+
+	return nil
+}
+
+func (instance *bot) editPlainMessage(
+	message *discordgo.Message,
+	content string,
+	actions responseActions,
+) error {
+	edit := discordgo.NewMessageEdit(message.ChannelID, message.ID)
+	edit.SetEmbeds([]*discordgo.MessageEmbed{})
+
+	components := buildPlainComponents(content, actions)
+	edit.Components = &components
+	edit.Flags = discordgo.MessageFlagsIsComponentsV2 |
+		discordgo.MessageFlagsSuppressNotifications
 
 	_, err := instance.session.ChannelMessageEditComplex(edit)
 	if err != nil {
