@@ -109,6 +109,8 @@ web_search:
   # `mcp` keeps Exa MCP as primary and uses Tavily as fallback.
   # `tavily` flips the order and uses Exa MCP as fallback.
   primary_provider: mcp
+  # Maximum URLs to request from Exa or Tavily for each search query.
+  max_urls: 5
   tavily:
     # Optional when `primary_provider: mcp`; required if you want Tavily as either
     # primary or fallback. `api_key` also accepts a YAML list. Keys are tried in order.

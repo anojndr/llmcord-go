@@ -87,6 +87,7 @@ type rawTavilySearchConfig struct {
 
 type rawWebSearchConfig struct {
 	PrimaryProvider scalarString          `yaml:"primary_provider"`
+	MaxURLs         *int                  `yaml:"max_urls"`
 	Tavily          rawTavilySearchConfig `yaml:"tavily"`
 }
 
@@ -114,6 +115,7 @@ const (
 
 type webSearchConfig struct {
 	PrimaryProvider webSearchProviderKind
+	MaxURLs         int
 	Tavily          tavilySearchConfig
 }
 
@@ -233,6 +235,7 @@ func loadConfig(filename string) (config, error) {
 		Providers:         loadedProviders,
 		WebSearch: webSearchConfig{
 			PrimaryProvider: primarySearchProvider,
+			MaxURLs:         intValueOrDefault(rawLoadedConfig.WebSearch.MaxURLs, defaultWebSearchMaxURLs),
 			Tavily: tavilySearchConfig{
 				APIKey:  firstAPIKey(tavilyAPIKeys),
 				APIKeys: tavilyAPIKeys,
@@ -315,6 +318,14 @@ func normalizeWebSearchProvider(rawValue scalarString) webSearchProviderKind {
 	}
 
 	return webSearchProviderKind(trimmedValue)
+}
+
+func (loadedConfig webSearchConfig) maxURLs() int {
+	if loadedConfig.MaxURLs <= 0 {
+		return defaultWebSearchMaxURLs
+	}
+
+	return loadedConfig.MaxURLs
 }
 
 func validateConfig(loadedConfig config) error {
@@ -407,6 +418,10 @@ func validateConfig(loadedConfig config) error {
 }
 
 func validateWebSearchConfig(loadedConfig webSearchConfig) error {
+	if loadedConfig.MaxURLs <= 0 {
+		return fmt.Errorf("web_search.max_urls must be greater than zero: %w", os.ErrInvalid)
+	}
+
 	switch loadedConfig.PrimaryProvider {
 	case webSearchProviderKindMCP, webSearchProviderKindTavily:
 		return nil
