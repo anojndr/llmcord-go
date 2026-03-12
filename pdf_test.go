@@ -130,6 +130,86 @@ func TestMaybeAugmentConversationWithPDFContentsAppendsTextAndImagesForNonGemini
 	}
 }
 
+func TestPersistAugmentedSourceMessageRetainsExtractedPDFTextAndImagesInFollowUpHistory(t *testing.T) {
+	t.Parallel()
+
+	instance, sourceMessage := newPDFExtractionTestBot(
+		"message-pdf-retained",
+		"<@123>: summarize the report",
+		[]contentPart{
+			testPDFDocumentPart(t, "Quarterly revenue grew by 12 percent.", true),
+		},
+	)
+
+	loadedConfig := testMediaAnalysisConfig()
+	loadedConfig.MaxImages = 2
+
+	augmentedConversation, err := instance.maybeAugmentConversationWithPDFContents(
+		context.Background(),
+		loadedConfig,
+		"openai/gpt-5",
+		sourceMessage,
+		[]chatMessage{{Role: messageRoleUser, Content: "<@123>: summarize the report"}},
+	)
+	if err != nil {
+		t.Fatalf("augment conversation with extracted pdf content: %v", err)
+	}
+
+	err = instance.persistAugmentedSourceMessage(
+		context.Background(),
+		sourceMessage,
+		augmentedConversation,
+	)
+	if err != nil {
+		t.Fatalf("persist augmented source message: %v", err)
+	}
+
+	assistantMessage := new(discordgo.Message)
+	assistantMessage.ID = "message-pdf-retained-assistant"
+	setCachedAssistantNode(instance, assistantMessage, sourceMessage, "assistant reply")
+
+	followUpMessage := new(discordgo.Message)
+	followUpMessage.ID = "message-pdf-retained-follow-up"
+	setCachedUserNode(instance, followUpMessage, assistantMessage, "<@123>: follow-up question")
+
+	history := retainedHistoryForFollowUp(
+		t,
+		instance,
+		followUpMessage,
+		messageContentOptions{
+			maxImages:      loadedConfig.MaxImages,
+			allowAudio:     false,
+			allowDocuments: false,
+			allowVideo:     false,
+		},
+	)
+
+	sourceParts, ok := history[0].Content.([]contentPart)
+	if !ok {
+		t.Fatalf("unexpected source message content type: %T", history[0].Content)
+	}
+
+	if len(sourceParts) != 2 {
+		t.Fatalf("unexpected retained source part count: %d", len(sourceParts))
+	}
+
+	sourceText := messageContentText(history[0].Content)
+	for _, expectedFragment := range []string{
+		pdfContentOpenTag,
+		"Quarterly revenue grew by 12 percent.",
+		"Extracted images: 1 total.",
+		pdfContentCloseTag,
+	} {
+		if !strings.Contains(sourceText, expectedFragment) {
+			t.Fatalf("expected retained pdf fragment %q in %q", expectedFragment, sourceText)
+		}
+	}
+
+	if sourceParts[1]["type"] != contentTypeImageURL {
+		t.Fatalf("expected retained extracted image part: %#v", sourceParts[1])
+	}
+}
+
 func TestMaybeAugmentConversationWithPDFContentsAppendsReplyTargetPDFForNonGeminiModel(t *testing.T) {
 	t.Parallel()
 

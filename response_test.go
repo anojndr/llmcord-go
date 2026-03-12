@@ -352,12 +352,12 @@ func TestGenerateAndSendResponseKeepsAssistantReplyInConversationHistory(t *test
 	)
 
 	sourceMessage := newPromptMessage(sourceMessageID, channelID, userID, botUserID)
-	assistantMessage := newAssistantResponseMessage(
-		assistantMessageID,
-		channelID,
-		botUserID,
-		sourceMessage.Reference(),
-	)
+	assistantMessage := new(discordgo.Message)
+	assistantMessage.ID = assistantMessageID
+	assistantMessage.ChannelID = channelID
+	assistantMessage.Author = newDiscordUser(botUserID, true)
+	assistantMessage.MessageReference = sourceMessage.Reference()
+	assistantMessage.Type = discordgo.MessageTypeReply
 	session := newResponseHistoryTestSession(t, channelID, botUserID, assistantMessage)
 	instance := newResponseHistoryTestBot(session, assistantReplyText)
 
@@ -572,22 +572,6 @@ func newPromptMessage(
 	message.Author = newDiscordUser(userID, false)
 	message.Content = "<@" + botUserID + "> generate a random 10-digit number"
 	message.Mentions = []*discordgo.User{newDiscordUser(botUserID, false)}
-
-	return message
-}
-
-func newAssistantResponseMessage(
-	messageID string,
-	channelID string,
-	botUserID string,
-	reference *discordgo.MessageReference,
-) *discordgo.Message {
-	message := new(discordgo.Message)
-	message.ID = messageID
-	message.ChannelID = channelID
-	message.Author = newDiscordUser(botUserID, true)
-	message.MessageReference = reference
-	message.Type = discordgo.MessageTypeReply
 
 	return message
 }

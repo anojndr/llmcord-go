@@ -318,7 +318,80 @@ func (instance *bot) augmentPreparedMessageResponse(
 		return nil, nil, nil, fmt.Errorf("augment conversation: %w", err)
 	}
 
+	err = instance.persistAugmentedSourceMessage(ctx, message, messages)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("persist augmented source message: %w", err)
+	}
+
 	return messages, searchMetadata, warnings, nil
+}
+
+func (instance *bot) persistAugmentedSourceMessage(
+	ctx context.Context,
+	sourceMessage *discordgo.Message,
+	conversation []chatMessage,
+) error {
+	if sourceMessage == nil {
+		return nil
+	}
+
+	index, err := latestUserMessageIndex(conversation)
+	if err != nil {
+		return fmt.Errorf("find latest user message: %w", err)
+	}
+
+	text, media, err := retainedMessageNodeContent(conversation[index].Content)
+	if err != nil {
+		return fmt.Errorf("normalize retained user content: %w", err)
+	}
+
+	node := instance.nodes.getOrCreate(sourceMessage.ID)
+
+	node.mu.Lock()
+	defer node.mu.Unlock()
+
+	if !node.initialized {
+		instance.initializeNode(ctx, sourceMessage, node)
+	}
+
+	node.text = text
+	node.media = media
+
+	return nil
+}
+
+func retainedMessageNodeContent(content any) (string, []contentPart, error) {
+	switch typedContent := content.(type) {
+	case nil:
+		return "", nil, nil
+	case string:
+		return retainedMessageText(typedContent), nil, nil
+	case []contentPart:
+		media := make([]contentPart, 0, len(typedContent))
+		for _, part := range typedContent {
+			partType, _ := part["type"].(string)
+			if partType == contentTypeText {
+				continue
+			}
+
+			media = append(media, cloneContentPart(part))
+		}
+
+		return retainedMessageText(contentPartsText(typedContent)), media, nil
+	default:
+		return "", nil, fmt.Errorf(
+			"unsupported retained content type %T: %w",
+			content,
+			os.ErrInvalid,
+		)
+	}
+}
+
+func retainedMessageText(text string) string {
+	prompt := parseAugmentedUserPrompt(text)
+	prompt.RepliedMessage = ""
+
+	return prompt.render()
 }
 
 func (instance *bot) augmentConversationWithVideoURLs(

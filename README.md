@@ -22,6 +22,7 @@ This bot turns Discord into a reply-chain frontend for OpenAI-compatible LLM API
 - Search-decider flow that can skip search or use Exa MCP and Tavily in configurable primary/fallback order when current information is needed
 - Guild messages containing `at ai` are treated like an explicit bot mention and stripped from the prompt text, which is useful for speech-to-text style prompts
 - `View on Rentry` button on final replies that publishes the assistant response to Rentry on demand for easier reading, plus a `Show Sources` button on searched replies that reveals the queries and parsed source URLs used
+- Augmented user-turn context such as visual search results, web search results, website/YouTube/Reddit enrichment, retained TikTok/Facebook video context, and non-Gemini PDF extraction output including extracted text and extracted images stays in the in-memory reply-chain history for later follow-up replies
 - Hot-reloaded `config.yaml`
 - Permission controls for users, roles, and channels
 - Bounded, mutex-protected message cache to avoid unbounded growth

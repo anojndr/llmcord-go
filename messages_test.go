@@ -269,12 +269,11 @@ func TestRespondToMessageSendsProgressEmbedBeforeTypingAndAttachmentProcessing(t
 		attachmentURL      = "https://attachments.example.com/context.txt"
 	)
 
-	assistantMessage := newAssistantResponseMessage(
-		assistantMessageID,
-		channelID,
-		botUserID,
-		nil,
-	)
+	assistantMessage := new(discordgo.Message)
+	assistantMessage.ID = assistantMessageID
+	assistantMessage.ChannelID = channelID
+	assistantMessage.Author = newDiscordUser(botUserID, true)
+	assistantMessage.Type = discordgo.MessageTypeReply
 	fixture := newRespondToMessageTypingFixture(
 		t,
 		channelID,
