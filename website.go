@@ -268,7 +268,10 @@ func isWebsiteScheme(scheme string) bool {
 }
 
 func isExcludedWebsiteHost(host string) bool {
-	return isTikTokHost(host) || isYouTubeHost(host) || isRedditHost(host)
+	return isTikTokHost(host) ||
+		isYouTubeHost(host) ||
+		isRedditHost(host) ||
+		isFacebookHost(host)
 }
 
 func isTikTokHost(host string) bool {
@@ -290,6 +293,16 @@ func isYouTubeHost(host string) bool {
 		normalizedHost == "youtube-nocookie.com" ||
 		strings.HasSuffix(normalizedHost, ".youtube.com") ||
 		strings.HasSuffix(normalizedHost, ".youtube-nocookie.com")
+}
+
+func isFacebookHost(host string) bool {
+	normalizedHost := strings.ToLower(strings.TrimSpace(host))
+	normalizedHost = strings.TrimPrefix(normalizedHost, "www.")
+
+	return normalizedHost == "facebook.com" ||
+		normalizedHost == "fb.watch" ||
+		strings.HasSuffix(normalizedHost, ".facebook.com") ||
+		strings.HasSuffix(normalizedHost, ".fb.watch")
 }
 
 func isHTMLContentType(contentType string) bool {
