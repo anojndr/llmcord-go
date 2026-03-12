@@ -7,22 +7,25 @@ import (
 )
 
 const (
-	augmentedPromptPrefix     = "Answer the user query based on "
-	mediaAnalysisCloseTag     = "</media_analysis>"
-	mediaAnalysisOpenTag      = "<media_analysis>"
-	replyTargetSectionName    = "Replied message"
-	userQuerySectionName      = "User query"
-	youtubeSectionName        = "YouTube URL content"
-	redditSectionName         = "Reddit URL content"
-	websiteSectionName        = "Website URL content"
-	webSearchSectionName      = "Web search results"
-	replyTargetDescription    = "the replied message"
-	youtubeSectionDescription = "the extracted YouTube URL content"
-	redditSectionDescription  = "the extracted Reddit URL content"
-	websiteSectionDescription = "the extracted website URL content"
-	webSearchStandalonePrompt = "the web search results"
-	webSearchCombinedPrompt   = "web search results"
-	maxPromptSections         = 5
+	augmentedPromptPrefix        = "Answer the user's query based on "
+	mediaAnalysisCloseTag        = "</media_analysis>"
+	mediaAnalysisOpenTag         = "<media_analysis>"
+	replyTargetSectionName       = "Replied message"
+	userQuerySectionName         = "User query"
+	youtubeSectionName           = "YouTube URL content"
+	redditSectionName            = "Reddit URL content"
+	websiteSectionName           = "Website URL content"
+	visualSearchSectionName      = "Visual search results"
+	webSearchSectionName         = "Web search results"
+	replyTargetDescription       = "the replied message"
+	youtubeSectionDescription    = "the extracted YouTube URL content"
+	redditSectionDescription     = "the extracted Reddit URL content"
+	websiteSectionDescription    = "the extracted website URL content"
+	visualSearchStandalonePrompt = "the visual search results"
+	visualSearchCombinedPrompt   = "visual search results"
+	webSearchStandalonePrompt    = "the web search results"
+	webSearchCombinedPrompt      = "web search results"
+	maxPromptSections            = 6
 )
 
 type augmentedUserPrompt struct {
@@ -31,6 +34,7 @@ type augmentedUserPrompt struct {
 	YouTubeContent   string
 	RedditContent    string
 	WebsiteContent   string
+	VisualSearch     string
 	WebSearchResults string
 }
 
@@ -74,6 +78,7 @@ func parseAugmentedUserPrompt(text string) augmentedUserPrompt {
 			YouTubeContent:   "",
 			RedditContent:    "",
 			WebsiteContent:   "",
+			VisualSearch:     "",
 			WebSearchResults: "",
 		}
 	}
@@ -88,6 +93,7 @@ func parseAugmentedUserPrompt(text string) augmentedUserPrompt {
 			YouTubeContent:   "",
 			RedditContent:    "",
 			WebsiteContent:   "",
+			VisualSearch:     "",
 			WebSearchResults: "",
 		}
 	}
@@ -100,6 +106,7 @@ func parseAugmentedUserPrompt(text string) augmentedUserPrompt {
 			YouTubeContent:   "",
 			RedditContent:    "",
 			WebsiteContent:   "",
+			VisualSearch:     "",
 			WebSearchResults: "",
 		}
 	}
@@ -110,6 +117,7 @@ func parseAugmentedUserPrompt(text string) augmentedUserPrompt {
 		YouTubeContent:   "",
 		RedditContent:    "",
 		WebsiteContent:   "",
+		VisualSearch:     "",
 		WebSearchResults: "",
 	}
 
@@ -156,12 +164,30 @@ func appendWebsiteContentToConversation(
 	})
 }
 
+func appendVisualSearchResultsToConversation(
+	conversation []chatMessage,
+	formattedResults string,
+) ([]chatMessage, error) {
+	return appendContextToConversation(conversation, func(prompt *augmentedUserPrompt) {
+		prompt.VisualSearch = strings.TrimSpace(formattedResults)
+	})
+}
+
 func appendWebSearchResultsToConversation(
 	conversation []chatMessage,
 	formattedResults string,
 ) ([]chatMessage, error) {
 	return appendContextToConversation(conversation, func(prompt *augmentedUserPrompt) {
 		prompt.WebSearchResults = strings.TrimSpace(formattedResults)
+	})
+}
+
+func rewriteUserQueryInConversation(
+	conversation []chatMessage,
+	userQuery string,
+) ([]chatMessage, error) {
+	return appendContextToConversation(conversation, func(prompt *augmentedUserPrompt) {
+		prompt.UserQuery = strings.TrimSpace(userQuery)
 	})
 }
 
@@ -293,6 +319,7 @@ func appendContextToMessageContent(
 			YouTubeContent:   "",
 			RedditContent:    "",
 			WebsiteContent:   "",
+			VisualSearch:     "",
 			WebSearchResults: "",
 		}
 		transform(&prompt)
@@ -470,6 +497,15 @@ func (prompt augmentedUserPrompt) activeSections() []promptSection {
 		})
 	}
 
+	if trimmedValue := strings.TrimSpace(prompt.VisualSearch); trimmedValue != "" {
+		sections = append(sections, promptSection{
+			Name:                  visualSearchSectionName,
+			Value:                 trimmedValue,
+			StandaloneDescription: visualSearchStandalonePrompt,
+			CombinedDescription:   visualSearchCombinedPrompt,
+		})
+	}
+
 	if trimmedValue := strings.TrimSpace(prompt.WebSearchResults); trimmedValue != "" {
 		sections = append(sections, promptSection{
 			Name:                  webSearchSectionName,
@@ -512,6 +548,7 @@ func findPromptSectionMatches(text string) []promptSectionMatch {
 		youtubeSectionName,
 		redditSectionName,
 		websiteSectionName,
+		visualSearchSectionName,
 		webSearchSectionName,
 	} {
 		marker := "\n\n" + sectionName + ":\n"
@@ -551,6 +588,8 @@ func setPromptSectionValue(prompt *augmentedUserPrompt, sectionName string, valu
 		prompt.RedditContent = trimmedValue
 	case websiteSectionName:
 		prompt.WebsiteContent = trimmedValue
+	case visualSearchSectionName:
+		prompt.VisualSearch = trimmedValue
 	case webSearchSectionName:
 		prompt.WebSearchResults = trimmedValue
 	}
