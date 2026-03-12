@@ -257,7 +257,7 @@ func TestBuildChatCompletionRequestNormalizesOpenAICodexReasoningAlias(t *testin
 	}
 }
 
-func TestRespondToMessageStartsTypingBeforeAttachmentProcessing(t *testing.T) {
+func TestRespondToMessageSendsProgressEmbedBeforeTypingAndAttachmentProcessing(t *testing.T) {
 	t.Parallel()
 
 	const (
@@ -297,6 +297,10 @@ func TestRespondToMessageStartsTypingBeforeAttachmentProcessing(t *testing.T) {
 
 	if !fixture.typingSent.Load() {
 		t.Fatal("expected typing indicator to be sent")
+	}
+
+	if !fixture.progressSent.Load() {
+		t.Fatal("expected progress embed to be sent")
 	}
 
 	if !fixture.attachmentFetched.Load() {
@@ -493,6 +497,7 @@ type respondToMessageTypingFixture struct {
 	loadedConfig      config
 	sourceMessage     *discordgo.Message
 	typingSent        *atomic.Bool
+	progressSent      *atomic.Bool
 	attachmentFetched *atomic.Bool
 }
 
@@ -518,9 +523,11 @@ func newRespondToMessageTypingFixture(
 	assistantMessage.MessageReference = sourceMessage.Reference()
 
 	typingSent := new(atomic.Bool)
+	progressSent := new(atomic.Bool)
 	attachmentFetched := new(atomic.Bool)
 	probe := typingPreprocessingProbe{
 		typingSent:        typingSent,
+		progressSent:      progressSent,
 		attachmentFetched: attachmentFetched,
 	}
 
@@ -551,12 +558,14 @@ func newRespondToMessageTypingFixture(
 		loadedConfig:      loadedConfig,
 		sourceMessage:     sourceMessage,
 		typingSent:        typingSent,
+		progressSent:      progressSent,
 		attachmentFetched: attachmentFetched,
 	}
 }
 
 type typingPreprocessingProbe struct {
 	typingSent        *atomic.Bool
+	progressSent      *atomic.Bool
 	attachmentFetched *atomic.Bool
 }
 
@@ -591,6 +600,10 @@ func newRespondToMessageTypingSession(
 
 		if request.Method == http.MethodPost &&
 			request.URL.Path == "/api/v9/channels/"+channelID+"/typing" {
+			if !probe.progressSent.Load() {
+				t.Fatal("expected progress embed before typing indicator")
+			}
+
 			probe.typingSent.Store(true)
 
 			return newNoContentResponse(request), nil
@@ -598,8 +611,19 @@ func newRespondToMessageTypingSession(
 
 		if request.Method == http.MethodPost &&
 			request.URL.Path == "/api/v9/channels/"+channelID+"/messages" {
-			if !probe.typingSent.Load() {
-				t.Fatal("expected typing indicator before sending the response message")
+			if probe.typingSent.Load() {
+				t.Fatal("expected progress embed to be sent before the typing indicator")
+			}
+
+			probe.progressSent.Store(true)
+
+			return newJSONResponse(t, request, assistantMessage), nil
+		}
+
+		if request.Method == http.MethodPatch &&
+			request.URL.Path == "/api/v9/channels/"+channelID+"/messages/"+assistantMessage.ID {
+			if !probe.progressSent.Load() {
+				t.Fatal("expected progress message before editing the final response")
 			}
 
 			return newJSONResponse(t, request, assistantMessage), nil
@@ -639,6 +663,10 @@ func newRespondToMessageTypingChatClient(
 			t.Fatalf("unexpected configured model: %q", request.ConfiguredModel)
 		}
 
+		if !probe.progressSent.Load() {
+			t.Fatal("expected progress embed before chat completion")
+		}
+
 		if !probe.attachmentFetched.Load() {
 			t.Fatal("expected attachment preprocessing before the main completion request")
 		}
@@ -671,6 +699,10 @@ func newRespondToMessageAttachmentClient(
 
 		if !probe.typingSent.Load() {
 			t.Fatal("expected typing indicator before attachment download")
+		}
+
+		if !probe.progressSent.Load() {
+			t.Fatal("expected progress embed before attachment download")
 		}
 
 		return newTextResponse(request, "attachment context"), nil
