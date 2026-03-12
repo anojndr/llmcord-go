@@ -31,7 +31,7 @@ const (
 	contentFieldMIMEType = "mime_type"
 	mimeTypePDF          = "application/pdf"
 	mimeTypePNG          = "image/png"
-	searchAnswerTemplate = `Answer the user query based on the web search results.
+	searchAnswerTemplate = `Answer the user's query based on the web search results.
 
 User query:
 %s
