@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -244,6 +245,19 @@ func TestParseSearchDecisionNormalizesQueries(t *testing.T) {
 	}
 }
 
+func TestSearchDeciderPromptMatchesTextFile(t *testing.T) {
+	t.Parallel()
+
+	promptBytes, err := os.ReadFile("searchDeciderPrompt.txt")
+	if err != nil {
+		t.Fatalf("read search decider prompt file: %v", err)
+	}
+
+	if searchDeciderPrompt() != strings.TrimSpace(string(promptBytes)) {
+		t.Fatal("expected embedded search decider prompt to match searchDeciderPrompt.txt")
+	}
+}
+
 func TestSearchDeciderPromptRetainsCriticalInstructions(t *testing.T) {
 	t.Parallel()
 
@@ -261,8 +275,10 @@ func TestSearchDeciderPromptRetainsCriticalInstructions(t *testing.T) {
 			`figure, event, law, schedule, price, or release`,
 	}
 
+	prompt := searchDeciderPrompt()
+
 	for _, expectedSnippet := range expectedSnippets {
-		if !strings.Contains(searchDeciderPrompt, expectedSnippet) {
+		if !strings.Contains(prompt, expectedSnippet) {
 			t.Fatalf("expected search decider prompt to contain %q", expectedSnippet)
 		}
 	}
