@@ -3,8 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
-	"encoding/xml"
 	"fmt"
 	"html"
 	"io"
@@ -14,21 +14,33 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
+	"time"
 )
 
 const (
-	defaultYouTubeWatchURL        = "https://www.youtube.com/watch"
-	defaultYouTubeAPIBaseURL      = "https://www.youtube.com/youtubei/v1"
-	youtubeWarningText            = "Warning: YouTube content unavailable"
-	youtubeAndroidClientName      = "ANDROID"
-	youtubeAndroidClientVersion   = "20.10.38"
-	youtubeWebClientName          = "WEB"
-	youtubeWebClientVersionHeader = "1"
-	youtubeAcceptLanguage         = "en-US,en;q=0.9"
-	youtubeUserAgent              = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 " +
+	defaultYouTubeWatchURL         = "https://www.youtube.com/watch"
+	defaultYouTubeAPIBaseURL       = "https://www.youtube.com/youtubei/v1"
+	defaultNoteGPTAPIBaseURL       = "https://notegpt.io/api/v2"
+	youtubeWarningText             = "Warning: YouTube content unavailable"
+	noteGPTSuccessCode             = 100000
+	noteGPTPlatformYouTube         = "youtube"
+	noteGPTMediaStatusProcessing   = "processing"
+	noteGPTMediaStatusSuccess      = "success"
+	noteGPTMediaStatusNotFound     = "not_found"
+	noteGPTAnonymousUserCookieName = "anonymous_user_id"
+	noteGPTUUIDVersionMask         = 0x0f
+	noteGPTUUIDVersionValue        = 0x40
+	noteGPTUUIDVariantMask         = 0x3f
+	noteGPTUUIDVariantValue        = 0x80
+	youtubeWebClientName           = "WEB"
+	youtubeWebClientVersionHeader  = "1"
+	youtubeAcceptLanguage          = "en-US,en;q=0.9"
+	youtubeUserAgent               = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 " +
 		"(KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36"
 	youtubeCommentsPanelIdentifier = "engagement-panel-comments-section"
+	youtubeMediaStatusPollInterval = 500 * time.Millisecond
 )
 
 var (
@@ -39,8 +51,6 @@ var (
 	youtubeAPIKeyRegexp        = regexp.MustCompile(`"INNERTUBE_API_KEY"\s*:\s*"([^"]+)"`)
 	youtubeClientVersionRegexp = regexp.MustCompile(`"INNERTUBE_CLIENT_VERSION"\s*:\s*"([^"]+)"`)
 	youtubeConsentValueRegexp  = regexp.MustCompile(`name="v"\s+value="([^"]+)"`)
-	youtubeHTMLTagRegexp       = regexp.MustCompile(`<[^>]+>`)
-	youtubeLineBreakTagRegexp  = regexp.MustCompile(`(?i)<br\s*/?>`)
 )
 
 type youtubeContentClient interface {
@@ -62,10 +72,11 @@ type youtubeComment struct {
 }
 
 type youtubeClient struct {
-	httpClient *http.Client
-	watchURL   string
-	apiBaseURL string
-	userAgent  string
+	httpClient        *http.Client
+	watchURL          string
+	apiBaseURL        string
+	noteGPTAPIBaseURL string
+	userAgent         string
 }
 
 type youtubeWatchPage struct {
@@ -74,56 +85,59 @@ type youtubeWatchPage struct {
 	CommentsToken string
 }
 
-type youtubePlayerResponse struct {
-	PlayabilityStatus youtubePlayabilityStatus
-	VideoDetails      youtubeVideoDetails
-	Captions          youtubeTracklistRenderer
+type noteGPTVideoTranscriptResponse struct {
+	Code    int                        `json:"code"`
+	Message string                     `json:"message"`
+	Data    noteGPTVideoTranscriptData `json:"data"`
 }
 
-type youtubePlayabilityStatus struct {
-	Status string
-	Reason string
+type noteGPTVideoTranscriptData struct {
+	VideoID      string                             `json:"video_id"`
+	VideoInfo    noteGPTVideoInfo                   `json:"video_info"`
+	LanguageCode []noteGPTLanguageCode              `json:"language_code"`
+	Transcripts  map[string]noteGPTTranscriptTracks `json:"transcripts"`
+	Duration     string                             `json:"duration"`
 }
 
-type youtubeVideoDetails struct {
-	Title  string
-	Author string
+type noteGPTVideoInfo struct {
+	Name   string `json:"name"`
+	Author string `json:"author"`
 }
 
-type youtubeTracklistRenderer struct {
-	CaptionTracks        []youtubeCaptionTrack
-	TranslationLanguages []youtubeTranslationLanguage
+type noteGPTLanguageCode struct {
+	Code string `json:"code"`
+	Name string `json:"name"`
 }
 
-type youtubeCaptionTrack struct {
-	BaseURL        string
-	LanguageCode   string
-	Kind           string
-	IsTranslatable bool
+type noteGPTTranscriptTracks struct {
+	Custom  []noteGPTTranscriptSegment `json:"custom"`
+	Default []noteGPTTranscriptSegment `json:"default"`
+	Auto    []noteGPTTranscriptSegment `json:"auto"`
 }
 
-type youtubeTranslationLanguage struct {
-	LanguageCode string
+type noteGPTTranscriptSegment struct {
+	Start string `json:"start"`
+	End   string `json:"end"`
+	Text  string `json:"text"`
 }
 
-type youtubeTranscriptDocument struct {
-	Body youtubeTranscriptBody `xml:"body"`
+type noteGPTStatusResponse struct {
+	Code    int               `json:"code"`
+	Message string            `json:"message"`
+	Data    noteGPTStatusData `json:"data"`
 }
 
-type youtubeTranscriptBody struct {
-	Paragraphs []youtubeTranscriptParagraph `xml:"p"`
-}
-
-type youtubeTranscriptParagraph struct {
-	InnerXML string `xml:",innerxml"`
+type noteGPTStatusData struct {
+	Status string `json:"status"`
 }
 
 func newYouTubeClient(httpClient *http.Client) youtubeClient {
 	return youtubeClient{
-		httpClient: httpClient,
-		watchURL:   defaultYouTubeWatchURL,
-		apiBaseURL: defaultYouTubeAPIBaseURL,
-		userAgent:  youtubeUserAgent,
+		httpClient:        httpClient,
+		watchURL:          defaultYouTubeWatchURL,
+		apiBaseURL:        defaultYouTubeAPIBaseURL,
+		noteGPTAPIBaseURL: defaultNoteGPTAPIBaseURL,
+		userAgent:         youtubeUserAgent,
 	}
 }
 
@@ -165,64 +179,366 @@ func (client youtubeClient) fetch(ctx context.Context, rawURL string) (youtubeVi
 	requestContext, cancel := context.WithTimeout(ctx, youtubeRequestTimeout)
 	defer cancel()
 
+	content, err := client.fetchNoteGPTContent(requestContext, videoID)
+	if err != nil {
+		return youtubeVideoContent{}, fmt.Errorf("fetch transcript for %q via notegpt: %w", rawURL, err)
+	}
+
+	content.URL = canonicalURL
+
 	watchPage, err := client.fetchWatchPage(requestContext, videoID)
 	if err != nil {
-		return youtubeVideoContent{}, fmt.Errorf("fetch watch page for %q: %w", rawURL, err)
-	}
-
-	playerResponse, err := client.fetchPlayerResponse(requestContext, watchPage.APIKey, videoID)
-	if err != nil {
-		return youtubeVideoContent{}, fmt.Errorf("fetch player response for %q: %w", rawURL, err)
-	}
-
-	if playabilityStatus := strings.TrimSpace(playerResponse.PlayabilityStatus.Status); playabilityStatus != "" &&
-		!strings.EqualFold(playabilityStatus, "OK") {
-		reason := strings.TrimSpace(playerResponse.PlayabilityStatus.Reason)
-		if reason == "" {
-			reason = playabilityStatus
-		}
-
-		return youtubeVideoContent{}, fmt.Errorf("video %q unavailable: %s: %w", rawURL, reason, os.ErrInvalid)
-	}
-
-	title := strings.TrimSpace(playerResponse.VideoDetails.Title)
-
-	channelName := strings.TrimSpace(playerResponse.VideoDetails.Author)
-	if title == "" || channelName == "" {
-		return youtubeVideoContent{}, fmt.Errorf(
-			"extract title/channel for %q: %w",
-			rawURL,
-			os.ErrInvalid,
+		slog.Warn("fetch youtube watch page", "url", rawURL, "error", err)
+	} else {
+		comments, commentsErr := client.fetchComments(
+			requestContext,
+			watchPage.APIKey,
+			watchPage.ClientVersion,
+			watchPage.CommentsToken,
 		)
+		if commentsErr != nil {
+			slog.Warn("fetch youtube comments", "url", rawURL, "error", commentsErr)
+		} else {
+			content.Comments = comments
+		}
 	}
 
-	transcript, err := client.fetchTranscript(
-		requestContext,
-		videoID,
-		playerResponse.Captions,
-	)
+	return content, nil
+}
+
+func (client youtubeClient) fetchNoteGPTContent(
+	ctx context.Context,
+	videoID string,
+) (youtubeVideoContent, error) {
+	anonymousUserID, err := newNoteGPTAnonymousUserID()
 	if err != nil {
-		return youtubeVideoContent{}, fmt.Errorf("fetch transcript for %q: %w", rawURL, err)
+		return youtubeVideoContent{}, err
 	}
 
-	comments, err := client.fetchComments(
-		requestContext,
-		watchPage.APIKey,
-		watchPage.ClientVersion,
-		watchPage.CommentsToken,
-	)
+	transcriptData, err := client.fetchNoteGPTVideoTranscript(ctx, videoID, anonymousUserID)
 	if err != nil {
-		slog.Warn("fetch youtube comments", "url", rawURL, "error", err)
+		return youtubeVideoContent{}, err
+	}
+
+	title := strings.TrimSpace(transcriptData.VideoInfo.Name)
+	if title == "" {
+		return youtubeVideoContent{}, fmt.Errorf("extract title for %q: %w", videoID, os.ErrInvalid)
+	}
+
+	channelName := strings.TrimSpace(transcriptData.VideoInfo.Author)
+	if channelName == "" {
+		channelName = unknownText
+	}
+
+	transcript, err := formatNoteGPTTranscript(transcriptData)
+	if err != nil {
+		return youtubeVideoContent{}, fmt.Errorf("format transcript for %q: %w", videoID, err)
 	}
 
 	return youtubeVideoContent{
-		URL:         canonicalURL,
+		URL:         "",
 		VideoID:     videoID,
 		Title:       title,
 		ChannelName: channelName,
 		Transcript:  transcript,
-		Comments:    comments,
+		Comments:    nil,
 	}, nil
+}
+
+func (client youtubeClient) fetchNoteGPTVideoTranscript(
+	ctx context.Context,
+	videoID string,
+	anonymousUserID string,
+) (noteGPTVideoTranscriptData, error) {
+	transcriptData, ready, err := client.fetchNoteGPTVideoTranscriptOnce(ctx, videoID, anonymousUserID)
+	if err != nil {
+		return noteGPTVideoTranscriptData{}, err
+	}
+
+	if ready {
+		return transcriptData, nil
+	}
+
+	err = client.startNoteGPTTranscriptGeneration(ctx, videoID, anonymousUserID)
+	if err != nil {
+		return noteGPTVideoTranscriptData{}, err
+	}
+
+	err = client.waitForNoteGPTTranscriptGeneration(ctx, videoID, anonymousUserID)
+	if err != nil {
+		return noteGPTVideoTranscriptData{}, err
+	}
+
+	transcriptData, ready, err = client.fetchNoteGPTVideoTranscriptOnce(ctx, videoID, anonymousUserID)
+	if err != nil {
+		return noteGPTVideoTranscriptData{}, err
+	}
+
+	if !ready {
+		return noteGPTVideoTranscriptData{}, fmt.Errorf(
+			"transcript unavailable after generation for %q: %w",
+			videoID,
+			os.ErrNotExist,
+		)
+	}
+
+	return transcriptData, nil
+}
+
+func (client youtubeClient) fetchNoteGPTVideoTranscriptOnce(
+	ctx context.Context,
+	videoID string,
+	anonymousUserID string,
+) (noteGPTVideoTranscriptData, bool, error) {
+	requestURL, err := client.buildNoteGPTURL(
+		"video-transcript",
+		map[string]string{
+			"platform": noteGPTPlatformYouTube,
+			"video_id": videoID,
+		},
+	)
+	if err != nil {
+		return noteGPTVideoTranscriptData{}, false, err
+	}
+
+	responseBody, err := client.doRequest(
+		ctx,
+		http.MethodGet,
+		requestURL,
+		nil,
+		map[string]string{
+			"Cookie": client.noteGPTAnonymousUserCookie(anonymousUserID),
+		},
+	)
+	if err != nil {
+		return noteGPTVideoTranscriptData{}, false, err
+	}
+
+	var payload noteGPTVideoTranscriptResponse
+
+	err = json.Unmarshal(responseBody, &payload)
+	if err != nil {
+		return noteGPTVideoTranscriptData{}, false, fmt.Errorf("decode notegpt video transcript response: %w", err)
+	}
+
+	if payload.Code != noteGPTSuccessCode {
+		return noteGPTVideoTranscriptData{}, false, fmt.Errorf(
+			"notegpt video transcript code %d: %s: %w",
+			payload.Code,
+			strings.TrimSpace(payload.Message),
+			os.ErrInvalid,
+		)
+	}
+
+	return payload.Data, len(selectNoteGPTTranscriptSegments(payload.Data)) > 0, nil
+}
+
+func (client youtubeClient) startNoteGPTTranscriptGeneration(
+	ctx context.Context,
+	videoID string,
+	anonymousUserID string,
+) error {
+	requestURL, err := client.buildNoteGPTURL(
+		"transcript-generate",
+		map[string]string{
+			"platform": noteGPTPlatformYouTube,
+			"video_id": videoID,
+		},
+	)
+	if err != nil {
+		return err
+	}
+
+	responseBody, err := client.doRequest(
+		ctx,
+		http.MethodGet,
+		requestURL,
+		nil,
+		map[string]string{
+			"Cookie": client.noteGPTAnonymousUserCookie(anonymousUserID),
+		},
+	)
+	if err != nil {
+		return err
+	}
+
+	var payload noteGPTStatusResponse
+
+	err = json.Unmarshal(responseBody, &payload)
+	if err != nil {
+		return fmt.Errorf("decode notegpt transcript generate response: %w", err)
+	}
+
+	if payload.Code != noteGPTSuccessCode {
+		return fmt.Errorf(
+			"notegpt transcript generate code %d: %s: %w",
+			payload.Code,
+			strings.TrimSpace(payload.Message),
+			os.ErrInvalid,
+		)
+	}
+
+	return nil
+}
+
+func (client youtubeClient) waitForNoteGPTTranscriptGeneration(
+	ctx context.Context,
+	videoID string,
+	anonymousUserID string,
+) error {
+	ticker := time.NewTicker(youtubeMediaStatusPollInterval)
+	defer ticker.Stop()
+
+	for {
+		status, err := client.fetchNoteGPTMediaStatus(ctx, videoID, anonymousUserID)
+		if err != nil {
+			return err
+		}
+
+		switch strings.TrimSpace(strings.ToLower(status)) {
+		case noteGPTMediaStatusSuccess:
+			return nil
+		case "", noteGPTMediaStatusNotFound, noteGPTMediaStatusProcessing:
+		default:
+			return fmt.Errorf("notegpt media status for %q: %s: %w", videoID, status, os.ErrInvalid)
+		}
+
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("wait for notegpt transcript generation for %q: %w", videoID, ctx.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
+func (client youtubeClient) fetchNoteGPTMediaStatus(
+	ctx context.Context,
+	videoID string,
+	anonymousUserID string,
+) (string, error) {
+	requestURL, err := client.buildNoteGPTURL(
+		"media-status",
+		map[string]string{
+			"platform": noteGPTPlatformYouTube,
+			"video_id": videoID,
+		},
+	)
+	if err != nil {
+		return "", err
+	}
+
+	responseBody, err := client.doRequest(
+		ctx,
+		http.MethodGet,
+		requestURL,
+		nil,
+		map[string]string{
+			"Cookie": client.noteGPTAnonymousUserCookie(anonymousUserID),
+		},
+	)
+	if err != nil {
+		return "", err
+	}
+
+	var payload noteGPTStatusResponse
+
+	err = json.Unmarshal(responseBody, &payload)
+	if err != nil {
+		return "", fmt.Errorf("decode notegpt media status response: %w", err)
+	}
+
+	if payload.Code != noteGPTSuccessCode {
+		return "", fmt.Errorf(
+			"notegpt media status code %d: %s: %w",
+			payload.Code,
+			strings.TrimSpace(payload.Message),
+			os.ErrInvalid,
+		)
+	}
+
+	return payload.Data.Status, nil
+}
+
+func (client youtubeClient) buildNoteGPTURL(
+	endpoint string,
+	queryParameters map[string]string,
+) (string, error) {
+	requestURL, err := url.Parse(client.noteGPTAPIBaseURL)
+	if err != nil {
+		return "", fmt.Errorf("parse notegpt api base url %q: %w", client.noteGPTAPIBaseURL, err)
+	}
+
+	requestURL.Path = strings.TrimRight(requestURL.Path, "/") + "/" + strings.TrimLeft(endpoint, "/")
+
+	queryValues := requestURL.Query()
+	for key, value := range queryParameters {
+		queryValues.Set(key, value)
+	}
+
+	requestURL.RawQuery = queryValues.Encode()
+
+	return requestURL.String(), nil
+}
+
+func (client youtubeClient) noteGPTAnonymousUserCookie(anonymousUserID string) string {
+	return noteGPTAnonymousUserCookieName + "=" + anonymousUserID
+}
+
+func newNoteGPTAnonymousUserID() (string, error) {
+	var randomBytes [16]byte
+
+	_, err := rand.Read(randomBytes[:])
+	if err != nil {
+		return "", fmt.Errorf("generate notegpt anonymous user id: %w", err)
+	}
+
+	randomBytes[6] = (randomBytes[6] & noteGPTUUIDVersionMask) | noteGPTUUIDVersionValue
+	randomBytes[8] = (randomBytes[8] & noteGPTUUIDVariantMask) | noteGPTUUIDVariantValue
+
+	return fmt.Sprintf(
+		"%x-%x-%x-%x-%x",
+		randomBytes[0:4],
+		randomBytes[4:6],
+		randomBytes[6:8],
+		randomBytes[8:10],
+		randomBytes[10:16],
+	), nil
+}
+
+func (transcriptData *noteGPTVideoTranscriptData) UnmarshalJSON(rawValue []byte) error {
+	type noteGPTVideoTranscriptDataAlias noteGPTVideoTranscriptData
+
+	var alias noteGPTVideoTranscriptDataAlias
+
+	err := json.Unmarshal(rawValue, &alias)
+	if err != nil {
+		return fmt.Errorf("decode notegpt transcript data: %w", err)
+	}
+
+	*transcriptData = noteGPTVideoTranscriptData(alias)
+
+	var payload map[string]json.RawMessage
+
+	err = json.Unmarshal(rawValue, &payload)
+	if err != nil {
+		return fmt.Errorf("decode notegpt transcript payload: %w", err)
+	}
+
+	if videoID, ok := payload["videoId"]; ok {
+		err = json.Unmarshal(videoID, &transcriptData.VideoID)
+		if err != nil {
+			return fmt.Errorf("decode notegpt video id: %w", err)
+		}
+	}
+
+	if videoInfo, ok := payload["videoInfo"]; ok {
+		err = json.Unmarshal(videoInfo, &transcriptData.VideoInfo)
+		if err != nil {
+			return fmt.Errorf("decode notegpt video info: %w", err)
+		}
+	}
+
+	return nil
 }
 
 func (client youtubeClient) fetchWatchPage(
@@ -294,72 +610,6 @@ func (client youtubeClient) fetchWatchHTML(
 	}
 
 	return html.UnescapeString(string(responseBody)), nil
-}
-
-func (client youtubeClient) fetchPlayerResponse(
-	ctx context.Context,
-	apiKey string,
-	videoID string,
-) (youtubePlayerResponse, error) {
-	requestURL := client.buildAPIURL("player", apiKey)
-
-	requestBody := map[string]any{
-		"context": map[string]any{
-			"client": map[string]string{
-				"clientName":    youtubeAndroidClientName,
-				"clientVersion": youtubeAndroidClientVersion,
-				"hl":            "en",
-				"gl":            "US",
-			},
-		},
-		"videoId": videoID,
-	}
-
-	responseBody, err := client.doJSONRequest(ctx, requestURL, requestBody, nil)
-	if err != nil {
-		return youtubePlayerResponse{}, err
-	}
-
-	var payload map[string]any
-
-	err = json.Unmarshal(responseBody, &payload)
-	if err != nil {
-		return youtubePlayerResponse{}, fmt.Errorf("decode youtube player response: %w", err)
-	}
-
-	return parseYouTubePlayerResponse(payload), nil
-}
-
-func (client youtubeClient) fetchTranscript(
-	ctx context.Context,
-	videoID string,
-	tracklist youtubeTracklistRenderer,
-) (string, error) {
-	track, err := selectYouTubeCaptionTrack(tracklist)
-	if err != nil {
-		return "", fmt.Errorf("select caption track for %q: %w", videoID, err)
-	}
-
-	transcriptURL, err := buildYouTubeTranscriptURL(tracklist, track)
-	if err != nil {
-		return "", fmt.Errorf("build transcript url for %q: %w", videoID, err)
-	}
-
-	responseBody, err := client.doRequest(ctx, http.MethodGet, transcriptURL, nil, nil)
-	if err != nil {
-		return "", err
-	}
-
-	transcript, err := parseYouTubeTranscript(responseBody)
-	if err != nil {
-		return "", fmt.Errorf("parse transcript for %q: %w", videoID, err)
-	}
-
-	if strings.TrimSpace(transcript) == "" {
-		return "", fmt.Errorf("empty transcript for %q: %w", videoID, os.ErrInvalid)
-	}
-
-	return transcript, nil
 }
 
 func (client youtubeClient) fetchComments(
@@ -756,116 +1006,122 @@ func extractYouTubeCommentsContinuationToken(initialData map[string]any) string 
 	return ""
 }
 
-func selectYouTubeCaptionTrack(tracklist youtubeTracklistRenderer) (youtubeCaptionTrack, error) {
-	if len(tracklist.CaptionTracks) == 0 {
-		return youtubeCaptionTrack{}, fmt.Errorf("no caption tracks available: %w", os.ErrNotExist)
-	}
-
-	priorityGroups := [][]youtubeCaptionTrack{
-		filterCaptionTracks(tracklist.CaptionTracks, true, true),
-		filterCaptionTracks(tracklist.CaptionTracks, true, false),
-		filterCaptionTracks(tracklist.CaptionTracks, false, true),
-		filterCaptionTracks(tracklist.CaptionTracks, false, false),
-	}
-
-	for _, tracks := range priorityGroups {
-		if len(tracks) == 0 {
-			continue
-		}
-
-		return tracks[0], nil
-	}
-
-	return youtubeCaptionTrack{}, fmt.Errorf("select caption track: %w", os.ErrNotExist)
-}
-
-func filterCaptionTracks(
-	tracks []youtubeCaptionTrack,
-	preferEnglish bool,
-	manualOnly bool,
-) []youtubeCaptionTrack {
-	filteredTracks := make([]youtubeCaptionTrack, 0, len(tracks))
-
-	for _, track := range tracks {
-		if manualOnly && strings.EqualFold(track.Kind, "asr") {
-			continue
-		}
-
-		if preferEnglish && !isEnglishLanguageCode(track.LanguageCode) {
-			continue
-		}
-
-		filteredTracks = append(filteredTracks, track)
-	}
-
-	return filteredTracks
-}
-
 func isEnglishLanguageCode(languageCode string) bool {
-	return languageCode == "en" || strings.HasPrefix(languageCode, "en-")
+	return languageCode == "en" ||
+		strings.HasPrefix(languageCode, "en-") ||
+		strings.HasPrefix(languageCode, "en_")
 }
 
-func buildYouTubeTranscriptURL(
-	tracklist youtubeTracklistRenderer,
-	track youtubeCaptionTrack,
-) (string, error) {
-	transcriptURL, err := url.Parse(track.BaseURL)
-	if err != nil {
-		return "", fmt.Errorf("parse transcript url %q: %w", track.BaseURL, err)
+func formatNoteGPTTranscript(transcriptData noteGPTVideoTranscriptData) (string, error) {
+	segments := selectNoteGPTTranscriptSegments(transcriptData)
+	if len(segments) == 0 {
+		return "", fmt.Errorf("select notegpt transcript segments: %w", os.ErrNotExist)
 	}
 
-	queryValues := transcriptURL.Query()
-	queryValues.Set("fmt", "srv3")
+	lines := make([]string, 0, len(segments))
+	previousLine := ""
 
-	if !isEnglishLanguageCode(track.LanguageCode) &&
-		track.IsTranslatable &&
-		tracklistHasEnglishTranslation(tracklist) {
-		queryValues.Set("tlang", "en")
-	}
-
-	transcriptURL.RawQuery = queryValues.Encode()
-
-	return transcriptURL.String(), nil
-}
-
-func tracklistHasEnglishTranslation(tracklist youtubeTracklistRenderer) bool {
-	for _, language := range tracklist.TranslationLanguages {
-		if isEnglishLanguageCode(language.LanguageCode) {
-			return true
-		}
-	}
-
-	return false
-}
-
-func parseYouTubeTranscript(responseBody []byte) (string, error) {
-	var document youtubeTranscriptDocument
-
-	err := xml.Unmarshal(responseBody, &document)
-	if err != nil {
-		return "", fmt.Errorf("decode youtube transcript xml: %w", err)
-	}
-
-	textParts := make([]string, 0, len(document.Body.Paragraphs))
-	for _, paragraph := range document.Body.Paragraphs {
-		text := strings.TrimSpace(paragraph.InnerXML)
-		if text == "" {
+	for _, segment := range segments {
+		text := strings.Join(strings.Fields(strings.TrimSpace(segment.Text)), " ")
+		if text == "" || text == previousLine {
 			continue
 		}
 
-		text = youtubeLineBreakTagRegexp.ReplaceAllString(text, "\n")
-		text = youtubeHTMLTagRegexp.ReplaceAllString(text, "")
-		text = html.UnescapeString(text)
+		lines = append(lines, text)
+		previousLine = text
+	}
 
-		text = strings.Join(strings.Fields(text), " ")
-		if text == "" {
+	transcript := strings.Join(lines, "\n")
+	if strings.TrimSpace(transcript) == "" {
+		return "", fmt.Errorf("empty notegpt transcript: %w", os.ErrInvalid)
+	}
+
+	return transcript, nil
+}
+
+func selectNoteGPTTranscriptSegments(
+	transcriptData noteGPTVideoTranscriptData,
+) []noteGPTTranscriptSegment {
+	languageCodes := orderedNoteGPTTranscriptLanguageCodes(transcriptData)
+
+	for _, languageCode := range languageCodes {
+		if !isEnglishLanguageCode(languageCode) {
 			continue
 		}
 
-		textParts = append(textParts, text)
+		if segments := preferredNoteGPTTranscriptSegments(transcriptData.Transcripts[languageCode]); len(segments) > 0 {
+			return segments
+		}
 	}
 
-	return strings.Join(textParts, "\n"), nil
+	for _, languageCode := range languageCodes {
+		if segments := preferredNoteGPTTranscriptSegments(transcriptData.Transcripts[languageCode]); len(segments) > 0 {
+			return segments
+		}
+	}
+
+	return nil
+}
+
+func orderedNoteGPTTranscriptLanguageCodes(
+	transcriptData noteGPTVideoTranscriptData,
+) []string {
+	orderedCodes := make([]string, 0, len(transcriptData.Transcripts))
+	seenCodes := make(map[string]struct{}, len(transcriptData.Transcripts))
+
+	for _, languageCode := range transcriptData.LanguageCode {
+		code := strings.TrimSpace(languageCode.Code)
+		if code == "" {
+			continue
+		}
+
+		if _, exists := transcriptData.Transcripts[code]; !exists {
+			continue
+		}
+
+		if _, seen := seenCodes[code]; seen {
+			continue
+		}
+
+		seenCodes[code] = struct{}{}
+		orderedCodes = append(orderedCodes, code)
+	}
+
+	additionalCodes := make([]string, 0, len(transcriptData.Transcripts))
+	for code := range transcriptData.Transcripts {
+		code = strings.TrimSpace(code)
+		if code == "" {
+			continue
+		}
+
+		if _, seen := seenCodes[code]; seen {
+			continue
+		}
+
+		additionalCodes = append(additionalCodes, code)
+	}
+
+	sort.Strings(additionalCodes)
+
+	return append(orderedCodes, additionalCodes...)
+}
+
+func preferredNoteGPTTranscriptSegments(
+	transcriptTracks noteGPTTranscriptTracks,
+) []noteGPTTranscriptSegment {
+	if len(transcriptTracks.Default) > 0 {
+		return transcriptTracks.Default
+	}
+
+	if len(transcriptTracks.Auto) > 0 {
+		return transcriptTracks.Auto
+	}
+
+	if len(transcriptTracks.Custom) > 0 {
+		return transcriptTracks.Custom
+	}
+
+	return nil
 }
 
 func parseYouTubeCommentsResponse(
@@ -990,7 +1246,7 @@ func extractYouTubeCommentEntities(response map[string]any) map[string]youtubeCo
 			"displayName",
 		)
 		if author == "" {
-			author = "Unknown"
+			author = unknownText
 		}
 
 		comments[entityKey] = youtubeComment{
@@ -1066,86 +1322,6 @@ func numberAt(value any, path ...any) (float64, bool) {
 	typedValue, ok := resolvedValue.(float64)
 
 	return typedValue, ok
-}
-
-func boolAt(value any, path ...any) (bool, bool) {
-	resolvedValue, valueFound := valueAt(value, path...)
-	if !valueFound {
-		return false, false
-	}
-
-	typedValue, ok := resolvedValue.(bool)
-
-	return typedValue, ok
-}
-
-func parseYouTubePlayerResponse(payload map[string]any) youtubePlayerResponse {
-	response := youtubePlayerResponse{
-		PlayabilityStatus: youtubePlayabilityStatus{
-			Status: valueOrEmptyString(payload, "playabilityStatus", "status"),
-			Reason: valueOrEmptyString(payload, "playabilityStatus", "reason"),
-		},
-		VideoDetails: youtubeVideoDetails{
-			Title:  valueOrEmptyString(payload, "videoDetails", "title"),
-			Author: valueOrEmptyString(payload, "videoDetails", "author"),
-		},
-		Captions: youtubeTracklistRenderer{
-			CaptionTracks:        nil,
-			TranslationLanguages: nil,
-		},
-	}
-
-	captionTracks, _ := anySliceAt(
-		payload,
-		"captions",
-		"playerCaptionsTracklistRenderer",
-		"captionTracks",
-	)
-	for _, captionTrack := range captionTracks {
-		baseURL, hasBaseURL := stringAt(captionTrack, "baseUrl")
-		if !hasBaseURL || strings.TrimSpace(baseURL) == "" {
-			continue
-		}
-
-		response.Captions.CaptionTracks = append(response.Captions.CaptionTracks, youtubeCaptionTrack{
-			BaseURL:        baseURL,
-			LanguageCode:   valueOrEmptyString(captionTrack, "languageCode"),
-			Kind:           valueOrEmptyString(captionTrack, "kind"),
-			IsTranslatable: valueOrFalse(captionTrack, "isTranslatable"),
-		})
-	}
-
-	translationLanguages, _ := anySliceAt(
-		payload,
-		"captions",
-		"playerCaptionsTracklistRenderer",
-		"translationLanguages",
-	)
-	for _, translationLanguage := range translationLanguages {
-		languageCode := valueOrEmptyString(translationLanguage, "languageCode")
-		if languageCode == "" {
-			continue
-		}
-
-		response.Captions.TranslationLanguages = append(
-			response.Captions.TranslationLanguages,
-			youtubeTranslationLanguage{LanguageCode: languageCode},
-		)
-	}
-
-	return response
-}
-
-func valueOrEmptyString(value any, path ...any) string {
-	resolvedValue, _ := stringAt(value, path...)
-
-	return resolvedValue
-}
-
-func valueOrFalse(value any, path ...any) bool {
-	resolvedValue, _ := boolAt(value, path...)
-
-	return resolvedValue
 }
 
 func valueAt(value any, path ...any) (any, bool) {

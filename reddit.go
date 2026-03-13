@@ -596,7 +596,7 @@ func formatRedditCommentNumber(numbers []int) string {
 
 func formatUnixTimestamp(unixSeconds float64) string {
 	if unixSeconds <= 0 {
-		return "Unknown"
+		return unknownText
 	}
 
 	return time.Unix(int64(unixSeconds), 0).UTC().Format(time.RFC3339)
