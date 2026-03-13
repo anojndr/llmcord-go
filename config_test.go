@@ -275,6 +275,57 @@ models:
 	}
 }
 
+func TestLoadConfigPreservesNestedModelPayloadParameters(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	configText := `
+bot_token: discord-token
+providers:
+  nvidia:
+    base_url: https://integrate.api.nvidia.com/v1
+models:
+  nvidia/qwen/qwen3.5-397b-a17b:vision:
+    chat_template_kwargs:
+      enable_thinking: false
+`
+
+	err := os.WriteFile(configPath, []byte(configText), 0o600)
+	if err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	loadedConfig, err := loadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	request, err := buildChatCompletionRequest(
+		loadedConfig,
+		"nvidia/qwen/qwen3.5-397b-a17b:vision",
+		[]chatMessage{{Role: messageRoleUser, Content: "hello"}},
+	)
+	if err != nil {
+		t.Fatalf("build chat completion request: %v", err)
+	}
+
+	if request.Model != "qwen/qwen3.5-397b-a17b" {
+		t.Fatalf("unexpected request model: %q", request.Model)
+	}
+
+	requestBody := buildChatCompletionRequestBody(request)
+
+	chatTemplateKwargs, ok := requestBody["chat_template_kwargs"].(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected chat_template_kwargs payload: %#v", requestBody["chat_template_kwargs"])
+	}
+
+	if got, ok := chatTemplateKwargs["enable_thinking"].(bool); !ok || got {
+		t.Fatalf("unexpected enable_thinking payload: %#v", chatTemplateKwargs["enable_thinking"])
+	}
+}
+
 func TestLoadConfigAllowsTavilyWebSearchAPIKeyLists(t *testing.T) {
 	t.Parallel()
 
