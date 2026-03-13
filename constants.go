@@ -31,7 +31,10 @@ const (
 	searchDeciderModelOptionName         = "model"
 	searchDeciderModelOptionDescription  = "Search decider model to view or use"
 	showSourcesButtonCustomID            = "show_sources"
+	showSourcesPageButtonCustomIDPrefix  = "show_sources_page:"
 	showSourcesButtonLabel               = "Show Sources"
+	showSourcesPreviousButtonLabel       = "Previous"
+	showSourcesNextButtonLabel           = "Next"
 	viewOnRentryButtonCustomID           = "view_on_rentry"
 	viewOnRentryButtonLabel              = "View on Rentry"
 	messageRoleAssistant                 = "assistant"
@@ -40,6 +43,7 @@ const (
 	defaultWebSearchMaxURLs              = 5
 	maxYouTubeComments                   = 50
 	showSourcesMessageMaxLength          = 1900
+	showSourcesPageBodyMaxLength         = showSourcesMessageMaxLength - 64
 	attachmentRequestTimeout             = 30 * time.Second
 	geminiFilePollInterval               = 500 * time.Millisecond
 	geminiFileProcessingTimeout          = 2 * time.Minute

@@ -262,17 +262,19 @@ func TestSearchDeciderPromptRetainsCriticalInstructions(t *testing.T) {
 	t.Parallel()
 
 	expectedSnippets := []string{
-		`You are a search-gating assistant. Your job is to decide whether a web search ` +
-			`is needed to answer the user's latest request.`,
-		`2. If the user's latest request includes an explicit instruction not to search ` +
-			`the web or not to browse the web, always return:`,
-		`7. Use conversation context when resolving references like "this", "that", ` +
-			`"verify this", "look it up", or "search everything mentioned here".`,
-		`8. If the user refers to content in an attached image, extract the concrete ` +
-			`entities/topics shown in the image or named in the accompanying text, and ` +
-			`search for those directly.`,
-		`- The user asks about a specific webpage, document, product, company, public ` +
-			`figure, event, law, schedule, price, or release`,
+		`You are a classifier that decides whether answering the user's request requires ` +
+			`a web search.`,
+		`3. If the user's request explicitly says "search the web" or something clearly ` +
+			`equivalent, always return:`,
+		`4. If the user's request explicitly says "don't search the web" or something ` +
+			`clearly equivalent, always return:`,
+		`2. If the user refers to prior context like "verify this", "is that true", ` +
+			`"search this", or "look it up", use the actual claim or entity from the ` +
+			`conversation, not the literal follow-up words.`,
+		`7. If the request says to search everything mentioned in attached text or ` +
+			`images, extract the actual items and use them as queries.`,
+		`- questions about a specific webpage, document, article, company update, or ` +
+			`public figure where current information matters`,
 	}
 
 	prompt := searchDeciderPrompt()
@@ -1169,6 +1171,87 @@ func TestFormatSearchSourcesMessageLimitsSourcesPerQuery(t *testing.T) {
 
 	if strings.Contains(message, excludedLine) {
 		t.Fatalf("expected message to exclude source %d: %q", excludedSource, message)
+	}
+}
+
+func TestFormatSearchSourcesPagesSplitsLongMessagesWithoutTruncation(t *testing.T) {
+	t.Parallel()
+
+	metadata := testPaginatedSearchMetadata()
+
+	message := formatSearchSourcesMessage(metadata)
+	if runeCount(message) <= showSourcesPageBodyMaxLength {
+		t.Fatalf("expected test message to exceed page body limit: %d", runeCount(message))
+	}
+
+	pages := formatSearchSourcesPages(metadata)
+	if len(pages) < 2 {
+		t.Fatalf("expected paginated sources, got %d page(s)", len(pages))
+	}
+
+	for index, page := range pages {
+		if runeCount(page) > showSourcesPageBodyMaxLength {
+			t.Fatalf("page %d exceeds body limit: %d", index, runeCount(page))
+		}
+
+		if containsFold(page, "... truncated") {
+			t.Fatalf("expected page %d to avoid truncation marker: %q", index, page)
+		}
+	}
+
+	joinedPages := strings.Join(pages, "\n")
+	for _, fragment := range []string{
+		"Sources for \"latest ai news\":",
+		"https://example.com/ai-news/1",
+		"https://example.com/agent-frameworks/5",
+	} {
+		if !containsFold(joinedPages, fragment) {
+			t.Fatalf("expected fragment %q in paginated pages: %q", fragment, joinedPages)
+		}
+	}
+}
+
+func testPaginatedSearchMetadata() *searchMetadata {
+	searchQueries := []struct {
+		query string
+		slug  string
+	}{
+		{query: "latest ai news", slug: "ai-news"},
+		{query: "llm benchmarks", slug: "llm-benchmarks"},
+		{query: "agent frameworks", slug: "agent-frameworks"},
+	}
+
+	queries := make([]string, 0, len(searchQueries))
+	results := make([]webSearchResult, 0, len(searchQueries))
+
+	for _, searchQuery := range searchQueries {
+		queries = append(queries, searchQuery.query)
+
+		var resultText strings.Builder
+
+		for sourceIndex := range defaultWebSearchMaxURLs {
+			sourceNumber := sourceIndex + 1
+			_, _ = fmt.Fprintf(
+				&resultText,
+				"Title: %s source %d %s\nURL: https://example.com/%s/%d\nText: body\n\n",
+				searchQuery.query,
+				sourceNumber,
+				strings.Repeat("detail ", 20),
+				searchQuery.slug,
+				sourceNumber,
+			)
+		}
+
+		results = append(results, webSearchResult{
+			Query: searchQuery.query,
+			Text:  resultText.String(),
+		})
+	}
+
+	return &searchMetadata{
+		Queries: queries,
+		Results: results,
+		MaxURLs: defaultWebSearchMaxURLs,
 	}
 }
 
