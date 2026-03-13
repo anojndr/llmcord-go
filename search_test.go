@@ -244,6 +244,30 @@ func TestParseSearchDecisionNormalizesQueries(t *testing.T) {
 	}
 }
 
+func TestSearchDeciderPromptRetainsCriticalInstructions(t *testing.T) {
+	t.Parallel()
+
+	expectedSnippets := []string{
+		`You are a search-gating assistant. Your job is to decide whether a web search ` +
+			`is needed to answer the user's latest request.`,
+		`2. If the user's latest request includes an explicit instruction not to search ` +
+			`the web or not to browse the web, always return:`,
+		`7. Use conversation context when resolving references like "this", "that", ` +
+			`"verify this", "look it up", or "search everything mentioned here".`,
+		`8. If the user refers to content in an attached image, extract the concrete ` +
+			`entities/topics shown in the image or named in the accompanying text, and ` +
+			`search for those directly.`,
+		`- The user asks about a specific webpage, document, product, company, public ` +
+			`figure, event, law, schedule, price, or release`,
+	}
+
+	for _, expectedSnippet := range expectedSnippets {
+		if !strings.Contains(searchDeciderPrompt, expectedSnippet) {
+			t.Fatalf("expected search decider prompt to contain %q", expectedSnippet)
+		}
+	}
+}
+
 func TestSearchDeciderConversationStripsImagesForTextOnlyModels(t *testing.T) {
 	t.Parallel()
 
