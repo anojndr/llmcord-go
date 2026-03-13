@@ -9,7 +9,7 @@ This bot turns Discord into a reply-chain frontend for OpenAI-compatible LLM API
 - Reply-chain conversations in guilds, DMs, and public threads
 - Reply-chain responses without pinging the replied author
 - `/model` and `/searchdecidermodel` autocomplete and model switching for all users, with optional per-channel main-model locks
-- Immediate progress embeds sent as soon as a request arrives, then edited into streaming embed responses with automatic message splitting and model labels in the embed author
+- Immediate progress embeds sent as soon as a request arrives, then edited into streaming embed responses with automatic message splitting and model labels in the embed author; if a request fails before any reply content is streamed, the bot replaces that progress message with a user-facing error
 - Plain-response mode using Discord text display components
 - Text attachment ingestion, image attachment support for vision models, Gemini PDF/audio/video understanding via the native Files API, local PDF text and image extraction for non-Gemini models, and Gemini sidecar audio/video preprocessing for non-Gemini models
 - `vsearch` reverse-image lookup that sends attached or replied images through Yandex Images and appends structured visual-search results to the prompt
@@ -76,7 +76,7 @@ The config schema stays close to the original Python project.
 | `max_text` | Maximum characters taken from a single message, including text attachments. Default: `100000`. |
 | `max_images` | Maximum images taken from a single message when the selected model is vision-capable. Default: `5`. |
 | `max_messages` | Maximum messages loaded from the reply chain. Default: `25`. |
-| `use_plain_responses` | Switch final replies from streaming embeds to plain text display components. The bot still sends an immediate progress embed and then edits that message into the plain response. This disables warnings and streamed edits on the final response. |
+| `use_plain_responses` | Switch final replies from streaming embeds to plain text display components. The bot still sends an immediate progress embed and then edits that message into the plain response. If a request fails before any reply content is streamed, the bot edits the progress message into a user-facing error instead. This disables warnings and streamed edits on the final response. |
 | `allow_dms` | Allow non-admin users to DM the bot. Default: `true`. |
 | `permissions` | Access control lists for `users`, `roles`, and `channels`. User admins bypass DM restrictions. |
 

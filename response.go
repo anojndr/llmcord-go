@@ -2,11 +2,14 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	"google.golang.org/genai"
 )
 
 type segmentAccumulator struct {
@@ -37,6 +40,7 @@ type responseTracker struct {
 	pendingResponses []pendingResponse
 	renderedSpecs    []renderSpec
 	progressActive   bool
+	responseVisible  bool
 }
 
 func newSegmentAccumulator(maxLength int) segmentAccumulator {
@@ -120,10 +124,6 @@ func (tracker *responseTracker) release(fullText string) {
 	}
 }
 
-func (tracker *responseTracker) releaseJoined(accumulator *segmentAccumulator) {
-	tracker.release(accumulator.joined())
-}
-
 func (instance *bot) generateAndSendResponse(
 	ctx context.Context,
 	request chatCompletionRequest,
@@ -137,9 +137,7 @@ func (instance *bot) generateAndSendResponse(
 	}
 
 	accumulator := newSegmentAccumulator(maxLength)
-
 	tracker.modelName = strings.TrimSpace(request.ConfiguredModel)
-	defer tracker.releaseJoined(&accumulator)
 
 	var finishReason string
 
@@ -183,6 +181,44 @@ func (instance *bot) generateAndSendResponse(
 		finishReason = "error"
 	}
 
+	responseErr := instance.renderFinalResponse(
+		ctx,
+		tracker,
+		warnings,
+		&accumulator,
+		finishReason,
+		usePlainResponses,
+	)
+	if responseErr == nil && streamErr != nil {
+		responseErr = fmt.Errorf("stream response: %w", streamErr)
+	}
+
+	finalText := accumulator.joined()
+
+	if responseErr != nil && !tracker.responseVisible {
+		errorText := userFacingResponseError(responseErr)
+
+		renderErr := instance.renderFailureResponse(tracker, errorText, usePlainResponses)
+		if renderErr != nil {
+			responseErr = errors.Join(responseErr, fmt.Errorf("render failure response: %w", renderErr))
+		} else {
+			finalText = errorText
+		}
+	}
+
+	tracker.release(finalText)
+
+	return responseErr
+}
+
+func (instance *bot) renderFinalResponse(
+	ctx context.Context,
+	tracker *responseTracker,
+	warnings []string,
+	accumulator *segmentAccumulator,
+	finishReason string,
+	usePlainResponses bool,
+) error {
 	if usePlainResponses {
 		err := instance.sendPlainResponse(
 			ctx,
@@ -192,22 +228,196 @@ func (instance *bot) generateAndSendResponse(
 		if err != nil {
 			return fmt.Errorf("send plain response: %w", err)
 		}
-	} else {
-		err := instance.renderEmbedResponse(
-			ctx,
-			tracker,
-			warnings,
-			accumulator.renderSegments(true),
-			finishReason,
-			true,
-		)
-		if err != nil {
-			return fmt.Errorf("render final embed response: %w", err)
+
+		return nil
+	}
+
+	err := instance.renderEmbedResponse(
+		ctx,
+		tracker,
+		warnings,
+		accumulator.renderSegments(true),
+		finishReason,
+		true,
+	)
+	if err != nil {
+		return fmt.Errorf("render final embed response: %w", err)
+	}
+
+	return nil
+}
+
+func userFacingResponseError(err error) string {
+	const (
+		genericResponseErrorText   = "Couldn't generate a response right now. Try again."
+		rateLimitResponseErrorText = "Usage limit reached for this model. Try other models."
+		accessResponseErrorText    = "This model is unavailable right now. Try other models."
+		timeoutResponseErrorText   = "Request timed out. Try again."
+		canceledResponseErrorText  = "Request cancelled."
+	)
+
+	switch {
+	case err == nil:
+		return genericResponseErrorText
+	case errors.Is(err, context.Canceled):
+		return canceledResponseErrorText
+	case errors.Is(err, context.DeadlineExceeded):
+		return timeoutResponseErrorText
+	case isRateLimitResponseError(err):
+		return rateLimitResponseErrorText
+	case isAccessResponseError(err):
+		return accessResponseErrorText
+	default:
+		return genericResponseErrorText
+	}
+}
+
+func isRateLimitResponseError(err error) bool {
+	statusCode, ok := responseErrorStatusCode(err)
+	if ok && statusCode == http.StatusTooManyRequests {
+		return true
+	}
+
+	return responseErrorContains(
+		err,
+		"quota exceeded",
+		"quota reached",
+		"rate limit",
+		"rate limited",
+		"resource exhausted",
+		"too many requests",
+		"usage limit",
+	)
+}
+
+func isAccessResponseError(err error) bool {
+	statusCode, ok := responseErrorStatusCode(err)
+	if ok {
+		switch statusCode {
+		case http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound:
+			return true
 		}
 	}
 
-	if streamErr != nil {
-		return fmt.Errorf("stream response: %w", streamErr)
+	var apiKeyErr providerAPIKeyError
+	if errors.As(err, &apiKeyErr) {
+		return true
+	}
+
+	return responseErrorContains(
+		err,
+		"access denied",
+		"api key",
+		"api_key",
+		"forbidden",
+		"model not found",
+		"permission denied",
+		"unauthorized",
+	)
+}
+
+func responseErrorStatusCode(err error) (int, bool) {
+	var statusErr providerStatusError
+	if errors.As(err, &statusErr) {
+		return statusErr.StatusCode, true
+	}
+
+	var geminiErr genai.APIError
+	if errors.As(err, &geminiErr) {
+		return geminiErr.Code, true
+	}
+
+	return 0, false
+}
+
+func responseErrorContains(err error, fragments ...string) bool {
+	if err == nil {
+		return false
+	}
+
+	errorText := strings.ToLower(strings.Join(strings.Fields(err.Error()), " "))
+	for _, fragment := range fragments {
+		if strings.Contains(errorText, fragment) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func (instance *bot) renderFailureResponse(
+	tracker *responseTracker,
+	errorText string,
+	usePlainResponses bool,
+) error {
+	if tracker == nil {
+		return nil
+	}
+
+	errorText = strings.TrimSpace(errorText)
+	if errorText == "" {
+		errorText = userFacingResponseError(nil)
+	}
+
+	failureEmbed := buildRequestProgressFailureEmbed(tracker.modelName, errorText)
+
+	var renderErr error
+
+	if tracker.progressActive && len(tracker.responseMessages) > 0 {
+		tracker.progressActive = false
+
+		err := instance.editEmbedMessage(
+			tracker.responseMessages[0],
+			failureEmbed,
+			nil,
+		)
+		if err == nil {
+			tracker.responseVisible = true
+
+			return nil
+		}
+
+		renderErr = fmt.Errorf("edit progress message: %w", err)
+	}
+
+	fallbackTracker := newResponseTracker(tracker.sourceMessage, tracker.modelName)
+	fallbackTracker.searchMetadata = cloneSearchMetadata(tracker.searchMetadata)
+
+	var (
+		sentMessage *discordgo.Message
+		pending     pendingResponse
+		err         error
+	)
+
+	if usePlainResponses {
+		sentMessage, pending, err = instance.sendPlainMessage(
+			fallbackTracker,
+			errorText,
+			responseActions{showSources: false, showRentry: false},
+		)
+	} else {
+		sentMessage, pending, err = instance.sendEmbedMessage(
+			fallbackTracker,
+			failureEmbed,
+			responseActions{showSources: false, showRentry: false},
+		)
+	}
+
+	if err != nil {
+		if renderErr != nil {
+			return errors.Join(renderErr, fmt.Errorf("send failure response: %w", err))
+		}
+
+		return fmt.Errorf("send failure response: %w", err)
+	}
+
+	tracker.progressActive = false
+	tracker.responseVisible = true
+	tracker.responseMessages = append(tracker.responseMessages, sentMessage)
+	tracker.pendingResponses = append(tracker.pendingResponses, pending)
+
+	if renderErr != nil {
+		return renderErr
 	}
 
 	return nil
@@ -338,6 +548,8 @@ func (instance *bot) renderEmbedResponse(
 		}
 	}
 
+	tracker.responseVisible = true
+
 	return nil
 }
 
@@ -381,6 +593,8 @@ func (instance *bot) sendPlainResponse(
 		tracker.responseMessages = append(tracker.responseMessages, sentMessage)
 		tracker.pendingResponses = append(tracker.pendingResponses, pending)
 	}
+
+	tracker.responseVisible = true
 
 	return nil
 }

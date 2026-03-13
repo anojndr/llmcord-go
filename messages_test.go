@@ -2,8 +2,11 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
+	"os"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -14,6 +17,8 @@ import (
 )
 
 const testSearchDeciderModel = "openai/decider-model"
+
+var errSendProgressMessageFailed = errors.New("send progress message failed")
 
 func TestBuildChatCompletionRequestPreservesConfiguredModelForDisplay(t *testing.T) {
 	t.Parallel()
@@ -304,6 +309,146 @@ func TestRespondToMessageSendsProgressEmbedBeforeTypingAndAttachmentProcessing(t
 
 	if !fixture.attachmentFetched.Load() {
 		t.Fatal("expected attachment download during conversation preprocessing")
+	}
+}
+
+func TestRespondToMessageEditsProgressMessageWithRateLimitError(t *testing.T) {
+	t.Parallel()
+
+	const (
+		botUserID       = "bot-user"
+		channelID       = "channel-1"
+		userID          = "user-1"
+		sourceMessageID = "user-message-1"
+		progressID      = "progress-message"
+		expectedError   = "Usage limit reached for this model. Try other models."
+	)
+
+	progressMessage := new(discordgo.Message)
+	progressMessage.ID = progressID
+	progressMessage.ChannelID = channelID
+	progressMessage.Author = newDiscordUser(botUserID, true)
+
+	patchDescriptions := make([]string, 0, 3)
+	progressSent := false
+	session := newDirectMessageTestSession(t, channelID, botUserID, roundTripFunc(func(
+		request *http.Request,
+	) (*http.Response, error) {
+		t.Helper()
+
+		switch {
+		case request.Method == http.MethodPost &&
+			request.URL.Path == "/api/v9/channels/"+channelID+"/typing":
+			return newNoContentResponse(request), nil
+		case request.Method == http.MethodPost &&
+			request.URL.Path == "/api/v9/channels/"+channelID+"/messages":
+			if progressSent {
+				t.Fatalf("unexpected additional message send: %s %s", request.Method, request.URL.Path)
+			}
+
+			progressSent = true
+
+			return newJSONResponse(t, request, progressMessage), nil
+		case request.Method == http.MethodPatch &&
+			request.URL.Path == "/api/v9/channels/"+channelID+"/messages/"+progressID:
+			patchDescriptions = append(patchDescriptions, requestEmbedDescription(t, request))
+
+			return newJSONResponse(t, request, progressMessage), nil
+		default:
+			t.Fatalf("unexpected request: %s %s", request.Method, request.URL.Path)
+
+			return nil, errUnexpectedTestRequest
+		}
+	}))
+
+	instance := newRateLimitedRespondToMessageBot(session)
+
+	err := instance.respondToMessage(
+		context.Background(),
+		newRateLimitedRespondToMessageConfig(),
+		newRateLimitedRespondToMessageSourceMessage(channelID, sourceMessageID, userID),
+		"openai/main-model",
+	)
+	if err == nil {
+		t.Fatal("expected respond to message error")
+	}
+
+	if len(patchDescriptions) == 0 {
+		t.Fatal("expected progress message edits")
+	}
+
+	if patchDescriptions[len(patchDescriptions)-1] != expectedError {
+		t.Fatalf("unexpected final progress error: %#v", patchDescriptions)
+	}
+}
+
+func TestRespondToMessageSendsRateLimitErrorWhenProgressMessageSendFails(t *testing.T) {
+	t.Parallel()
+
+	const (
+		botUserID       = "bot-user"
+		channelID       = "channel-1"
+		userID          = "user-1"
+		sourceMessageID = "user-message-1"
+		failureID       = "failure-message"
+		expectedError   = "Usage limit reached for this model. Try other models."
+	)
+
+	failureMessage := new(discordgo.Message)
+	failureMessage.ID = failureID
+	failureMessage.ChannelID = channelID
+	failureMessage.Author = newDiscordUser(botUserID, true)
+
+	messageDescriptions := make([]string, 0, 2)
+	messageSendCount := 0
+	session := newDirectMessageTestSession(t, channelID, botUserID, roundTripFunc(func(
+		request *http.Request,
+	) (*http.Response, error) {
+		t.Helper()
+
+		switch {
+		case request.Method == http.MethodPost &&
+			request.URL.Path == "/api/v9/channels/"+channelID+"/typing":
+			return newNoContentResponse(request), nil
+		case request.Method == http.MethodPost &&
+			request.URL.Path == "/api/v9/channels/"+channelID+"/messages":
+			messageDescriptions = append(messageDescriptions, requestEmbedDescription(t, request))
+			messageSendCount++
+
+			if messageSendCount == 1 {
+				return nil, errSendProgressMessageFailed
+			}
+
+			return newJSONResponse(t, request, failureMessage), nil
+		case request.Method == http.MethodPatch:
+			t.Fatalf("unexpected progress message edit: %s %s", request.Method, request.URL.Path)
+
+			return nil, errUnexpectedTestRequest
+		default:
+			t.Fatalf("unexpected request: %s %s", request.Method, request.URL.Path)
+
+			return nil, errUnexpectedTestRequest
+		}
+	}))
+
+	instance := newRateLimitedRespondToMessageBot(session)
+
+	err := instance.respondToMessage(
+		context.Background(),
+		newRateLimitedRespondToMessageConfig(),
+		newRateLimitedRespondToMessageSourceMessage(channelID, sourceMessageID, userID),
+		"openai/main-model",
+	)
+	if err == nil {
+		t.Fatal("expected respond to message error")
+	}
+
+	if messageSendCount != 2 {
+		t.Fatalf("unexpected message send count: %d", messageSendCount)
+	}
+
+	if messageDescriptions[1] != expectedError {
+		t.Fatalf("unexpected fallback error message: %#v", messageDescriptions)
 	}
 }
 
@@ -634,6 +779,120 @@ func newRespondToMessageTypingFixture(
 		progressSent:      progressSent,
 		attachmentFetched: attachmentFetched,
 	}
+}
+
+func newDirectMessageTestSession(
+	t *testing.T,
+	channelID string,
+	botUserID string,
+	transport roundTripFunc,
+) *discordgo.Session {
+	t.Helper()
+
+	session, err := discordgo.New("Bot discord-token")
+	if err != nil {
+		t.Fatalf("create discord session: %v", err)
+	}
+
+	session.State.User = newDiscordUser(botUserID, true)
+
+	channel := new(discordgo.Channel)
+	channel.ID = channelID
+	channel.Type = discordgo.ChannelTypeDM
+
+	err = session.State.ChannelAdd(channel)
+	if err != nil {
+		t.Fatalf("add channel to state: %v", err)
+	}
+
+	client := new(http.Client)
+	client.Transport = transport
+	session.Client = client
+
+	return session
+}
+
+func newRateLimitedRespondToMessageBot(session *discordgo.Session) *bot {
+	instance := new(bot)
+	instance.session = session
+	instance.nodes = newMessageNodeStore(10)
+	instance.chatCompletions = newRateLimitedRespondToMessageChatClient()
+
+	return instance
+}
+
+func newRateLimitedRespondToMessageConfig() config {
+	loadedConfig := testSearchConfig()
+	loadedConfig.MaxText = defaultMaxText
+	loadedConfig.MaxImages = defaultMaxImages
+	loadedConfig.MaxMessages = defaultMaxMessages
+
+	return loadedConfig
+}
+
+func newRateLimitedRespondToMessageSourceMessage(
+	channelID string,
+	sourceMessageID string,
+	userID string,
+) *discordgo.Message {
+	sourceMessage := new(discordgo.Message)
+	sourceMessage.ID = sourceMessageID
+	sourceMessage.ChannelID = channelID
+	sourceMessage.Author = newDiscordUser(userID, false)
+	sourceMessage.Content = "at ai hello"
+
+	return sourceMessage
+}
+
+func newRateLimitedRespondToMessageChatClient() *stubChatCompletionClient {
+	return newStubChatClient(func(
+		_ context.Context,
+		request chatCompletionRequest,
+		handle func(streamDelta) error,
+	) error {
+		if request.ConfiguredModel == testSearchDeciderModel {
+			err := handle(newStreamDelta(`{"needs_search":false}`, ""))
+			if err != nil {
+				return err
+			}
+
+			return handle(newStreamDelta("", finishReasonStop))
+		}
+
+		return providerStatusError{
+			StatusCode: http.StatusTooManyRequests,
+			Message:    "rate limited",
+			Err:        os.ErrInvalid,
+		}
+	})
+}
+
+func requestEmbedDescription(t *testing.T, request *http.Request) string {
+	t.Helper()
+
+	var payload map[string]any
+
+	err := json.NewDecoder(request.Body).Decode(&payload)
+	if err != nil {
+		t.Fatalf("decode request body: %v", err)
+	}
+
+	embeds, embedsOK := payload["embeds"].([]any)
+	if !embedsOK || len(embeds) != 1 {
+		t.Fatalf("unexpected embeds payload: %#v", payload["embeds"])
+	}
+
+	embed, embedOK := embeds[0].(map[string]any)
+	if !embedOK {
+		t.Fatalf("unexpected embed payload: %#v", embeds[0])
+	}
+
+	description, descriptionOK := embed["description"].(string)
+	if !descriptionOK {
+		t.Fatalf("unexpected embed description: %#v", embed["description"])
+	}
+
+	return description
 }
 
 type typingPreprocessingProbe struct {
