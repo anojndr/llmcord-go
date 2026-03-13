@@ -17,6 +17,7 @@ const (
 	statusMessageMaxLength               = 128
 	plainResponseMaxLength               = 4000
 	streamingIndicator                   = " ..."
+	unknownText                          = "Unknown"
 	embedResponseMaxLength               = 4096 - len(streamingIndicator)
 	embedColorComplete                   = 0x006400
 	embedColorIncomplete                 = 0xffa500
