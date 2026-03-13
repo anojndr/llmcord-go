@@ -31,6 +31,7 @@ type requestProgressHandoff struct {
 }
 
 type requestProgressFailure struct {
+	err  error
 	done chan struct{}
 }
 
@@ -115,13 +116,13 @@ func (progress *requestProgress) handoff(
 	return <-result
 }
 
-func (progress *requestProgress) fail() {
+func (progress *requestProgress) fail(err error) {
 	if progress == nil {
 		return
 	}
 
 	done := make(chan struct{})
-	progress.failures <- requestProgressFailure{done: done}
+	progress.failures <- requestProgressFailure{err: err, done: done}
 
 	<-done
 }
@@ -165,52 +166,24 @@ func (progress *requestProgress) run() {
 
 			return
 		case failure := <-progress.failures:
-			if progress.message != nil {
-				tracker.progressActive = false
+			errorText := userFacingResponseError(failure.err)
 
-				editErr := progress.instance.editEmbedMessage(
-					progress.message,
-					buildRequestProgressFailureEmbed(tracker.modelName),
-					nil,
+			err := progress.instance.renderFailureResponse(tracker, errorText, false)
+			if err != nil {
+				slog.Warn(
+					"render request progress failure response",
+					"source_message_id",
+					tracker.sourceMessage.ID,
+					"error",
+					err,
 				)
-				if editErr != nil {
-					slog.Warn(
-						"edit request progress failure embed",
-						"message_id",
-						progress.message.ID,
-						"error",
-						editErr,
-					)
-				}
 			}
 
+			tracker.release(errorText)
 			close(failure.done)
 
 			return
 		}
-	}
-}
-
-func (instance *bot) renderProgressFailure(tracker *responseTracker) {
-	if tracker == nil || !tracker.progressActive || len(tracker.responseMessages) == 0 {
-		return
-	}
-
-	tracker.progressActive = false
-
-	err := instance.editEmbedMessage(
-		tracker.responseMessages[0],
-		buildRequestProgressFailureEmbed(tracker.modelName),
-		nil,
-	)
-	if err != nil {
-		slog.Warn(
-			"edit request progress failure embed",
-			"message_id",
-			tracker.responseMessages[0].ID,
-			"error",
-			err,
-		)
 	}
 }
 
@@ -229,9 +202,12 @@ func buildRequestProgressEmbed(
 	return buildResponseEmbed(description, modelName, embedColorIncomplete, nil)
 }
 
-func buildRequestProgressFailureEmbed(modelName string) *discordgo.MessageEmbed {
+func buildRequestProgressFailureEmbed(
+	modelName string,
+	errorText string,
+) *discordgo.MessageEmbed {
 	return buildResponseEmbed(
-		"Request failed before a response could be sent.",
+		strings.TrimSpace(errorText),
 		modelName,
 		embedColorFailure,
 		nil,

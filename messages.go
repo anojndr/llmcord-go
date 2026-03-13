@@ -185,6 +185,8 @@ func (instance *bot) respondToMessage(
 		progress,
 	)
 	if err != nil {
+		progress.fail(err)
+
 		return err
 	}
 
@@ -196,8 +198,6 @@ func (instance *bot) respondToMessage(
 		loadedConfig.UsePlainResponses,
 	)
 	if err != nil {
-		instance.renderProgressFailure(tracker)
-
 		return fmt.Errorf("generate and send response: %w", err)
 	}
 
@@ -218,8 +218,6 @@ func (instance *bot) prepareMessageResponse(
 		providerSlashModel,
 	)
 	if err != nil {
-		progress.fail()
-
 		return chatCompletionRequest{}, nil, nil,
 			fmt.Errorf("build message conversation: %w", err)
 	}
@@ -235,8 +233,6 @@ func (instance *bot) prepareMessageResponse(
 		warnings,
 	)
 	if err != nil {
-		progress.fail()
-
 		return chatCompletionRequest{}, nil, nil,
 			fmt.Errorf("augment prepared message response: %w", err)
 	}
@@ -245,8 +241,6 @@ func (instance *bot) prepareMessageResponse(
 
 	request, err := buildChatCompletionRequest(loadedConfig, providerSlashModel, messages)
 	if err != nil {
-		progress.fail()
-
 		return chatCompletionRequest{}, nil, nil,
 			fmt.Errorf("build chat completion request: %w", err)
 	}
