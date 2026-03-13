@@ -304,6 +304,170 @@ func TestHandleInteractionCreateRespondsToShowSourcesButtonAfterPendingRelease(t
 	}
 }
 
+func TestHandleInteractionCreateRespondsToPaginatedShowSourcesButton(t *testing.T) {
+	t.Parallel()
+
+	var response discordgo.InteractionResponse
+
+	session := newInteractionTestSession(t, &response)
+	instance := new(bot)
+	instance.nodes = newMessageNodeStore(10)
+
+	node := instance.nodes.getOrCreate("response-message")
+	node.mu.Lock()
+	node.searchMetadata = testPaginatedSearchMetadata()
+	node.mu.Unlock()
+
+	interaction := newShowSourcesInteraction("response-message")
+
+	instance.handleInteractionCreate(session, interaction)
+
+	if response.Type != discordgo.InteractionResponseChannelMessageWithSource {
+		t.Fatalf("unexpected response type: %v", response.Type)
+	}
+
+	if response.Data == nil {
+		t.Fatal("expected interaction response data")
+	}
+
+	if response.Data.Flags != discordgo.MessageFlagsEphemeral {
+		t.Fatalf("unexpected response flags: %v", response.Data.Flags)
+	}
+
+	if !containsFold(response.Data.Content, "page 1/") {
+		t.Fatalf("expected first page indicator in response content: %q", response.Data.Content)
+	}
+
+	if containsFold(response.Data.Content, "... truncated") {
+		t.Fatalf("expected paginated response to avoid truncation marker: %q", response.Data.Content)
+	}
+
+	if len(response.Data.Components) != 1 {
+		t.Fatalf("unexpected component count: %d", len(response.Data.Components))
+	}
+
+	row, rowOK := response.Data.Components[0].(*discordgo.ActionsRow)
+	if !rowOK {
+		t.Fatalf("expected actions row, got %T", response.Data.Components[0])
+	}
+
+	if len(row.Components) != 2 {
+		t.Fatalf("unexpected pagination button count: %d", len(row.Components))
+	}
+
+	previousButton, previousOK := row.Components[0].(*discordgo.Button)
+	if !previousOK {
+		t.Fatalf("expected previous button, got %T", row.Components[0])
+	}
+
+	if previousButton.Label != showSourcesPreviousButtonLabel {
+		t.Fatalf("unexpected previous button label: %q", previousButton.Label)
+	}
+
+	if !previousButton.Disabled {
+		t.Fatal("expected previous button to be disabled on the first page")
+	}
+
+	nextButton, nextOK := row.Components[1].(*discordgo.Button)
+	if !nextOK {
+		t.Fatalf("expected next button, got %T", row.Components[1])
+	}
+
+	if nextButton.Label != showSourcesNextButtonLabel {
+		t.Fatalf("unexpected next button label: %q", nextButton.Label)
+	}
+
+	if nextButton.Disabled {
+		t.Fatal("expected next button to be enabled on the first page")
+	}
+
+	messageID, pageIndex, ok := parseShowSourcesPageButtonCustomID(nextButton.CustomID)
+	if !ok {
+		t.Fatalf("expected parsable next button custom id: %q", nextButton.CustomID)
+	}
+
+	if messageID != "response-message" || pageIndex != 1 {
+		t.Fatalf("unexpected next button target: message=%q page=%d", messageID, pageIndex)
+	}
+}
+
+func TestHandleInteractionCreateUpdatesShowSourcesPaginationPage(t *testing.T) {
+	t.Parallel()
+
+	var response discordgo.InteractionResponse
+
+	session := newInteractionTestSession(t, &response)
+	instance := new(bot)
+	instance.nodes = newMessageNodeStore(10)
+
+	metadata := testPaginatedSearchMetadata()
+	node := instance.nodes.getOrCreate("response-message")
+	node.mu.Lock()
+	node.searchMetadata = metadata
+	node.mu.Unlock()
+
+	pageCount := len(formatSearchSourcesPages(metadata))
+	if pageCount < 2 {
+		t.Fatalf("expected multiple pages, got %d", pageCount)
+	}
+
+	targetPageIndex := pageCount - 1
+	interaction := newComponentInteraction(
+		"ephemeral-message",
+		showSourcesPageButtonCustomID("response-message", targetPageIndex),
+	)
+
+	instance.handleInteractionCreate(session, interaction)
+
+	if response.Type != discordgo.InteractionResponseUpdateMessage {
+		t.Fatalf("unexpected response type: %v", response.Type)
+	}
+
+	if response.Data == nil {
+		t.Fatal("expected interaction response data")
+	}
+
+	expectedPageIndicator := fmt.Sprintf("page %d/%d", targetPageIndex+1, pageCount)
+	if !containsFold(response.Data.Content, expectedPageIndicator) {
+		t.Fatalf("expected page indicator %q in response content: %q", expectedPageIndicator, response.Data.Content)
+	}
+
+	if !containsFold(response.Data.Content, "https://example.com/agent-frameworks/5") {
+		t.Fatalf("expected last source URL in final page content: %q", response.Data.Content)
+	}
+
+	if len(response.Data.Components) != 1 {
+		t.Fatalf("unexpected component count: %d", len(response.Data.Components))
+	}
+
+	row, rowOK := response.Data.Components[0].(*discordgo.ActionsRow)
+	if !rowOK {
+		t.Fatalf("expected actions row, got %T", response.Data.Components[0])
+	}
+
+	if len(row.Components) != 2 {
+		t.Fatalf("unexpected pagination button count: %d", len(row.Components))
+	}
+
+	previousButton, previousOK := row.Components[0].(*discordgo.Button)
+	if !previousOK {
+		t.Fatalf("expected previous button, got %T", row.Components[0])
+	}
+
+	if previousButton.Disabled {
+		t.Fatal("expected previous button to be enabled on the final page")
+	}
+
+	nextButton, nextOK := row.Components[1].(*discordgo.Button)
+	if !nextOK {
+		t.Fatalf("expected next button, got %T", row.Components[1])
+	}
+
+	if !nextButton.Disabled {
+		t.Fatal("expected next button to be disabled on the final page")
+	}
+}
+
 func TestHandleInteractionCreateRespondsToViewOnRentryButton(t *testing.T) {
 	t.Parallel()
 
@@ -451,9 +615,41 @@ func newInteractionTestSession(
 			t.Fatalf("read request body: %v", err)
 		}
 
-		err = json.Unmarshal(responseBody, response)
+		var decoded struct {
+			Type discordgo.InteractionResponseType `json:"type"`
+			Data *struct {
+				Content    string                                      `json:"content"`
+				Flags      discordgo.MessageFlags                      `json:"flags,omitempty"`
+				Choices    []*discordgo.ApplicationCommandOptionChoice `json:"choices,omitempty"`
+				Components []json.RawMessage                           `json:"components"`
+			} `json:"data"`
+		}
+
+		err = json.Unmarshal(responseBody, &decoded)
 		if err != nil {
 			t.Fatalf("decode interaction response: %v", err)
+		}
+
+		response.Type = decoded.Type
+		response.Data = nil
+
+		if decoded.Data != nil {
+			response.Data = new(discordgo.InteractionResponseData)
+			response.Data.Content = decoded.Data.Content
+			response.Data.Flags = decoded.Data.Flags
+			response.Data.Choices = decoded.Data.Choices
+
+			if decoded.Data.Components != nil {
+				response.Data.Components = make([]discordgo.MessageComponent, 0, len(decoded.Data.Components))
+				for _, rawComponent := range decoded.Data.Components {
+					component, componentErr := discordgo.MessageComponentFromJSON(rawComponent)
+					if componentErr != nil {
+						t.Fatalf("decode interaction component: %v", componentErr)
+					}
+
+					response.Data.Components = append(response.Data.Components, component)
+				}
+			}
 		}
 
 		return newNoContentResponse(request), nil

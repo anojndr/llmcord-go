@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/bwmarrin/discordgo"
@@ -72,11 +73,13 @@ func (instance *bot) handleMessageComponentInteraction(
 ) error {
 	componentData := interaction.MessageComponentData()
 
-	switch componentData.CustomID {
-	case showSourcesButtonCustomID:
+	switch {
+	case componentData.CustomID == showSourcesButtonCustomID:
 		return instance.handleShowSourcesButton(session, interaction)
-	case viewOnRentryButtonCustomID:
+	case componentData.CustomID == viewOnRentryButtonCustomID:
 		return instance.handleViewOnRentryButton(session, interaction)
+	case strings.HasPrefix(componentData.CustomID, showSourcesPageButtonCustomIDPrefix):
+		return instance.handleShowSourcesPageButton(session, interaction)
 	default:
 		return nil
 	}
@@ -90,26 +93,132 @@ func (instance *bot) handleShowSourcesButton(
 		return fmt.Errorf("show sources interaction without message: %w", os.ErrInvalid)
 	}
 
-	messageNode, ok := instance.nodes.get(interaction.Message.ID)
+	content, components := instance.showSourcesPageResponse(interaction.Message.ID, 0)
+
+	return respondInteractionMessage(
+		session,
+		interaction.Interaction,
+		discordgo.InteractionResponseChannelMessageWithSource,
+		content,
+		components,
+		discordgo.MessageFlagsEphemeral,
+	)
+}
+
+func (instance *bot) handleShowSourcesPageButton(
+	session *discordgo.Session,
+	interaction *discordgo.InteractionCreate,
+) error {
+	if interaction == nil {
+		return fmt.Errorf("show sources page interaction without interaction: %w", os.ErrInvalid)
+	}
+
+	messageID, pageIndex, ok := parseShowSourcesPageButtonCustomID(interaction.MessageComponentData().CustomID)
 	if !ok {
-		return respondInteractionTextWithFlags(
-			session,
-			interaction.Interaction,
-			"No web search sources available.",
-			discordgo.MessageFlagsEphemeral,
-		)
+		return fmt.Errorf("invalid show sources page interaction custom id: %w", os.ErrInvalid)
+	}
+
+	content, components := instance.showSourcesPageResponse(messageID, pageIndex)
+
+	return respondInteractionMessage(
+		session,
+		interaction.Interaction,
+		discordgo.InteractionResponseUpdateMessage,
+		content,
+		components,
+		0,
+	)
+}
+
+func (instance *bot) showSourcesPageResponse(messageID string, pageIndex int) (string, []discordgo.MessageComponent) {
+	searchMetadata := instance.searchMetadataForMessage(messageID)
+	pages := formatSearchSourcesPages(searchMetadata)
+
+	if pageIndex < 0 {
+		pageIndex = 0
+	} else if pageIndex >= len(pages) {
+		pageIndex = len(pages) - 1
+	}
+
+	return formatSearchSourcesPageContent(pages, pageIndex),
+		buildShowSourcesPaginationComponents(messageID, pageIndex, len(pages))
+}
+
+func (instance *bot) searchMetadataForMessage(messageID string) *searchMetadata {
+	messageNode, ok := instance.nodes.get(messageID)
+	if !ok {
+		return nil
 	}
 
 	messageNode.mu.Lock()
-	searchMetadata := cloneSearchMetadata(messageNode.searchMetadata)
-	messageNode.mu.Unlock()
+	defer messageNode.mu.Unlock()
 
-	return respondInteractionTextWithFlags(
-		session,
-		interaction.Interaction,
-		formatSearchSourcesMessage(searchMetadata),
-		discordgo.MessageFlagsEphemeral,
-	)
+	return cloneSearchMetadata(messageNode.searchMetadata)
+}
+
+func buildShowSourcesPaginationComponents(
+	messageID string,
+	pageIndex int,
+	pageCount int,
+) []discordgo.MessageComponent {
+	if pageCount <= 1 {
+		return []discordgo.MessageComponent{}
+	}
+
+	previousPageIndex := pageIndex
+	if previousPageIndex > 0 {
+		previousPageIndex--
+	}
+
+	nextPageIndex := pageIndex
+	if nextPageIndex < pageCount-1 {
+		nextPageIndex++
+	}
+
+	previousButton := new(discordgo.Button)
+	previousButton.CustomID = showSourcesPageButtonCustomID(messageID, previousPageIndex)
+	previousButton.Label = showSourcesPreviousButtonLabel
+	previousButton.Style = discordgo.SecondaryButton
+	previousButton.Disabled = pageIndex == 0
+
+	nextButton := new(discordgo.Button)
+	nextButton.CustomID = showSourcesPageButtonCustomID(messageID, nextPageIndex)
+	nextButton.Label = showSourcesNextButtonLabel
+	nextButton.Style = discordgo.SecondaryButton
+	nextButton.Disabled = pageIndex >= pageCount-1
+
+	row := new(discordgo.ActionsRow)
+	row.Components = []discordgo.MessageComponent{previousButton, nextButton}
+
+	return []discordgo.MessageComponent{row}
+}
+
+func showSourcesPageButtonCustomID(messageID string, pageIndex int) string {
+	return fmt.Sprintf("%s%s:%d", showSourcesPageButtonCustomIDPrefix, messageID, pageIndex)
+}
+
+func parseShowSourcesPageButtonCustomID(customID string) (string, int, bool) {
+	remainder, ok := strings.CutPrefix(customID, showSourcesPageButtonCustomIDPrefix)
+	if !ok {
+		return "", 0, false
+	}
+
+	separatorIndex := strings.LastIndex(remainder, ":")
+	if separatorIndex <= 0 || separatorIndex >= len(remainder)-1 {
+		return "", 0, false
+	}
+
+	pageIndex, err := strconv.Atoi(remainder[separatorIndex+1:])
+	if err != nil || pageIndex < 0 {
+		return "", 0, false
+	}
+
+	messageID := strings.TrimSpace(remainder[:separatorIndex])
+	if messageID == "" {
+		return "", 0, false
+	}
+
+	return messageID, pageIndex, true
 }
 
 func (instance *bot) handleViewOnRentryButton(
@@ -417,12 +526,35 @@ func respondInteractionTextWithFlags(
 	content string,
 	flags discordgo.MessageFlags,
 ) error {
+	return respondInteractionMessage(
+		session,
+		interaction,
+		discordgo.InteractionResponseChannelMessageWithSource,
+		content,
+		nil,
+		flags,
+	)
+}
+
+func respondInteractionMessage(
+	session *discordgo.Session,
+	interaction *discordgo.Interaction,
+	responseType discordgo.InteractionResponseType,
+	content string,
+	components []discordgo.MessageComponent,
+	flags discordgo.MessageFlags,
+) error {
 	response := new(discordgo.InteractionResponse)
-	response.Type = discordgo.InteractionResponseChannelMessageWithSource
+	response.Type = responseType
 
 	responseData := new(discordgo.InteractionResponseData)
 	responseData.Content = content
+
 	responseData.Flags = flags
+	if components != nil {
+		responseData.Components = components
+	}
+
 	response.Data = responseData
 
 	err := session.InteractionRespond(interaction, response)

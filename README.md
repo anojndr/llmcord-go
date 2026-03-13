@@ -21,7 +21,7 @@ This bot turns Discord into a reply-chain frontend for OpenAI-compatible LLM API
 - Automatic website URL enrichment for non-TikTok/Facebook/YouTube/Reddit links that fetches page titles, descriptions, and extracted main text from pages such as Wikipedia
 - Search-decider flow that can skip search or use Exa MCP and Tavily in configurable primary/fallback order when current information is needed
 - Guild messages containing `at ai` are treated like an explicit bot mention and stripped from the prompt text, which is useful for speech-to-text style prompts
-- `View on Rentry` button on final replies that publishes the assistant response to Rentry on demand for easier reading, plus a `Show Sources` button on searched replies that reveals the queries and parsed source URLs used
+- `View on Rentry` button on final replies that publishes the assistant response to Rentry on demand for easier reading, plus a `Show Sources` button on searched replies that opens a paginated ephemeral view of the queries and parsed source URLs used
 - Augmented user-turn context such as visual search results, web search results, website/YouTube/Reddit enrichment, retained TikTok/Facebook video context, and non-Gemini PDF extraction output including extracted text and extracted images stays in the in-memory reply-chain history for later follow-up replies
 - Hot-reloaded `config.yaml`
 - Permission controls for users, roles, and channels
@@ -96,7 +96,7 @@ The config schema stays close to the original Python project.
 | Setting | Description |
 | --- | --- |
 | `web_search.primary_provider` | Which search backend to try first. Supported values: `mcp` and `tavily`. Default: `mcp`. The other backend is used as fallback automatically. |
-| `web_search.max_urls` | Maximum number of URLs to request from Exa or Tavily for each search query and to show in the `Show Sources` button output. Default: `5`. Must be greater than zero. |
+| `web_search.max_urls` | Maximum number of URLs to request from Exa or Tavily for each search query and to show in the paginated `Show Sources` button output. Default: `5`. Must be greater than zero. |
 | `web_search.tavily.api_key` | Tavily API key configuration. Required if Tavily is selected as the primary backend and optional when it is used only as fallback. Accepts either a single string or a YAML list of strings, and the bot retries the keys in order on auth/quota-style failures before giving up. |
 
 ## Development
@@ -131,6 +131,7 @@ golangci-lint run --default=all
 - When the search decider requires web search, the bot uses `web_search.primary_provider` to decide whether Exa MCP or Tavily runs first, and automatically falls back to the other backend on failure.
 - Exa MCP uses `https://mcp.exa.ai/mcp`, requests up to `web_search.max_urls` URLs per search query, and does not require an API key by default.
 - Tavily uses `https://api.tavily.com/search`, requests up to `web_search.max_urls` URLs per search query with `include_raw_content: "text"`, and includes the full raw page text for each returned URL in the search context. If multiple Tavily keys are configured, the bot retries them in order on auth/quota-style failures before moving on.
+- Clicking `Show Sources` returns the collected search queries and parsed source URLs in an ephemeral Discord response. When they do not fit in one message, the bot paginates them with `Previous` and `Next` buttons instead of truncating the list.
 - Clicking `View on Rentry` sends only that assistant reply to `https://rentry.co/` at click time, then returns the generated Rentry URL in an ephemeral Discord response. The bot caches that URL per Discord message while the in-memory message node is retained.
 - OpenAI Codex providers stream through the ChatGPT Codex Responses API. If `extra_headers.chatgpt-account-id` is not set, the bot derives it from the JWT in `api_key`.
 - If a provider has multiple `api_key` entries, the router retries the request with the next configured key when the current key is rejected or rate-limited before any response is streamed.

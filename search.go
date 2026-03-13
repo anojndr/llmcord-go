@@ -764,14 +764,95 @@ func formatSearchSourcesMessage(metadata *searchMetadata) string {
 		}
 	}
 
-	message := strings.TrimSpace(builder.String())
-	if runeCount(message) <= showSourcesMessageMaxLength {
-		return message
+	return strings.TrimSpace(builder.String())
+}
+
+func formatSearchSourcesPages(metadata *searchMetadata) []string {
+	message := strings.TrimSpace(formatSearchSourcesMessage(metadata))
+	if message == "" {
+		return []string{"No web search sources available."}
 	}
 
-	truncatedMessage := truncateRunes(message, showSourcesMessageMaxLength-len("\n\n... truncated"))
+	return splitMessagePages(message, showSourcesPageBodyMaxLength)
+}
 
-	return strings.TrimSpace(truncatedMessage) + "\n\n... truncated"
+func splitMessagePages(text string, limit int) []string {
+	trimmedText := strings.TrimSpace(text)
+	if trimmedText == "" || limit <= 0 {
+		return nil
+	}
+
+	if runeCount(trimmedText) <= limit {
+		return []string{trimmedText}
+	}
+
+	pages := make([]string, 0, (runeCount(trimmedText)+limit-1)/limit)
+	remaining := trimmedText
+
+	for remaining != "" {
+		if runeCount(remaining) <= limit {
+			pages = append(pages, remaining)
+
+			break
+		}
+
+		prefix, suffix := splitRunesPrefix(remaining, limit)
+
+		splitIndex := strings.LastIndex(prefix, "\n\n")
+		separatorLength := len("\n\n")
+
+		if splitIndex < 0 {
+			splitIndex = strings.LastIndex(prefix, "\n")
+			separatorLength = len("\n")
+		}
+
+		page := prefix
+		remaining = suffix
+
+		if splitIndex > 0 {
+			page = prefix[:splitIndex]
+			remaining = prefix[splitIndex+separatorLength:] + suffix
+		}
+
+		page = strings.TrimSpace(page)
+		remaining = strings.TrimLeft(remaining, "\n")
+
+		if page == "" {
+			page, remaining = splitRunesPrefix(remaining, limit)
+			page = strings.TrimSpace(page)
+			remaining = strings.TrimLeft(remaining, "\n")
+		}
+
+		if page == "" {
+			break
+		}
+
+		pages = append(pages, page)
+	}
+
+	if len(pages) == 0 {
+		return []string{trimmedText}
+	}
+
+	return pages
+}
+
+func formatSearchSourcesPageContent(pages []string, pageIndex int) string {
+	if len(pages) == 0 {
+		return "No web search sources available."
+	}
+
+	if pageIndex < 0 {
+		pageIndex = 0
+	} else if pageIndex >= len(pages) {
+		pageIndex = len(pages) - 1
+	}
+
+	if len(pages) == 1 {
+		return pages[pageIndex]
+	}
+
+	return fmt.Sprintf("Sources (page %d/%d)\n\n%s", pageIndex+1, len(pages), pages[pageIndex])
 }
 
 func (metadata *searchMetadata) maxURLs() int {
