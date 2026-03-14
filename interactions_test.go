@@ -277,11 +277,12 @@ func TestHandleInteractionCreateRespondsToShowSourcesButtonAfterPendingRelease(t
 	}
 	tracker.pendingResponses = []pendingResponse{
 		{
-			node: instance.nodes.addPending("response-message", sourceMessage),
+			messageID: "response-message",
+			node:      instance.nodes.addPending("response-message", sourceMessage),
 		},
 	}
 
-	tracker.release("assistant reply")
+	tracker.release(instance.nodes, "assistant reply")
 
 	interaction := newShowSourcesInteraction("response-message")
 

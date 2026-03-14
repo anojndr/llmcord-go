@@ -179,7 +179,8 @@ func (progress *requestProgress) run() {
 				)
 			}
 
-			tracker.release(errorText)
+			tracker.release(progress.instance.nodes, errorText)
+			progress.instance.nodes.persistBestEffort()
 			close(failure.done)
 
 			return

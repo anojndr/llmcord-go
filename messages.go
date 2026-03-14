@@ -342,14 +342,16 @@ func (instance *bot) persistAugmentedSourceMessage(
 	node := instance.nodes.getOrCreate(sourceMessage.ID)
 
 	node.mu.Lock()
-	defer node.mu.Unlock()
-
 	if !node.initialized {
 		instance.initializeNode(ctx, sourceMessage, node)
 	}
 
 	node.text = text
 	node.media = media
+	instance.nodes.cacheLockedNode(sourceMessage.ID, node)
+	node.mu.Unlock()
+
+	instance.nodes.persistBestEffort()
 
 	return nil
 }

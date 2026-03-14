@@ -232,6 +232,7 @@ func (instance *bot) initializeNode(
 	node.hasBadAttachments = len(message.Attachments) > supportedAttachmentCount(message.Attachments)
 	node.parentMessage, node.fetchParentFailed = instance.resolveParentMessage(message)
 	node.initialized = true
+	instance.nodes.cacheLockedNode(message.ID, node)
 }
 
 func messageRole(message *discordgo.Message, botUserID string) string {

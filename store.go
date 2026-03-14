@@ -26,15 +26,20 @@ type messageNode struct {
 }
 
 type messageNodeStore struct {
-	mu       sync.Mutex
-	nodes    map[string]*messageNode
-	capacity int
+	mu            sync.Mutex
+	nodes         map[string]*messageNode
+	capacity      int
+	path          string
+	saveMu        sync.Mutex
+	snapshotMu    sync.Mutex
+	snapshotCache map[string]messageNodeSnapshot
 }
 
 func newMessageNodeStore(capacity int) *messageNodeStore {
 	store := new(messageNodeStore)
 	store.nodes = make(map[string]*messageNode)
 	store.capacity = capacity
+	store.snapshotCache = make(map[string]messageNodeSnapshot)
 
 	return store
 }
@@ -92,28 +97,46 @@ func (store *messageNodeStore) evictExcess() {
 
 	sortMessageIDs(messageIDs)
 
+	deletedAny := false
+
 	for _, messageID := range messageIDs[:excessCount] {
-		store.deleteWhenUnlocked(messageID)
+		if store.deleteWhenUnlocked(messageID) {
+			deletedAny = true
+		}
+	}
+
+	if deletedAny {
+		store.persistBestEffort()
 	}
 }
 
-func (store *messageNodeStore) deleteWhenUnlocked(messageID string) {
+func (store *messageNodeStore) deleteWhenUnlocked(messageID string) bool {
 	store.mu.Lock()
 	node, ok := store.nodes[messageID]
 	store.mu.Unlock()
 
 	if !ok {
-		return
+		return false
 	}
 
 	node.mu.Lock()
 	defer node.mu.Unlock()
 
+	deleted := false
+
 	store.mu.Lock()
 	if currentNode, currentNodeExists := store.nodes[messageID]; currentNodeExists && currentNode == node {
 		delete(store.nodes, messageID)
+
+		deleted = true
 	}
 	store.mu.Unlock()
+
+	if deleted {
+		store.deleteCachedSnapshot(messageID)
+	}
+
+	return deleted
 }
 
 func sortMessageIDs(messageIDs []string) {
