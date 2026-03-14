@@ -19,7 +19,7 @@ This bot turns Discord into a reply-chain frontend for OpenAI-compatible LLM API
 - Automatic YouTube URL enrichment that fetches transcripts, titles, channel names, and up to 50 top comments without an API key
 - Automatic Reddit URL enrichment that fetches thread metadata, post bodies, and nested comments from Reddit's `.json` endpoint without an API key
 - Automatic website URL enrichment for non-TikTok/Facebook/YouTube/Reddit links that fetches page titles, descriptions, and extracted main text from pages such as Wikipedia
-- Search-decider flow that can skip search or use Exa MCP and Tavily in configurable primary/fallback order when current information is needed
+- Search-decider flow that can skip search or use Exa MCP and Tavily in configurable primary/fallback order when current information is needed, with the current host date/time injected into the decider prompt so relative queries like "today" resolve correctly
 - Guild messages containing `at ai` are treated like an explicit bot mention and stripped from the prompt text, which is useful for speech-to-text style prompts
 - `View on Rentry` button on final replies that publishes the assistant response to Rentry on demand for easier reading, plus a `Show Sources` button on searched replies that opens a paginated ephemeral view of the queries and parsed source URLs used
 - Reply-chain history is persisted on disk, so assistant replies plus retained user-turn context such as visual search results, web search results, website/YouTube/Reddit enrichment, retained TikTok/Facebook video context, and non-Gemini PDF extraction output including extracted text and extracted images survive bot restarts for later follow-up replies
@@ -56,7 +56,7 @@ This bot turns Discord into a reply-chain frontend for OpenAI-compatible LLM API
    docker compose up --build
    ```
 
-   The provided `docker-compose.yaml` mounts the project root read-write so persisted reply-chain history files can be created directly in the project root.
+   The provided `docker-compose.yaml` mounts the project root read-write so persisted reply-chain history files can be created under `./chat_history/`.
 
 To log in to ChatGPT and print a copyable Codex API key for `providers.<name>.api_key`, run:
 
@@ -117,7 +117,7 @@ golangci-lint run --default=all
 ## Notes
 
 - The bot reads `config.yaml` on each message and `/model` autocomplete request, so configuration changes apply without restarting.
-- Reply-chain history is stored directly in the project root as `message-history-*.gob`, keyed by the config path. Existing `.llmcord-go/message-history-*.gob` files are still loaded as fallback and are rewritten into the project root on the next save, so cached assistant replies, retained augmentations, search-source metadata, and Rentry URLs survive bot restarts.
+- Reply-chain history is stored under `chat_history/message-history-*.gob`, keyed by the config path. Existing `message-history-*.gob` files in the project root and older `.llmcord-go/message-history-*.gob` files are still loaded as fallbacks and are rewritten into `chat_history/` on the next save, so cached assistant replies, retained augmentations, search-source metadata, and Rentry URLs survive bot restarts.
 - `channel_model_locks` matches the current channel first, then its parent thread/forum context when applicable. Locked channels only affect reply generation; `/searchdecidermodel` and search-decider execution are unchanged.
 - Gemini providers use the official `google.golang.org/genai` SDK. Existing configs that still point at `https://generativelanguage.googleapis.com/.../openai` are detected and routed through the native Gemini client automatically.
 - Gemini requests can include Discord PDF, audio, and video attachments. Those attachments are uploaded through the Gemini Files API before `GenerateContent`, so Gemini models can inspect them without relying on inline request blobs. Gemini's document vision meaningfully applies to PDFs; other text-like attachments continue to be ingested as plain text when Discord reports them as `text/*`.
