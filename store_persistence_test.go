@@ -11,7 +11,9 @@ import (
 	"github.com/bwmarrin/discordgo"
 )
 
-func TestDefaultMessageNodeStorePathUsesProjectRoot(t *testing.T) {
+const testMessageHistoryFilename = "message-history.gob"
+
+func TestDefaultMessageNodeStorePathUsesChatHistoryDirectory(t *testing.T) {
 	t.Parallel()
 
 	workingDirectory, err := os.Getwd()
@@ -24,6 +26,109 @@ func TestDefaultMessageNodeStorePathUsesProjectRoot(t *testing.T) {
 
 	if filepath.Dir(historyPath) != expectedDirectory {
 		t.Fatalf("unexpected history directory: got %q want %q", filepath.Dir(historyPath), expectedDirectory)
+	}
+}
+
+func TestPersistentMessageNodeStoreLoadsRootSnapshotIntoPrimaryPath(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	primaryPath := filepath.Join(tempDir, messageNodeStoreDirectoryName, testMessageHistoryFilename)
+	rootPath := filepath.Join(tempDir, testMessageHistoryFilename)
+
+	assertPersistentMessageNodeStoreLoadsFallbackSnapshotIntoPrimaryPath(t, primaryPath, rootPath)
+}
+
+func TestPersistentMessageNodeStoreLoadsLegacySnapshotIntoPrimaryPath(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	primaryPath := filepath.Join(tempDir, messageNodeStoreDirectoryName, testMessageHistoryFilename)
+	legacyPath := filepath.Join(
+		tempDir,
+		legacyMessageNodeStoreDirectoryName,
+		testMessageHistoryFilename,
+	)
+
+	assertPersistentMessageNodeStoreLoadsFallbackSnapshotIntoPrimaryPath(t, primaryPath, legacyPath)
+}
+
+func assertPersistentMessageNodeStoreLoadsFallbackSnapshotIntoPrimaryPath(
+	t *testing.T,
+	primaryPath string,
+	fallbackPath string,
+) {
+	t.Helper()
+
+	fallbackSnapshot := messageNodeStoreSnapshot{
+		Version: messageNodeStoreSnapshotVersion,
+		Nodes: map[string]messageNodeSnapshot{
+			"assistant-message": testAssistantMessageNodeSnapshot(),
+		},
+	}
+
+	err := writeMessageNodeStoreSnapshot(fallbackPath, fallbackSnapshot)
+	if err != nil {
+		t.Fatalf("write fallback message history: %v", err)
+	}
+
+	store, err := newPersistentMessageNodeStore(10, primaryPath, fallbackPath)
+	if err != nil {
+		t.Fatalf("load persistent message store with fallback: %v", err)
+	}
+
+	if store.path != primaryPath {
+		t.Fatalf("unexpected store path: got %q want %q", store.path, primaryPath)
+	}
+
+	node, found := store.get("assistant-message")
+	if !found {
+		t.Fatal("expected assistant node from fallback snapshot")
+	}
+
+	node.mu.Lock()
+	if node.role != messageRoleAssistant ||
+		node.text != testAssistantReply ||
+		!node.initialized {
+		node.mu.Unlock()
+		t.Fatalf("unexpected restored node: %#v", node)
+	}
+	node.mu.Unlock()
+
+	err = store.persist()
+	if err != nil {
+		t.Fatalf("persist primary message history: %v", err)
+	}
+
+	primarySnapshot, err := readMessageNodeStoreSnapshot(primaryPath)
+	if err != nil {
+		t.Fatalf("read primary message history: %v", err)
+	}
+
+	persistedNode, found := primarySnapshot.Nodes["assistant-message"]
+	if !found {
+		t.Fatal("expected assistant node in primary snapshot")
+	}
+
+	if persistedNode.Role != messageRoleAssistant ||
+		persistedNode.Text != testAssistantReply ||
+		!persistedNode.Initialized {
+		t.Fatalf("unexpected persisted node: %#v", persistedNode)
+	}
+}
+
+func testAssistantMessageNodeSnapshot() messageNodeSnapshot {
+	return messageNodeSnapshot{
+		Role:              messageRoleAssistant,
+		Text:              testAssistantReply,
+		URLScanText:       "",
+		RentryURL:         "",
+		Media:             nil,
+		SearchMetadata:    nil,
+		HasBadAttachments: false,
+		FetchParentFailed: false,
+		ParentMessage:     nil,
+		Initialized:       true,
 	}
 }
 
@@ -97,7 +202,7 @@ func TestPersistentMessageNodeStoreRestoresRetainedSearchHistoryAfterRestart(t *
 	)
 
 	assertRetainedSearchHistory(t, history)
-	assertRestartedConversationTail(t, history, userID, "assistant reply", "follow-up question")
+	assertRestartedConversationTail(t, history, userID, testAssistantReply, "follow-up question")
 	assertPersistedAssistantMetadata(
 		t,
 		restartedInstance,
@@ -167,7 +272,7 @@ func TestPersistentMessageNodeStoreRestoresRetainedVideoHistoryAfterRestart(t *t
 	)
 
 	assertRetainedVideoHistory(t, history)
-	assertRestartedConversationTail(t, history, userID, "assistant reply", "follow-up question")
+	assertRestartedConversationTail(t, history, userID, testAssistantReply, "follow-up question")
 	assertRetainedVideoBytes(t, history)
 }
 

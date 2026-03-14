@@ -61,8 +61,15 @@ func newBot(configPath string, loadedConfig config) (*bot, error) {
 	instance.website = newWebsiteClient(httpClient)
 
 	storePath := defaultMessageNodeStorePath(configPath)
+	rootStorePath := rootMessageNodeStorePath(configPath)
+	legacyStorePath := legacyMessageNodeStorePath(configPath)
 
-	instance.nodes, err = newPersistentMessageNodeStore(maxMessageNodes, storePath)
+	instance.nodes, err = newPersistentMessageNodeStore(
+		maxMessageNodes,
+		storePath,
+		rootStorePath,
+		legacyStorePath,
+	)
 	if err != nil {
 		slog.Warn("load persisted message history", "path", storePath, "error", err)
 

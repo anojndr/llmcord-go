@@ -15,9 +15,10 @@ import (
 )
 
 const (
-	messageNodeStoreSnapshotVersion = 1
-	messageNodeStoreDirectoryName   = ".llmcord-go"
-	messageNodeStoreDirectoryMode   = 0o750
+	messageNodeStoreSnapshotVersion     = 1
+	messageNodeStoreDirectoryName       = "chat_history"
+	legacyMessageNodeStoreDirectoryName = ".llmcord-go"
+	messageNodeStoreDirectoryMode       = 0o750
 )
 
 type messageNodeStoreSnapshot struct {
@@ -83,7 +84,11 @@ type discordMessageReferenceSnapshot struct {
 	GuildID   string
 }
 
-func newPersistentMessageNodeStore(capacity int, path string) (*messageNodeStore, error) {
+func newPersistentMessageNodeStore(
+	capacity int,
+	path string,
+	fallbackPaths ...string,
+) (*messageNodeStore, error) {
 	store := newMessageNodeStore(capacity)
 
 	trimmedPath := strings.TrimSpace(path)
@@ -95,11 +100,18 @@ func newPersistentMessageNodeStore(capacity int, path string) (*messageNodeStore
 
 	snapshot, err := readMessageNodeStoreSnapshot(store.path)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return store, nil
+		if !errors.Is(err, os.ErrNotExist) {
+			return nil, err
 		}
 
-		return nil, err
+		snapshot, err = readMessageNodeStoreSnapshotFallbacks(fallbackPaths)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return store, nil
+			}
+
+			return nil, err
+		}
 	}
 
 	snapshot.Nodes = trimSnapshotNodes(snapshot.Nodes, capacity)
@@ -110,11 +122,38 @@ func newPersistentMessageNodeStore(capacity int, path string) (*messageNodeStore
 }
 
 func defaultMessageNodeStorePath(configPath string) string {
+	return filepath.Join(
+		messageNodeStoreProjectRoot(),
+		messageNodeStoreDirectoryName,
+		defaultMessageNodeStoreFilename(configPath),
+	)
+}
+
+func rootMessageNodeStorePath(configPath string) string {
+	return filepath.Join(
+		messageNodeStoreProjectRoot(),
+		defaultMessageNodeStoreFilename(configPath),
+	)
+}
+
+func legacyMessageNodeStorePath(configPath string) string {
+	return filepath.Join(
+		messageNodeStoreProjectRoot(),
+		legacyMessageNodeStoreDirectoryName,
+		defaultMessageNodeStoreFilename(configPath),
+	)
+}
+
+func messageNodeStoreProjectRoot() string {
 	projectRoot, err := os.Getwd()
 	if err != nil || strings.TrimSpace(projectRoot) == "" {
-		projectRoot = "."
+		return "."
 	}
 
+	return projectRoot
+}
+
+func defaultMessageNodeStoreFilename(configPath string) string {
 	resolvedConfigPath, err := filepath.Abs(configPath)
 	if err != nil {
 		resolvedConfigPath = configPath
@@ -122,11 +161,27 @@ func defaultMessageNodeStorePath(configPath string) string {
 
 	hash := sha256.Sum256([]byte(filepath.Clean(resolvedConfigPath)))
 
-	return filepath.Join(
-		projectRoot,
-		messageNodeStoreDirectoryName,
-		fmt.Sprintf("message-history-%x.gob", hash[:8]),
-	)
+	return fmt.Sprintf("message-history-%x.gob", hash[:8])
+}
+
+func readMessageNodeStoreSnapshotFallbacks(paths []string) (messageNodeStoreSnapshot, error) {
+	for _, path := range paths {
+		trimmedPath := strings.TrimSpace(path)
+		if trimmedPath == "" {
+			continue
+		}
+
+		snapshot, err := readMessageNodeStoreSnapshot(trimmedPath)
+		if err == nil {
+			return snapshot, nil
+		}
+
+		if !errors.Is(err, os.ErrNotExist) {
+			return messageNodeStoreSnapshot{}, err
+		}
+	}
+
+	return messageNodeStoreSnapshot{}, os.ErrNotExist
 }
 
 func (store *messageNodeStore) persistBestEffort() {
