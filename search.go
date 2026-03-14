@@ -13,6 +13,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -48,8 +49,8 @@ var rawSearchDeciderPrompt string
 
 var errExaSearchTool = errors.New("exa MCP search tool returned an error")
 
-func searchDeciderPrompt() string {
-	return strings.TrimSpace(rawSearchDeciderPrompt)
+func searchDeciderPrompt(now time.Time) string {
+	return systemPromptNow(rawSearchDeciderPrompt, now)
 }
 
 type chatCompletionClient interface {
@@ -293,7 +294,7 @@ func (instance *bot) decideWebSearch(
 	}
 
 	searchDeciderMessages = append(
-		[]chatMessage{{Role: "system", Content: searchDeciderPrompt()}},
+		[]chatMessage{{Role: "system", Content: searchDeciderPrompt(time.Now())}},
 		searchDeciderMessages...,
 	)
 	searchDeciderMessages = append(searchDeciderMessages, chatMessage{

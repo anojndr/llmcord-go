@@ -253,8 +253,27 @@ func TestSearchDeciderPromptMatchesTextFile(t *testing.T) {
 		t.Fatalf("read search decider prompt file: %v", err)
 	}
 
-	if searchDeciderPrompt() != strings.TrimSpace(string(promptBytes)) {
+	instant := time.Date(2026, time.March, 9, 13, 14, 15, 0, time.FixedZone("PHT", 8*60*60))
+	expectedPrompt := systemPromptNow(strings.TrimSpace(string(promptBytes)), instant)
+
+	if searchDeciderPrompt(instant) != expectedPrompt {
 		t.Fatal("expected embedded search decider prompt to match searchDeciderPrompt.txt")
+	}
+}
+
+func TestSearchDeciderPromptReplacesDateAndTime(t *testing.T) {
+	t.Parallel()
+
+	instant := time.Date(2026, time.March, 9, 13, 14, 15, 0, time.FixedZone("PHT", 8*60*60))
+	prompt := searchDeciderPrompt(instant)
+
+	expectedLine := "Today's date is March 09 2026. The current time is 13:14:15 PHT+0800."
+	if !strings.Contains(prompt, expectedLine) {
+		t.Fatalf("expected rendered search decider prompt to contain %q", expectedLine)
+	}
+
+	if strings.Contains(prompt, "{date}") || strings.Contains(prompt, "{time}") {
+		t.Fatalf("expected rendered search decider prompt to replace placeholders: %q", prompt)
 	}
 }
 
@@ -277,7 +296,8 @@ func TestSearchDeciderPromptRetainsCriticalInstructions(t *testing.T) {
 			`public figure where current information matters`,
 	}
 
-	prompt := searchDeciderPrompt()
+	instant := time.Date(2026, time.March, 9, 13, 14, 15, 0, time.FixedZone("PHT", 8*60*60))
+	prompt := searchDeciderPrompt(instant)
 
 	for _, expectedSnippet := range expectedSnippets {
 		if !strings.Contains(prompt, expectedSnippet) {
@@ -613,6 +633,19 @@ func assertSearchDeciderRequestIncludesInstruction(
 
 	if requestMessages[0].Role != "system" {
 		t.Fatalf("expected search decider system prompt, got role %q", requestMessages[0].Role)
+	}
+
+	systemPrompt, systemPromptOK := requestMessages[0].Content.(string)
+	if !systemPromptOK {
+		t.Fatalf("unexpected system prompt content type: %T", requestMessages[0].Content)
+	}
+
+	if !strings.Contains(systemPrompt, "Today's date is ") {
+		t.Fatalf("expected rendered date in search decider system prompt: %q", systemPrompt)
+	}
+
+	if strings.Contains(systemPrompt, "{date}") || strings.Contains(systemPrompt, "{time}") {
+		t.Fatalf("expected rendered search decider system prompt without placeholders: %q", systemPrompt)
 	}
 
 	if requestMessages[2].Role != messageRoleUser {
