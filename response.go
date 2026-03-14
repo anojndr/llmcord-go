@@ -29,7 +29,8 @@ type responseActions struct {
 }
 
 type pendingResponse struct {
-	node *messageNode
+	messageID string
+	node      *messageNode
 }
 
 type responseTracker struct {
@@ -112,7 +113,7 @@ func newResponseTracker(
 	return tracker
 }
 
-func (tracker *responseTracker) release(fullText string) {
+func (tracker *responseTracker) release(store *messageNodeStore, fullText string) {
 	for _, pending := range tracker.pendingResponses {
 		pending.node.role = messageRoleAssistant
 		pending.node.text = fullText
@@ -120,6 +121,11 @@ func (tracker *responseTracker) release(fullText string) {
 		pending.node.searchMetadata = cloneSearchMetadata(tracker.searchMetadata)
 		pending.node.parentMessage = tracker.sourceMessage
 		pending.node.initialized = true
+
+		if store != nil {
+			store.cacheLockedNode(pending.messageID, pending.node)
+		}
+
 		pending.node.mu.Unlock()
 	}
 }
@@ -206,7 +212,8 @@ func (instance *bot) generateAndSendResponse(
 		}
 	}
 
-	tracker.release(finalText)
+	tracker.release(instance.nodes, finalText)
+	instance.nodes.persistBestEffort()
 
 	return responseErr
 }
@@ -661,7 +668,8 @@ func (instance *bot) sendReplyMessage(
 	}
 
 	pending := pendingResponse{
-		node: instance.nodes.addPending(sentMessage.ID, tracker.sourceMessage),
+		messageID: sentMessage.ID,
+		node:      instance.nodes.addPending(sentMessage.ID, tracker.sourceMessage),
 	}
 	pending.node.searchMetadata = cloneSearchMetadata(tracker.searchMetadata)
 

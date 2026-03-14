@@ -59,7 +59,16 @@ func newBot(configPath string, loadedConfig config) (*bot, error) {
 	instance.youtube = newYouTubeClient(httpClient)
 	instance.reddit = newRedditClient(httpClient)
 	instance.website = newWebsiteClient(httpClient)
-	instance.nodes = newMessageNodeStore(maxMessageNodes)
+
+	storePath := defaultMessageNodeStorePath(configPath)
+
+	instance.nodes, err = newPersistentMessageNodeStore(maxMessageNodes, storePath)
+	if err != nil {
+		slog.Warn("load persisted message history", "path", storePath, "error", err)
+
+		instance.nodes = newMessageNodeStore(maxMessageNodes)
+	}
+
 	instance.currentModel = loadedConfig.firstModel()
 	instance.currentSearchDeciderModel = loadedConfig.SearchDeciderModel
 
