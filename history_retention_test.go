@@ -86,7 +86,7 @@ func newHistoryRetentionFixture(t *testing.T, sourceContent string) historyReten
 	assistantMessage.Author = newDiscordUser(botUserID, true)
 	assistantMessage.MessageReference = sourceMessage.Reference()
 	assistantMessage.Type = discordgo.MessageTypeReply
-	setCachedAssistantNode(instance, assistantMessage, sourceMessage, "assistant reply")
+	setCachedAssistantNode(instance, assistantMessage, sourceMessage)
 
 	followUpMessage := new(discordgo.Message)
 	followUpMessage.ID = followUpMessageID
@@ -381,7 +381,6 @@ func setCachedAssistantNode(
 	instance *bot,
 	assistantMessage *discordgo.Message,
 	parentMessage *discordgo.Message,
-	text string,
 ) {
 	node := instance.nodes.getOrCreate(assistantMessage.ID)
 
@@ -389,10 +388,11 @@ func setCachedAssistantNode(
 	defer node.mu.Unlock()
 
 	node.role = messageRoleAssistant
-	node.text = text
-	node.urlScanText = text
+	node.text = "assistant reply"
+	node.urlScanText = "assistant reply"
 	node.parentMessage = parentMessage
 	node.initialized = true
+	instance.nodes.cacheLockedNode(assistantMessage.ID, node)
 }
 
 func setCachedUserNode(
@@ -411,4 +411,5 @@ func setCachedUserNode(
 	node.urlScanText = text
 	node.parentMessage = parentMessage
 	node.initialized = true
+	instance.nodes.cacheLockedNode(userMessage.ID, node)
 }

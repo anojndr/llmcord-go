@@ -290,7 +290,11 @@ func (instance *bot) handleViewOnRentryButton(
 	} else {
 		rentryURL = messageNode.rentryURL
 	}
+
+	instance.nodes.cacheLockedNode(interaction.Message.ID, messageNode)
 	messageNode.mu.Unlock()
+
+	instance.nodes.persistBestEffort()
 
 	return respondInteractionTextWithFlags(
 		session,

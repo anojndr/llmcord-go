@@ -166,7 +166,7 @@ func TestPersistAugmentedSourceMessageRetainsExtractedPDFTextAndImagesInFollowUp
 
 	assistantMessage := new(discordgo.Message)
 	assistantMessage.ID = "message-pdf-retained-assistant"
-	setCachedAssistantNode(instance, assistantMessage, sourceMessage, "assistant reply")
+	setCachedAssistantNode(instance, assistantMessage, sourceMessage)
 
 	followUpMessage := new(discordgo.Message)
 	followUpMessage.ID = "message-pdf-retained-follow-up"
