@@ -56,7 +56,7 @@ This bot turns Discord into a reply-chain frontend for OpenAI-compatible LLM API
    docker compose up --build
    ```
 
-   The provided `docker-compose.yaml` mounts `./.llmcord-go` into the container so persisted reply-chain history stays in the project root.
+   The provided `docker-compose.yaml` mounts the project root read-write so persisted reply-chain history files can be created directly in the project root.
 
 To log in to ChatGPT and print a copyable Codex API key for `providers.<name>.api_key`, run:
 
@@ -117,7 +117,7 @@ golangci-lint run --default=all
 ## Notes
 
 - The bot reads `config.yaml` on each message and `/model` autocomplete request, so configuration changes apply without restarting.
-- Reply-chain history is stored in the project root under `.llmcord-go/`, keyed by the config path, so cached assistant replies, retained augmentations, search-source metadata, and Rentry URLs survive bot restarts.
+- Reply-chain history is stored directly in the project root as `message-history-*.gob`, keyed by the config path. Existing `.llmcord-go/message-history-*.gob` files are still loaded as fallback and are rewritten into the project root on the next save, so cached assistant replies, retained augmentations, search-source metadata, and Rentry URLs survive bot restarts.
 - `channel_model_locks` matches the current channel first, then its parent thread/forum context when applicable. Locked channels only affect reply generation; `/searchdecidermodel` and search-decider execution are unchanged.
 - Gemini providers use the official `google.golang.org/genai` SDK. Existing configs that still point at `https://generativelanguage.googleapis.com/.../openai` are detected and routed through the native Gemini client automatically.
 - Gemini requests can include Discord PDF, audio, and video attachments. Those attachments are uploaded through the Gemini Files API before `GenerateContent`, so Gemini models can inspect them without relying on inline request blobs. Gemini's document vision meaningfully applies to PDFs; other text-like attachments continue to be ingested as plain text when Discord reports them as `text/*`.

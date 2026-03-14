@@ -388,8 +388,8 @@ func setCachedAssistantNode(
 	defer node.mu.Unlock()
 
 	node.role = messageRoleAssistant
-	node.text = "assistant reply"
-	node.urlScanText = "assistant reply"
+	node.text = testAssistantReply
+	node.urlScanText = testAssistantReply
 	node.parentMessage = parentMessage
 	node.initialized = true
 	instance.nodes.cacheLockedNode(assistantMessage.ID, node)
