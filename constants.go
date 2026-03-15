@@ -47,6 +47,9 @@ const (
 	attachmentRequestTimeout             = 30 * time.Second
 	geminiFilePollInterval               = 500 * time.Millisecond
 	geminiFileProcessingTimeout          = 2 * time.Minute
+	openRouterHost                       = "openrouter.ai"
+	openRouterTransformsField            = "transforms"
+	openRouterMiddleOutTransform         = "middle-out"
 	searchDeciderTimeout                 = 30 * time.Second
 	facebookRequestTimeout               = 30 * time.Second
 	tikTokRenderPollInterval             = 500 * time.Millisecond

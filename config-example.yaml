@@ -69,6 +69,10 @@ providers:
   openrouter:
     base_url: https://openrouter.ai/api/v1
     api_key: 
+    # Requests to OpenRouter default to `transforms: ["middle-out"]`.
+    # To disable that default for this provider, uncomment:
+    # extra_body:
+    #   transforms: []
 
   x-ai:
     base_url: https://api.x.ai/v1

@@ -89,6 +89,98 @@ func TestBuildChatCompletionRequestPreservesProviderAPIKeys(t *testing.T) {
 	}
 }
 
+func TestBuildChatCompletionRequestDefaultsOpenRouterTransforms(t *testing.T) {
+	t.Parallel()
+
+	provider := new(providerConfig)
+	provider.BaseURL = "https://openrouter.ai/api/v1"
+	provider.ExtraBody = map[string]any{
+		"temperature": 0.2,
+	}
+
+	var loadedConfig config
+
+	loadedConfig.Providers = map[string]providerConfig{
+		"router": *provider,
+	}
+	loadedConfig.Models = map[string]map[string]any{
+		"router/anthropic/claude-3.7-sonnet": nil,
+	}
+
+	request, err := buildChatCompletionRequest(
+		loadedConfig,
+		"router/anthropic/claude-3.7-sonnet",
+		[]chatMessage{{Role: messageRoleUser, Content: "hello"}},
+	)
+	if err != nil {
+		t.Fatalf("build chat completion request: %v", err)
+	}
+
+	if request.Model != "anthropic/claude-3.7-sonnet" {
+		t.Fatalf("unexpected request model: %q", request.Model)
+	}
+
+	transforms, transformsOK := request.Provider.ExtraBody[openRouterTransformsField].([]string)
+	if !transformsOK {
+		t.Fatalf("unexpected openrouter transforms payload: %#v", request.Provider.ExtraBody[openRouterTransformsField])
+	}
+
+	if !slices.Equal(transforms, []string{openRouterMiddleOutTransform}) {
+		t.Fatalf("unexpected openrouter transforms: %#v", transforms)
+	}
+
+	if _, ok := provider.ExtraBody[openRouterTransformsField]; ok {
+		t.Fatalf("unexpected mutation of provider extra body: %#v", provider.ExtraBody)
+	}
+
+	if request.Provider.ExtraBody["temperature"] != 0.2 {
+		t.Fatalf("unexpected provider extra body: %#v", request.Provider.ExtraBody)
+	}
+}
+
+func TestBuildChatCompletionRequestPreservesExplicitOpenRouterTransforms(t *testing.T) {
+	t.Parallel()
+
+	provider := new(providerConfig)
+	provider.BaseURL = "https://openrouter.ai/api/v1"
+
+	modelParameters := map[string]any{
+		openRouterTransformsField: []any{},
+	}
+
+	var loadedConfig config
+
+	loadedConfig.Providers = map[string]providerConfig{
+		"router": *provider,
+	}
+	loadedConfig.Models = map[string]map[string]any{
+		"router/anthropic/claude-3.7-sonnet": modelParameters,
+	}
+
+	request, err := buildChatCompletionRequest(
+		loadedConfig,
+		"router/anthropic/claude-3.7-sonnet",
+		[]chatMessage{{Role: messageRoleUser, Content: "hello"}},
+	)
+	if err != nil {
+		t.Fatalf("build chat completion request: %v", err)
+	}
+
+	transforms, transformsOK := request.Provider.ExtraBody[openRouterTransformsField].([]any)
+	if !transformsOK {
+		t.Fatalf("unexpected openrouter transforms payload: %#v", request.Provider.ExtraBody[openRouterTransformsField])
+	}
+
+	if len(transforms) != 0 {
+		t.Fatalf("unexpected openrouter transforms override: %#v", transforms)
+	}
+
+	originalTransforms, originalTransformsOK := modelParameters[openRouterTransformsField].([]any)
+	if !originalTransformsOK || len(originalTransforms) != 0 {
+		t.Fatalf("unexpected mutation of model parameters: %#v", modelParameters)
+	}
+}
+
 func TestBuildChatCompletionRequestNormalizesGeminiThinkingAlias(t *testing.T) {
 	t.Parallel()
 

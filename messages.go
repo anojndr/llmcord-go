@@ -700,6 +700,24 @@ func mergeExtraBody(providerExtraBody map[string]any, modelParameters map[string
 	return mergedBody
 }
 
+func defaultOpenRouterTransforms(provider providerConfig, extraBody map[string]any) map[string]any {
+	if !provider.usesOpenRouter() {
+		return extraBody
+	}
+
+	if _, ok := extraBody[openRouterTransformsField]; ok {
+		return extraBody
+	}
+
+	if extraBody == nil {
+		extraBody = make(map[string]any, 1)
+	}
+
+	extraBody[openRouterTransformsField] = []string{openRouterMiddleOutTransform}
+
+	return extraBody
+}
+
 func buildChatCompletionRequest(
 	loadedConfig config,
 	providerSlashModel string,
@@ -747,6 +765,8 @@ func buildChatCompletionRequest(
 	if providerAPIKind == providerAPIKindOpenAICodex {
 		modelName, extraBody = normalizeOpenAICodexModelAlias(modelName, extraBody)
 	}
+
+	extraBody = defaultOpenRouterTransforms(provider, extraBody)
 
 	return chatCompletionRequest{
 		Provider: providerRequestConfig{

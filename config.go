@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -493,6 +494,21 @@ func (provider providerConfig) apiKind() providerAPIKind {
 	default:
 		return providerAPIKind(strings.ToLower(strings.TrimSpace(provider.Type)))
 	}
+}
+
+func (provider providerConfig) usesOpenRouter() bool {
+	if provider.apiKind() != providerAPIKindOpenAI {
+		return false
+	}
+
+	parsedURL, err := url.Parse(strings.TrimSpace(provider.BaseURL))
+	if err != nil {
+		return false
+	}
+
+	host := strings.ToLower(strings.TrimSpace(parsedURL.Hostname()))
+
+	return host == openRouterHost || strings.HasSuffix(host, "."+openRouterHost)
 }
 
 func (provider providerConfig) validate(providerName string) error {
