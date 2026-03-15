@@ -93,6 +93,36 @@ func TestExtractWebsiteURLsIgnoresURLsInAugmentedPromptSections(t *testing.T) {
 	}
 }
 
+func TestExtractWebsiteURLsIgnoresNonURLLogIdentifiers(t *testing.T) {
+	t.Parallel()
+
+	text := strings.Join([]string{
+		"sweetpotet@DESKTOP-FRKOURV:~$ kitty",
+		"libEGL warning: failed to get driver name for fd -1",
+		"",
+		"libEGL warning: MESA-LOADER: failed to retrieve device information",
+		"",
+		"libEGL warning: failed to get driver name for fd -1",
+		"",
+		"MESA: error: ZINK: failed to choose pdev",
+		"libEGL warning: egl: failed to create dri2 screen",
+		"[0.942] [glfw error 65544]: Notify: Failed to get server capabilities error: " +
+			"org.freedesktop.DBus.Error.NoReply: Did not receive a reply. Possible causes include: " +
+			"the remote application did not send a reply, the message bus security policy blocked the " +
+			"reply, the reply timeout expired, or the network connection was broken.",
+		"[0.942] [glfw error 65544]: process_desktop_settings: failed with error: " +
+			"org.freedesktop.DBus.Error.ServiceUnknown: The name org.freedesktop.portal.Desktop " +
+			"was not provided by any .service files",
+		"ignoreboth or ignorespace present in bash HISTCONTROL setting, showing running command will " +
+			"not be robust",
+	}, "\n")
+
+	urls := extractWebsiteURLs(text)
+	if len(urls) != 0 {
+		t.Fatalf("unexpected urls: %#v", urls)
+	}
+}
+
 func TestAppendWebsiteContentToConversationPreservesImages(t *testing.T) {
 	t.Parallel()
 
