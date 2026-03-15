@@ -337,6 +337,152 @@ func TestSendPlainResponseEditsExistingProgressMessage(t *testing.T) {
 	}
 }
 
+func TestGenerateAndSendResponseAppendsErrorWhenStreamFailsAfterPartialOutput(t *testing.T) {
+	t.Parallel()
+	testGenerateAndSendResponseAppendsErrorWhenStreamFailsAfterPartialOutput(t)
+}
+
+func testGenerateAndSendResponseAppendsErrorWhenStreamFailsAfterPartialOutput(t *testing.T) {
+	t.Helper()
+
+	const (
+		botUserID          = "bot-user"
+		channelID          = "channel-1"
+		userID             = "user-1"
+		sourceMessageID    = "user-message-1"
+		assistantMessageID = "assistant-message-1"
+		partialText        = "partial reply"
+		expectedError      = "Couldn't generate a response right now. Try again."
+	)
+
+	sourceMessage := newPromptMessage(sourceMessageID, channelID, userID, botUserID)
+	assistantMessage := new(discordgo.Message)
+	assistantMessage.ID = assistantMessageID
+	assistantMessage.ChannelID = channelID
+	assistantMessage.Author = newDiscordUser(botUserID, true)
+	assistantMessage.MessageReference = sourceMessage.Reference()
+	assistantMessage.Type = discordgo.MessageTypeReply
+
+	messageDescriptions := make([]string, 0, 3)
+	patchDescriptions := make([]string, 0, 2)
+	messageSendCount := 0
+	session := newPartialFailureResponseSession(
+		t,
+		channelID,
+		botUserID,
+		assistantMessage,
+		&messageDescriptions,
+		&patchDescriptions,
+		&messageSendCount,
+	)
+	instance := newPartialFailureResponseBot(session, partialText)
+
+	err := instance.generateAndSendResponse(
+		context.Background(),
+		emptyChatCompletionRequest(),
+		newResponseTracker(sourceMessage, ""),
+		nil,
+		false,
+	)
+	if err == nil {
+		t.Fatal("expected generate and send response error")
+	}
+
+	if messageSendCount != 2 {
+		t.Fatalf("unexpected message send count: %d", messageSendCount)
+	}
+
+	if len(patchDescriptions) == 0 {
+		t.Fatal("expected partial response edit")
+	}
+
+	if !containsFold(patchDescriptions[len(patchDescriptions)-1], partialText) {
+		t.Fatalf("unexpected partial response patch: %q", patchDescriptions[len(patchDescriptions)-1])
+	}
+
+	if !containsFold(messageDescriptions[len(messageDescriptions)-1], expectedError) {
+		t.Fatalf("unexpected final error response: %q", messageDescriptions[len(messageDescriptions)-1])
+	}
+}
+
+func newPartialFailureResponseSession(
+	t *testing.T,
+	channelID string,
+	botUserID string,
+	assistantMessage *discordgo.Message,
+	messageDescriptions *[]string,
+	patchDescriptions *[]string,
+	messageSendCount *int,
+) *discordgo.Session {
+	t.Helper()
+
+	return newDirectMessageTestSession(t, channelID, botUserID, roundTripFunc(func(
+		request *http.Request,
+	) (*http.Response, error) {
+		t.Helper()
+
+		switch {
+		case request.Method == http.MethodPost &&
+			request.URL.Path == "/api/v9/channels/"+channelID+"/messages":
+			*messageDescriptions = append(*messageDescriptions, requestEmbedDescription(t, request))
+			*messageSendCount++
+
+			return newJSONResponse(t, request, assistantMessage), nil
+		case request.Method == http.MethodPatch &&
+			request.URL.Path == "/api/v9/channels/"+channelID+"/messages/"+assistantMessage.ID:
+			*patchDescriptions = append(*patchDescriptions, requestEmbedDescription(t, request))
+
+			return newJSONResponse(t, request, assistantMessage), nil
+		case request.Method == http.MethodPost &&
+			request.URL.Path == "/api/v9/channels/"+channelID+"/typing":
+			return newNoContentResponse(request), nil
+		default:
+			t.Fatalf("unexpected request: %s %s", request.Method, request.URL.Path)
+
+			return nil, errUnexpectedTestRequest
+		}
+	}))
+}
+
+func newPartialFailureResponseBot(session *discordgo.Session, partialText string) *bot {
+	instance := new(bot)
+	instance.session = session
+	instance.nodes = newMessageNodeStore(10)
+	instance.chatCompletions = newStubChatClient(func(
+		_ context.Context,
+		_ chatCompletionRequest,
+		handle func(streamDelta) error,
+	) error {
+		err := handle(newStreamDelta(partialText, ""))
+		if err != nil {
+			return err
+		}
+
+		return errPartialStreamFailure
+	})
+
+	return instance
+}
+
+func emptyChatCompletionRequest() chatCompletionRequest {
+	return chatCompletionRequest{
+		Provider: providerRequestConfig{
+			APIKind:      "",
+			BaseURL:      "",
+			APIKey:       "",
+			APIKeys:      nil,
+			ExtraHeaders: nil,
+			ExtraQuery:   nil,
+			ExtraBody:    nil,
+		},
+		Model:           "",
+		ConfiguredModel: "",
+		Messages:        nil,
+	}
+}
+
+var errPartialStreamFailure = errors.New("partial stream failure")
+
 var errUnexpectedTestRequest = errors.New("unexpected test request")
 
 func TestGenerateAndSendResponseKeepsAssistantReplyInConversationHistory(t *testing.T) {

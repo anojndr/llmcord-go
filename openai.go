@@ -15,6 +15,14 @@ import (
 	"strings"
 )
 
+const (
+	openAIStreamErrorEventType           = "error"
+	openAIStreamMessagePartsCapacity     = 3
+	openAIContentFilterFinishReason      = "content_filter"
+	openAIStreamToolCallsFinishReason    = "tool_calls"
+	openAIStreamFunctionCallFinishReason = "function_call"
+)
+
 type chatMessage struct {
 	Role    string `json:"role"`
 	Content any    `json:"content"`
@@ -115,11 +123,15 @@ func (client openAIClient) streamChatCompletion(
 		}
 	}
 
-	err = consumeServerSentEvents(httpResponse.Body, func(payload []byte) error {
+	doneSeen, err := consumeServerSentEvents(httpResponse.Body, func(payload []byte) error {
 		return handleStreamPayload(payload, handle)
 	})
 	if err != nil {
 		return fmt.Errorf("consume chat completion stream: %w", err)
+	}
+
+	if !doneSeen {
+		return fmt.Errorf("chat completion stream ended before [DONE]: %w", io.ErrUnexpectedEOF)
 	}
 
 	return nil
@@ -166,11 +178,13 @@ func openAIAPIKey(apiKey string) string {
 	return apiKey
 }
 
-func consumeServerSentEvents(reader io.Reader, handle func([]byte) error) error {
+func consumeServerSentEvents(reader io.Reader, handle func([]byte) error) (bool, error) {
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, sseScannerInitialBuffer), sseScannerMaxBuffer)
 
 	var eventData strings.Builder
+
+	doneSeen := false
 
 	flushEvent := func() error {
 		if eventData.Len() == 0 {
@@ -181,6 +195,8 @@ func consumeServerSentEvents(reader io.Reader, handle func([]byte) error) error 
 		eventData.Reset()
 
 		if payload == "[DONE]" {
+			doneSeen = true
+
 			return nil
 		}
 
@@ -192,7 +208,7 @@ func consumeServerSentEvents(reader io.Reader, handle func([]byte) error) error 
 		if strings.TrimSpace(line) == "" {
 			err := flushEvent()
 			if err != nil {
-				return err
+				return doneSeen, err
 			}
 
 			continue
@@ -204,7 +220,9 @@ func consumeServerSentEvents(reader io.Reader, handle func([]byte) error) error 
 
 		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 		if payload == "[DONE]" {
-			return nil
+			doneSeen = true
+
+			return doneSeen, nil
 		}
 
 		if eventData.Len() > 0 {
@@ -216,18 +234,46 @@ func consumeServerSentEvents(reader io.Reader, handle func([]byte) error) error 
 
 	err := scanner.Err()
 	if err != nil {
-		return fmt.Errorf("scan server-sent events: %w", err)
+		return doneSeen, fmt.Errorf("scan server-sent events: %w", err)
 	}
 
 	err = flushEvent()
 	if err != nil {
-		return fmt.Errorf("flush server-sent events: %w", err)
+		return doneSeen, fmt.Errorf("flush server-sent events: %w", err)
+	}
+
+	return doneSeen, nil
+}
+
+func handleStreamPayload(payload []byte, handle func(streamDelta) error) error {
+	delta, err := openAIStreamPayloadDelta(payload)
+	if err != nil {
+		return err
+	}
+
+	if delta.Content != "" {
+		err = handle(streamDelta{Content: delta.Content, FinishReason: ""})
+		if err != nil {
+			return fmt.Errorf("handle stream delta: %w", err)
+		}
+	}
+
+	if delta.FinishReason != "" {
+		err = openAIStreamFinishReasonError(delta.FinishReason)
+		if err != nil {
+			return err
+		}
+
+		err = handle(streamDelta{Content: "", FinishReason: delta.FinishReason})
+		if err != nil {
+			return fmt.Errorf("handle stream delta: %w", err)
+		}
 	}
 
 	return nil
 }
 
-func handleStreamPayload(payload []byte, handle func(streamDelta) error) error {
+func openAIStreamPayloadDelta(payload []byte) (streamDelta, error) {
 	type streamChoiceDelta struct {
 		Content string `json:"content"`
 	}
@@ -237,19 +283,34 @@ func handleStreamPayload(payload []byte, handle func(streamDelta) error) error {
 		FinishReason *string           `json:"finish_reason"`
 	}
 
+	type streamError struct {
+		Message string `json:"message"`
+		Type    string `json:"type"`
+		Code    any    `json:"code"`
+	}
+
 	type streamEnvelope struct {
 		Choices []streamChoice `json:"choices"`
+		Error   *streamError   `json:"error"`
 	}
 
 	var envelope streamEnvelope
 
 	err := json.Unmarshal(payload, &envelope)
 	if err != nil {
-		return fmt.Errorf("decode stream payload: %w", err)
+		return streamDelta{Content: "", FinishReason: ""}, fmt.Errorf("decode stream payload: %w", err)
+	}
+
+	if envelope.Error != nil {
+		return streamDelta{Content: "", FinishReason: ""}, openAIStreamEventError(
+			envelope.Error.Message,
+			envelope.Error.Type,
+			envelope.Error.Code,
+		)
 	}
 
 	if len(envelope.Choices) == 0 {
-		return nil
+		return streamDelta{Content: "", FinishReason: ""}, nil
 	}
 
 	delta := streamDelta{
@@ -257,17 +318,48 @@ func handleStreamPayload(payload []byte, handle func(streamDelta) error) error {
 		FinishReason: "",
 	}
 	if envelope.Choices[0].FinishReason != nil {
-		delta.FinishReason = *envelope.Choices[0].FinishReason
+		delta.FinishReason = strings.TrimSpace(*envelope.Choices[0].FinishReason)
 	}
 
-	if delta.Content == "" && delta.FinishReason == "" {
+	return delta, nil
+}
+
+func openAIStreamEventError(message string, eventType string, code any) error {
+	messageParts := make([]string, 0, openAIStreamMessagePartsCapacity)
+
+	message = strings.TrimSpace(message)
+	if message != "" {
+		messageParts = append(messageParts, message)
+	}
+
+	typ := strings.TrimSpace(eventType)
+	if typ != "" && !strings.EqualFold(typ, message) {
+		messageParts = append(messageParts, "type="+typ)
+	}
+
+	if code != nil {
+		codeText := strings.TrimSpace(fmt.Sprint(code))
+		if codeText != "" && codeText != "<nil>" {
+			messageParts = append(messageParts, "code="+codeText)
+		}
+	}
+
+	if len(messageParts) == 0 {
+		messageParts = append(messageParts, "chat completion stream error")
+	}
+
+	return fmt.Errorf("%s: %w", strings.Join(messageParts, " "), os.ErrInvalid)
+}
+
+func openAIStreamFinishReasonError(finishReason string) error {
+	switch strings.ToLower(strings.TrimSpace(finishReason)) {
+	case "", finishReasonStop, "end_turn", "length":
+		return nil
+	case openAIContentFilterFinishReason:
+		return fmt.Errorf("provider blocked the response (finish_reason=%s): %w", finishReason, os.ErrInvalid)
+	case openAIStreamToolCallsFinishReason, openAIStreamFunctionCallFinishReason, openAIStreamErrorEventType:
+		return fmt.Errorf("provider ended the stream with finish_reason=%s: %w", finishReason, os.ErrInvalid)
+	default:
 		return nil
 	}
-
-	err = handle(delta)
-	if err != nil {
-		return fmt.Errorf("handle stream delta: %w", err)
-	}
-
-	return nil
 }

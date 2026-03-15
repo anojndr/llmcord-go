@@ -186,3 +186,133 @@ func TestOpenAIClientStreamChatCompletionReturnsStatusErrors(t *testing.T) {
 		t.Fatalf("unexpected error text: %v", err)
 	}
 }
+
+func TestOpenAIClientStreamChatCompletionReturnsStreamEventErrors(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		_ *http.Request,
+	) {
+		responseWriter.Header().Set("Content-Type", "text/event-stream")
+		writeStreamChunk(
+			t,
+			responseWriter,
+			"data: {\"error\":{\"message\":\"rate limited\",\"type\":\"server_error\",\"code\":\"rate_limit_exceeded\"}}\n\n",
+		)
+	}))
+	defer server.Close()
+
+	client := newOpenAIClient(server.Client())
+	request := chatCompletionRequest{
+		Provider: providerRequestConfig{
+			APIKind:      providerAPIKindOpenAI,
+			BaseURL:      server.URL,
+			APIKey:       "test-key",
+			APIKeys:      nil,
+			ExtraHeaders: nil,
+			ExtraQuery:   nil,
+			ExtraBody:    nil,
+		},
+		Model:           "gpt-test",
+		ConfiguredModel: "",
+		Messages:        []chatMessage{{Role: "user", Content: "hello"}},
+	}
+
+	err := client.streamChatCompletion(context.Background(), request, func(streamDelta) error {
+		return nil
+	})
+	if err == nil {
+		t.Fatal("expected stream event error")
+	}
+
+	if !strings.Contains(err.Error(), "rate limited") ||
+		!strings.Contains(err.Error(), "rate_limit_exceeded") {
+		t.Fatalf("unexpected error text: %v", err)
+	}
+}
+
+func TestOpenAIClientStreamChatCompletionReturnsBlockedFinishReasonErrors(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		_ *http.Request,
+	) {
+		responseWriter.Header().Set("Content-Type", "text/event-stream")
+		writeStreamChunk(
+			t,
+			responseWriter,
+			"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"content_filter\"}]}\n\n",
+		)
+		writeStreamChunk(t, responseWriter, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	client := newOpenAIClient(server.Client())
+	request := chatCompletionRequest{
+		Provider: providerRequestConfig{
+			APIKind:      providerAPIKindOpenAI,
+			BaseURL:      server.URL,
+			APIKey:       "test-key",
+			APIKeys:      nil,
+			ExtraHeaders: nil,
+			ExtraQuery:   nil,
+			ExtraBody:    nil,
+		},
+		Model:           "gpt-test",
+		ConfiguredModel: "",
+		Messages:        []chatMessage{{Role: "user", Content: "hello"}},
+	}
+
+	err := client.streamChatCompletion(context.Background(), request, func(streamDelta) error {
+		return nil
+	})
+	if err == nil {
+		t.Fatal("expected blocked finish reason error")
+	}
+
+	if !strings.Contains(err.Error(), "content_filter") {
+		t.Fatalf("unexpected error text: %v", err)
+	}
+}
+
+func TestOpenAIClientStreamChatCompletionReturnsErrorWithoutDoneMarker(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		_ *http.Request,
+	) {
+		responseWriter.Header().Set("Content-Type", "text/event-stream")
+		writeStreamChunk(t, responseWriter, "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n")
+	}))
+	defer server.Close()
+
+	client := newOpenAIClient(server.Client())
+	request := chatCompletionRequest{
+		Provider: providerRequestConfig{
+			APIKind:      providerAPIKindOpenAI,
+			BaseURL:      server.URL,
+			APIKey:       "test-key",
+			APIKeys:      nil,
+			ExtraHeaders: nil,
+			ExtraQuery:   nil,
+			ExtraBody:    nil,
+		},
+		Model:           "gpt-test",
+		ConfiguredModel: "",
+		Messages:        []chatMessage{{Role: "user", Content: "hello"}},
+	}
+
+	err := client.streamChatCompletion(context.Background(), request, func(streamDelta) error {
+		return nil
+	})
+	if err == nil {
+		t.Fatal("expected missing [DONE] error")
+	}
+
+	if !strings.Contains(err.Error(), "before [DONE]") {
+		t.Fatalf("unexpected error text: %v", err)
+	}
+}

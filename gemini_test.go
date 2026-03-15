@@ -5,6 +5,7 @@ import (
 	"io"
 	"iter"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -267,6 +268,151 @@ func TestGeminiClientStreamChatCompletionEmitsTextAndFinishReason(t *testing.T) 
 	}
 
 	assertGeminiClientConfig(t, capturedConfig)
+}
+
+func TestGeminiClientStreamChatCompletionReturnsPromptFeedbackErrors(t *testing.T) {
+	t.Parallel()
+
+	client := geminiClient{
+		httpClient: new(http.Client),
+		newClient: func(
+			_ context.Context,
+			_ *genai.ClientConfig,
+		) (geminiAPIClient, error) {
+			var stubClient stubGeminiAPIClient
+
+			stubClient.generateContentStream = func(
+				_ context.Context,
+				_ string,
+				_ []*genai.Content,
+				_ *genai.GenerateContentConfig,
+			) iter.Seq2[*genai.GenerateContentResponse, error] {
+				return func(yield func(*genai.GenerateContentResponse, error) bool) {
+					response := newGeminiGenerateContentResponse("", genai.FinishReasonUnspecified)
+					response.Candidates = nil
+					response.PromptFeedback = &genai.GenerateContentResponsePromptFeedback{
+						BlockReason:        genai.BlockedReasonSafety,
+						BlockReasonMessage: "",
+						SafetyRatings:      nil,
+					}
+
+					_ = yield(response, nil)
+				}
+			}
+
+			return stubClient, nil
+		},
+	}
+
+	err := client.streamChatCompletion(
+		context.Background(),
+		newSimpleGeminiStreamRequest(),
+		func(streamDelta) error {
+			return nil
+		},
+	)
+	if err == nil {
+		t.Fatal("expected prompt feedback error")
+	}
+
+	if !containsFold(err.Error(), "blocked the prompt") || !containsFold(err.Error(), "safety") {
+		t.Fatalf("unexpected error text: %v", err)
+	}
+}
+
+func TestGeminiClientStreamChatCompletionReturnsCandidateFinishReasonErrors(t *testing.T) {
+	t.Parallel()
+
+	client := geminiClient{
+		httpClient: new(http.Client),
+		newClient: func(
+			_ context.Context,
+			_ *genai.ClientConfig,
+		) (geminiAPIClient, error) {
+			var stubClient stubGeminiAPIClient
+
+			stubClient.generateContentStream = func(
+				_ context.Context,
+				_ string,
+				_ []*genai.Content,
+				_ *genai.GenerateContentConfig,
+			) iter.Seq2[*genai.GenerateContentResponse, error] {
+				return func(yield func(*genai.GenerateContentResponse, error) bool) {
+					response := newGeminiGenerateContentResponse("partial", genai.FinishReasonSafety)
+					response.Candidates[0].FinishMessage = "response blocked"
+
+					_ = yield(response, nil)
+				}
+			}
+
+			return stubClient, nil
+		},
+	}
+
+	var joinedText strings.Builder
+
+	err := client.streamChatCompletion(
+		context.Background(),
+		newSimpleGeminiStreamRequest(),
+		func(delta streamDelta) error {
+			joinedText.WriteString(delta.Content)
+
+			return nil
+		},
+	)
+	if err == nil {
+		t.Fatal("expected finish reason error")
+	}
+
+	if joinedText.String() != "partial" {
+		t.Fatalf("expected partial content before error, got %q", joinedText.String())
+	}
+
+	if !containsFold(err.Error(), "response blocked") || !containsFold(err.Error(), "safety") {
+		t.Fatalf("unexpected error text: %v", err)
+	}
+}
+
+func TestGeminiClientStreamChatCompletionReturnsErrorWithoutFinishReason(t *testing.T) {
+	t.Parallel()
+
+	client := geminiClient{
+		httpClient: new(http.Client),
+		newClient: func(
+			_ context.Context,
+			_ *genai.ClientConfig,
+		) (geminiAPIClient, error) {
+			var stubClient stubGeminiAPIClient
+
+			stubClient.generateContentStream = func(
+				_ context.Context,
+				_ string,
+				_ []*genai.Content,
+				_ *genai.GenerateContentConfig,
+			) iter.Seq2[*genai.GenerateContentResponse, error] {
+				return func(yield func(*genai.GenerateContentResponse, error) bool) {
+					_ = yield(newGeminiGenerateContentResponse("Hello", genai.FinishReasonUnspecified), nil)
+				}
+			}
+
+			return stubClient, nil
+		},
+	}
+
+	err := client.streamChatCompletion(
+		context.Background(),
+		newSimpleGeminiStreamRequest(),
+		func(streamDelta) error {
+			return nil
+		},
+	)
+	if err == nil {
+		t.Fatal("expected missing finish reason error")
+	}
+
+	if !containsFold(err.Error(), "without finish reason") {
+		t.Fatalf("unexpected error text: %v", err)
+	}
 }
 
 func TestBuildGeminiGenerateContentRequestUploadsBinaryFiles(t *testing.T) {

@@ -103,11 +103,15 @@ func (client openAICodexClient) streamChatCompletion(
 		}
 	}
 
-	err = consumeServerSentEvents(httpResponse.Body, func(payload []byte) error {
+	doneSeen, err := consumeServerSentEvents(httpResponse.Body, func(payload []byte) error {
 		return handleOpenAICodexStreamPayload(payload, handle)
 	})
 	if err != nil {
 		return fmt.Errorf("consume codex stream: %w", err)
+	}
+
+	if !doneSeen {
+		return fmt.Errorf("codex stream ended before [DONE]: %w", io.ErrUnexpectedEOF)
 	}
 
 	return nil

@@ -135,6 +135,8 @@ func (client geminiClient) streamChatCompletion(
 		return fmt.Errorf("build gemini request: %w", err)
 	}
 
+	finishSeen := false
+
 	for response, streamErr := range apiClient.GenerateContentStream(
 		ctx,
 		request.Model,
@@ -145,15 +147,39 @@ func (client geminiClient) streamChatCompletion(
 			return fmt.Errorf("stream gemini content: %w", streamErr)
 		}
 
-		delta := geminiStreamDelta(response)
-		if delta.Content == "" && delta.FinishReason == "" {
+		delta, processErr := geminiStreamDelta(response)
+		if processErr != nil {
+			if delta.Content != "" {
+				err = handle(streamDelta{Content: delta.Content, FinishReason: ""})
+				if err != nil {
+					return fmt.Errorf("handle stream delta: %w", err)
+				}
+			}
+
+			return fmt.Errorf("process gemini stream response: %w", processErr)
+		}
+
+		if delta.Content != "" {
+			err = handle(streamDelta{Content: delta.Content, FinishReason: ""})
+			if err != nil {
+				return fmt.Errorf("handle stream delta: %w", err)
+			}
+		}
+
+		if delta.FinishReason == "" {
 			continue
 		}
 
-		err = handle(delta)
+		finishSeen = true
+
+		err = handle(streamDelta{Content: "", FinishReason: delta.FinishReason})
 		if err != nil {
 			return fmt.Errorf("handle stream delta: %w", err)
 		}
+	}
+
+	if !finishSeen {
+		return fmt.Errorf("gemini stream ended without finish reason: %w", io.ErrUnexpectedEOF)
 	}
 
 	return nil
@@ -865,16 +891,92 @@ func geminiFileStateError(file *genai.File) error {
 	return fmt.Errorf("gemini file %q failed processing: %w", name, os.ErrInvalid)
 }
 
-func geminiStreamDelta(response *genai.GenerateContentResponse) streamDelta {
+func geminiStreamDelta(response *genai.GenerateContentResponse) (streamDelta, error) {
 	var delta streamDelta
 	if response == nil {
-		return delta
+		return delta, nil
+	}
+
+	err := geminiPromptFeedbackError(response.PromptFeedback)
+	if err != nil {
+		return delta, err
 	}
 
 	delta.Content = response.Text()
 	if len(response.Candidates) > 0 {
-		delta.FinishReason = strings.ToLower(string(response.Candidates[0].FinishReason))
+		candidate := response.Candidates[0]
+		delta.FinishReason = normalizedGeminiFinishReason(candidate.FinishReason)
+
+		err = geminiFinishReasonError(candidate)
+		if err != nil {
+			return streamDelta{Content: delta.Content, FinishReason: ""}, err
+		}
 	}
 
-	return delta
+	return delta, nil
+}
+
+func normalizedGeminiFinishReason(finishReason genai.FinishReason) string {
+	if finishReason == "" || finishReason == genai.FinishReasonUnspecified {
+		return ""
+	}
+
+	return strings.ToLower(strings.TrimSpace(string(finishReason)))
+}
+
+func geminiPromptFeedbackError(feedback *genai.GenerateContentResponsePromptFeedback) error {
+	if feedback == nil {
+		return nil
+	}
+
+	message := strings.TrimSpace(feedback.BlockReasonMessage)
+	blockReason := strings.ToLower(strings.TrimSpace(string(feedback.BlockReason)))
+
+	if message == "" {
+		message = "provider blocked the prompt"
+		if blockReason != "" && blockReason != strings.ToLower(string(genai.BlockedReasonUnspecified)) {
+			message += " (block_reason=" + blockReason + ")"
+		}
+	}
+
+	return fmt.Errorf("%s: %w", message, os.ErrInvalid)
+}
+
+func geminiFinishReasonError(candidate *genai.Candidate) error {
+	if candidate == nil {
+		return nil
+	}
+
+	switch candidate.FinishReason {
+	case "", genai.FinishReasonUnspecified, genai.FinishReasonStop, genai.FinishReasonMaxTokens:
+		return nil
+	case genai.FinishReasonSafety,
+		genai.FinishReasonRecitation,
+		genai.FinishReasonLanguage,
+		genai.FinishReasonOther,
+		genai.FinishReasonBlocklist,
+		genai.FinishReasonProhibitedContent,
+		genai.FinishReasonSPII,
+		genai.FinishReasonMalformedFunctionCall,
+		genai.FinishReasonImageSafety,
+		genai.FinishReasonUnexpectedToolCall,
+		genai.FinishReasonImageProhibitedContent,
+		genai.FinishReasonNoImage,
+		genai.FinishReasonImageRecitation,
+		genai.FinishReasonImageOther:
+	}
+
+	finishReason := strings.ToLower(strings.TrimSpace(string(candidate.FinishReason)))
+	message := strings.TrimSpace(candidate.FinishMessage)
+
+	if message == "" {
+		message = "provider ended the response"
+		if finishReason != "" {
+			message += " (finish_reason=" + finishReason + ")"
+		}
+	} else if finishReason != "" && !strings.Contains(strings.ToLower(message), finishReason) {
+		message += " (finish_reason=" + finishReason + ")"
+	}
+
+	return fmt.Errorf("%s: %w", message, os.ErrInvalid)
 }
