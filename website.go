@@ -14,6 +14,7 @@ import (
 
 	"golang.org/x/net/html"
 	"golang.org/x/net/html/atom"
+	"golang.org/x/net/publicsuffix"
 )
 
 const (
@@ -195,13 +196,15 @@ func (client websiteClient) doRequest(
 func extractWebsiteURLs(text string) []string {
 	text = normalizedURLExtractionText(text)
 
-	matches := websiteURLRegexp.FindAllString(text, -1)
-	normalizedURLs := make([]string, 0, len(matches))
-	seenURLs := make(map[string]struct{}, len(matches))
+	matchIndices := websiteURLRegexp.FindAllStringIndex(text, -1)
+	normalizedURLs := make([]string, 0, len(matchIndices))
+	seenURLs := make(map[string]struct{}, len(matchIndices))
 
-	for _, match := range matches {
-		normalizedURL, err := normalizeWebsiteURL(match)
-		if err != nil {
+	for _, matchIndex := range matchIndices {
+		rawURL := text[matchIndex[0]:matchIndex[1]]
+
+		normalizedURL, err := normalizeWebsiteURL(rawURL)
+		if err != nil || !shouldExtractWebsiteURL(text, matchIndex[0], rawURL, normalizedURL) {
 			continue
 		}
 
@@ -214,6 +217,46 @@ func extractWebsiteURLs(text string) []string {
 	}
 
 	return normalizedURLs
+}
+
+func shouldExtractWebsiteURL(
+	text string,
+	matchStart int,
+	rawURL string,
+	normalizedURL string,
+) bool {
+	if hasExplicitWebsiteScheme(rawURL) {
+		return true
+	}
+
+	if matchStart > 0 && text[matchStart-1] == '@' {
+		return false
+	}
+
+	parsedURL, err := url.Parse(normalizedURL)
+	if err != nil {
+		return false
+	}
+
+	return hasRecognizedWebsiteSuffix(parsedURL.Hostname())
+}
+
+func hasExplicitWebsiteScheme(rawURL string) bool {
+	trimmedURL := strings.ToLower(strings.TrimSpace(rawURL))
+
+	return strings.HasPrefix(trimmedURL, "http://") ||
+		strings.HasPrefix(trimmedURL, "https://")
+}
+
+func hasRecognizedWebsiteSuffix(host string) bool {
+	normalizedHost := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
+	if normalizedHost == "" {
+		return false
+	}
+
+	suffix, icann := publicsuffix.PublicSuffix(normalizedHost)
+
+	return icann || strings.Contains(suffix, ".")
 }
 
 func normalizeWebsiteURL(rawURL string) (string, error) {
