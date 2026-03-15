@@ -201,14 +201,14 @@ func (instance *bot) generateAndSendResponse(
 
 	finalText := accumulator.joined()
 
-	if responseErr != nil && !tracker.responseVisible {
+	if responseErr != nil {
 		errorText := userFacingResponseError(responseErr)
 
 		renderErr := instance.renderFailureResponse(tracker, errorText, usePlainResponses)
 		if renderErr != nil {
 			responseErr = errors.Join(responseErr, fmt.Errorf("render failure response: %w", renderErr))
 		} else {
-			finalText = errorText
+			finalText = responseTextWithError(finalText, errorText)
 		}
 	}
 
@@ -216,6 +216,21 @@ func (instance *bot) generateAndSendResponse(
 	instance.nodes.persistBestEffort()
 
 	return responseErr
+}
+
+func responseTextWithError(responseText string, errorText string) string {
+	trimmedResponseText := strings.TrimSpace(responseText)
+	trimmedErrorText := strings.TrimSpace(errorText)
+
+	if trimmedResponseText == "" {
+		return trimmedErrorText
+	}
+
+	if trimmedErrorText == "" {
+		return trimmedResponseText
+	}
+
+	return trimmedResponseText + "\n\n" + trimmedErrorText
 }
 
 func (instance *bot) renderFinalResponse(
@@ -389,6 +404,7 @@ func (instance *bot) renderFailureResponse(
 
 	fallbackTracker := newResponseTracker(tracker.sourceMessage, tracker.modelName)
 	fallbackTracker.searchMetadata = cloneSearchMetadata(tracker.searchMetadata)
+	fallbackTracker.responseMessages = append(fallbackTracker.responseMessages, tracker.responseMessages...)
 
 	var (
 		sentMessage *discordgo.Message
