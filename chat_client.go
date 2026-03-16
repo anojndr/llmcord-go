@@ -28,30 +28,31 @@ func (client chatCompletionRouter) streamChatCompletion(
 	handle func(streamDelta) error,
 ) error {
 	apiKeys := request.Provider.apiKeysForAttempts()
+	if len(apiKeys) == 1 {
+		keyedRequest := request
+		keyedRequest.Provider = request.Provider.withSingleAPIKey(apiKeys[0])
+
+		return client.streamChatCompletionOnce(ctx, keyedRequest, handle)
+	}
+
 	attemptErrors := make([]error, 0, len(apiKeys))
 
 	for index, apiKey := range apiKeys {
 		keyedRequest := request
 		keyedRequest.Provider = request.Provider.withSingleAPIKey(apiKey)
 
-		emittedDelta := false
-
-		err := client.streamChatCompletionOnce(ctx, keyedRequest, func(delta streamDelta) error {
-			emittedDelta = true
-
-			return handle(delta)
-		})
+		bufferedDeltas, err := client.collectChatCompletionAttempt(ctx, keyedRequest)
 		if err == nil {
-			return nil
+			return replayBufferedStreamDeltas(handle, bufferedDeltas)
 		}
 
 		attemptErrors = append(attemptErrors, err)
-		if emittedDelta || !shouldRetryWithNextAPIKey(err) || index == len(apiKeys)-1 {
+		if ctx.Err() != nil || index == len(apiKeys)-1 {
 			if len(attemptErrors) == 1 {
 				return err
 			}
 
-			if emittedDelta || !shouldRetryWithNextAPIKey(err) {
+			if ctx.Err() != nil {
 				return err
 			}
 
@@ -60,6 +61,32 @@ func (client chatCompletionRouter) streamChatCompletion(
 	}
 
 	return fmt.Errorf("missing API key attempt: %w", os.ErrInvalid)
+}
+
+func (client chatCompletionRouter) collectChatCompletionAttempt(
+	ctx context.Context,
+	request chatCompletionRequest,
+) ([]streamDelta, error) {
+	var bufferedDeltas []streamDelta
+
+	err := client.streamChatCompletionOnce(ctx, request, func(delta streamDelta) error {
+		bufferedDeltas = append(bufferedDeltas, delta)
+
+		return nil
+	})
+
+	return bufferedDeltas, err
+}
+
+func replayBufferedStreamDeltas(handle func(streamDelta) error, bufferedDeltas []streamDelta) error {
+	for _, delta := range bufferedDeltas {
+		err := handle(delta)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func (client chatCompletionRouter) streamChatCompletionOnce(

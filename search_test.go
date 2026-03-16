@@ -1047,8 +1047,99 @@ func TestTavilySearchClientSearchRetriesConfiguredAPIKeys(t *testing.T) {
 	assertTavilyRawContentResult(t, results[0])
 }
 
+func TestTavilySearchClientSearchRetriesConfiguredAPIKeysOnInternalServerError(t *testing.T) {
+	t.Parallel()
+
+	var (
+		requestsMu   sync.Mutex
+		authHeaders  []string
+		searchBodies []tavilySearchRequest
+	)
+
+	client, closeServer := newTavilySearchTestClient(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		request *http.Request,
+	) {
+		var body tavilySearchRequest
+
+		err := json.NewDecoder(request.Body).Decode(&body)
+		if err != nil {
+			t.Errorf("decode request body: %v", err)
+			responseWriter.WriteHeader(http.StatusBadRequest)
+
+			return
+		}
+
+		authHeader := request.Header.Get("Authorization")
+
+		requestsMu.Lock()
+		defer requestsMu.Unlock()
+
+		authHeaders = append(authHeaders, authHeader)
+		searchBodies = append(searchBodies, body)
+
+		switch authHeader {
+		case testTavilyPrimaryAuthHeader:
+			http.Error(responseWriter, "upstream failure", http.StatusInternalServerError)
+		case testTavilyBackupAuthHeader:
+			writeTavilySearchResponse(t, responseWriter, testTavilySearchSuccessResponse())
+		default:
+			http.Error(responseWriter, "unexpected api key", http.StatusUnauthorized)
+		}
+	}))
+	defer closeServer()
+
+	results, err := client.search(context.Background(), testTavilySearchConfig(), []string{"latest ai news"})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+
+	assertTavilyAuthHeaders(t, authHeaders)
+
+	if len(searchBodies) != 2 {
+		t.Fatalf("unexpected Tavily request count: %d", len(searchBodies))
+	}
+
+	assertTavilySearchRequest(t, searchBodies[0])
+	assertTavilySearchRequest(t, searchBodies[1])
+
+	if len(results) != 1 {
+		t.Fatalf("unexpected result count: %d", len(results))
+	}
+
+	assertTavilyRawContentResult(t, results[0])
+}
+
 func TestTavilySearchClientSearchAttemptsAllKeysBeforeFailure(t *testing.T) {
 	t.Parallel()
+	runTavilySearchAttemptsAllKeysBeforeFailureTest(
+		t,
+		http.StatusUnauthorized,
+		"invalid key",
+		http.StatusTooManyRequests,
+		"rate limited",
+	)
+}
+
+func TestTavilySearchClientSearchAttemptsAllKeysBeforeFailureOnInternalServerError(t *testing.T) {
+	t.Parallel()
+	runTavilySearchAttemptsAllKeysBeforeFailureTest(
+		t,
+		http.StatusInternalServerError,
+		"upstream failure",
+		http.StatusBadGateway,
+		"bad gateway",
+	)
+}
+
+func runTavilySearchAttemptsAllKeysBeforeFailureTest(
+	t *testing.T,
+	primaryStatusCode int,
+	primaryMessage string,
+	backupStatusCode int,
+	backupMessage string,
+) {
+	t.Helper()
 
 	var (
 		requestsMu  sync.Mutex
@@ -1062,16 +1153,15 @@ func TestTavilySearchClientSearchAttemptsAllKeysBeforeFailure(t *testing.T) {
 		authHeader := request.Header.Get("Authorization")
 
 		requestsMu.Lock()
-
 		defer requestsMu.Unlock()
 
 		authHeaders = append(authHeaders, authHeader)
 
 		switch authHeader {
 		case testTavilyPrimaryAuthHeader:
-			http.Error(responseWriter, "invalid key", http.StatusUnauthorized)
+			http.Error(responseWriter, primaryMessage, primaryStatusCode)
 		case testTavilyBackupAuthHeader:
-			http.Error(responseWriter, "rate limited", http.StatusTooManyRequests)
+			http.Error(responseWriter, backupMessage, backupStatusCode)
 		default:
 			http.Error(responseWriter, "unexpected api key", http.StatusUnauthorized)
 		}
