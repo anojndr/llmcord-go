@@ -100,8 +100,11 @@ func testPermissionsConfig() config {
 				BlockedIDs: idList{"blocked-channel"},
 			},
 		},
-		Providers:          nil,
-		WebSearch:          searchConfig,
+		Providers: nil,
+		WebSearch: searchConfig,
+		VisualSearch: visualSearchConfig{
+			SerpAPI: serpAPIVisualSearchConfig{APIKey: "", APIKeys: nil},
+		},
 		Models:             nil,
 		ModelOrder:         nil,
 		ChannelModelLocks:  nil,

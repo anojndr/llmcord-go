@@ -86,6 +86,14 @@ type rawTavilySearchConfig struct {
 	APIKey scalarStringList `yaml:"api_key"`
 }
 
+type rawSerpAPIVisualSearchConfig struct {
+	APIKey scalarStringList `yaml:"api_key"`
+}
+
+type rawVisualSearchConfig struct {
+	SerpAPI rawSerpAPIVisualSearchConfig `yaml:"serpapi"`
+}
+
 type rawWebSearchConfig struct {
 	PrimaryProvider scalarString          `yaml:"primary_provider"`
 	MaxURLs         *int                  `yaml:"max_urls"`
@@ -105,6 +113,15 @@ type providerConfig struct {
 type tavilySearchConfig struct {
 	APIKey  string
 	APIKeys []string
+}
+
+type serpAPIVisualSearchConfig struct {
+	APIKey  string
+	APIKeys []string
+}
+
+type visualSearchConfig struct {
+	SerpAPI serpAPIVisualSearchConfig
 }
 
 type webSearchProviderKind string
@@ -140,6 +157,7 @@ type rawConfig struct {
 	Permissions        permissionsConfig            `yaml:"permissions"`
 	Providers          map[string]rawProviderConfig `yaml:"providers"`
 	WebSearch          rawWebSearchConfig           `yaml:"web_search"`
+	VisualSearch       rawVisualSearchConfig        `yaml:"visual_search"`
 	Models             map[string]map[string]any    `yaml:"models"`
 	ChannelModelLocks  map[string]scalarString      `yaml:"channel_model_locks"`
 	SearchDeciderModel scalarString                 `yaml:"search_decider_model"`
@@ -159,6 +177,7 @@ type config struct {
 	Permissions        permissionsConfig
 	Providers          map[string]providerConfig
 	WebSearch          webSearchConfig
+	VisualSearch       visualSearchConfig
 	Models             map[string]map[string]any
 	ModelOrder         []string
 	ChannelModelLocks  map[string]string
@@ -180,9 +199,17 @@ func loadConfig(filename string) (config, error) {
 		return config{}, fmt.Errorf("parse config %q: %w", filename, err)
 	}
 
+	return buildLoadedConfig(filename, configBytes, rawLoadedConfig)
+}
+
+func buildLoadedConfig(
+	filename string,
+	configBytes []byte,
+	rawLoadedConfig rawConfig,
+) (config, error) {
 	var rootNode yaml.Node
 
-	err = yaml.Unmarshal(configBytes, &rootNode)
+	err := yaml.Unmarshal(configBytes, &rootNode)
 	if err != nil {
 		return config{}, fmt.Errorf("parse config node %q: %w", filename, err)
 	}
@@ -208,6 +235,7 @@ func loadConfig(filename string) (config, error) {
 	}
 
 	tavilyAPIKeys := normalizeAPIKeys([]string(rawLoadedConfig.WebSearch.Tavily.APIKey))
+	serpAPIVisualSearchKeys := normalizeAPIKeys([]string(rawLoadedConfig.VisualSearch.SerpAPI.APIKey))
 	primarySearchProvider := normalizeWebSearchProvider(rawLoadedConfig.WebSearch.PrimaryProvider)
 
 	allowDMs := true
@@ -240,6 +268,12 @@ func loadConfig(filename string) (config, error) {
 			Tavily: tavilySearchConfig{
 				APIKey:  firstAPIKey(tavilyAPIKeys),
 				APIKeys: tavilyAPIKeys,
+			},
+		},
+		VisualSearch: visualSearchConfig{
+			SerpAPI: serpAPIVisualSearchConfig{
+				APIKey:  firstAPIKey(serpAPIVisualSearchKeys),
+				APIKeys: serpAPIVisualSearchKeys,
 			},
 		},
 		Models:             rawLoadedConfig.Models,

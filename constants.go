@@ -5,6 +5,7 @@ import "time"
 const (
 	defaultConfigPath                    = "config.yaml"
 	defaultExaMCPEndpoint                = "https://mcp.exa.ai/mcp?tools=web_search_exa"
+	defaultSerpAPIGoogleLensEndpoint     = "https://serpapi.com/search.json"
 	defaultTavilySearchEndpoint          = "https://api.tavily.com/search"
 	defaultRentryEndpoint                = "https://rentry.co/"
 	defaultStatusMessage                 = "github.com/jakobdylanc/llmcord"

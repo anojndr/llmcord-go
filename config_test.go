@@ -368,6 +368,51 @@ web_search:
 	}
 }
 
+func TestLoadConfigAllowsSerpAPIVisualSearchAPIKeyLists(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	configText := `
+bot_token: discord-token
+providers:
+  openai:
+    base_url: https://api.example.com/v1
+models:
+  openai/first-model:
+visual_search:
+  serpapi:
+    api_key:
+      - serp-primary
+      - serp-backup
+      - serp-primary
+`
+
+	err := os.WriteFile(configPath, []byte(configText), 0o600)
+	if err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	loadedConfig, err := loadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	if loadedConfig.VisualSearch.SerpAPI.APIKey != "serp-primary" {
+		t.Fatalf("unexpected primary SerpApi visual search API key: %q", loadedConfig.VisualSearch.SerpAPI.APIKey)
+	}
+
+	if !slices.Equal(
+		loadedConfig.VisualSearch.SerpAPI.APIKeys,
+		[]string{"serp-primary", "serp-backup"},
+	) {
+		t.Fatalf(
+			"unexpected SerpApi visual search API keys: %#v",
+			loadedConfig.VisualSearch.SerpAPI.APIKeys,
+		)
+	}
+}
+
 func TestLoadConfigUsesConfiguredPrimaryWebSearchProvider(t *testing.T) {
 	t.Parallel()
 

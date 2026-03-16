@@ -90,6 +90,7 @@ type searchSource struct {
 }
 
 type visualSearchSourceGroup struct {
+	Label   string
 	Sources []searchSource
 }
 
@@ -226,6 +227,7 @@ func newVisualSearchMetadata(results []visualSearchResult) *searchMetadata {
 
 	for _, result := range results {
 		metadata.VisualSearchSources = append(metadata.VisualSearchSources, visualSearchSourceGroup{
+			Label:   visualSearchResultSectionLabel(result, results),
 			Sources: extractVisualSearchSources(result),
 		})
 	}
@@ -255,6 +257,7 @@ func cloneVisualSearchSourceGroups(
 
 	for _, sourceGroup := range sourceGroups {
 		clonedGroups = append(clonedGroups, visualSearchSourceGroup{
+			Label:   sourceGroup.Label,
 			Sources: append([]searchSource(nil), sourceGroup.Sources...),
 		})
 	}
@@ -861,7 +864,14 @@ func formatVisualSearchSourcesMessage(sourceGroups []visualSearchSourceGroup) st
 	builder.WriteString("Visual search result URLs:\n")
 
 	for groupIndex, sourceGroup := range sourceGroups {
-		if len(sourceGroups) > 1 {
+		if label := strings.TrimSpace(sourceGroup.Label); label != "" {
+			if groupIndex > 0 {
+				builder.WriteString("\n")
+			}
+
+			builder.WriteString(label)
+			builder.WriteString(":\n")
+		} else if len(sourceGroups) > 1 {
 			builder.WriteString("\n")
 			_, _ = fmt.Fprintf(&builder, "Image %d:\n", groupIndex+1)
 		}
