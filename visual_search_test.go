@@ -15,7 +15,77 @@ var errVisualSearchBackendUnavailable = errors.New("visual search backend unavai
 const (
 	testVisualSearchPrompt          = "<@123>: vsearch what anime?"
 	testRewrittenVisualSearchPrompt = "<@123>: what anime?"
+	testVisualSearchAttachmentURL   = "https://cdn.discordapp.com/attachments/image.png"
+	testVisualSearchTopMatchURL     = "https://ru.ruwiki.ru/wiki/Sword_Art_Online"
+	testVisualSearchSimilarImageURL = "https://yandex.com/images/search?cbir_page=similar-1"
+	testVisualSearchSiteDomain      = "vampireknightptk.blogspot.com"
+	testVisualSearchSiteMatchURL    = "http://vampireknightptk.blogspot.com/2012/09/indonic-hosting.html"
 )
+
+func newVisualSearchSourceMessage(messageID string, userID string) *discordgo.Message {
+	message := new(discordgo.Message)
+
+	message.ID = messageID
+	if userID != "" {
+		message.Author = newDiscordUser(userID, false)
+	}
+
+	message.Attachments = []*discordgo.MessageAttachment{{
+		URL:         testVisualSearchAttachmentURL,
+		Filename:    "image.png",
+		ContentType: "image/png",
+	}}
+
+	return message
+}
+
+func newStructuredVisualSearchResult(imageURL string) visualSearchResult {
+	result := newVisualSearchResult(imageURL, "")
+	result.TopMatch = emptyVisualSearchTopMatch()
+	result.TopMatch.Title = "Sword Art Online"
+	result.TopMatch.Source = "ru.ruwiki.ru"
+	result.TopMatch.URL = testVisualSearchTopMatchURL
+	result.SimilarImages = []visualSearchSimilarImage{{
+		Title: "AnimePTK",
+		URL:   testVisualSearchSimilarImageURL,
+	}}
+	result.SiteMatches = []visualSearchSiteMatch{{
+		Title:   "AnimePTK",
+		Domain:  testVisualSearchSiteDomain,
+		Snippet: "",
+		URL:     testVisualSearchSiteMatchURL,
+	}}
+
+	return result
+}
+
+func testStructuredVisualSearchMetadata() *searchMetadata {
+	return newVisualSearchMetadata([]visualSearchResult{newStructuredVisualSearchResult("")})
+}
+
+func assertSingleVisualSearchSourceMetadata(
+	t *testing.T,
+	metadata *searchMetadata,
+	expectedURL string,
+) {
+	t.Helper()
+
+	if metadata == nil {
+		t.Fatal("expected visual search metadata")
+	}
+
+	if len(metadata.VisualSearchSources) != 1 {
+		t.Fatalf("unexpected visual search source groups: %#v", metadata.VisualSearchSources)
+	}
+
+	if len(metadata.VisualSearchSources[0].Sources) != 3 {
+		t.Fatalf("unexpected visual search sources: %#v", metadata.VisualSearchSources[0].Sources)
+	}
+
+	if metadata.VisualSearchSources[0].Sources[0].URL != expectedURL {
+		t.Fatalf("unexpected visual search source url: %#v", metadata.VisualSearchSources[0].Sources[0])
+	}
+}
 
 type stubVisualSearchClient struct {
 	mu       sync.Mutex
@@ -75,24 +145,11 @@ func TestAppendVisualSearchResultsToConversationPreservesImages(t *testing.T) {
 func TestMaybeAugmentConversationWithVisualSearchAddsResultsAndStripsPrefix(t *testing.T) {
 	t.Parallel()
 
-	sourceMessage := new(discordgo.Message)
-	sourceMessage.ID = "message-1"
-	sourceMessage.Author = newDiscordUser("123", false)
-	sourceMessage.Attachments = []*discordgo.MessageAttachment{
-		{
-			URL:         "https://cdn.discordapp.com/attachments/image.png",
-			Filename:    "image.png",
-			ContentType: "image/png",
-		},
-	}
+	sourceMessage := newVisualSearchSourceMessage("message-1", "123")
 
 	visualSearch := new(stubVisualSearchClient)
 	visualSearch.searchFn = func(_ context.Context, imageURL string) (visualSearchResult, error) {
-		result := newVisualSearchResult(imageURL, "")
-		result.TopMatch = emptyVisualSearchTopMatch()
-		result.TopMatch.Title = "Sword Art Online"
-		result.TopMatch.Source = "ru.ruwiki.ru"
-		result.TopMatch.URL = "https://ru.ruwiki.ru/wiki/Sword_Art_Online"
+		result := newStructuredVisualSearchResult(imageURL)
 		result.Tags = []string{"sword art online", "asuna sword art online"}
 
 		return result, nil
@@ -111,7 +168,7 @@ func TestMaybeAugmentConversationWithVisualSearchAddsResultsAndStripsPrefix(t *t
 		},
 	}
 
-	augmentedConversation, warnings, err := instance.maybeAugmentConversationWithVisualSearch(
+	augmentedConversation, metadata, warnings, err := instance.maybeAugmentConversationWithVisualSearch(
 		context.Background(),
 		sourceMessage,
 		conversation,
@@ -123,6 +180,8 @@ func TestMaybeAugmentConversationWithVisualSearchAddsResultsAndStripsPrefix(t *t
 	if len(warnings) != 0 {
 		t.Fatalf("unexpected warnings: %#v", warnings)
 	}
+
+	assertSingleVisualSearchSourceMetadata(t, metadata, testVisualSearchTopMatchURL)
 
 	if len(visualSearch.calls) != 1 || visualSearch.calls[0] != sourceMessage.Attachments[0].URL {
 		t.Fatalf("unexpected visual search calls: %#v", visualSearch.calls)
@@ -169,7 +228,7 @@ func TestMaybeAugmentConversationWithVisualSearchWarnsWhenImageMissing(t *testin
 		{Role: messageRoleUser, Content: testVisualSearchPrompt},
 	}
 
-	augmentedConversation, warnings, err := instance.maybeAugmentConversationWithVisualSearch(
+	augmentedConversation, metadata, warnings, err := instance.maybeAugmentConversationWithVisualSearch(
 		context.Background(),
 		new(discordgo.Message),
 		conversation,
@@ -180,6 +239,10 @@ func TestMaybeAugmentConversationWithVisualSearchWarnsWhenImageMissing(t *testin
 
 	if len(warnings) != 1 || warnings[0] != visualSearchImageWarningText {
 		t.Fatalf("unexpected warnings: %#v", warnings)
+	}
+
+	if metadata != nil {
+		t.Fatalf("expected nil visual search metadata: %#v", metadata)
 	}
 
 	content, ok := augmentedConversation[0].Content.(string)
@@ -195,15 +258,7 @@ func TestMaybeAugmentConversationWithVisualSearchWarnsWhenImageMissing(t *testin
 func TestMaybeAugmentConversationWithVisualSearchReturnsWarningOnSearchFailure(t *testing.T) {
 	t.Parallel()
 
-	sourceMessage := new(discordgo.Message)
-	sourceMessage.ID = "message-2"
-	sourceMessage.Attachments = []*discordgo.MessageAttachment{
-		{
-			URL:         "https://cdn.discordapp.com/attachments/image.png",
-			Filename:    "image.png",
-			ContentType: "image/png",
-		},
-	}
+	sourceMessage := newVisualSearchSourceMessage("message-2", "")
 
 	instance := new(bot)
 	visualSearch := new(stubVisualSearchClient)
@@ -216,7 +271,7 @@ func TestMaybeAugmentConversationWithVisualSearchReturnsWarningOnSearchFailure(t
 		{Role: messageRoleUser, Content: testVisualSearchPrompt},
 	}
 
-	augmentedConversation, warnings, err := instance.maybeAugmentConversationWithVisualSearch(
+	augmentedConversation, metadata, warnings, err := instance.maybeAugmentConversationWithVisualSearch(
 		context.Background(),
 		sourceMessage,
 		conversation,
@@ -227,6 +282,10 @@ func TestMaybeAugmentConversationWithVisualSearchReturnsWarningOnSearchFailure(t
 
 	if len(warnings) != 1 || warnings[0] != visualSearchWarningText {
 		t.Fatalf("unexpected warnings: %#v", warnings)
+	}
+
+	if metadata != nil {
+		t.Fatalf("expected nil visual search metadata: %#v", metadata)
 	}
 
 	content, ok := augmentedConversation[0].Content.(string)
@@ -329,5 +388,34 @@ func TestParseYandexVisualSearchHTMLExtractsStructuredResults(t *testing.T) {
 
 	if len(result.SiteMatches) != 1 || result.SiteMatches[0].Domain != "vampireknightptk.blogspot.com" {
 		t.Fatalf("unexpected site matches: %#v", result.SiteMatches)
+	}
+}
+
+func TestExtractVisualSearchSourcesIncludesUniqueURLs(t *testing.T) {
+	t.Parallel()
+
+	result := newStructuredVisualSearchResult("")
+	result.SiteMatches = append(result.SiteMatches, visualSearchSiteMatch{
+		Title:   "Duplicate top match",
+		Domain:  "ru.ruwiki.ru",
+		Snippet: "",
+		URL:     testVisualSearchTopMatchURL,
+	})
+
+	sources := extractVisualSearchSources(result)
+	if len(sources) != 3 {
+		t.Fatalf("unexpected visual search source count: %#v", sources)
+	}
+
+	if sources[0].Title != "Top match: Sword Art Online (ru.ruwiki.ru)" {
+		t.Fatalf("unexpected top match source: %#v", sources[0])
+	}
+
+	if sources[1].Title != "Similar image: AnimePTK" {
+		t.Fatalf("unexpected similar image source: %#v", sources[1])
+	}
+
+	if sources[2].Title != "Site match: AnimePTK (vampireknightptk.blogspot.com)" {
+		t.Fatalf("unexpected site match source: %#v", sources[2])
 	}
 }

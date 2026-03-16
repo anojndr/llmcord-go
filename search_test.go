@@ -1095,17 +1095,16 @@ func TestFormatSearchSourcesMessageIncludesQueriesAndSources(t *testing.T) {
 
 	metadata := &searchMetadata{
 		Queries: []string{"latest ai news"},
-		Results: []webSearchResult{
-			{
-				Query: "latest ai news",
-				Text: "Title: Example Source\n" +
-					"URL: https://example.com/source\n" +
-					"Text: body\n\n" +
-					"Title: Second Source\n" +
-					"URL: https://example.com/second\n",
-			},
-		},
-		MaxURLs: defaultWebSearchMaxURLs,
+		Results: []webSearchResult{{
+			Query: "latest ai news",
+			Text: "Title: Example Source\n" +
+				"URL: https://example.com/source\n" +
+				"Text: body\n\n" +
+				"Title: Second Source\n" +
+				"URL: https://example.com/second\n",
+		}},
+		MaxURLs:             defaultWebSearchMaxURLs,
+		VisualSearchSources: nil,
 	}
 
 	message := formatSearchSourcesMessage(metadata)
@@ -1128,14 +1127,10 @@ func TestFormatSearchSourcesMessageUsesAngleBracketURLWithoutDuplicateTitle(t *t
 	t.Parallel()
 
 	metadata := &searchMetadata{
-		Queries: []string{"latest ai news"},
-		Results: []webSearchResult{
-			{
-				Query: "latest ai news",
-				Text:  "URL: https://example.com/source\n",
-			},
-		},
-		MaxURLs: defaultWebSearchMaxURLs,
+		Queries:             []string{"latest ai news"},
+		Results:             []webSearchResult{{Query: "latest ai news", Text: "URL: https://example.com/source\n"}},
+		MaxURLs:             defaultWebSearchMaxURLs,
+		VisualSearchSources: nil,
 	}
 
 	message := formatSearchSourcesMessage(metadata)
@@ -1150,6 +1145,26 @@ func TestFormatSearchSourcesMessageUsesAngleBracketURLWithoutDuplicateTitle(t *t
 
 	if strings.Contains(message, "https://example.com/source <https://example.com/source>") {
 		t.Fatalf("expected source URL to be shown once when title is unavailable: %q", message)
+	}
+}
+
+func TestFormatSearchSourcesMessageIncludesVisualSearchSourceURLs(t *testing.T) {
+	t.Parallel()
+
+	metadata := testStructuredVisualSearchMetadata()
+
+	message := formatSearchSourcesMessage(metadata)
+
+	for _, fragment := range []string{
+		"Visual search result URLs:",
+		"1. Top match: Sword Art Online (ru.ruwiki.ru) <" + testVisualSearchTopMatchURL + ">",
+		"2. Similar image: AnimePTK <" + testVisualSearchSimilarImageURL + ">",
+		"3. Site match: AnimePTK (" + testVisualSearchSiteDomain + ") <" +
+			testVisualSearchSiteMatchURL + ">",
+	} {
+		if !strings.Contains(message, fragment) {
+			t.Fatalf("expected fragment %q in message: %q", fragment, message)
+		}
 	}
 }
 
@@ -1170,13 +1185,12 @@ func TestFormatSearchSourcesMessageLimitsSourcesPerQuery(t *testing.T) {
 
 	metadata := &searchMetadata{
 		Queries: []string{"latest ai news"},
-		Results: []webSearchResult{
-			{
-				Query: "latest ai news",
-				Text:  resultText.String(),
-			},
-		},
-		MaxURLs: 2,
+		Results: []webSearchResult{{
+			Query: "latest ai news",
+			Text:  resultText.String(),
+		}},
+		MaxURLs:             2,
+		VisualSearchSources: nil,
 	}
 
 	message := formatSearchSourcesMessage(metadata)
@@ -1282,9 +1296,10 @@ func testPaginatedSearchMetadata() *searchMetadata {
 	}
 
 	return &searchMetadata{
-		Queries: queries,
-		Results: results,
-		MaxURLs: defaultWebSearchMaxURLs,
+		Queries:             queries,
+		Results:             results,
+		MaxURLs:             defaultWebSearchMaxURLs,
+		VisualSearchSources: nil,
 	}
 }
 

@@ -155,7 +155,7 @@ func (instance *bot) maybeAugmentConversationWithYouTube(
 		return conversation, nil, nil
 	}
 
-	augmentedConversation, warnings, err := augmentConversationWithConcurrentURLContent(
+	augmentedConversation, _, warnings, err := augmentConversationWithConcurrentURLContent(
 		ctx,
 		conversation,
 		youtubeURLs,
