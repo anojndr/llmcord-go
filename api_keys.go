@@ -129,3 +129,11 @@ func (settings tavilySearchConfig) apiKeys() []string {
 func (settings tavilySearchConfig) apiKeysForAttempts() []string {
 	return settings.apiKeys()
 }
+
+func (settings serpAPIVisualSearchConfig) apiKeys() []string {
+	return providerAPIKeys(settings.APIKey, settings.APIKeys)
+}
+
+func (settings serpAPIVisualSearchConfig) apiKeysForAttempts() []string {
+	return settings.apiKeys()
+}

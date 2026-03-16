@@ -139,6 +139,7 @@ func testRestartSearchMetadata() *searchMetadata {
 		defaultWebSearchMaxURLs,
 	)
 	metadata.VisualSearchSources = []visualSearchSourceGroup{{
+		Label: "",
 		Sources: []searchSource{{
 			Title: "Top match: Example image",
 			URL:   "https://images.example.com/example",

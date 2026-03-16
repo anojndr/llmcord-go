@@ -1242,11 +1242,13 @@ func TestFormatSearchSourcesMessageIncludesVisualSearchSourceURLs(t *testing.T) 
 	t.Parallel()
 
 	metadata := testStructuredVisualSearchMetadata()
+	metadata.VisualSearchSources[0].Label = yandexVisualSearchProviderName
 
 	message := formatSearchSourcesMessage(metadata)
 
 	for _, fragment := range []string{
 		"Visual search result URLs:",
+		yandexVisualSearchProviderName + ":",
 		"1. Top match: Sword Art Online (ru.ruwiki.ru) <" + testVisualSearchTopMatchURL + ">",
 		"2. Similar image: AnimePTK <" + testVisualSearchSimilarImageURL + ">",
 		"3. Site match: AnimePTK (" + testVisualSearchSiteDomain + ") <" +

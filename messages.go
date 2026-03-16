@@ -579,6 +579,7 @@ func (instance *bot) augmentConversation(
 	augmentedMessages, visualSearchMetadata, visualSearchWarnings, err :=
 		instance.maybeAugmentConversationWithVisualSearch(
 			ctx,
+			loadedConfig,
 			sourceMessage,
 			messages,
 		)

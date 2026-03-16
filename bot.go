@@ -19,6 +19,7 @@ type bot struct {
 	chatCompletions           chatCompletionClient
 	webSearch                 webSearchClient
 	visualSearch              visualSearchClient
+	serpAPIVisualSearch       serpAPIVisualSearchClient
 	rentry                    rentryClient
 	tiktok                    tiktokContentClient
 	facebook                  facebookContentClient
@@ -48,6 +49,7 @@ func newBot(configPath string, loadedConfig config) (*bot, error) {
 	instance.chatCompletions = newChatCompletionRouter(httpClient)
 	instance.webSearch = newWebSearchClient(httpClient)
 	instance.visualSearch = newVisualSearchClient(httpClient)
+	instance.serpAPIVisualSearch = newSerpAPIVisualSearchClient(httpClient)
 	instance.rentry = newRentryClient(httpClient, defaultRentryEndpoint)
 	instance.tiktok = newTikTokClient(httpClient)
 

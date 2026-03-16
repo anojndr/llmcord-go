@@ -3,12 +3,16 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	neturl "net/url"
 	"os"
 	"strings"
+	"sync"
 	"unicode/utf8"
 
 	"github.com/bwmarrin/discordgo"
@@ -17,21 +21,37 @@ import (
 
 const (
 	defaultYandexVisualSearchEndpoint = "https://yandex.com/images/search"
+	visualSearchPartialWarningText    = "Warning: some visual search results were unavailable"
 	visualSearchWarningText           = "Warning: visual search unavailable"
 	visualSearchImageWarningText      = "Warning: visual search needs an image attachment"
 	visualSearchResponseByteLimit     = 4 * 1024 * 1024
+	maxVisualSearchRelatedContent     = 5
+	serpAPIGoogleLensMatchDetailCap   = 5
 	maxVisualSearchDescriptionRunes   = 500
 	maxVisualSearchSnippetRunes       = 280
 	maxVisualSearchTitleRunes         = 180
 	maxVisualSearchTags               = 5
 	maxVisualSearchSimilarItems       = 5
 	maxVisualSearchSiteMatches        = 5
+	visualSearchLabelPartCapacity     = 2
+	visualSearchProviderCapacity      = 2
 	visualSearchTopMatchLineCapacity  = 5
 	defaultVisualSearchQuery          = "what is in this image?"
+	serpAPIVisualSearchProviderName   = "SerpApi Google Lens"
+	yandexVisualSearchProviderName    = "Yandex Images"
 )
 
 type visualSearchClient interface {
 	search(ctx context.Context, imageURL string) (visualSearchResult, error)
+}
+
+type serpAPIVisualSearchClient interface {
+	search(ctx context.Context, loadedConfig config, imageURL string) (visualSearchResult, error)
+}
+
+type visualSearchProvider struct {
+	name   string
+	search func(context.Context, string) (visualSearchResult, error)
 }
 
 type visualSearchTopMatch struct {
@@ -54,20 +74,68 @@ type visualSearchSiteMatch struct {
 	URL     string
 }
 
+type visualSearchRelatedContent struct {
+	Query string
+	URL   string
+}
+
 type visualSearchResult struct {
-	ImageURL      string
-	SearchURL     string
-	TopMatch      visualSearchTopMatch
-	Tags          []string
-	TextInImage   []string
-	SimilarImages []visualSearchSimilarImage
-	SiteMatches   []visualSearchSiteMatch
+	ImageIndex     int
+	Provider       string
+	ImageURL       string
+	SearchURL      string
+	TopMatch       visualSearchTopMatch
+	Tags           []string
+	TextInImage    []string
+	SimilarImages  []visualSearchSimilarImage
+	SiteMatches    []visualSearchSiteMatch
+	RelatedContent []visualSearchRelatedContent
 }
 
 type yandexVisualSearchClient struct {
 	endpoint   string
 	httpClient *http.Client
 	userAgent  string
+}
+
+type serpAPIGoogleLensClient struct {
+	endpoint   string
+	httpClient *http.Client
+	userAgent  string
+}
+
+type serpAPIGoogleLensResponse struct {
+	SearchMetadata serpAPIGoogleLensSearchMetadata  `json:"search_metadata"`
+	VisualMatches  []serpAPIGoogleLensVisualMatch   `json:"visual_matches"`
+	RelatedContent []serpAPIGoogleLensRelatedResult `json:"related_content"`
+	Error          string                           `json:"error"`
+}
+
+type serpAPIGoogleLensSearchMetadata struct {
+	Status        string `json:"status"`
+	JSONEndpoint  string `json:"json_endpoint"`
+	GoogleLensURL string `json:"google_lens_url"`
+}
+
+type serpAPIGoogleLensVisualMatch struct {
+	Title        string                 `json:"title"`
+	Link         string                 `json:"link"`
+	Source       string                 `json:"source"`
+	Rating       float64                `json:"rating"`
+	Reviews      int                    `json:"reviews"`
+	Price        serpAPIGoogleLensPrice `json:"price"`
+	InStock      *bool                  `json:"in_stock"`
+	Condition    string                 `json:"condition"`
+	ExactMatches bool                   `json:"exact_matches"`
+}
+
+type serpAPIGoogleLensPrice struct {
+	Value string `json:"value"`
+}
+
+type serpAPIGoogleLensRelatedResult struct {
+	Query string `json:"query"`
+	Link  string `json:"link"`
 }
 
 func emptyVisualSearchTopMatch() visualSearchTopMatch {
@@ -82,13 +150,16 @@ func emptyVisualSearchTopMatch() visualSearchTopMatch {
 
 func emptyVisualSearchResult() visualSearchResult {
 	return visualSearchResult{
-		ImageURL:      "",
-		SearchURL:     "",
-		TopMatch:      emptyVisualSearchTopMatch(),
-		Tags:          nil,
-		TextInImage:   nil,
-		SimilarImages: nil,
-		SiteMatches:   nil,
+		ImageIndex:     0,
+		Provider:       "",
+		ImageURL:       "",
+		SearchURL:      "",
+		TopMatch:       emptyVisualSearchTopMatch(),
+		Tags:           nil,
+		TextInImage:    nil,
+		SimilarImages:  nil,
+		SiteMatches:    nil,
+		RelatedContent: nil,
 	}
 }
 
@@ -103,6 +174,14 @@ func newVisualSearchResult(imageURL string, searchURL string) visualSearchResult
 func newVisualSearchClient(httpClient *http.Client) yandexVisualSearchClient {
 	return yandexVisualSearchClient{
 		endpoint:   defaultYandexVisualSearchEndpoint,
+		httpClient: httpClient,
+		userAgent:  youtubeUserAgent,
+	}
+}
+
+func newSerpAPIVisualSearchClient(httpClient *http.Client) serpAPIGoogleLensClient {
+	return serpAPIGoogleLensClient{
+		endpoint:   defaultSerpAPIGoogleLensEndpoint,
 		httpClient: httpClient,
 		userAgent:  youtubeUserAgent,
 	}
@@ -196,7 +275,345 @@ func (client yandexVisualSearchClient) search(
 		)
 	}
 
+	result.Provider = yandexVisualSearchProviderName
+
 	return result, nil
+}
+
+func (client serpAPIGoogleLensClient) search(
+	ctx context.Context,
+	loadedConfig config,
+	imageURL string,
+) (visualSearchResult, error) {
+	apiKeys := loadedConfig.VisualSearch.SerpAPI.apiKeysForAttempts()
+	if len(apiKeys) == 0 {
+		return emptyVisualSearchResult(), fmt.Errorf(
+			"missing SerpApi Google Lens API key for %q: %w",
+			imageURL,
+			os.ErrNotExist,
+		)
+	}
+
+	attemptErrors := make([]error, 0, len(apiKeys))
+
+	for index, apiKey := range apiKeys {
+		result, err := client.searchOnce(ctx, imageURL, apiKey)
+		if err == nil {
+			return result, nil
+		}
+
+		attemptErrors = append(attemptErrors, err)
+		if ctx.Err() != nil || index == len(apiKeys)-1 {
+			if len(attemptErrors) == 1 {
+				return emptyVisualSearchResult(), err
+			}
+
+			if ctx.Err() != nil {
+				return emptyVisualSearchResult(), err
+			}
+
+			return emptyVisualSearchResult(), fmt.Errorf(
+				"all configured SerpApi Google Lens API keys failed for %q: %w",
+				imageURL,
+				errors.Join(attemptErrors...),
+			)
+		}
+	}
+
+	return emptyVisualSearchResult(), fmt.Errorf(
+		"missing SerpApi Google Lens API key attempt for %q: %w",
+		imageURL,
+		os.ErrInvalid,
+	)
+}
+
+func (client serpAPIGoogleLensClient) searchOnce(
+	ctx context.Context,
+	imageURL string,
+	apiKey string,
+) (visualSearchResult, error) {
+	requestURL, err := client.requestURL(imageURL, apiKey)
+	if err != nil {
+		return emptyVisualSearchResult(), err
+	}
+
+	requestContext, cancel := context.WithTimeout(ctx, websiteRequestTimeout)
+	defer cancel()
+
+	httpRequest, err := http.NewRequestWithContext(
+		requestContext,
+		http.MethodGet,
+		requestURL,
+		nil,
+	)
+	if err != nil {
+		return emptyVisualSearchResult(), fmt.Errorf(
+			"create SerpApi Google Lens request %q: %w",
+			requestURL,
+			err,
+		)
+	}
+
+	httpRequest.Header.Set("Accept", "application/json")
+	httpRequest.Header.Set("Accept-Language", youtubeAcceptLanguage)
+	httpRequest.Header.Set("User-Agent", client.userAgent)
+
+	httpResponse, err := client.httpClient.Do(httpRequest)
+	if err != nil {
+		return emptyVisualSearchResult(), fmt.Errorf(
+			"send SerpApi Google Lens request %q: %w",
+			requestURL,
+			err,
+		)
+	}
+
+	defer func() {
+		_ = httpResponse.Body.Close()
+	}()
+
+	responseBody, err := io.ReadAll(io.LimitReader(httpResponse.Body, visualSearchResponseByteLimit+1))
+	if err != nil {
+		return emptyVisualSearchResult(), fmt.Errorf(
+			"read SerpApi Google Lens response %q: %w",
+			requestURL,
+			err,
+		)
+	}
+
+	if len(responseBody) > visualSearchResponseByteLimit {
+		return emptyVisualSearchResult(), fmt.Errorf(
+			"SerpApi Google Lens response %q exceeds %d bytes: %w",
+			requestURL,
+			visualSearchResponseByteLimit,
+			os.ErrInvalid,
+		)
+	}
+
+	if httpResponse.StatusCode < http.StatusOK || httpResponse.StatusCode >= http.StatusMultipleChoices {
+		return emptyVisualSearchResult(), fmt.Errorf(
+			"SerpApi Google Lens request %q failed with status %d: %s: %w",
+			requestURL,
+			httpResponse.StatusCode,
+			strings.TrimSpace(string(responseBody)),
+			os.ErrInvalid,
+		)
+	}
+
+	return client.parseResponse(requestURL, imageURL, responseBody)
+}
+
+func (client serpAPIGoogleLensClient) parseResponse(
+	requestURL string,
+	imageURL string,
+	responseBody []byte,
+) (visualSearchResult, error) {
+	var response serpAPIGoogleLensResponse
+
+	err := json.Unmarshal(responseBody, &response)
+	if err != nil {
+		return emptyVisualSearchResult(), fmt.Errorf(
+			"decode SerpApi Google Lens response %q: %w",
+			requestURL,
+			err,
+		)
+	}
+
+	if responseError := strings.TrimSpace(response.Error); responseError != "" {
+		return emptyVisualSearchResult(), fmt.Errorf(
+			"SerpApi Google Lens returned an error for %q: %s: %w",
+			imageURL,
+			responseError,
+			os.ErrInvalid,
+		)
+	}
+
+	if status := strings.TrimSpace(response.SearchMetadata.Status); status != "" && !strings.EqualFold(status, "Success") {
+		return emptyVisualSearchResult(), fmt.Errorf(
+			"SerpApi Google Lens returned status %q for %q: %w",
+			status,
+			imageURL,
+			os.ErrInvalid,
+		)
+	}
+
+	return parseSerpAPIGoogleLensResponse(imageURL, response), nil
+}
+
+func (client serpAPIGoogleLensClient) requestURL(imageURL string, apiKey string) (string, error) {
+	parsedURL, err := neturl.Parse(client.endpoint)
+	if err != nil {
+		return "", fmt.Errorf(
+			"parse SerpApi Google Lens endpoint %q: %w",
+			client.endpoint,
+			err,
+		)
+	}
+
+	queryValues := parsedURL.Query()
+	queryValues.Set("api_key", strings.TrimSpace(apiKey))
+	queryValues.Set("engine", "google_lens")
+	queryValues.Set("type", "all")
+	queryValues.Set("url", strings.TrimSpace(imageURL))
+	parsedURL.RawQuery = queryValues.Encode()
+
+	return parsedURL.String(), nil
+}
+
+func parseSerpAPIGoogleLensResponse(
+	imageURL string,
+	response serpAPIGoogleLensResponse,
+) visualSearchResult {
+	searchURL := strings.TrimSpace(response.SearchMetadata.GoogleLensURL)
+	if searchURL == "" {
+		searchURL = strings.TrimSpace(response.SearchMetadata.JSONEndpoint)
+	}
+
+	result := newVisualSearchResult(imageURL, searchURL)
+	result.Provider = serpAPIVisualSearchProviderName
+	result.RelatedContent = parseSerpAPIGoogleLensRelatedContent(response.RelatedContent)
+
+	if len(response.VisualMatches) == 0 {
+		return result
+	}
+
+	result.TopMatch = serpAPIGoogleLensTopMatch(response.VisualMatches[0])
+	result.SiteMatches = parseSerpAPIGoogleLensSiteMatches(response.VisualMatches)
+
+	return result
+}
+
+func parseSerpAPIGoogleLensRelatedContent(
+	items []serpAPIGoogleLensRelatedResult,
+) []visualSearchRelatedContent {
+	relatedContent := make([]visualSearchRelatedContent, 0, len(items))
+	seenURLs := make(map[string]struct{}, len(items))
+
+	for _, item := range items {
+		url := strings.TrimSpace(item.Link)
+		if url == "" {
+			continue
+		}
+
+		foldedURL := strings.ToLower(url)
+		if _, ok := seenURLs[foldedURL]; ok {
+			continue
+		}
+
+		seenURLs[foldedURL] = struct{}{}
+
+		relatedContent = append(relatedContent, visualSearchRelatedContent{
+			Query: truncateRunes(strings.TrimSpace(item.Query), maxVisualSearchTitleRunes),
+			URL:   url,
+		})
+		if len(relatedContent) == maxVisualSearchRelatedContent {
+			break
+		}
+	}
+
+	return relatedContent
+}
+
+func serpAPIGoogleLensTopMatch(match serpAPIGoogleLensVisualMatch) visualSearchTopMatch {
+	return visualSearchTopMatch{
+		Title:       truncateRunes(strings.TrimSpace(match.Title), maxVisualSearchTitleRunes),
+		Subtitle:    serpAPIGoogleLensTopMatchSubtitle(match),
+		Description: serpAPIGoogleLensMatchDetails(match),
+		Source:      serpAPIGoogleLensMatchSource(match),
+		URL:         strings.TrimSpace(match.Link),
+	}
+}
+
+func serpAPIGoogleLensTopMatchSubtitle(match serpAPIGoogleLensVisualMatch) string {
+	if match.ExactMatches {
+		return "Exact match"
+	}
+
+	return ""
+}
+
+func parseSerpAPIGoogleLensSiteMatches(
+	items []serpAPIGoogleLensVisualMatch,
+) []visualSearchSiteMatch {
+	siteMatches := make([]visualSearchSiteMatch, 0, len(items))
+	seenURLs := make(map[string]struct{}, len(items))
+
+	for itemIndex, item := range items {
+		if itemIndex == 0 {
+			continue
+		}
+
+		url := strings.TrimSpace(item.Link)
+		if url == "" {
+			continue
+		}
+
+		foldedURL := strings.ToLower(url)
+		if _, ok := seenURLs[foldedURL]; ok {
+			continue
+		}
+
+		seenURLs[foldedURL] = struct{}{}
+
+		siteMatches = append(siteMatches, visualSearchSiteMatch{
+			Title:   truncateRunes(strings.TrimSpace(item.Title), maxVisualSearchTitleRunes),
+			Domain:  serpAPIGoogleLensMatchSource(item),
+			Snippet: serpAPIGoogleLensMatchDetails(item),
+			URL:     url,
+		})
+		if len(siteMatches) == maxVisualSearchSiteMatches {
+			break
+		}
+	}
+
+	return siteMatches
+}
+
+func serpAPIGoogleLensMatchSource(match serpAPIGoogleLensVisualMatch) string {
+	if source := strings.TrimSpace(match.Source); source != "" {
+		return truncateRunes(source, maxVisualSearchTitleRunes)
+	}
+
+	parsedURL, err := neturl.Parse(strings.TrimSpace(match.Link))
+	if err != nil {
+		return ""
+	}
+
+	return truncateRunes(strings.TrimSpace(parsedURL.Hostname()), maxVisualSearchTitleRunes)
+}
+
+func serpAPIGoogleLensMatchDetails(match serpAPIGoogleLensVisualMatch) string {
+	details := make([]string, 0, serpAPIGoogleLensMatchDetailCap)
+
+	if price := strings.TrimSpace(match.Price.Value); price != "" {
+		details = append(details, "Price: "+price)
+	}
+
+	if condition := strings.TrimSpace(match.Condition); condition != "" {
+		details = append(details, "Condition: "+condition)
+	}
+
+	if match.InStock != nil {
+		if *match.InStock {
+			details = append(details, "In stock")
+		} else {
+			details = append(details, "Out of stock")
+		}
+	}
+
+	if match.Rating > 0 {
+		ratingText := fmt.Sprintf("Rating: %.1f", match.Rating)
+		if match.Reviews > 0 {
+			ratingText += fmt.Sprintf(" (%d reviews)", match.Reviews)
+		}
+
+		details = append(details, ratingText)
+	}
+
+	if match.ExactMatches {
+		details = append(details, "Exact matches available")
+	}
+
+	return truncateRunes(strings.Join(details, "; "), maxVisualSearchDescriptionRunes)
 }
 
 func (client yandexVisualSearchClient) requestURL(imageURL string) (string, error) {
@@ -215,10 +632,11 @@ func (client yandexVisualSearchClient) requestURL(imageURL string) (string, erro
 
 func (instance *bot) maybeAugmentConversationWithVisualSearch(
 	ctx context.Context,
+	loadedConfig config,
 	sourceMessage *discordgo.Message,
 	conversation []chatMessage,
 ) ([]chatMessage, *searchMetadata, []string, error) {
-	if instance.visualSearch == nil {
+	if instance.visualSearch == nil && instance.serpAPIVisualSearch == nil {
 		return conversation, nil, nil, nil
 	}
 
@@ -242,22 +660,133 @@ func (instance *bot) maybeAugmentConversationWithVisualSearch(
 		return rewrittenConversation, nil, []string{visualSearchImageWarningText}, nil
 	}
 
-	augmentedConversation, results, warnings, err := augmentConversationWithConcurrentURLContent(
-		ctx,
+	providers := instance.visualSearchProvidersForConfig(loadedConfig)
+	if len(providers) == 0 {
+		return rewrittenConversation, nil, nil, nil
+	}
+
+	results, warnings := instance.runVisualSearchProviders(ctx, imageURLs, providers)
+	if len(results) == 0 {
+		return rewrittenConversation, nil, warnings, nil
+	}
+
+	augmentedConversation, err := appendVisualSearchResultsToConversation(
 		rewrittenConversation,
-		imageURLs,
-		instance.visualSearch.search,
-		"run visual search",
-		visualSearchWarningText,
-		formatVisualSearchResults,
-		appendVisualSearchResultsToConversation,
-		"append visual search results to conversation",
+		formatVisualSearchResults(results),
 	)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, fmt.Errorf("append visual search results to conversation: %w", err)
 	}
 
 	return augmentedConversation, newVisualSearchMetadata(results), warnings, nil
+}
+
+func (instance *bot) visualSearchProvidersForConfig(loadedConfig config) []visualSearchProvider {
+	providers := make([]visualSearchProvider, 0, visualSearchProviderCapacity)
+
+	if instance.visualSearch != nil {
+		providers = append(providers, visualSearchProvider{
+			name: yandexVisualSearchProviderName,
+			search: func(ctx context.Context, imageURL string) (visualSearchResult, error) {
+				return instance.visualSearch.search(ctx, imageURL)
+			},
+		})
+	}
+
+	if instance.serpAPIVisualSearch != nil && len(loadedConfig.VisualSearch.SerpAPI.apiKeysForAttempts()) > 0 {
+		providers = append(providers, visualSearchProvider{
+			name: serpAPIVisualSearchProviderName,
+			search: func(ctx context.Context, imageURL string) (visualSearchResult, error) {
+				return instance.serpAPIVisualSearch.search(ctx, loadedConfig, imageURL)
+			},
+		})
+	}
+
+	return providers
+}
+
+func (instance *bot) runVisualSearchProviders(
+	ctx context.Context,
+	imageURLs []string,
+	providers []visualSearchProvider,
+) ([]visualSearchResult, []string) {
+	if len(imageURLs) == 0 || len(providers) == 0 {
+		return nil, nil
+	}
+
+	type indexedVisualSearchResult struct {
+		result visualSearchResult
+		ok     bool
+	}
+
+	results := make([]indexedVisualSearchResult, len(imageURLs)*len(providers))
+
+	var (
+		fetchFailed bool
+		failedMu    sync.Mutex
+		waitGroup   sync.WaitGroup
+	)
+
+	for imageIndex, imageURL := range imageURLs {
+		for providerIndex, provider := range providers {
+			waitGroup.Add(1)
+
+			go func(
+				imageIndex int,
+				imageURL string,
+				providerIndex int,
+				provider visualSearchProvider,
+			) {
+				defer waitGroup.Done()
+
+				result, err := provider.search(ctx, imageURL)
+				if err != nil {
+					slog.Warn("run visual search", "provider", provider.name, "url", imageURL, "error", err)
+					failedMu.Lock()
+					fetchFailed = true
+					failedMu.Unlock()
+
+					return
+				}
+
+				result.ImageIndex = imageIndex
+				result.ImageURL = strings.TrimSpace(imageURL)
+
+				if strings.TrimSpace(result.Provider) == "" {
+					result.Provider = provider.name
+				}
+
+				results[imageIndex*len(providers)+providerIndex] = indexedVisualSearchResult{
+					result: result,
+					ok:     true,
+				}
+			}(imageIndex, imageURL, providerIndex, provider)
+		}
+	}
+
+	waitGroup.Wait()
+
+	formattedResults := make([]visualSearchResult, 0, len(results))
+	for _, item := range results {
+		if !item.ok {
+			continue
+		}
+
+		formattedResults = append(formattedResults, item.result)
+	}
+
+	warnings := make([]string, 0, 1)
+
+	if fetchFailed {
+		warningText := visualSearchPartialWarningText
+		if len(formattedResults) == 0 {
+			warningText = visualSearchWarningText
+		}
+
+		warnings = append(warnings, warningText)
+	}
+
+	return formattedResults, warnings
 }
 
 func (instance *bot) visualSearchImageURLs(
@@ -699,7 +1228,7 @@ func formatVisualSearchResults(results []visualSearchResult) string {
 	for index, result := range results {
 		formattedResults = append(
 			formattedResults,
-			formatSingleVisualSearchResult(index, len(results), result),
+			formatSingleVisualSearchResult(index, result, results),
 		)
 	}
 
@@ -707,7 +1236,7 @@ func formatVisualSearchResults(results []visualSearchResult) string {
 }
 
 func extractVisualSearchSources(result visualSearchResult) []searchSource {
-	sources := make([]searchSource, 0, 1+len(result.SimilarImages)+len(result.SiteMatches))
+	sources := make([]searchSource, 0, 2+len(result.SimilarImages)+len(result.SiteMatches)+len(result.RelatedContent))
 	seenURLs := make(map[string]struct{})
 
 	appendSource := func(title string, rawURL string) {
@@ -732,6 +1261,7 @@ func extractVisualSearchSources(result visualSearchResult) []searchSource {
 	}
 
 	appendSource(visualSearchTopMatchSourceTitle(result.TopMatch), result.TopMatch.URL)
+	appendSource(visualSearchSearchPageSourceTitle(result), result.SearchURL)
 
 	for _, item := range result.SimilarImages {
 		appendSource(visualSearchSimilarImageSourceTitle(item), item.URL)
@@ -741,7 +1271,55 @@ func extractVisualSearchSources(result visualSearchResult) []searchSource {
 		appendSource(visualSearchSiteMatchSourceTitle(item), item.URL)
 	}
 
+	for _, item := range result.RelatedContent {
+		appendSource(visualSearchRelatedContentSourceTitle(item), item.URL)
+	}
+
 	return sources
+}
+
+func visualSearchResultSectionLabel(
+	result visualSearchResult,
+	allResults []visualSearchResult,
+) string {
+	if len(allResults) <= 1 {
+		return ""
+	}
+
+	hasMultipleImages := false
+	hasMultipleProviders := false
+	firstImageIndex := allResults[0].ImageIndex
+	firstProvider := strings.TrimSpace(allResults[0].Provider)
+
+	for _, item := range allResults[1:] {
+		if item.ImageIndex != firstImageIndex {
+			hasMultipleImages = true
+		}
+
+		if !strings.EqualFold(strings.TrimSpace(item.Provider), firstProvider) {
+			hasMultipleProviders = true
+		}
+	}
+
+	labelParts := make([]string, 0, visualSearchLabelPartCapacity)
+	if hasMultipleImages {
+		labelParts = append(labelParts, fmt.Sprintf("Image %d", result.ImageIndex+1))
+	}
+
+	if hasMultipleProviders {
+		providerName := strings.TrimSpace(result.Provider)
+		if providerName == "" {
+			providerName = "Visual search"
+		}
+
+		labelParts = append(labelParts, providerName)
+	}
+
+	if len(labelParts) == 0 {
+		return ""
+	}
+
+	return strings.Join(labelParts, " - ")
 }
 
 func visualSearchTopMatchSourceTitle(topMatch visualSearchTopMatch) string {
@@ -785,14 +1363,38 @@ func visualSearchSiteMatchSourceTitle(item visualSearchSiteMatch) string {
 	}
 }
 
+func visualSearchSearchPageSourceTitle(result visualSearchResult) string {
+	if strings.TrimSpace(result.SearchURL) == "" {
+		return ""
+	}
+
+	providerName := strings.TrimSpace(result.Provider)
+	if providerName == "" {
+		providerName = "Visual search"
+	}
+
+	return "Search page: " + providerName
+}
+
+func visualSearchRelatedContentSourceTitle(item visualSearchRelatedContent) string {
+	query := strings.TrimSpace(item.Query)
+	if query == "" {
+		return "Related content"
+	}
+
+	return "Related content: " + query
+}
+
 func formatSingleVisualSearchResult(
 	index int,
-	total int,
 	result visualSearchResult,
+	allResults []visualSearchResult,
 ) string {
 	lines := make([]string, 0)
 
-	if total > 1 {
+	if label := visualSearchResultSectionLabel(result, allResults); label != "" {
+		lines = append(lines, label+":")
+	} else if len(allResults) > 1 {
 		lines = append(lines, fmt.Sprintf("Image %d:", index+1))
 	}
 
@@ -812,6 +1414,10 @@ func formatSingleVisualSearchResult(
 
 	if siteMatches := formatVisualSearchSiteMatches(result.SiteMatches); siteMatches != "" {
 		lines = append(lines, siteMatches)
+	}
+
+	if relatedContent := formatVisualSearchRelatedContent(result.RelatedContent); relatedContent != "" {
+		lines = append(lines, relatedContent)
 	}
 
 	if len(lines) == 0 {
@@ -890,6 +1496,30 @@ func formatVisualSearchSiteMatches(items []visualSearchSiteMatch) string {
 		if item.URL != "" {
 			lines = append(lines, "URL: "+item.URL)
 		}
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+func formatVisualSearchRelatedContent(items []visualSearchRelatedContent) string {
+	if len(items) == 0 {
+		return ""
+	}
+
+	lines := make([]string, 0, len(items)+1)
+	lines = append(lines, "Related content:")
+
+	for itemIndex, item := range items {
+		line := fmt.Sprintf("%d. %s", itemIndex+1, item.Query)
+		if strings.TrimSpace(item.Query) == "" {
+			line = fmt.Sprintf("%d. Related content", itemIndex+1)
+		}
+
+		if item.URL != "" {
+			line += " <" + item.URL + ">"
+		}
+
+		lines = append(lines, line)
 	}
 
 	return strings.Join(lines, "\n")
