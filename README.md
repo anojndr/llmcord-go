@@ -139,6 +139,7 @@ golangci-lint run --default=all
 - Providers pointing at `https://openrouter.ai/...` automatically send `transforms: ["middle-out"]` unless `transforms` is already set in `extra_body` or model parameters. Set `transforms: []` to disable the default for a provider or model.
 - OpenAI Codex providers stream through the ChatGPT Codex Responses API. If `extra_headers.chatgpt-account-id` is not set, the bot derives it from the JWT in `api_key`.
 - If a provider has multiple `api_key` entries, the router retries the request with the next configured key when the current key is rejected or rate-limited before any response is streamed.
+- OpenAI-compatible chat completions automatically retry once without any `tools`, `functions`, `tool_choice`, or `function_call` entries that reference provider-reported `DEGRADED` function IDs, which helps temporary upstream tool outages fail open instead of aborting the whole reply.
 - OpenAI-compatible and Gemini streaming handlers treat provider-declared stream errors, blocked responses, and prematurely terminated streams as failures, and the bot always shows a user-facing error message instead of silently stopping.
 - The implementation targets chat-completions-style OpenAI-compatible APIs, OpenAI Codex Responses streaming, and native Gemini GenerateContent streaming.
 - If you need the original single-file Python implementation, use [`jakobdylanc/llmcord`](https://github.com/jakobdylanc/llmcord).
