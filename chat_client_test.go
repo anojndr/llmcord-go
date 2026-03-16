@@ -13,6 +13,13 @@ import (
 	"google.golang.org/genai"
 )
 
+const (
+	testRetryPrimaryAPIKey     = "first-key"
+	testRetryBackupAPIKey      = "second-key"
+	testRetryPrimaryAuthHeader = "Bearer " + testRetryPrimaryAPIKey
+	testRetryBackupAuthHeader  = "Bearer " + testRetryBackupAPIKey
+)
+
 type stringCapture struct {
 	mutex  sync.Mutex
 	values []string
@@ -74,7 +81,103 @@ func TestChatCompletionRouterRetriesOpenAIAPIKeys(t *testing.T) {
 		t.Fatalf("stream chat completion: %v", err)
 	}
 
-	if !slices.Equal(authCapture.snapshot(), []string{"Bearer first-key", "Bearer second-key"}) {
+	if !slices.Equal(authCapture.snapshot(), []string{testRetryPrimaryAuthHeader, testRetryBackupAuthHeader}) {
+		t.Fatalf("unexpected authorization attempts: %#v", authCapture.snapshot())
+	}
+
+	if content != testStreamedHelloText {
+		t.Fatalf("unexpected streamed content: %q", content)
+	}
+}
+
+func TestChatCompletionRouterRetriesOpenAIAPIKeysOnInternalServerError(t *testing.T) {
+	t.Parallel()
+
+	authCapture := new(stringCapture)
+
+	server := httptest.NewServer(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		request *http.Request,
+	) {
+		t.Helper()
+
+		authHeader := request.Header.Get("Authorization")
+		authCapture.append(authHeader)
+
+		if authHeader == testRetryPrimaryAuthHeader {
+			http.Error(responseWriter, "internal server error", http.StatusInternalServerError)
+
+			return
+		}
+
+		streamOpenAIHello(t, responseWriter)
+	}))
+	defer server.Close()
+
+	router := chatCompletionRouter{
+		openAI:      newOpenAIClient(server.Client()),
+		openAICodex: newOpenAICodexClient(nil),
+		gemini:      newGeminiClient(nil),
+	}
+
+	content, err := collectStreamedContent(
+		context.Background(),
+		router,
+		newOpenAIRetryRequest(server.URL+"/v1"),
+	)
+	if err != nil {
+		t.Fatalf("stream chat completion: %v", err)
+	}
+
+	if !slices.Equal(authCapture.snapshot(), []string{testRetryPrimaryAuthHeader, testRetryBackupAuthHeader}) {
+		t.Fatalf("unexpected authorization attempts: %#v", authCapture.snapshot())
+	}
+
+	if content != testStreamedHelloText {
+		t.Fatalf("unexpected streamed content: %q", content)
+	}
+}
+
+func TestChatCompletionRouterRetriesOpenAIAPIKeysAfterStreamFailure(t *testing.T) {
+	t.Parallel()
+
+	authCapture := new(stringCapture)
+
+	server := httptest.NewServer(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		request *http.Request,
+	) {
+		t.Helper()
+
+		authHeader := request.Header.Get("Authorization")
+		authCapture.append(authHeader)
+
+		if authHeader == testRetryPrimaryAuthHeader {
+			streamOpenAIPartialHello(t, responseWriter)
+
+			return
+		}
+
+		streamOpenAIHello(t, responseWriter)
+	}))
+	defer server.Close()
+
+	router := chatCompletionRouter{
+		openAI:      newOpenAIClient(server.Client()),
+		openAICodex: newOpenAICodexClient(nil),
+		gemini:      newGeminiClient(nil),
+	}
+
+	content, err := collectStreamedContent(
+		context.Background(),
+		router,
+		newOpenAIRetryRequest(server.URL+"/v1"),
+	)
+	if err != nil {
+		t.Fatalf("stream chat completion: %v", err)
+	}
+
+	if !slices.Equal(authCapture.snapshot(), []string{testRetryPrimaryAuthHeader, testRetryBackupAuthHeader}) {
 		t.Fatalf("unexpected authorization attempts: %#v", authCapture.snapshot())
 	}
 
@@ -131,7 +234,7 @@ func TestChatCompletionRouterRetriesGeminiAPIKeys(t *testing.T) {
 		t.Fatalf("stream gemini completion: %v", err)
 	}
 
-	if !slices.Equal(attemptCapture.snapshot(), []string{"first-key", "second-key"}) {
+	if !slices.Equal(attemptCapture.snapshot(), []string{testRetryPrimaryAPIKey, testRetryBackupAPIKey}) {
 		t.Fatalf("unexpected gemini API key attempts: %#v", attemptCapture.snapshot())
 	}
 
@@ -174,7 +277,7 @@ func newOpenAIRetryTestServer(
 		authHeader := request.Header.Get("Authorization")
 		authCapture.append(authHeader)
 
-		if authHeader == "Bearer first-key" {
+		if authHeader == testRetryPrimaryAuthHeader {
 			http.Error(responseWriter, "rate limited", http.StatusTooManyRequests)
 
 			return
@@ -190,7 +293,7 @@ func newOpenAIRetryRequest(baseURL string) chatCompletionRequest {
 			APIKind:      providerAPIKindOpenAI,
 			BaseURL:      baseURL,
 			APIKey:       "",
-			APIKeys:      []string{"first-key", "second-key"},
+			APIKeys:      []string{testRetryPrimaryAPIKey, testRetryBackupAPIKey},
 			ExtraHeaders: nil,
 			ExtraQuery:   nil,
 			ExtraBody:    nil,
@@ -218,6 +321,20 @@ func streamOpenAIHello(t *testing.T, responseWriter http.ResponseWriter) {
 	writeStreamChunk(t, responseWriter, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
 	flusher.Flush()
 	writeStreamChunk(t, responseWriter, "data: [DONE]\n\n")
+	flusher.Flush()
+}
+
+func streamOpenAIPartialHello(t *testing.T, responseWriter http.ResponseWriter) {
+	t.Helper()
+
+	responseWriter.Header().Set("Content-Type", "text/event-stream")
+
+	flusher, ok := responseWriter.(http.Flusher)
+	if !ok {
+		t.Fatal("expected response writer to support flushing")
+	}
+
+	writeStreamChunk(t, responseWriter, "data: {\"choices\":[{\"delta\":{\"content\":\"Hel\"}}]}\n\n")
 	flusher.Flush()
 }
 
@@ -327,7 +444,7 @@ func newGeminiRetryRequest() chatCompletionRequest {
 			APIKind:      providerAPIKindGemini,
 			BaseURL:      "",
 			APIKey:       "",
-			APIKeys:      []string{"first-key", "second-key"},
+			APIKeys:      []string{testRetryPrimaryAPIKey, testRetryBackupAPIKey},
 			ExtraHeaders: nil,
 			ExtraQuery:   nil,
 			ExtraBody:    nil,
@@ -351,7 +468,7 @@ func newGeminiRetryStream(apiKey string) func(
 		_ *genai.GenerateContentConfig,
 	) iter.Seq2[*genai.GenerateContentResponse, error] {
 		return func(yield func(*genai.GenerateContentResponse, error) bool) {
-			if apiKey == "first-key" {
+			if apiKey == testRetryPrimaryAPIKey {
 				apiErr := new(genai.APIError)
 				apiErr.Code = http.StatusForbidden
 				apiErr.Message = "permission denied"

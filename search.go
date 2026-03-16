@@ -165,15 +165,6 @@ func (err tavilyStatusError) Unwrap() error {
 	return err.Err
 }
 
-func (err tavilyStatusError) retryWithNextAPIKey() bool {
-	switch err.StatusCode {
-	case http.StatusUnauthorized, http.StatusForbidden, http.StatusTooManyRequests:
-		return true
-	default:
-		return false
-	}
-}
-
 func (instance *bot) maybeAugmentConversationWithWebSearch(
 	ctx context.Context,
 	loadedConfig config,
@@ -1182,12 +1173,12 @@ func (client tavilySearchClient) searchQuery(
 		}
 
 		attemptErrors = append(attemptErrors, err)
-		if !shouldRetryWithNextAPIKey(err) || index == len(apiKeys)-1 {
+		if ctx.Err() != nil || index == len(apiKeys)-1 {
 			if len(attemptErrors) == 1 {
 				return webSearchResult{}, err
 			}
 
-			if !shouldRetryWithNextAPIKey(err) {
+			if ctx.Err() != nil {
 				return webSearchResult{}, err
 			}
 
