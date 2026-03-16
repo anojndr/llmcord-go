@@ -132,6 +132,22 @@ func testAssistantMessageNodeSnapshot() messageNodeSnapshot {
 	}
 }
 
+func testRestartSearchMetadata() *searchMetadata {
+	metadata := newSearchMetadata(
+		[]string{"example"},
+		[]webSearchResult{{Query: "example", Text: "Title: Example\nURL: https://example.com"}},
+		defaultWebSearchMaxURLs,
+	)
+	metadata.VisualSearchSources = []visualSearchSourceGroup{{
+		Sources: []searchSource{{
+			Title: "Top match: Example image",
+			URL:   "https://images.example.com/example",
+		}},
+	}}
+
+	return metadata
+}
+
 func TestPersistentMessageNodeStoreRestoresRetainedSearchHistoryAfterRestart(t *testing.T) {
 	t.Parallel()
 
@@ -143,6 +159,8 @@ func TestPersistentMessageNodeStoreRestoresRetainedSearchHistoryAfterRestart(t *
 		assistantMessageID = "assistant-message"
 		followUpMessageID  = "follow-up-message"
 	)
+
+	expectedMetadata := testRestartSearchMetadata()
 
 	historyPath := filepath.Join(t.TempDir(), "message-history.gob")
 	initialInstance := newPersistentHistoryTestBot(t, historyPath)
@@ -167,11 +185,7 @@ func TestPersistentMessageNodeStoreRestoresRetainedSearchHistoryAfterRestart(t *
 		t,
 		initialInstance,
 		assistantMessage.ID,
-		newSearchMetadata(
-			[]string{"example"},
-			[]webSearchResult{{Query: "example", Text: "Title: Example\nURL: https://example.com"}},
-			defaultWebSearchMaxURLs,
-		),
+		expectedMetadata,
 		"https://rentry.co/example",
 	)
 
@@ -207,8 +221,9 @@ func TestPersistentMessageNodeStoreRestoresRetainedSearchHistoryAfterRestart(t *
 		t,
 		restartedInstance,
 		assistantMessageID,
-		[]string{"example"},
-		[]webSearchResult{{Query: "example", Text: "Title: Example\nURL: https://example.com"}},
+		expectedMetadata.Queries,
+		expectedMetadata.Results,
+		expectedMetadata.VisualSearchSources,
 		"https://rentry.co/example",
 	)
 }
@@ -385,6 +400,7 @@ func assertPersistedAssistantMetadata(
 	messageID string,
 	expectedQueries []string,
 	expectedResults []webSearchResult,
+	expectedVisualSearchSources []visualSearchSourceGroup,
 	expectedRentryURL string,
 ) {
 	t.Helper()
@@ -400,6 +416,16 @@ func assertPersistedAssistantMetadata(
 
 	if !slices.Equal(metadata.Results, expectedResults) {
 		t.Fatalf("unexpected persisted results: %#v", metadata.Results)
+	}
+
+	if !slices.EqualFunc(
+		metadata.VisualSearchSources,
+		expectedVisualSearchSources,
+		func(left visualSearchSourceGroup, right visualSearchSourceGroup) bool {
+			return slices.Equal(left.Sources, right.Sources)
+		},
+	) {
+		t.Fatalf("unexpected persisted visual search sources: %#v", metadata.VisualSearchSources)
 	}
 
 	if metadata.MaxURLs != defaultWebSearchMaxURLs {

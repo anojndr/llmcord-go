@@ -576,11 +576,12 @@ func (instance *bot) augmentConversation(
 	warnings []string,
 	urlExtractionText string,
 ) ([]chatMessage, *searchMetadata, []string, error) {
-	augmentedMessages, visualSearchWarnings, err := instance.maybeAugmentConversationWithVisualSearch(
-		ctx,
-		sourceMessage,
-		messages,
-	)
+	augmentedMessages, visualSearchMetadata, visualSearchWarnings, err :=
+		instance.maybeAugmentConversationWithVisualSearch(
+			ctx,
+			sourceMessage,
+			messages,
+		)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("augment conversation with visual search: %w", err)
 	}
@@ -620,7 +621,7 @@ func (instance *bot) augmentConversation(
 
 	warnings = append(warnings, redditWarnings...)
 
-	augmentedMessages, searchMetadata, searchWarnings, err := instance.maybeAugmentConversationWithWebSearch(
+	augmentedMessages, webSearchMetadata, searchWarnings, err := instance.maybeAugmentConversationWithWebSearch(
 		ctx,
 		loadedConfig,
 		providerSlashModel,
@@ -633,7 +634,7 @@ func (instance *bot) augmentConversation(
 
 	warnings = append(warnings, searchWarnings...)
 
-	return augmentedMessages, searchMetadata, warnings, nil
+	return augmentedMessages, mergeSearchMetadata(visualSearchMetadata, webSearchMetadata), warnings, nil
 }
 
 func (instance *bot) sourceMessageURLExtractionText(

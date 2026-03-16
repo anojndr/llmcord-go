@@ -217,32 +217,32 @@ func (instance *bot) maybeAugmentConversationWithVisualSearch(
 	ctx context.Context,
 	sourceMessage *discordgo.Message,
 	conversation []chatMessage,
-) ([]chatMessage, []string, error) {
+) ([]chatMessage, *searchMetadata, []string, error) {
 	if instance.visualSearch == nil {
-		return conversation, nil, nil
+		return conversation, nil, nil, nil
 	}
 
 	latestUserQuery, err := latestUserPromptQuery(conversation)
 	if err != nil {
-		return nil, nil, fmt.Errorf("extract latest user query: %w", err)
+		return nil, nil, nil, fmt.Errorf("extract latest user query: %w", err)
 	}
 
 	rewrittenQuery, requested := rewriteVisualSearchUserQuery(latestUserQuery)
 	if !requested {
-		return conversation, nil, nil
+		return conversation, nil, nil, nil
 	}
 
 	rewrittenConversation, err := rewriteUserQueryInConversation(conversation, rewrittenQuery)
 	if err != nil {
-		return nil, nil, fmt.Errorf("rewrite latest user query: %w", err)
+		return nil, nil, nil, fmt.Errorf("rewrite latest user query: %w", err)
 	}
 
 	imageURLs := instance.visualSearchImageURLs(ctx, sourceMessage)
 	if len(imageURLs) == 0 {
-		return rewrittenConversation, []string{visualSearchImageWarningText}, nil
+		return rewrittenConversation, nil, []string{visualSearchImageWarningText}, nil
 	}
 
-	augmentedConversation, warnings, err := augmentConversationWithConcurrentURLContent(
+	augmentedConversation, results, warnings, err := augmentConversationWithConcurrentURLContent(
 		ctx,
 		rewrittenConversation,
 		imageURLs,
@@ -254,10 +254,10 @@ func (instance *bot) maybeAugmentConversationWithVisualSearch(
 		"append visual search results to conversation",
 	)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
-	return augmentedConversation, warnings, nil
+	return augmentedConversation, newVisualSearchMetadata(results), warnings, nil
 }
 
 func (instance *bot) visualSearchImageURLs(
@@ -704,6 +704,85 @@ func formatVisualSearchResults(results []visualSearchResult) string {
 	}
 
 	return strings.Join(formattedResults, "\n\n")
+}
+
+func extractVisualSearchSources(result visualSearchResult) []searchSource {
+	sources := make([]searchSource, 0, 1+len(result.SimilarImages)+len(result.SiteMatches))
+	seenURLs := make(map[string]struct{})
+
+	appendSource := func(title string, rawURL string) {
+		url := strings.TrimSpace(rawURL)
+		if url == "" {
+			return
+		}
+
+		foldedURL := strings.ToLower(url)
+		if _, ok := seenURLs[foldedURL]; ok {
+			return
+		}
+
+		seenURLs[foldedURL] = struct{}{}
+
+		sourceTitle := strings.TrimSpace(title)
+		if sourceTitle == "" {
+			sourceTitle = url
+		}
+
+		sources = append(sources, searchSource{Title: sourceTitle, URL: url})
+	}
+
+	appendSource(visualSearchTopMatchSourceTitle(result.TopMatch), result.TopMatch.URL)
+
+	for _, item := range result.SimilarImages {
+		appendSource(visualSearchSimilarImageSourceTitle(item), item.URL)
+	}
+
+	for _, item := range result.SiteMatches {
+		appendSource(visualSearchSiteMatchSourceTitle(item), item.URL)
+	}
+
+	return sources
+}
+
+func visualSearchTopMatchSourceTitle(topMatch visualSearchTopMatch) string {
+	title := strings.TrimSpace(topMatch.Title)
+	source := strings.TrimSpace(topMatch.Source)
+
+	switch {
+	case title != "" && source != "" && !strings.EqualFold(title, source):
+		return "Top match: " + title + " (" + source + ")"
+	case title != "":
+		return "Top match: " + title
+	case source != "":
+		return "Top match: " + source
+	default:
+		return ""
+	}
+}
+
+func visualSearchSimilarImageSourceTitle(item visualSearchSimilarImage) string {
+	title := strings.TrimSpace(item.Title)
+	if title == "" {
+		return ""
+	}
+
+	return "Similar image: " + title
+}
+
+func visualSearchSiteMatchSourceTitle(item visualSearchSiteMatch) string {
+	title := strings.TrimSpace(item.Title)
+	domain := strings.TrimSpace(item.Domain)
+
+	switch {
+	case title != "" && domain != "" && !strings.EqualFold(title, domain):
+		return "Site match: " + title + " (" + domain + ")"
+	case title != "":
+		return "Site match: " + title
+	case domain != "":
+		return "Site match: " + domain
+	default:
+		return ""
+	}
 }
 
 func formatSingleVisualSearchResult(

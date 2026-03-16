@@ -68,7 +68,7 @@ func (instance *bot) maybeAugmentConversationWithWebsite(
 		return conversation, nil, nil
 	}
 
-	augmentedConversation, warnings, err := augmentConversationWithConcurrentURLContent(
+	augmentedConversation, _, warnings, err := augmentConversationWithConcurrentURLContent(
 		ctx,
 		conversation,
 		websiteURLs,

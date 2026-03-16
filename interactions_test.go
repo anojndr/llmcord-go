@@ -219,18 +219,16 @@ func TestHandleInteractionCreateRespondsToShowSourcesButton(t *testing.T) {
 	node.mu.Lock()
 	node.searchMetadata = &searchMetadata{
 		Queries: []string{"latest ai news"},
-		Results: []webSearchResult{
-			{
-				Query: "latest ai news",
-				Text: "Title: Example Source\n" +
-					"URL: https://example.com/source\n",
-			},
-		},
-		MaxURLs: defaultWebSearchMaxURLs,
+		Results: []webSearchResult{{
+			Query: "latest ai news",
+			Text:  "Title: Example Source\nURL: https://example.com/source\n",
+		}},
+		MaxURLs:             defaultWebSearchMaxURLs,
+		VisualSearchSources: nil,
 	}
 	node.mu.Unlock()
 
-	interaction := newShowSourcesInteraction("response-message")
+	interaction := newShowSourcesInteraction()
 
 	instance.handleInteractionCreate(session, interaction)
 
@@ -251,6 +249,44 @@ func TestHandleInteractionCreateRespondsToShowSourcesButton(t *testing.T) {
 	}
 }
 
+func TestHandleInteractionCreateRespondsToShowSourcesButtonForVisualSearch(t *testing.T) {
+	t.Parallel()
+
+	var response discordgo.InteractionResponse
+
+	session := newInteractionTestSession(t, &response)
+	instance := new(bot)
+	instance.nodes = newMessageNodeStore(10)
+
+	node := instance.nodes.getOrCreate("response-message")
+	node.mu.Lock()
+	node.searchMetadata = testStructuredVisualSearchMetadata()
+	node.mu.Unlock()
+
+	interaction := newShowSourcesInteraction()
+
+	instance.handleInteractionCreate(session, interaction)
+
+	if response.Data == nil {
+		t.Fatal("expected interaction response data")
+	}
+
+	if response.Data.Flags != discordgo.MessageFlagsEphemeral {
+		t.Fatalf("unexpected response flags: %v", response.Data.Flags)
+	}
+
+	for _, fragment := range []string{
+		"visual search result urls",
+		"https://ru.ruwiki.ru/wiki/Sword_Art_Online",
+		"https://yandex.com/images/search?cbir_page=similar-1",
+		"http://vampireknightptk.blogspot.com/2012/09/indonic-hosting.html",
+	} {
+		if !containsFold(response.Data.Content, fragment) {
+			t.Fatalf("expected fragment %q in response content: %q", fragment, response.Data.Content)
+		}
+	}
+}
+
 func TestHandleInteractionCreateRespondsToShowSourcesButtonAfterPendingRelease(t *testing.T) {
 	t.Parallel()
 
@@ -266,14 +302,12 @@ func TestHandleInteractionCreateRespondsToShowSourcesButtonAfterPendingRelease(t
 	tracker := newResponseTracker(sourceMessage, "")
 	tracker.searchMetadata = &searchMetadata{
 		Queries: []string{"latest ai news"},
-		Results: []webSearchResult{
-			{
-				Query: "latest ai news",
-				Text: "Title: Example Source\n" +
-					"URL: https://example.com/source\n",
-			},
-		},
-		MaxURLs: defaultWebSearchMaxURLs,
+		Results: []webSearchResult{{
+			Query: "latest ai news",
+			Text:  "Title: Example Source\nURL: https://example.com/source\n",
+		}},
+		MaxURLs:             defaultWebSearchMaxURLs,
+		VisualSearchSources: nil,
 	}
 	tracker.pendingResponses = []pendingResponse{
 		{
@@ -284,7 +318,7 @@ func TestHandleInteractionCreateRespondsToShowSourcesButtonAfterPendingRelease(t
 
 	tracker.release(instance.nodes, "assistant reply")
 
-	interaction := newShowSourcesInteraction("response-message")
+	interaction := newShowSourcesInteraction()
 
 	instance.handleInteractionCreate(session, interaction)
 
@@ -319,7 +353,7 @@ func TestHandleInteractionCreateRespondsToPaginatedShowSourcesButton(t *testing.
 	node.searchMetadata = testPaginatedSearchMetadata()
 	node.mu.Unlock()
 
-	interaction := newShowSourcesInteraction("response-message")
+	interaction := newShowSourcesInteraction()
 
 	instance.handleInteractionCreate(session, interaction)
 
@@ -756,8 +790,8 @@ func newConfiguredModelCommandInteraction(
 	return result
 }
 
-func newShowSourcesInteraction(messageID string) *discordgo.InteractionCreate {
-	return newComponentInteraction(messageID, showSourcesButtonCustomID)
+func newShowSourcesInteraction() *discordgo.InteractionCreate {
+	return newComponentInteraction("response-message", showSourcesButtonCustomID)
 }
 
 func newComponentInteraction(messageID string, customID string) *discordgo.InteractionCreate {

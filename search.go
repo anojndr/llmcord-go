@@ -22,6 +22,8 @@ import (
 const (
 	exaSearchToolName                = "web_search_exa"
 	searchWarningText                = "Warning: web search unavailable"
+	searchSourcesSectionCapacity     = 2
+	searchSourcesUnavailableText     = "No sources available."
 	messageRoleUser                  = "user"
 	contentTypeAudioData             = "audio_data"
 	contentTypeDocument              = "document_data"
@@ -71,9 +73,10 @@ type searchDecision struct {
 }
 
 type searchMetadata struct {
-	Queries []string
-	Results []webSearchResult
-	MaxURLs int
+	Queries             []string
+	Results             []webSearchResult
+	MaxURLs             int
+	VisualSearchSources []visualSearchSourceGroup
 }
 
 type webSearchResult struct {
@@ -84,6 +87,10 @@ type webSearchResult struct {
 type searchSource struct {
 	Title string
 	URL   string
+}
+
+type visualSearchSourceGroup struct {
+	Sources []searchSource
 }
 
 type exaSearchClient struct {
@@ -210,10 +217,27 @@ func (instance *bot) maybeAugmentConversationWithWebSearch(
 }
 
 func newSearchMetadata(queries []string, results []webSearchResult, maxURLs int) *searchMetadata {
+	return &searchMetadata{
+		Queries:             append([]string(nil), queries...),
+		Results:             append([]webSearchResult(nil), results...),
+		MaxURLs:             maxURLs,
+		VisualSearchSources: nil,
+	}
+}
+
+func newVisualSearchMetadata(results []visualSearchResult) *searchMetadata {
+	if len(results) == 0 {
+		return nil
+	}
+
 	metadata := new(searchMetadata)
-	metadata.Queries = append(metadata.Queries, queries...)
-	metadata.Results = append(metadata.Results, results...)
-	metadata.MaxURLs = maxURLs
+	metadata.VisualSearchSources = make([]visualSearchSourceGroup, 0, len(results))
+
+	for _, result := range results {
+		metadata.VisualSearchSources = append(metadata.VisualSearchSources, visualSearchSourceGroup{
+			Sources: extractVisualSearchSources(result),
+		})
+	}
 
 	return metadata
 }
@@ -223,7 +247,51 @@ func cloneSearchMetadata(metadata *searchMetadata) *searchMetadata {
 		return nil
 	}
 
-	return newSearchMetadata(metadata.Queries, metadata.Results, metadata.MaxURLs)
+	cloned := newSearchMetadata(metadata.Queries, metadata.Results, metadata.MaxURLs)
+	cloned.VisualSearchSources = cloneVisualSearchSourceGroups(metadata.VisualSearchSources)
+
+	return cloned
+}
+
+func cloneVisualSearchSourceGroups(
+	sourceGroups []visualSearchSourceGroup,
+) []visualSearchSourceGroup {
+	if len(sourceGroups) == 0 {
+		return nil
+	}
+
+	clonedGroups := make([]visualSearchSourceGroup, 0, len(sourceGroups))
+
+	for _, sourceGroup := range sourceGroups {
+		clonedGroups = append(clonedGroups, visualSearchSourceGroup{
+			Sources: append([]searchSource(nil), sourceGroup.Sources...),
+		})
+	}
+
+	return clonedGroups
+}
+
+func mergeSearchMetadata(left *searchMetadata, right *searchMetadata) *searchMetadata {
+	switch {
+	case left == nil:
+		return cloneSearchMetadata(right)
+	case right == nil:
+		return cloneSearchMetadata(left)
+	}
+
+	merged := cloneSearchMetadata(left)
+	merged.Queries = append(merged.Queries, right.Queries...)
+	merged.Results = append(merged.Results, right.Results...)
+	merged.VisualSearchSources = append(
+		merged.VisualSearchSources,
+		cloneVisualSearchSourceGroups(right.VisualSearchSources)...,
+	)
+
+	if right.MaxURLs > 0 {
+		merged.MaxURLs = right.MaxURLs
+	}
+
+	return merged
 }
 
 func (client routedWebSearchClient) search(
@@ -738,15 +806,39 @@ func normalizeSearchQueries(queries []string) []string {
 
 func formatSearchSourcesMessage(metadata *searchMetadata) string {
 	if metadata == nil {
-		return "No web search sources available."
+		return searchSourcesUnavailableText
+	}
+
+	sections := make([]string, 0, searchSourcesSectionCapacity)
+
+	if webSources := formatWebSearchSourcesMessage(metadata); webSources != "" {
+		sections = append(sections, webSources)
+	}
+
+	if visualSources := formatVisualSearchSourcesMessage(metadata.VisualSearchSources); visualSources != "" {
+		sections = append(sections, visualSources)
+	}
+
+	if len(sections) == 0 {
+		return searchSourcesUnavailableText
+	}
+
+	return strings.Join(sections, "\n\n")
+}
+
+func formatWebSearchSourcesMessage(metadata *searchMetadata) string {
+	if metadata == nil || (len(metadata.Queries) == 0 && len(metadata.Results) == 0) {
+		return ""
 	}
 
 	var builder strings.Builder
 
-	builder.WriteString("Search queries:\n")
+	if len(metadata.Queries) > 0 {
+		builder.WriteString("Search queries:\n")
 
-	for index, query := range metadata.Queries {
-		_, _ = fmt.Fprintf(&builder, "%d. %s\n", index+1, query)
+		for index, query := range metadata.Queries {
+			_, _ = fmt.Fprintf(&builder, "%d. %s\n", index+1, query)
+		}
 	}
 
 	for _, result := range metadata.Results {
@@ -768,10 +860,39 @@ func formatSearchSourcesMessage(metadata *searchMetadata) string {
 	return strings.TrimSpace(builder.String())
 }
 
+func formatVisualSearchSourcesMessage(sourceGroups []visualSearchSourceGroup) string {
+	if len(sourceGroups) == 0 {
+		return ""
+	}
+
+	var builder strings.Builder
+
+	builder.WriteString("Visual search result URLs:\n")
+
+	for groupIndex, sourceGroup := range sourceGroups {
+		if len(sourceGroups) > 1 {
+			builder.WriteString("\n")
+			_, _ = fmt.Fprintf(&builder, "Image %d:\n", groupIndex+1)
+		}
+
+		if len(sourceGroup.Sources) == 0 {
+			builder.WriteString("No source URLs were found in the visual search results.\n")
+
+			continue
+		}
+
+		for sourceIndex, source := range sourceGroup.Sources {
+			_, _ = fmt.Fprintf(&builder, "%d. %s\n", sourceIndex+1, formatSearchSourceLine(source))
+		}
+	}
+
+	return strings.TrimSpace(builder.String())
+}
+
 func formatSearchSourcesPages(metadata *searchMetadata) []string {
 	message := strings.TrimSpace(formatSearchSourcesMessage(metadata))
 	if message == "" {
-		return []string{"No web search sources available."}
+		return []string{searchSourcesUnavailableText}
 	}
 
 	return splitMessagePages(message, showSourcesPageBodyMaxLength)
@@ -840,7 +961,7 @@ func splitMessagePages(text string, limit int) []string {
 
 func formatSearchSourcesPageContent(pages []string, pageIndex int) string {
 	if len(pages) == 0 {
-		return "No web search sources available."
+		return searchSourcesUnavailableText
 	}
 
 	if pageIndex < 0 {

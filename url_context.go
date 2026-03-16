@@ -19,7 +19,7 @@ func augmentConversationWithConcurrentURLContent[T any](
 	formatContent func([]T) string,
 	appendContent func([]chatMessage, string) ([]chatMessage, error),
 	appendErrorMessage string,
-) ([]chatMessage, []string, error) {
+) ([]chatMessage, []T, []string, error) {
 	results := make([]T, len(urls))
 	successful := make([]bool, len(urls))
 
@@ -67,7 +67,7 @@ func augmentConversationWithConcurrentURLContent[T any](
 	}
 
 	if len(formattedResults) == 0 {
-		return conversation, warnings, nil
+		return conversation, nil, warnings, nil
 	}
 
 	augmentedConversation, err := appendContent(
@@ -75,8 +75,8 @@ func augmentConversationWithConcurrentURLContent[T any](
 		formatContent(formattedResults),
 	)
 	if err != nil {
-		return nil, nil, fmt.Errorf("%s: %w", appendErrorMessage, err)
+		return nil, nil, nil, fmt.Errorf("%s: %w", appendErrorMessage, err)
 	}
 
-	return augmentedConversation, warnings, nil
+	return augmentedConversation, formattedResults, warnings, nil
 }
