@@ -104,6 +104,7 @@ func testPermissionsConfig() config {
 		WebSearch: searchConfig,
 		Database: databaseConfig{
 			ConnectionString: "",
+			StoreKey:         "",
 		},
 		VisualSearch: visualSearchConfig{
 			SerpAPI: serpAPIVisualSearchConfig{APIKey: "", APIKeys: nil},

@@ -103,6 +103,27 @@ func TestDefaultMessageNodeStoreKeyUsesExpectedPrefix(t *testing.T) {
 	}
 }
 
+func TestMessageNodeStoreKeyUsesConfiguredValue(t *testing.T) {
+	t.Parallel()
+
+	storeKey := messageNodeStoreKey("config.yaml", "shared-home-bots")
+
+	if storeKey != "shared-home-bots" {
+		t.Fatalf("unexpected configured store key: %q", storeKey)
+	}
+}
+
+func TestMessageNodeStoreKeyFallsBackToDefaultWhenEmpty(t *testing.T) {
+	t.Parallel()
+
+	defaultStoreKey := defaultMessageNodeStoreKey("config.yaml")
+	storeKey := messageNodeStoreKey("config.yaml", "")
+
+	if storeKey != defaultStoreKey {
+		t.Fatalf("unexpected fallback store key: got %q want %q", storeKey, defaultStoreKey)
+	}
+}
+
 func TestDefaultMessageNodeStoreKeyIsStableForEquivalentPaths(t *testing.T) {
 	t.Parallel()
 

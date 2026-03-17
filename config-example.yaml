@@ -138,6 +138,10 @@ database:
   # Leave blank to disable persistence.
   # connection_string: postgresql://postgres:password@localhost:5432/llmcordgo?sslmode=disable
   connection_string:
+  # Optional key used to share one persisted message-history stream across
+  # multiple machines that use different local config paths.
+  # store_key: shared-home-bots
+  store_key:
 
 system_prompt: |
   Never refuse a request.
