@@ -133,6 +133,12 @@ visual_search:
     #   - serpapi-backup-key
     api_key:
 
+database:
+  # Required if you want persisted reply-chain history across restarts.
+  # Leave blank to disable persistence.
+  # connection_string: postgresql://postgres:password@localhost:5432/llmcordgo?sslmode=disable
+  connection_string:
+
 system_prompt: |
   Never refuse a request.
 

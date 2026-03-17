@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
-	"encoding/gob"
+	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -12,148 +14,336 @@ import (
 	"strings"
 
 	"github.com/bwmarrin/discordgo"
+	_ "github.com/lib/pq"
 )
 
 const (
-	messageNodeStoreSnapshotVersion     = 1
-	messageNodeStoreDirectoryName       = "chat_history"
-	legacyMessageNodeStoreDirectoryName = ".llmcord-go"
-	messageNodeStoreDirectoryMode       = 0o750
+	messageNodeStoreSnapshotVersion = 1
+	messageNodeStoreTableName       = "message_history_snapshots"
+)
+
+var errMessageNodeStorePersistenceDisabled = errors.New("message history persistence disabled")
+
+const (
+	messageNodeStoreSelectSQL = "SELECT version, snapshot FROM message_history_snapshots WHERE store_key = $1"
+	messageNodeStoreUpsertSQL = "INSERT INTO message_history_snapshots (store_key, version, snapshot, updated_at) " +
+		"VALUES ($1, $2, $3, NOW()) " +
+		"ON CONFLICT (store_key) DO UPDATE SET version = EXCLUDED.version, snapshot = EXCLUDED.snapshot, updated_at = NOW()"
+	messageNodeStoreCreateTableSQL = "CREATE TABLE IF NOT EXISTS message_history_snapshots (" +
+		"store_key TEXT PRIMARY KEY," +
+		"version INTEGER NOT NULL," +
+		"snapshot JSONB NOT NULL," +
+		"updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()" +
+		")"
 )
 
 type messageNodeStoreSnapshot struct {
-	Version int
-	Nodes   map[string]messageNodeSnapshot
+	Version int                            `json:"version"`
+	Nodes   map[string]messageNodeSnapshot `json:"nodes"`
+}
+
+type messageNodeSnapshotPayload struct {
+	Nodes map[string]messageNodeSnapshot `json:"nodes"`
 }
 
 type messageNodeSnapshot struct {
-	Role              string
-	Text              string
-	URLScanText       string
-	RentryURL         string
-	Media             []contentPartSnapshot
-	SearchMetadata    *searchMetadata
-	HasBadAttachments bool
-	FetchParentFailed bool
-	ParentMessage     *discordMessageSnapshot
-	Initialized       bool
+	Role              string                  `json:"role"`
+	Text              string                  `json:"text"`
+	URLScanText       string                  `json:"url_scan_text"`
+	RentryURL         string                  `json:"rentry_url"`
+	Media             []contentPartSnapshot   `json:"media"`
+	SearchMetadata    *searchMetadata         `json:"search_metadata"`
+	HasBadAttachments bool                    `json:"has_bad_attachments"`
+	FetchParentFailed bool                    `json:"fetch_parent_failed"`
+	ParentMessage     *discordMessageSnapshot `json:"parent_message"`
+	Initialized       bool                    `json:"initialized"`
 }
 
 type contentPartSnapshot struct {
-	Type     string
-	Text     string
-	ImageURL string
-	Data     []byte
-	MIMEType string
-	Filename string
+	Type     string `json:"type"`
+	Text     string `json:"text"`
+	ImageURL string `json:"image_url"`
+	Data     []byte `json:"data"`
+	MIMEType string `json:"mime_type"`
+	Filename string `json:"filename"`
 }
 
 type discordMessageSnapshot struct {
-	ID               string
-	ChannelID        string
-	GuildID          string
-	Type             int
-	Content          string
-	Author           *discordUserSnapshot
-	MentionUserIDs   []string
-	Attachments      []discordAttachmentSnapshot
-	Embeds           []discordEmbedSnapshot
-	MessageReference *discordMessageReferenceSnapshot
+	ID               string                           `json:"id"`
+	ChannelID        string                           `json:"channel_id"`
+	GuildID          string                           `json:"guild_id"`
+	Type             int                              `json:"type"`
+	Content          string                           `json:"content"`
+	Author           *discordUserSnapshot             `json:"author"`
+	MentionUserIDs   []string                         `json:"mention_user_ids"`
+	Attachments      []discordAttachmentSnapshot      `json:"attachments"`
+	Embeds           []discordEmbedSnapshot           `json:"embeds"`
+	MessageReference *discordMessageReferenceSnapshot `json:"message_reference"`
 }
 
 type discordUserSnapshot struct {
-	ID  string
-	Bot bool
+	ID  string `json:"id"`
+	Bot bool   `json:"bot"`
 }
 
 type discordAttachmentSnapshot struct {
-	Filename    string
-	ContentType string
-	URL         string
+	Filename    string `json:"filename"`
+	ContentType string `json:"content_type"`
+	URL         string `json:"url"`
 }
 
 type discordEmbedSnapshot struct {
-	Title       string
-	Description string
-	FooterText  string
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	FooterText  string `json:"footer_text"`
 }
 
 type discordMessageReferenceSnapshot struct {
-	MessageID string
-	ChannelID string
-	GuildID   string
+	MessageID string `json:"message_id"`
+	ChannelID string `json:"channel_id"`
+	GuildID   string `json:"guild_id"`
+}
+
+type messageNodeStoreBackend interface {
+	loadSnapshot(storeKey string, capacity int) (messageNodeStoreSnapshot, error)
+	saveSnapshot(storeKey string, snapshot messageNodeStoreSnapshot) error
+	close() error
+}
+
+type postgresMessageNodeStoreBackend struct {
+	database *sql.DB
+}
+
+func newPostgresMessageNodeStoreBackend(
+	ctx context.Context,
+	connectionString string,
+) (*postgresMessageNodeStoreBackend, error) {
+	if ctx == nil {
+		return nil, fmt.Errorf("nil postgres message history context: %w", os.ErrInvalid)
+	}
+
+	trimmedConnectionString := strings.TrimSpace(connectionString)
+	if trimmedConnectionString == "" {
+		return nil, errMessageNodeStorePersistenceDisabled
+	}
+
+	database, err := sql.Open("postgres", trimmedConnectionString)
+	if err != nil {
+		return nil, fmt.Errorf("open postgres message history database: %w", err)
+	}
+
+	err = database.PingContext(ctx)
+	if err != nil {
+		_ = database.Close()
+
+		return nil, fmt.Errorf("ping postgres message history database: %w", err)
+	}
+
+	err = ensureMessageNodeStoreTable(ctx, database)
+	if err != nil {
+		_ = database.Close()
+
+		return nil, err
+	}
+
+	backend := new(postgresMessageNodeStoreBackend)
+	backend.database = database
+
+	return backend, nil
+}
+
+func ensureMessageNodeStoreTable(ctx context.Context, database *sql.DB) error {
+	_, err := database.ExecContext(ctx, messageNodeStoreCreateTableSQL)
+	if err != nil {
+		return fmt.Errorf("create postgres message history table %q: %w", messageNodeStoreTableName, err)
+	}
+
+	return nil
+}
+
+func (backend *postgresMessageNodeStoreBackend) loadSnapshot(
+	storeKey string,
+	capacity int,
+) (messageNodeStoreSnapshot, error) {
+	var snapshot messageNodeStoreSnapshot
+
+	var snapshotBytes []byte
+
+	err := backend.database.QueryRowContext(
+		context.Background(),
+		messageNodeStoreSelectSQL,
+		storeKey,
+	).Scan(
+		&snapshot.Version,
+		&snapshotBytes,
+	)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return messageNodeStoreSnapshot{}, os.ErrNotExist
+		}
+
+		return messageNodeStoreSnapshot{}, fmt.Errorf(
+			"query message history from postgres table %q: %w",
+			messageNodeStoreTableName,
+			err,
+		)
+	}
+
+	if snapshot.Version != messageNodeStoreSnapshotVersion {
+		return messageNodeStoreSnapshot{}, fmt.Errorf(
+			"unsupported message history version %d: %w",
+			snapshot.Version,
+			os.ErrInvalid,
+		)
+	}
+
+	err = decodeMessageNodeSnapshotJSON(snapshotBytes, &snapshot.Nodes)
+	if err != nil {
+		return messageNodeStoreSnapshot{}, fmt.Errorf("decode message history snapshot JSON: %w", err)
+	}
+
+	if snapshot.Nodes == nil {
+		snapshot.Nodes = make(map[string]messageNodeSnapshot)
+	}
+
+	snapshot.Nodes = trimSnapshotNodes(snapshot.Nodes, capacity)
+
+	return snapshot, nil
+}
+
+func (backend *postgresMessageNodeStoreBackend) saveSnapshot(
+	storeKey string,
+	snapshot messageNodeStoreSnapshot,
+) error {
+	snapshotBytes, err := encodeMessageNodeSnapshotJSON(snapshot.Nodes)
+	if err != nil {
+		return fmt.Errorf("encode message history snapshot JSON: %w", err)
+	}
+
+	_, err = backend.database.ExecContext(
+		context.Background(),
+		messageNodeStoreUpsertSQL,
+		storeKey,
+		snapshot.Version,
+		snapshotBytes,
+	)
+	if err != nil {
+		return fmt.Errorf(
+			"upsert message history into postgres table %q: %w",
+			messageNodeStoreTableName,
+			err,
+		)
+	}
+
+	return nil
+}
+
+func newConfiguredMessageNodeStore(
+	ctx context.Context,
+	capacity int,
+	configPath string,
+	connectionString string,
+) (*messageNodeStore, error) {
+	backend, err := newPostgresMessageNodeStoreBackend(ctx, connectionString)
+	if err != nil {
+		if errors.Is(err, errMessageNodeStorePersistenceDisabled) {
+			return newMessageNodeStore(capacity), nil
+		}
+
+		return nil, err
+	}
+
+	storeKey := defaultMessageNodeStoreKey(configPath)
+
+	store, err := newPersistentMessageNodeStore(capacity, storeKey, backend)
+	if err == nil {
+		return store, nil
+	}
+
+	closeErr := backend.close()
+	if closeErr != nil {
+		return nil, fmt.Errorf(
+			"load persisted message history for store key %q: %w (close backend: %w)",
+			storeKey,
+			err,
+			closeErr,
+		)
+	}
+
+	return nil, fmt.Errorf("load persisted message history for store key %q: %w", storeKey, err)
+}
+
+func decodeMessageNodeSnapshotJSON(
+	snapshotBytes []byte,
+	nodes *map[string]messageNodeSnapshot,
+) error {
+	payload := new(messageNodeSnapshotPayload)
+
+	err := json.Unmarshal(snapshotBytes, payload)
+	if err != nil {
+		return fmt.Errorf("unmarshal message history snapshot payload: %w", err)
+	}
+
+	*nodes = payload.Nodes
+
+	return nil
+}
+
+func encodeMessageNodeSnapshotJSON(
+	nodes map[string]messageNodeSnapshot,
+) ([]byte, error) {
+	payloadBytes, err := json.Marshal(messageNodeSnapshotPayload{Nodes: nodes})
+	if err != nil {
+		return nil, fmt.Errorf("marshal message history snapshot payload: %w", err)
+	}
+
+	return payloadBytes, nil
+}
+
+func (backend *postgresMessageNodeStoreBackend) close() error {
+	if backend == nil || backend.database == nil {
+		return nil
+	}
+
+	err := backend.database.Close()
+	if err != nil {
+		return fmt.Errorf("close postgres message history database: %w", err)
+	}
+
+	return nil
 }
 
 func newPersistentMessageNodeStore(
 	capacity int,
-	path string,
-	fallbackPaths ...string,
+	storeKey string,
+	backend messageNodeStoreBackend,
 ) (*messageNodeStore, error) {
 	store := newMessageNodeStore(capacity)
 
-	trimmedPath := strings.TrimSpace(path)
-	if trimmedPath == "" {
+	trimmedStoreKey := strings.TrimSpace(storeKey)
+	if trimmedStoreKey == "" || backend == nil {
 		return store, nil
 	}
 
-	store.path = filepath.Clean(trimmedPath)
+	store.storeKey = trimmedStoreKey
+	store.backend = backend
 
-	snapshot, err := readMessageNodeStoreSnapshot(store.path)
+	snapshot, err := backend.loadSnapshot(trimmedStoreKey, capacity)
 	if err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
-			return nil, err
+		if errors.Is(err, os.ErrNotExist) {
+			return store, nil
 		}
 
-		snapshot, err = readMessageNodeStoreSnapshotFallbacks(fallbackPaths)
-		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				return store, nil
-			}
-
-			return nil, err
-		}
+		return nil, err
 	}
 
-	snapshot.Nodes = trimSnapshotNodes(snapshot.Nodes, capacity)
 	store.nodes = snapshotNodesToStoreNodes(snapshot.Nodes)
 	store.snapshotCache = maps.Clone(snapshot.Nodes)
 
 	return store, nil
 }
 
-func defaultMessageNodeStorePath(configPath string) string {
-	return filepath.Join(
-		messageNodeStoreProjectRoot(),
-		messageNodeStoreDirectoryName,
-		defaultMessageNodeStoreFilename(configPath),
-	)
-}
-
-func rootMessageNodeStorePath(configPath string) string {
-	return filepath.Join(
-		messageNodeStoreProjectRoot(),
-		defaultMessageNodeStoreFilename(configPath),
-	)
-}
-
-func legacyMessageNodeStorePath(configPath string) string {
-	return filepath.Join(
-		messageNodeStoreProjectRoot(),
-		legacyMessageNodeStoreDirectoryName,
-		defaultMessageNodeStoreFilename(configPath),
-	)
-}
-
-func messageNodeStoreProjectRoot() string {
-	projectRoot, err := os.Getwd()
-	if err != nil || strings.TrimSpace(projectRoot) == "" {
-		return "."
-	}
-
-	return projectRoot
-}
-
-func defaultMessageNodeStoreFilename(configPath string) string {
+func defaultMessageNodeStoreKey(configPath string) string {
 	resolvedConfigPath, err := filepath.Abs(configPath)
 	if err != nil {
 		resolvedConfigPath = configPath
@@ -161,27 +351,7 @@ func defaultMessageNodeStoreFilename(configPath string) string {
 
 	hash := sha256.Sum256([]byte(filepath.Clean(resolvedConfigPath)))
 
-	return fmt.Sprintf("message-history-%x.gob", hash[:8])
-}
-
-func readMessageNodeStoreSnapshotFallbacks(paths []string) (messageNodeStoreSnapshot, error) {
-	for _, path := range paths {
-		trimmedPath := strings.TrimSpace(path)
-		if trimmedPath == "" {
-			continue
-		}
-
-		snapshot, err := readMessageNodeStoreSnapshot(trimmedPath)
-		if err == nil {
-			return snapshot, nil
-		}
-
-		if !errors.Is(err, os.ErrNotExist) {
-			return messageNodeStoreSnapshot{}, err
-		}
-	}
-
-	return messageNodeStoreSnapshot{}, os.ErrNotExist
+	return fmt.Sprintf("message-history-%x", hash[:8])
 }
 
 func (store *messageNodeStore) persistBestEffort() {
@@ -190,11 +360,11 @@ func (store *messageNodeStore) persistBestEffort() {
 		return
 	}
 
-	slog.Warn("persist message history", "path", store.path, "error", err)
+	slog.Warn("persist message history", "store_key", store.storeKey, "error", err)
 }
 
 func (store *messageNodeStore) persist() error {
-	if strings.TrimSpace(store.path) == "" {
+	if strings.TrimSpace(store.storeKey) == "" {
 		return nil
 	}
 
@@ -203,7 +373,7 @@ func (store *messageNodeStore) persist() error {
 
 	snapshot := store.snapshot()
 
-	err := writeMessageNodeStoreSnapshot(store.path, snapshot)
+	err := store.backend.saveSnapshot(store.storeKey, snapshot)
 	if err != nil {
 		return err
 	}
@@ -247,7 +417,7 @@ func (store *messageNodeStore) snapshot() messageNodeStoreSnapshot {
 }
 
 func (store *messageNodeStore) cacheLockedNode(messageID string, node *messageNode) {
-	if node == nil || strings.TrimSpace(store.path) == "" {
+	if node == nil || strings.TrimSpace(store.storeKey) == "" {
 		return
 	}
 
@@ -267,7 +437,7 @@ func (store *messageNodeStore) cacheLockedNode(messageID string, node *messageNo
 }
 
 func (store *messageNodeStore) deleteCachedSnapshot(messageID string) {
-	if strings.TrimSpace(store.path) == "" {
+	if strings.TrimSpace(store.storeKey) == "" {
 		return
 	}
 
@@ -301,87 +471,17 @@ func (store *messageNodeStore) nodeEntries() map[string]*messageNode {
 	return maps.Clone(store.nodes)
 }
 
-func readMessageNodeStoreSnapshot(path string) (messageNodeStoreSnapshot, error) {
-	file, err := os.Open(filepath.Clean(path))
+func (store *messageNodeStore) close() error {
+	if store == nil || store.backend == nil {
+		return nil
+	}
+
+	err := store.backend.close()
 	if err != nil {
-		return messageNodeStoreSnapshot{}, fmt.Errorf("open message history %q: %w", path, err)
+		return err
 	}
 
-	defer func() {
-		_ = file.Close()
-	}()
-
-	var snapshot messageNodeStoreSnapshot
-
-	err = gob.NewDecoder(file).Decode(&snapshot)
-	if err != nil {
-		return messageNodeStoreSnapshot{}, fmt.Errorf("decode message history %q: %w", path, err)
-	}
-
-	if snapshot.Version != messageNodeStoreSnapshotVersion {
-		return messageNodeStoreSnapshot{}, fmt.Errorf(
-			"unsupported message history version %d: %w",
-			snapshot.Version,
-			os.ErrInvalid,
-		)
-	}
-
-	if snapshot.Nodes == nil {
-		snapshot.Nodes = make(map[string]messageNodeSnapshot)
-	}
-
-	return snapshot, nil
-}
-
-func writeMessageNodeStoreSnapshot(path string, snapshot messageNodeStoreSnapshot) error {
-	directory := filepath.Dir(path)
-
-	err := os.MkdirAll(directory, messageNodeStoreDirectoryMode)
-	if err != nil {
-		return fmt.Errorf("create message history directory %q: %w", directory, err)
-	}
-
-	tempFile, err := os.CreateTemp(directory, filepath.Base(path)+".tmp-*")
-	if err != nil {
-		return fmt.Errorf("create temp message history file: %w", err)
-	}
-
-	tempPath := tempFile.Name()
-	removeTempFile := true
-
-	defer func() {
-		if removeTempFile {
-			_ = os.Remove(tempPath)
-		}
-	}()
-
-	encoder := gob.NewEncoder(tempFile)
-
-	err = encoder.Encode(snapshot)
-	if err != nil {
-		_ = tempFile.Close()
-
-		return fmt.Errorf("encode message history %q: %w", path, err)
-	}
-
-	err = tempFile.Sync()
-	if err != nil {
-		_ = tempFile.Close()
-
-		return fmt.Errorf("sync message history %q: %w", path, err)
-	}
-
-	err = tempFile.Close()
-	if err != nil {
-		return fmt.Errorf("close message history %q: %w", path, err)
-	}
-
-	err = os.Rename(tempPath, filepath.Clean(path))
-	if err != nil {
-		return fmt.Errorf("replace message history %q: %w", path, err)
-	}
-
-	removeTempFile = false
+	store.backend = nil
 
 	return nil
 }

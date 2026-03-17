@@ -100,6 +100,10 @@ type rawWebSearchConfig struct {
 	Tavily          rawTavilySearchConfig `yaml:"tavily"`
 }
 
+type rawDatabaseConfig struct {
+	ConnectionString scalarString `yaml:"connection_string"`
+}
+
 type providerConfig struct {
 	Type         string
 	BaseURL      string
@@ -137,6 +141,10 @@ type webSearchConfig struct {
 	Tavily          tavilySearchConfig
 }
 
+type databaseConfig struct {
+	ConnectionString string
+}
+
 type providerAPIKind string
 
 const (
@@ -158,6 +166,7 @@ type rawConfig struct {
 	Providers          map[string]rawProviderConfig `yaml:"providers"`
 	WebSearch          rawWebSearchConfig           `yaml:"web_search"`
 	VisualSearch       rawVisualSearchConfig        `yaml:"visual_search"`
+	Database           rawDatabaseConfig            `yaml:"database"`
 	Models             map[string]map[string]any    `yaml:"models"`
 	ChannelModelLocks  map[string]scalarString      `yaml:"channel_model_locks"`
 	SearchDeciderModel scalarString                 `yaml:"search_decider_model"`
@@ -178,6 +187,7 @@ type config struct {
 	Providers          map[string]providerConfig
 	WebSearch          webSearchConfig
 	VisualSearch       visualSearchConfig
+	Database           databaseConfig
 	Models             map[string]map[string]any
 	ModelOrder         []string
 	ChannelModelLocks  map[string]string
@@ -275,6 +285,9 @@ func buildLoadedConfig(
 				APIKey:  firstAPIKey(serpAPIVisualSearchKeys),
 				APIKeys: serpAPIVisualSearchKeys,
 			},
+		},
+		Database: databaseConfig{
+			ConnectionString: strings.TrimSpace(string(rawLoadedConfig.Database.ConnectionString)),
 		},
 		Models:             rawLoadedConfig.Models,
 		ModelOrder:         modelOrder,
@@ -389,6 +402,11 @@ func validateConfig(loadedConfig config) error {
 		return err
 	}
 
+	err = validateDatabaseConfig(loadedConfig.Database)
+	if err != nil {
+		return err
+	}
+
 	for _, modelName := range loadedConfig.ModelOrder {
 		providerName, _, err := splitConfiguredModel(modelName)
 		if err != nil {
@@ -419,34 +437,9 @@ func validateConfig(loadedConfig config) error {
 		return err
 	}
 
-	if strings.TrimSpace(loadedConfig.MediaAnalysisModel) != "" {
-		if !loadedConfig.hasModel(loadedConfig.MediaAnalysisModel) {
-			return fmt.Errorf(
-				"media_analysis_model %q is not defined in models: %w",
-				loadedConfig.MediaAnalysisModel,
-				os.ErrNotExist,
-			)
-		}
-
-		apiKind, err := configuredModelAPIKind(
-			loadedConfig,
-			loadedConfig.MediaAnalysisModel,
-		)
-		if err != nil {
-			return fmt.Errorf(
-				"inspect media_analysis_model %q: %w",
-				loadedConfig.MediaAnalysisModel,
-				err,
-			)
-		}
-
-		if apiKind != providerAPIKindGemini {
-			return fmt.Errorf(
-				"media_analysis_model %q must use a gemini provider: %w",
-				loadedConfig.MediaAnalysisModel,
-				os.ErrInvalid,
-			)
-		}
+	err = validateMediaAnalysisModel(loadedConfig)
+	if err != nil {
+		return err
 	}
 
 	return nil
@@ -483,6 +476,60 @@ func validateChannelModelLocks(loadedConfig config) error {
 				os.ErrNotExist,
 			)
 		}
+	}
+
+	return nil
+}
+
+func validateDatabaseConfig(loadedConfig databaseConfig) error {
+	trimmedConnectionString := strings.TrimSpace(loadedConfig.ConnectionString)
+	if trimmedConnectionString == "" {
+		return nil
+	}
+
+	parsedURL, err := url.Parse(trimmedConnectionString)
+	if err != nil {
+		return fmt.Errorf("database.connection_string is invalid: %w", err)
+	}
+
+	if parsedURL.Scheme != "postgres" && parsedURL.Scheme != "postgresql" {
+		return fmt.Errorf("database.connection_string must use postgres:// or postgresql://: %w", os.ErrInvalid)
+	}
+
+	return nil
+}
+
+func validateMediaAnalysisModel(loadedConfig config) error {
+	if strings.TrimSpace(loadedConfig.MediaAnalysisModel) == "" {
+		return nil
+	}
+
+	if !loadedConfig.hasModel(loadedConfig.MediaAnalysisModel) {
+		return fmt.Errorf(
+			"media_analysis_model %q is not defined in models: %w",
+			loadedConfig.MediaAnalysisModel,
+			os.ErrNotExist,
+		)
+	}
+
+	apiKind, err := configuredModelAPIKind(
+		loadedConfig,
+		loadedConfig.MediaAnalysisModel,
+	)
+	if err != nil {
+		return fmt.Errorf(
+			"inspect media_analysis_model %q: %w",
+			loadedConfig.MediaAnalysisModel,
+			err,
+		)
+	}
+
+	if apiKind != providerAPIKindGemini {
+		return fmt.Errorf(
+			"media_analysis_model %q must use a gemini provider: %w",
+			loadedConfig.MediaAnalysisModel,
+			os.ErrInvalid,
+		)
 	}
 
 	return nil

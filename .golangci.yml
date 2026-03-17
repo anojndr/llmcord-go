@@ -17,6 +17,7 @@ linters:
             - github.com/Advik-B/cloudscraper/lib/user_agent
             - github.com/bwmarrin/discordgo
             - github.com/ledongthuc/pdf
+            - github.com/lib/pq
             - github.com/modelcontextprotocol/go-sdk/mcp
             - github.com/pdfcpu/pdfcpu/pkg/api
             - github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model

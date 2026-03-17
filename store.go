@@ -29,7 +29,8 @@ type messageNodeStore struct {
 	mu            sync.Mutex
 	nodes         map[string]*messageNode
 	capacity      int
-	path          string
+	storeKey      string
+	backend       messageNodeStoreBackend
 	saveMu        sync.Mutex
 	snapshotMu    sync.Mutex
 	snapshotCache map[string]messageNodeSnapshot

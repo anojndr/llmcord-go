@@ -56,7 +56,7 @@ This bot turns Discord into a reply-chain frontend for OpenAI-compatible LLM API
    docker compose up --build
    ```
 
-   The provided `docker-compose.yaml` mounts the project root read-write so persisted reply-chain history files can be created under `./chat_history/`.
+   The provided `docker-compose.yaml` mounts the project root read-write for local development.
 
 To log in to ChatGPT and print a copyable Codex API key for `providers.<name>.api_key`, run:
 
@@ -91,6 +91,7 @@ The config schema stays close to the original Python project.
 | `channel_model_locks` | Optional map of Discord channel IDs to configured reply models. Messages in those channels always use the locked model, and `/model` is disabled there. This affects only the main reply model; `search_decider_model` still works independently. |
 | `search_decider_model` | Optional `<provider>/<model>` entry used for deciding whether web search is required. Defaults to the first configured model. |
 | `media_analysis_model` | Optional `<provider>/<model>` entry used for Gemini preprocessing of audio/video attachments before non-Gemini replies. Must reference a configured Gemini model. If omitted, the bot falls back to `search_decider_model` when that model is Gemini, or the first configured Gemini model. |
+| `database.connection_string` | Optional PostgreSQL connection string used to persist reply-chain history and retained augmentation metadata. Must use `postgres://` or `postgresql://`. Leave empty to disable persistence. |
 | `system_prompt` | Optional prompt prepended to every request. `{date}` and `{time}` are expanded using the host time zone. |
 
 ### Search settings
@@ -118,7 +119,7 @@ golangci-lint run --default=all
 ## Notes
 
 - The bot reads `config.yaml` on each message and `/model` autocomplete request, so configuration changes apply without restarting.
-- Reply-chain history is stored under `chat_history/message-history-*.gob`, keyed by the config path. Existing `message-history-*.gob` files in the project root and older `.llmcord-go/message-history-*.gob` files are still loaded as fallbacks and are rewritten into `chat_history/` on the next save, so cached assistant replies, retained augmentations, search-source metadata, and Rentry URLs survive bot restarts.
+- Reply-chain history is stored in PostgreSQL table `message_history_snapshots` when `database.connection_string` is configured. Rows are keyed by a deterministic hash of the config path, so cached assistant replies, retained augmentations, search-source metadata, and Rentry URLs survive bot restarts.
 - `channel_model_locks` matches the current channel first, then its parent thread/forum context when applicable. Locked channels only affect reply generation; `/searchdecidermodel` and search-decider execution are unchanged.
 - Gemini providers use the official `google.golang.org/genai` SDK. Existing configs that still point at `https://generativelanguage.googleapis.com/.../openai` are detected and routed through the native Gemini client automatically.
 - Gemini requests can include Discord PDF, audio, and video attachments. Those attachments are uploaded through the Gemini Files API before `GenerateContent`, so Gemini models can inspect them without relying on inline request blobs. Gemini's document vision meaningfully applies to PDFs; other text-like attachments continue to be ingested as plain text when Discord reports them as `text/*`.
