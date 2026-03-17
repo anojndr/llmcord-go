@@ -93,6 +93,10 @@ models:
 			loadedConfig.Database.ConnectionString,
 		)
 	}
+
+	if loadedConfig.Database.StoreKey != "" {
+		t.Fatalf("unexpected default database store key: %q", loadedConfig.Database.StoreKey)
+	}
 }
 
 func TestLoadConfigUsesConfiguredDatabaseConnectionString(t *testing.T) {
@@ -127,6 +131,63 @@ database:
 			"unexpected database connection string: %q",
 			loadedConfig.Database.ConnectionString,
 		)
+	}
+}
+
+func TestLoadConfigUsesConfiguredDatabaseStoreKey(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	configText := `
+bot_token: discord-token
+providers:
+  openai:
+    base_url: https://api.example.com/v1
+models:
+  openai/first-model:
+database:
+  store_key: shared-home-bots
+`
+
+	err := os.WriteFile(configPath, []byte(configText), 0o600)
+	if err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	loadedConfig, err := loadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	if loadedConfig.Database.StoreKey != "shared-home-bots" {
+		t.Fatalf("unexpected database store key: %q", loadedConfig.Database.StoreKey)
+	}
+}
+
+func TestLoadConfigRejectsWhitespaceOnlyDatabaseStoreKey(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	configText := "\n" +
+		"bot_token: discord-token\n" +
+		"providers:\n" +
+		"  openai:\n" +
+		"    base_url: https://api.example.com/v1\n" +
+		"models:\n" +
+		"  openai/first-model:\n" +
+		"database:\n" +
+		"  store_key: \"   \"\n"
+
+	err := os.WriteFile(configPath, []byte(configText), 0o600)
+	if err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	_, err = loadConfig(configPath)
+	if err == nil {
+		t.Fatal("expected whitespace-only database store key to fail validation")
 	}
 }
 

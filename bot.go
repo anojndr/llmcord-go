@@ -67,6 +67,7 @@ func newBot(ctx context.Context, configPath string, loadedConfig config) (*bot, 
 		ctx,
 		maxMessageNodes,
 		configPath,
+		loadedConfig.Database.StoreKey,
 		loadedConfig.Database.ConnectionString,
 	)
 	if err != nil {

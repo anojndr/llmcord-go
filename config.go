@@ -102,6 +102,7 @@ type rawWebSearchConfig struct {
 
 type rawDatabaseConfig struct {
 	ConnectionString scalarString `yaml:"connection_string"`
+	StoreKey         scalarString `yaml:"store_key"`
 }
 
 type providerConfig struct {
@@ -143,6 +144,7 @@ type webSearchConfig struct {
 
 type databaseConfig struct {
 	ConnectionString string
+	StoreKey         string
 }
 
 type providerAPIKind string
@@ -286,9 +288,7 @@ func buildLoadedConfig(
 				APIKeys: serpAPIVisualSearchKeys,
 			},
 		},
-		Database: databaseConfig{
-			ConnectionString: strings.TrimSpace(string(rawLoadedConfig.Database.ConnectionString)),
-		},
+		Database:           normalizeDatabaseConfig(rawLoadedConfig.Database),
 		Models:             rawLoadedConfig.Models,
 		ModelOrder:         modelOrder,
 		ChannelModelLocks:  channelModelLocks,
@@ -357,6 +357,13 @@ func normalizeStringScalarMap(rawValues map[string]scalarString) map[string]stri
 	}
 
 	return values
+}
+
+func normalizeDatabaseConfig(rawLoadedConfig rawDatabaseConfig) databaseConfig {
+	return databaseConfig{
+		ConnectionString: strings.TrimSpace(string(rawLoadedConfig.ConnectionString)),
+		StoreKey:         string(rawLoadedConfig.StoreKey),
+	}
 }
 
 func normalizeWebSearchProvider(rawValue scalarString) webSearchProviderKind {
@@ -483,6 +490,12 @@ func validateChannelModelLocks(loadedConfig config) error {
 
 func validateDatabaseConfig(loadedConfig databaseConfig) error {
 	trimmedConnectionString := strings.TrimSpace(loadedConfig.ConnectionString)
+	trimmedStoreKey := strings.TrimSpace(loadedConfig.StoreKey)
+
+	if loadedConfig.StoreKey != "" && trimmedStoreKey == "" {
+		return fmt.Errorf("database.store_key must not be only whitespace: %w", os.ErrInvalid)
+	}
+
 	if trimmedConnectionString == "" {
 		return nil
 	}

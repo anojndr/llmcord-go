@@ -242,6 +242,7 @@ func newConfiguredMessageNodeStore(
 	ctx context.Context,
 	capacity int,
 	configPath string,
+	configuredStoreKey string,
 	connectionString string,
 ) (*messageNodeStore, error) {
 	backend, err := newPostgresMessageNodeStoreBackend(ctx, connectionString)
@@ -253,7 +254,7 @@ func newConfiguredMessageNodeStore(
 		return nil, err
 	}
 
-	storeKey := defaultMessageNodeStoreKey(configPath)
+	storeKey := messageNodeStoreKey(configPath, configuredStoreKey)
 
 	store, err := newPersistentMessageNodeStore(capacity, storeKey, backend)
 	if err == nil {
@@ -352,6 +353,15 @@ func defaultMessageNodeStoreKey(configPath string) string {
 	hash := sha256.Sum256([]byte(filepath.Clean(resolvedConfigPath)))
 
 	return fmt.Sprintf("message-history-%x", hash[:8])
+}
+
+func messageNodeStoreKey(configPath string, configuredStoreKey string) string {
+	trimmedStoreKey := strings.TrimSpace(configuredStoreKey)
+	if trimmedStoreKey != "" {
+		return trimmedStoreKey
+	}
+
+	return defaultMessageNodeStoreKey(configPath)
 }
 
 func (store *messageNodeStore) persistBestEffort() {
