@@ -102,6 +102,9 @@ func testPermissionsConfig() config {
 		},
 		Providers: nil,
 		WebSearch: searchConfig,
+		Database: databaseConfig{
+			ConnectionString: "",
+		},
 		VisualSearch: visualSearchConfig{
 			SerpAPI: serpAPIVisualSearchConfig{APIKey: "", APIKeys: nil},
 		},

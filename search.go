@@ -73,25 +73,25 @@ type searchDecision struct {
 }
 
 type searchMetadata struct {
-	Queries             []string
-	Results             []webSearchResult
-	MaxURLs             int
-	VisualSearchSources []visualSearchSourceGroup
+	Queries             []string                  `json:"queries"`
+	Results             []webSearchResult         `json:"results"`
+	MaxURLs             int                       `json:"max_urls"`
+	VisualSearchSources []visualSearchSourceGroup `json:"visual_search_sources"`
 }
 
 type webSearchResult struct {
-	Query string
-	Text  string
+	Query string `json:"query"`
+	Text  string `json:"text"`
 }
 
 type searchSource struct {
-	Title string
-	URL   string
+	Title string `json:"title"`
+	URL   string `json:"url"`
 }
 
 type visualSearchSourceGroup struct {
-	Label   string
-	Sources []searchSource
+	Label   string         `json:"label"`
+	Sources []searchSource `json:"sources"`
 }
 
 type exaSearchClient struct {

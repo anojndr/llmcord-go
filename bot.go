@@ -34,7 +34,7 @@ type bot struct {
 	nextEditAt                time.Time
 }
 
-func newBot(configPath string, loadedConfig config) (*bot, error) {
+func newBot(ctx context.Context, configPath string, loadedConfig config) (*bot, error) {
 	discordSession, err := discordgo.New("Bot " + loadedConfig.BotToken)
 	if err != nil {
 		return nil, fmt.Errorf("create discord session: %w", err)
@@ -61,21 +61,18 @@ func newBot(configPath string, loadedConfig config) (*bot, error) {
 	instance.youtube = newYouTubeClient(httpClient)
 	instance.reddit = newRedditClient(httpClient)
 	instance.website = newWebsiteClient(httpClient)
+	instance.nodes = newMessageNodeStore(maxMessageNodes)
 
-	storePath := defaultMessageNodeStorePath(configPath)
-	rootStorePath := rootMessageNodeStorePath(configPath)
-	legacyStorePath := legacyMessageNodeStorePath(configPath)
-
-	instance.nodes, err = newPersistentMessageNodeStore(
+	store, err := newConfiguredMessageNodeStore(
+		ctx,
 		maxMessageNodes,
-		storePath,
-		rootStorePath,
-		legacyStorePath,
+		configPath,
+		loadedConfig.Database.ConnectionString,
 	)
 	if err != nil {
-		slog.Warn("load persisted message history", "path", storePath, "error", err)
-
-		instance.nodes = newMessageNodeStore(maxMessageNodes)
+		slog.Warn("configure persisted message history", "error", err)
+	} else {
+		instance.nodes = store
 	}
 
 	instance.currentModel = loadedConfig.firstModel()
@@ -97,7 +94,7 @@ func run(ctx context.Context, configPath string) error {
 		return fmt.Errorf("load startup config: %w", err)
 	}
 
-	instance, err := newBot(configPath, loadedConfig)
+	instance, err := newBot(ctx, configPath, loadedConfig)
 	if err != nil {
 		return fmt.Errorf("create bot: %w", err)
 	}
@@ -162,6 +159,11 @@ func (instance *bot) close() error {
 	err := instance.session.Close()
 	if err != nil {
 		return fmt.Errorf("close discord session: %w", err)
+	}
+
+	err = instance.nodes.close()
+	if err != nil {
+		return fmt.Errorf("close message store: %w", err)
 	}
 
 	return nil

@@ -6,6 +6,7 @@ require (
 	github.com/Advik-B/cloudscraper v0.0.0-20251210084613-9c027088bf03
 	github.com/bwmarrin/discordgo v0.29.0
 	github.com/ledongthuc/pdf v0.0.0-20250511090121-5959a4027728
+	github.com/lib/pq v1.10.9
 	github.com/modelcontextprotocol/go-sdk v1.4.0
 	github.com/pdfcpu/pdfcpu v0.11.1
 	golang.org/x/net v0.45.0

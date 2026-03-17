@@ -3,87 +3,144 @@ package main
 import (
 	"bytes"
 	"context"
+	"maps"
 	"os"
-	"path/filepath"
 	"slices"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/bwmarrin/discordgo"
 )
 
-const testMessageHistoryFilename = "message-history.gob"
+type testMessageNodeStoreBackend struct {
+	mu        sync.Mutex
+	snapshots map[string]messageNodeStoreSnapshot
+}
 
-func TestDefaultMessageNodeStorePathUsesChatHistoryDirectory(t *testing.T) {
-	t.Parallel()
+func newTestMessageNodeStoreBackend() *testMessageNodeStoreBackend {
+	backend := new(testMessageNodeStoreBackend)
+	backend.snapshots = make(map[string]messageNodeStoreSnapshot)
 
-	workingDirectory, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("get working directory: %v", err)
+	return backend
+}
+
+func (backend *testMessageNodeStoreBackend) loadSnapshot(
+	storeKey string,
+	_ int,
+) (messageNodeStoreSnapshot, error) {
+	backend.mu.Lock()
+	defer backend.mu.Unlock()
+
+	snapshot, ok := backend.snapshots[storeKey]
+	if !ok {
+		return messageNodeStoreSnapshot{}, os.ErrNotExist
 	}
 
-	historyPath := defaultMessageNodeStorePath(defaultConfigPath)
-	expectedDirectory := filepath.Join(workingDirectory, messageNodeStoreDirectoryName)
+	return messageNodeStoreSnapshot{
+		Version: snapshot.Version,
+		Nodes:   maps.Clone(snapshot.Nodes),
+	}, nil
+}
 
-	if filepath.Dir(historyPath) != expectedDirectory {
-		t.Fatalf("unexpected history directory: got %q want %q", filepath.Dir(historyPath), expectedDirectory)
+func (backend *testMessageNodeStoreBackend) saveSnapshot(
+	storeKey string,
+	snapshot messageNodeStoreSnapshot,
+) error {
+	backend.mu.Lock()
+	backend.snapshots[storeKey] = messageNodeStoreSnapshot{
+		Version: snapshot.Version,
+		Nodes:   maps.Clone(snapshot.Nodes),
 	}
+	backend.mu.Unlock()
+
+	return nil
 }
 
-func TestPersistentMessageNodeStoreLoadsRootSnapshotIntoPrimaryPath(t *testing.T) {
-	t.Parallel()
-
-	tempDir := t.TempDir()
-	primaryPath := filepath.Join(tempDir, messageNodeStoreDirectoryName, testMessageHistoryFilename)
-	rootPath := filepath.Join(tempDir, testMessageHistoryFilename)
-
-	assertPersistentMessageNodeStoreLoadsFallbackSnapshotIntoPrimaryPath(t, primaryPath, rootPath)
+func (backend *testMessageNodeStoreBackend) close() error {
+	return nil
 }
 
-func TestPersistentMessageNodeStoreLoadsLegacySnapshotIntoPrimaryPath(t *testing.T) {
-	t.Parallel()
-
-	tempDir := t.TempDir()
-	primaryPath := filepath.Join(tempDir, messageNodeStoreDirectoryName, testMessageHistoryFilename)
-	legacyPath := filepath.Join(
-		tempDir,
-		legacyMessageNodeStoreDirectoryName,
-		testMessageHistoryFilename,
-	)
-
-	assertPersistentMessageNodeStoreLoadsFallbackSnapshotIntoPrimaryPath(t, primaryPath, legacyPath)
-}
-
-func assertPersistentMessageNodeStoreLoadsFallbackSnapshotIntoPrimaryPath(
-	t *testing.T,
-	primaryPath string,
-	fallbackPath string,
+func (backend *testMessageNodeStoreBackend) setSnapshot(
+	storeKey string,
+	snapshot messageNodeStoreSnapshot,
 ) {
-	t.Helper()
+	backend.mu.Lock()
+	backend.snapshots[storeKey] = messageNodeStoreSnapshot{
+		Version: snapshot.Version,
+		Nodes:   maps.Clone(snapshot.Nodes),
+	}
+	backend.mu.Unlock()
+}
 
-	fallbackSnapshot := messageNodeStoreSnapshot{
+func (backend *testMessageNodeStoreBackend) snapshot(
+	storeKey string,
+) (messageNodeStoreSnapshot, bool) {
+	backend.mu.Lock()
+	defer backend.mu.Unlock()
+
+	snapshot, ok := backend.snapshots[storeKey]
+	if !ok {
+		return messageNodeStoreSnapshot{
+			Version: 0,
+			Nodes:   nil,
+		}, false
+	}
+
+	return messageNodeStoreSnapshot{
+		Version: snapshot.Version,
+		Nodes:   maps.Clone(snapshot.Nodes),
+	}, true
+}
+
+func TestDefaultMessageNodeStoreKeyUsesExpectedPrefix(t *testing.T) {
+	t.Parallel()
+
+	storeKey := defaultMessageNodeStoreKey(defaultConfigPath)
+
+	if !strings.HasPrefix(storeKey, "message-history-") {
+		t.Fatalf("unexpected message store key prefix: %q", storeKey)
+	}
+}
+
+func TestDefaultMessageNodeStoreKeyIsStableForEquivalentPaths(t *testing.T) {
+	t.Parallel()
+
+	leftStoreKey := defaultMessageNodeStoreKey("./config.yaml")
+	rightStoreKey := defaultMessageNodeStoreKey("config.yaml")
+
+	if leftStoreKey != rightStoreKey {
+		t.Fatalf("unexpected store key mismatch: left=%q right=%q", leftStoreKey, rightStoreKey)
+	}
+}
+
+func TestPersistentMessageNodeStoreLoadsAndPersistsSnapshot(t *testing.T) {
+	t.Parallel()
+
+	const storeKey = "message-history-test"
+
+	backend := newTestMessageNodeStoreBackend()
+
+	seedSnapshot := messageNodeStoreSnapshot{
 		Version: messageNodeStoreSnapshotVersion,
 		Nodes: map[string]messageNodeSnapshot{
 			"assistant-message": testAssistantMessageNodeSnapshot(),
 		},
 	}
+	backend.setSnapshot(storeKey, seedSnapshot)
 
-	err := writeMessageNodeStoreSnapshot(fallbackPath, fallbackSnapshot)
+	store, err := newPersistentMessageNodeStore(10, storeKey, backend)
 	if err != nil {
-		t.Fatalf("write fallback message history: %v", err)
+		t.Fatalf("load persistent message store: %v", err)
 	}
 
-	store, err := newPersistentMessageNodeStore(10, primaryPath, fallbackPath)
-	if err != nil {
-		t.Fatalf("load persistent message store with fallback: %v", err)
-	}
-
-	if store.path != primaryPath {
-		t.Fatalf("unexpected store path: got %q want %q", store.path, primaryPath)
+	if store.storeKey != storeKey {
+		t.Fatalf("unexpected store key: got %q want %q", store.storeKey, storeKey)
 	}
 
 	node, found := store.get("assistant-message")
 	if !found {
-		t.Fatal("expected assistant node from fallback snapshot")
+		t.Fatal("expected assistant node from persisted snapshot")
 	}
 
 	node.mu.Lock()
@@ -97,17 +154,17 @@ func assertPersistentMessageNodeStoreLoadsFallbackSnapshotIntoPrimaryPath(
 
 	err = store.persist()
 	if err != nil {
-		t.Fatalf("persist primary message history: %v", err)
+		t.Fatalf("persist message history: %v", err)
 	}
 
-	primarySnapshot, err := readMessageNodeStoreSnapshot(primaryPath)
-	if err != nil {
-		t.Fatalf("read primary message history: %v", err)
+	persistedSnapshot, ok := backend.snapshot(storeKey)
+	if !ok {
+		t.Fatal("expected persisted snapshot in backend")
 	}
 
-	persistedNode, found := primarySnapshot.Nodes["assistant-message"]
+	persistedNode, found := persistedSnapshot.Nodes["assistant-message"]
 	if !found {
-		t.Fatal("expected assistant node in primary snapshot")
+		t.Fatal("expected assistant node in persisted snapshot")
 	}
 
 	if persistedNode.Role != messageRoleAssistant ||
@@ -162,9 +219,11 @@ func TestPersistentMessageNodeStoreRestoresRetainedSearchHistoryAfterRestart(t *
 	)
 
 	expectedMetadata := testRestartSearchMetadata()
+	backend := newTestMessageNodeStoreBackend()
 
-	historyPath := filepath.Join(t.TempDir(), "message-history.gob")
-	initialInstance := newPersistentHistoryTestBot(t, historyPath)
+	const storeKey = "message-history-search-restart"
+
+	initialInstance := newPersistentHistoryTestBot(t, backend, storeKey)
 
 	sourceMessage := new(discordgo.Message)
 	sourceMessage.ID = sourceMessageID
@@ -195,7 +254,7 @@ func TestPersistentMessageNodeStoreRestoresRetainedSearchHistoryAfterRestart(t *
 		t.Fatalf("persist message history: %v", err)
 	}
 
-	restartedInstance := newPersistentHistoryTestBot(t, historyPath)
+	restartedInstance := newPersistentHistoryTestBot(t, backend, storeKey)
 	followUpMessage := newRestartFollowUpMessage(
 		followUpMessageID,
 		channelID,
@@ -241,8 +300,11 @@ func TestPersistentMessageNodeStoreRestoresRetainedVideoHistoryAfterRestart(t *t
 		followUpMessageID  = "follow-up-message"
 	)
 
-	historyPath := filepath.Join(t.TempDir(), "message-history.gob")
-	initialInstance := newPersistentHistoryTestBot(t, historyPath)
+	backend := newTestMessageNodeStoreBackend()
+
+	const storeKey = "message-history-video-restart"
+
+	initialInstance := newPersistentHistoryTestBot(t, backend, storeKey)
 
 	sourceMessage := new(discordgo.Message)
 	sourceMessage.ID = sourceMessageID
@@ -266,7 +328,7 @@ func TestPersistentMessageNodeStoreRestoresRetainedVideoHistoryAfterRestart(t *t
 		t.Fatalf("persist message history: %v", err)
 	}
 
-	restartedInstance := newPersistentHistoryTestBot(t, historyPath)
+	restartedInstance := newPersistentHistoryTestBot(t, backend, storeKey)
 	followUpMessage := newRestartFollowUpMessage(
 		followUpMessageID,
 		channelID,
@@ -292,12 +354,16 @@ func TestPersistentMessageNodeStoreRestoresRetainedVideoHistoryAfterRestart(t *t
 	assertRetainedVideoBytes(t, history)
 }
 
-func newPersistentHistoryTestBot(t *testing.T, historyPath string) *bot {
+func newPersistentHistoryTestBot(
+	t *testing.T,
+	backend messageNodeStoreBackend,
+	storeKey string,
+) *bot {
 	t.Helper()
 
 	instance := newHistoryRetentionTestBot(t, "bot-user", "channel-1")
 
-	store, err := newPersistentMessageNodeStore(10, historyPath)
+	store, err := newPersistentMessageNodeStore(10, storeKey, backend)
 	if err != nil {
 		t.Fatalf("create persistent message store: %v", err)
 	}

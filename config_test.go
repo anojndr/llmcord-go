@@ -86,6 +86,75 @@ models:
 	if loadedConfig.WebSearch.MaxURLs != defaultWebSearchMaxURLs {
 		t.Fatalf("unexpected default web search max URLs: %d", loadedConfig.WebSearch.MaxURLs)
 	}
+
+	if loadedConfig.Database.ConnectionString != "" {
+		t.Fatalf(
+			"unexpected default database connection string: %q",
+			loadedConfig.Database.ConnectionString,
+		)
+	}
+}
+
+func TestLoadConfigUsesConfiguredDatabaseConnectionString(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	configText := `
+bot_token: discord-token
+providers:
+  openai:
+    base_url: https://api.example.com/v1
+models:
+  openai/first-model:
+database:
+  connection_string: postgresql://localhost:5432/llmcordgo?sslmode=disable
+`
+
+	err := os.WriteFile(configPath, []byte(configText), 0o600)
+	if err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	loadedConfig, err := loadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	if loadedConfig.Database.ConnectionString !=
+		"postgresql://localhost:5432/llmcordgo?sslmode=disable" {
+		t.Fatalf(
+			"unexpected database connection string: %q",
+			loadedConfig.Database.ConnectionString,
+		)
+	}
+}
+
+func TestLoadConfigRejectsUnsupportedDatabaseConnectionStringScheme(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	configText := `
+bot_token: discord-token
+providers:
+  openai:
+    base_url: https://api.example.com/v1
+models:
+  openai/first-model:
+database:
+  connection_string: mysql://localhost:3306/llmcordgo
+`
+
+	err := os.WriteFile(configPath, []byte(configText), 0o600)
+	if err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	_, err = loadConfig(configPath)
+	if err == nil {
+		t.Fatal("expected unsupported database scheme to fail validation")
+	}
 }
 
 func TestLoadConfigRejectsMissingModels(t *testing.T) {
