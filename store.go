@@ -12,17 +12,18 @@ import (
 type contentPart map[string]any
 
 type messageNode struct {
-	role              string
-	text              string
-	urlScanText       string
-	rentryURL         string
-	media             []contentPart
-	searchMetadata    *searchMetadata
-	hasBadAttachments bool
-	fetchParentFailed bool
-	parentMessage     *discordgo.Message
-	initialized       bool
-	mu                sync.Mutex
+	role                     string
+	text                     string
+	urlScanText              string
+	rentryURL                string
+	media                    []contentPart
+	searchMetadata           *searchMetadata
+	hasBadAttachments        bool
+	attachmentDownloadFailed bool
+	fetchParentFailed        bool
+	parentMessage            *discordgo.Message
+	initialized              bool
+	mu                       sync.Mutex
 }
 
 type messageNodeStore struct {

@@ -1,7 +1,10 @@
 package main
 
 import (
+	"context"
 	"encoding/base64"
+	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/bwmarrin/discordgo"
@@ -37,6 +40,169 @@ func TestBuildMessageTextReadsTextDisplayInsideSection(t *testing.T) {
 	if text != testAssistantReply {
 		t.Fatalf("unexpected message text: %q", text)
 	}
+}
+
+func TestFetchSupportedAttachmentsRetriesTransientDownloadError(t *testing.T) {
+	t.Parallel()
+
+	const attachmentURL = "https://cdn.discordapp.com/attachments/test/context.txt"
+
+	attemptCount := 0
+
+	instance := new(bot)
+	instance.httpClient = new(http.Client)
+	instance.httpClient.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		t.Helper()
+
+		if request.Method != http.MethodGet || request.URL.String() != attachmentURL {
+			t.Fatalf("unexpected request: %s %s", request.Method, request.URL.String())
+		}
+
+		attemptCount++
+		if attemptCount == 1 {
+			return nil, temporaryAttachmentNetError{}
+		}
+
+		return newTextResponse(request, "retried attachment body"), nil
+	})
+
+	attachment := new(discordgo.MessageAttachment)
+	attachment.ContentType = "text/plain"
+	attachment.Filename = "context.txt"
+	attachment.URL = attachmentURL
+
+	payloads, failed := instance.fetchSupportedAttachments(
+		context.Background(),
+		[]*discordgo.MessageAttachment{attachment},
+	)
+
+	if failed {
+		t.Fatal("expected attachment retry to succeed")
+	}
+
+	if attemptCount != 2 {
+		t.Fatalf("unexpected download attempts: %d", attemptCount)
+	}
+
+	if len(payloads) != 1 {
+		t.Fatalf("unexpected payload count: %d", len(payloads))
+	}
+
+	if got := string(payloads[0].body); got != "retried attachment body" {
+		t.Fatalf("unexpected payload body: %q", got)
+	}
+}
+
+func TestBuildConversationAddsFallbackTextWhenAttachmentDownloadFails(t *testing.T) {
+	t.Parallel()
+
+	const (
+		botUserID     = "bot-user"
+		channelID     = "channel-1"
+		userID        = "user-1"
+		messageID     = "user-message-1"
+		attachmentURL = "https://cdn.discordapp.com/attachments/test/context.txt"
+	)
+
+	session, err := discordgo.New("Bot discord-token")
+	if err != nil {
+		t.Fatalf("create discord session: %v", err)
+	}
+
+	session.State.User = newDiscordUser(botUserID, true)
+
+	channel := new(discordgo.Channel)
+	channel.ID = channelID
+	channel.Type = discordgo.ChannelTypeDM
+
+	err = session.State.ChannelAdd(channel)
+	if err != nil {
+		t.Fatalf("add channel to state: %v", err)
+	}
+
+	instance := new(bot)
+	instance.session = session
+	instance.nodes = newMessageNodeStore(10)
+	instance.httpClient = new(http.Client)
+	instance.httpClient.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		t.Helper()
+
+		if request.Method != http.MethodGet || request.URL.String() != attachmentURL {
+			t.Fatalf("unexpected attachment request: %s %s", request.Method, request.URL.String())
+		}
+
+		return nil, temporaryAttachmentNetError{}
+	})
+
+	sourceMessage := new(discordgo.Message)
+	sourceMessage.ID = messageID
+	sourceMessage.ChannelID = channelID
+	sourceMessage.Author = newDiscordUser(userID, false)
+	sourceMessage.Content = "<@" + botUserID + ">"
+	sourceMessage.Mentions = []*discordgo.User{newDiscordUser(botUserID, false)}
+	sourceMessage.Attachments = []*discordgo.MessageAttachment{{
+		ContentType: "text/plain",
+		Filename:    "context.txt",
+		URL:         attachmentURL,
+	}}
+
+	conversation, warnings := instance.buildConversation(
+		context.Background(),
+		sourceMessage,
+		defaultMaxText,
+		messageContentOptions{
+			maxImages:                defaultMaxImages,
+			allowAudio:               false,
+			allowDocuments:           false,
+			allowedDocumentMIMETypes: nil,
+			allowVideo:               false,
+		},
+		defaultMaxMessages,
+		false,
+		false,
+	)
+
+	if len(conversation) != 1 {
+		t.Fatalf("unexpected conversation length: %d", len(conversation))
+	}
+
+	content, ok := conversation[0].Content.(string)
+	if !ok {
+		t.Fatalf("unexpected conversation content type: %T", conversation[0].Content)
+	}
+
+	expectedContent := "<@" + userID + ">: " + attachmentDownloadFallbackText
+	if content != expectedContent {
+		t.Fatalf("unexpected conversation content: %q", content)
+	}
+
+	if !slicesContainsString(warnings, attachmentDownloadWarningText) {
+		t.Fatalf("expected attachment download warning: %#v", warnings)
+	}
+}
+
+func slicesContainsString(items []string, target string) bool {
+	for _, item := range items {
+		if strings.TrimSpace(item) == target {
+			return true
+		}
+	}
+
+	return false
+}
+
+type temporaryAttachmentNetError struct{}
+
+func (temporaryAttachmentNetError) Error() string {
+	return "temporary attachment transport error"
+}
+
+func (temporaryAttachmentNetError) Timeout() bool {
+	return false
+}
+
+func (temporaryAttachmentNetError) Temporary() bool {
+	return true
 }
 
 func TestBuildMediaPartsSupportsGeminiBinaryAttachments(t *testing.T) {

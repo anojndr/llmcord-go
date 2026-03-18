@@ -197,16 +197,17 @@ func TestPersistentMessageNodeStoreLoadsAndPersistsSnapshot(t *testing.T) {
 
 func testAssistantMessageNodeSnapshot() messageNodeSnapshot {
 	return messageNodeSnapshot{
-		Role:              messageRoleAssistant,
-		Text:              testAssistantReply,
-		URLScanText:       "",
-		RentryURL:         "",
-		Media:             nil,
-		SearchMetadata:    nil,
-		HasBadAttachments: false,
-		FetchParentFailed: false,
-		ParentMessage:     nil,
-		Initialized:       true,
+		Role:                     messageRoleAssistant,
+		Text:                     testAssistantReply,
+		URLScanText:              "",
+		RentryURL:                "",
+		Media:                    nil,
+		SearchMetadata:           nil,
+		HasBadAttachments:        false,
+		AttachmentDownloadFailed: false,
+		FetchParentFailed:        false,
+		ParentMessage:            nil,
+		Initialized:              true,
 	}
 }
 

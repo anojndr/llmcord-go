@@ -47,16 +47,17 @@ type messageNodeSnapshotPayload struct {
 }
 
 type messageNodeSnapshot struct {
-	Role              string                  `json:"role"`
-	Text              string                  `json:"text"`
-	URLScanText       string                  `json:"url_scan_text"`
-	RentryURL         string                  `json:"rentry_url"`
-	Media             []contentPartSnapshot   `json:"media"`
-	SearchMetadata    *searchMetadata         `json:"search_metadata"`
-	HasBadAttachments bool                    `json:"has_bad_attachments"`
-	FetchParentFailed bool                    `json:"fetch_parent_failed"`
-	ParentMessage     *discordMessageSnapshot `json:"parent_message"`
-	Initialized       bool                    `json:"initialized"`
+	Role                     string                  `json:"role"`
+	Text                     string                  `json:"text"`
+	URLScanText              string                  `json:"url_scan_text"`
+	RentryURL                string                  `json:"rentry_url"`
+	Media                    []contentPartSnapshot   `json:"media"`
+	SearchMetadata           *searchMetadata         `json:"search_metadata"`
+	HasBadAttachments        bool                    `json:"has_bad_attachments"`
+	AttachmentDownloadFailed bool                    `json:"attachment_download_failed"`
+	FetchParentFailed        bool                    `json:"fetch_parent_failed"`
+	ParentMessage            *discordMessageSnapshot `json:"parent_message"`
+	Initialized              bool                    `json:"initialized"`
 }
 
 type contentPartSnapshot struct {
@@ -550,16 +551,17 @@ func messageNodeSnapshotFromLockedNode(node *messageNode) (messageNodeSnapshot, 
 	}
 
 	snapshot := messageNodeSnapshot{
-		Role:              node.role,
-		Text:              node.text,
-		URLScanText:       node.urlScanText,
-		RentryURL:         node.rentryURL,
-		Media:             mediaSnapshots,
-		SearchMetadata:    cloneSearchMetadata(node.searchMetadata),
-		HasBadAttachments: node.hasBadAttachments,
-		FetchParentFailed: node.fetchParentFailed,
-		ParentMessage:     newDiscordMessageSnapshot(node.parentMessage),
-		Initialized:       node.initialized,
+		Role:                     node.role,
+		Text:                     node.text,
+		URLScanText:              node.urlScanText,
+		RentryURL:                node.rentryURL,
+		Media:                    mediaSnapshots,
+		SearchMetadata:           cloneSearchMetadata(node.searchMetadata),
+		HasBadAttachments:        node.hasBadAttachments,
+		AttachmentDownloadFailed: node.attachmentDownloadFailed,
+		FetchParentFailed:        node.fetchParentFailed,
+		ParentMessage:            newDiscordMessageSnapshot(node.parentMessage),
+		Initialized:              node.initialized,
 	}
 
 	return snapshot, true
@@ -584,6 +586,7 @@ func (snapshot messageNodeSnapshot) messageNode() *messageNode {
 
 	node.searchMetadata = cloneSearchMetadata(snapshot.SearchMetadata)
 	node.hasBadAttachments = snapshot.HasBadAttachments
+	node.attachmentDownloadFailed = snapshot.AttachmentDownloadFailed
 	node.fetchParentFailed = snapshot.FetchParentFailed
 	node.parentMessage = snapshot.ParentMessage.discordMessage()
 	node.initialized = snapshot.Initialized

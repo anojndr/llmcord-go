@@ -222,6 +222,17 @@ func (instance *bot) prepareMessageResponse(
 			fmt.Errorf("build message conversation: %w", err)
 	}
 
+	if len(messages) == 0 {
+		fallbackMessage, fallbackWarnings := fallbackAttachmentDownloadConversation(
+			message,
+			warnings,
+		)
+		if fallbackMessage != nil {
+			messages = append(messages, *fallbackMessage)
+			warnings = fallbackWarnings
+		}
+	}
+
 	progress.advance(requestProgressStageGatheringContext)
 
 	messages, searchMetadata, warnings, err := instance.augmentPreparedMessageResponse(
@@ -249,6 +260,33 @@ func (instance *bot) prepareMessageResponse(
 	tracker := progress.handoff(request.ConfiguredModel, searchMetadata)
 
 	return request, tracker, warnings, nil
+}
+
+func fallbackAttachmentDownloadConversation(
+	sourceMessage *discordgo.Message,
+	warnings []string,
+) (*chatMessage, []string) {
+	if sourceMessage == nil || len(sourceMessage.Attachments) == 0 {
+		return nil, warnings
+	}
+
+	content := attachmentDownloadFallbackText
+	if sourceMessage.Author != nil && strings.TrimSpace(sourceMessage.Author.ID) != "" {
+		content = fmt.Sprintf("<@%s>: %s", sourceMessage.Author.ID, content)
+	}
+
+	warningSet := make(map[string]struct{}, len(warnings)+1)
+	for _, warning := range warnings {
+		appendUniqueWarning(warningSet, warning)
+	}
+
+	appendUniqueWarning(warningSet, attachmentDownloadWarningText)
+
+	message := new(chatMessage)
+	message.Role = messageRoleUser
+	message.Content = content
+
+	return message, sortedWarnings(warningSet)
 }
 
 func (instance *bot) augmentPreparedMessageResponse(
