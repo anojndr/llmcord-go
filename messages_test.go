@@ -394,7 +394,7 @@ func TestRespondToMessageSendsProgressEmbedBeforeTypingAndAttachmentProcessing(t
 		userID             = "user-1"
 		sourceMessageID    = "user-message-1"
 		assistantMessageID = "assistant-message-1"
-		attachmentURL      = "https://attachments.example.com/context.txt"
+		attachmentURL      = "https://cdn.discordapp.com/attachments/test/context.txt"
 	)
 
 	assistantMessage := new(discordgo.Message)
@@ -575,6 +575,167 @@ func TestRespondToMessageSendsRateLimitErrorWhenProgressMessageSendFails(t *test
 	}
 }
 
+func TestRespondToMessageContinuesWhenAttachmentDownloadAlwaysFails(t *testing.T) {
+	t.Parallel()
+
+	const (
+		botUserID          = "bot-user"
+		channelID          = "channel-1"
+		userID             = "user-1"
+		sourceMessageID    = "user-message-1"
+		assistantMessageID = "assistant-message-1"
+		attachmentURL      = "https://cdn.discordapp.com/attachments/test/context.txt"
+	)
+
+	fixture := newRespondToMessageAttachmentFailureFixture(
+		t,
+		botUserID,
+		channelID,
+		userID,
+		sourceMessageID,
+		assistantMessageID,
+		attachmentURL,
+	)
+
+	err := fixture.instance.respondToMessage(
+		context.Background(),
+		fixture.loadedConfig,
+		fixture.sourceMessage,
+		"openai/main-model",
+	)
+	if err != nil {
+		t.Fatalf("respond to message: %v", err)
+	}
+
+	if !fixture.typingSent.Load() {
+		t.Fatal("expected typing indicator to be sent")
+	}
+
+	if !fixture.progressSent.Load() {
+		t.Fatal("expected progress embed to be sent")
+	}
+}
+
+type respondToMessageAttachmentFailureFixture struct {
+	instance      *bot
+	loadedConfig  config
+	sourceMessage *discordgo.Message
+	typingSent    *atomic.Bool
+	progressSent  *atomic.Bool
+}
+
+func newRespondToMessageAttachmentFailureFixture(
+	t *testing.T,
+	botUserID string,
+	channelID string,
+	userID string,
+	sourceMessageID string,
+	assistantMessageID string,
+	attachmentURL string,
+) respondToMessageAttachmentFailureFixture {
+	t.Helper()
+
+	assistantMessage := new(discordgo.Message)
+	assistantMessage.ID = assistantMessageID
+	assistantMessage.ChannelID = channelID
+	assistantMessage.Author = newDiscordUser(botUserID, true)
+	assistantMessage.Type = discordgo.MessageTypeReply
+
+	typingSent := new(atomic.Bool)
+	progressSent := new(atomic.Bool)
+	probe := typingPreprocessingProbe{
+		typingSent:        typingSent,
+		progressSent:      progressSent,
+		attachmentFetched: new(atomic.Bool),
+	}
+
+	session := newRespondToMessageTypingSession(
+		t,
+		channelID,
+		botUserID,
+		assistantMessage,
+		probe,
+	)
+
+	chatClient := newRespondToMessageAttachmentFailureChatClient(t)
+
+	instance := new(bot)
+	instance.session = session
+	instance.chatCompletions = chatClient
+	instance.nodes = newMessageNodeStore(10)
+	instance.httpClient = new(http.Client)
+	instance.httpClient.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		t.Helper()
+
+		if request.Method != http.MethodGet || request.URL.String() != attachmentURL {
+			t.Fatalf("unexpected attachment request: %s %s", request.Method, request.URL.String())
+		}
+
+		return nil, temporaryAttachmentNetError{}
+	})
+
+	loadedConfig := testSearchConfig()
+	loadedConfig.MaxText = defaultMaxText
+	loadedConfig.MaxImages = defaultMaxImages
+	loadedConfig.MaxMessages = defaultMaxMessages
+	loadedConfig.UsePlainResponses = true
+
+	sourceMessage := newPromptMessage(sourceMessageID, channelID, userID, botUserID)
+	sourceMessage.Content = "<@" + botUserID + ">"
+	sourceMessage.Mentions = []*discordgo.User{newDiscordUser(botUserID, false)}
+	sourceMessage.Attachments = []*discordgo.MessageAttachment{{
+		ContentType: "text/plain",
+		Filename:    "context.txt",
+		URL:         attachmentURL,
+	}}
+
+	return respondToMessageAttachmentFailureFixture{
+		instance:      instance,
+		loadedConfig:  loadedConfig,
+		sourceMessage: sourceMessage,
+		typingSent:    typingSent,
+		progressSent:  progressSent,
+	}
+}
+
+func newRespondToMessageAttachmentFailureChatClient(t *testing.T) *stubChatCompletionClient {
+	t.Helper()
+
+	return newStubChatClient(func(
+		_ context.Context,
+		request chatCompletionRequest,
+		handle func(streamDelta) error,
+	) error {
+		t.Helper()
+
+		if request.ConfiguredModel == testSearchDeciderModel {
+			return handle(newStreamDelta(`{"needs_search":false}`, ""))
+		}
+
+		if request.ConfiguredModel != "openai/main-model" {
+			t.Fatalf("unexpected configured model: %q", request.ConfiguredModel)
+		}
+
+		if len(request.Messages) == 0 {
+			t.Fatalf("unexpected request message count: %d", len(request.Messages))
+		}
+
+		latest := request.Messages[len(request.Messages)-1]
+
+		latestText := messageContentText(latest.Content)
+		if !containsFold(latestText, attachmentDownloadFallbackText) {
+			t.Fatalf("expected attachment fallback in latest user content: %q", latestText)
+		}
+
+		err := handle(newStreamDelta("assistant reply", ""))
+		if err != nil {
+			return err
+		}
+
+		return handle(newStreamDelta("", finishReasonStop))
+	})
+}
+
 func TestBuildMessageConversationAddsReplyTargetForRepliedTextAttachment(t *testing.T) {
 	t.Parallel()
 
@@ -584,7 +745,7 @@ func TestBuildMessageConversationAddsReplyTargetForRepliedTextAttachment(t *test
 		userID          = "user-1"
 		parentMessageID = "user-message-1"
 		sourceMessageID = "user-message-2"
-		attachmentURL   = "https://attachments.example.com/context.txt"
+		attachmentURL   = "https://cdn.discordapp.com/attachments/test/context.txt"
 	)
 
 	session, err := discordgo.New("Bot discord-token")
@@ -677,8 +838,8 @@ func TestSourceMessageURLExtractionTextSkipsTextAttachmentURLs(t *testing.T) {
 		userID               = "user-1"
 		parentMessageID      = "user-message-1"
 		sourceMessageID      = "user-message-2"
-		parentAttachmentURL  = "https://attachments.example.com/replied-context.txt"
-		sourceAttachmentURL  = "https://attachments.example.com/source-context.txt"
+		parentAttachmentURL  = "https://cdn.discordapp.com/attachments/test/replied-context.txt"
+		sourceAttachmentURL  = "https://cdn.discordapp.com/attachments/test/source-context.txt"
 		parentTypedURL       = "https://example.com/manual"
 		sourceTypedURL       = "https://youtu.be/dQw4w9WgXcQ"
 		parentAttachmentText = "https://www.reddit.com/r/testing/comments/abc123/thread-title/"

@@ -3,14 +3,18 @@ package main
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"mime"
+	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"path"
 	"strings"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 )
@@ -32,6 +36,16 @@ type messageContentSummary struct {
 	imageCount               int
 	unsupportedAttachmentCnt int
 }
+
+const (
+	attachmentDownloadWarningText  = "Warning: failed to download some attachments"
+	attachmentDownloadFallbackText = "I couldn't download one or more attachments, so I may miss attachment details."
+	maxAttachmentRetryShift        = 6
+	discordAttachmentCDNHost       = "cdn.discordapp.com"
+	discordAttachmentMediaHost     = "media.discordapp.net"
+)
+
+var errAttachmentRetryContextDone = errors.New("attachment retry context done")
 
 func (instance *bot) buildConversation(
 	ctx context.Context,
@@ -101,6 +115,10 @@ func (instance *bot) buildConversation(
 
 		if node.hasBadAttachments || summary.unsupportedAttachmentCnt > 0 {
 			appendUniqueWarning(warningSet, "Warning: unsupported attachments")
+		}
+
+		if node.attachmentDownloadFailed {
+			appendUniqueWarning(warningSet, attachmentDownloadWarningText)
 		}
 
 		if node.fetchParentFailed ||
@@ -208,11 +226,12 @@ func (instance *bot) initializeNode(
 	node *messageNode,
 ) {
 	cleanedContent := trimBotMention(message.Content, instance.session.State.User.ID)
-	payloads := instance.fetchSupportedAttachments(ctx, message.Attachments)
+	payloads, attachmentDownloadFailed := instance.fetchSupportedAttachments(ctx, message.Attachments)
 
 	node.role = messageRole(message, instance.session.State.User.ID)
 	node.text = buildMessageText(message, cleanedContent, payloads)
 	node.urlScanText = ""
+	node.attachmentDownloadFailed = attachmentDownloadFailed
 
 	if node.role == messageRoleUser {
 		node.urlScanText = normalizedURLExtractionText(
@@ -221,6 +240,13 @@ func (instance *bot) initializeNode(
 	}
 
 	node.media = buildMediaParts(payloads)
+
+	if node.role == messageRoleUser &&
+		node.attachmentDownloadFailed &&
+		strings.TrimSpace(node.text) == "" &&
+		len(node.media) == 0 {
+		node.text = attachmentDownloadFallbackText
+	}
 
 	if node.role == messageRoleUser && (node.text != "" || len(node.media) > 0) {
 		node.text = fmt.Sprintf("<@%s>: %s", message.Author.ID, node.text)
@@ -412,11 +438,12 @@ func binaryAttachmentContentPart(
 func (instance *bot) fetchSupportedAttachments(
 	ctx context.Context,
 	attachments []*discordgo.MessageAttachment,
-) []attachmentPayload {
+) ([]attachmentPayload, bool) {
 	timeoutContext, cancelTimeout := context.WithTimeout(ctx, attachmentRequestTimeout)
 	defer cancelTimeout()
 
 	payloads := make([]attachmentPayload, 0, len(attachments))
+	anyDownloadFailed := false
 
 	for _, attachment := range attachments {
 		if attachment == nil {
@@ -427,46 +454,18 @@ func (instance *bot) fetchSupportedAttachments(
 			continue
 		}
 
-		httpRequest, err := http.NewRequestWithContext(
-			timeoutContext,
-			http.MethodGet,
-			attachment.URL,
-			nil,
-		)
-		if err != nil {
-			slog.Warn("create attachment request", "url", attachment.URL, "error", err)
+		downloadURL, downloadURLErr := discordAttachmentDownloadURL(attachment.URL)
+		if downloadURLErr != nil {
+			slog.Warn("invalid attachment url", "error", downloadURLErr)
+
+			anyDownloadFailed = true
 
 			continue
 		}
 
-		httpResponse, err := instance.httpClient.Do(httpRequest)
-		if err != nil {
-			slog.Warn("download attachment", "url", attachment.URL, "error", err)
-
-			continue
-		}
-
-		body, readErr := io.ReadAll(httpResponse.Body)
-		closeErr := httpResponse.Body.Close()
-
-		if readErr != nil {
-			slog.Warn("read attachment", "url", attachment.URL, "error", readErr)
-
-			continue
-		}
-
-		if closeErr != nil {
-			slog.Warn("close attachment body", "url", attachment.URL, "error", closeErr)
-		}
-
-		if httpResponse.StatusCode < http.StatusOK || httpResponse.StatusCode >= http.StatusMultipleChoices {
-			slog.Warn(
-				"attachment request failed",
-				"url",
-				attachment.URL,
-				"status",
-				httpResponse.StatusCode,
-			)
+		body, fetchErr := instance.fetchAttachmentWithRetry(timeoutContext, downloadURL)
+		if fetchErr != nil {
+			anyDownloadFailed = true
 
 			continue
 		}
@@ -477,7 +476,196 @@ func (instance *bot) fetchSupportedAttachments(
 		})
 	}
 
-	return payloads
+	return payloads, anyDownloadFailed
+}
+
+func (instance *bot) fetchAttachmentWithRetry(
+	ctx context.Context,
+	attachmentURL string,
+) ([]byte, error) {
+	maxAttempts := attachmentDownloadMaxAttempts
+	if maxAttempts <= 0 {
+		maxAttempts = 1
+	}
+
+	var lastErr error
+
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		body, err := instance.fetchAttachmentAttempt(ctx, attachmentURL)
+		if err == nil {
+			return body, nil
+		}
+
+		lastErr = err
+
+		slog.Warn(
+			"download attachment",
+			"attempt",
+			attempt,
+			"max_attempts",
+			maxAttempts,
+			"error",
+			lastErr,
+		)
+
+		if !attachmentDownloadShouldRetry(lastErr) || attempt == maxAttempts {
+			return nil, lastErr
+		}
+
+		retryDelay := attachmentRetryDelay(attempt)
+		if retryDelay <= 0 {
+			continue
+		}
+
+		timer := time.NewTimer(retryDelay)
+
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+
+			return nil, fmt.Errorf("%w: %w", errAttachmentRetryContextDone, ctx.Err())
+		case <-timer.C:
+		}
+	}
+
+	if lastErr != nil {
+		return nil, lastErr
+	}
+
+	return nil, os.ErrInvalid
+}
+
+func (instance *bot) fetchAttachmentAttempt(
+	ctx context.Context,
+	attachmentURL string,
+) ([]byte, error) {
+	httpRequest, requestErr := http.NewRequestWithContext(
+		ctx,
+		http.MethodGet,
+		attachmentURL,
+		nil,
+	)
+	if requestErr != nil {
+		return nil, fmt.Errorf("create attachment request: %w", requestErr)
+	}
+
+	httpResponse, err := instance.performAttachmentRequest(httpRequest)
+	if err != nil {
+		return nil, err
+	}
+
+	body, readErr := io.ReadAll(httpResponse.Body)
+	closeErr := httpResponse.Body.Close()
+
+	if readErr != nil {
+		slog.Warn("read attachment", "error", readErr)
+
+		return nil, fmt.Errorf("read attachment response body: %w", readErr)
+	}
+
+	if closeErr != nil {
+		slog.Warn("close attachment body", "error", closeErr)
+	}
+
+	if httpResponse.StatusCode < http.StatusOK || httpResponse.StatusCode >= http.StatusMultipleChoices {
+		return nil, attachmentDownloadStatusError{statusCode: httpResponse.StatusCode}
+	}
+
+	return body, nil
+}
+
+func (instance *bot) performAttachmentRequest(httpRequest *http.Request) (*http.Response, error) {
+	if instance.httpClient == nil {
+		return nil, fmt.Errorf("missing attachment http client: %w", os.ErrInvalid)
+	}
+
+	transport := instance.httpClient.Transport
+	if transport == nil {
+		transport = http.DefaultTransport
+	}
+
+	httpResponse, err := transport.RoundTrip(httpRequest)
+	if err != nil {
+		return nil, fmt.Errorf("send attachment request: %w", err)
+	}
+
+	return httpResponse, nil
+}
+
+func attachmentDownloadShouldRetry(err error) bool {
+	var statusErr attachmentDownloadStatusError
+	if errors.As(err, &statusErr) {
+		if statusErr.statusCode == http.StatusTooManyRequests {
+			return true
+		}
+
+		return statusErr.statusCode >= http.StatusInternalServerError
+	}
+
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return false
+	}
+
+	var netErr net.Error
+
+	return errors.As(err, &netErr)
+}
+
+func attachmentRetryDelay(attempt int) time.Duration {
+	if attempt <= 0 {
+		return 0
+	}
+
+	baseDelay := attachmentRetryBaseDelay
+	if baseDelay <= 0 {
+		return 0
+	}
+
+	shift := min(attempt-1, maxAttachmentRetryShift)
+
+	return baseDelay << shift
+}
+
+func discordAttachmentDownloadURL(rawURL string) (string, error) {
+	trimmedURL := strings.TrimSpace(rawURL)
+	if trimmedURL == "" {
+		return "", fmt.Errorf("empty attachment url: %w", os.ErrInvalid)
+	}
+
+	parsedURL, err := url.Parse(trimmedURL)
+	if err != nil {
+		return "", fmt.Errorf("parse attachment url %q: %w", rawURL, err)
+	}
+
+	if !strings.EqualFold(parsedURL.Scheme, "https") {
+		return "", fmt.Errorf("unsupported attachment scheme %q: %w", parsedURL.Scheme, os.ErrInvalid)
+	}
+
+	host := strings.ToLower(strings.TrimSpace(parsedURL.Hostname()))
+	if !discordAttachmentHostAllowed(host) {
+		return "", fmt.Errorf("unsupported attachment host %q: %w", host, os.ErrInvalid)
+	}
+
+	parsedURL.Fragment = ""
+
+	return parsedURL.String(), nil
+}
+
+func discordAttachmentHostAllowed(host string) bool {
+	switch host {
+	case discordAttachmentCDNHost, discordAttachmentMediaHost:
+		return true
+	default:
+		return false
+	}
+}
+
+type attachmentDownloadStatusError struct {
+	statusCode int
+}
+
+func (err attachmentDownloadStatusError) Error() string {
+	return fmt.Sprintf("attachment request failed with status %d", err.statusCode)
 }
 
 func attachmentIsSupported(contentType string) bool {

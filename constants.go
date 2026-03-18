@@ -46,6 +46,8 @@ const (
 	showSourcesMessageMaxLength          = 1900
 	showSourcesPageBodyMaxLength         = showSourcesMessageMaxLength - 64
 	attachmentRequestTimeout             = 30 * time.Second
+	attachmentDownloadMaxAttempts        = 3
+	attachmentRetryBaseDelay             = 100 * time.Millisecond
 	geminiFilePollInterval               = 500 * time.Millisecond
 	geminiFileProcessingTimeout          = 2 * time.Minute
 	openRouterHost                       = "openrouter.ai"
