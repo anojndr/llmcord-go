@@ -9,6 +9,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/bwmarrin/discordgo"
 )
 
 const (
@@ -37,6 +39,7 @@ func TestOpenAICodexClientStreamChatCompletion(t *testing.T) {
 		),
 		Model:           testOpenAICodexModel,
 		ConfiguredModel: "",
+		SessionID:       "",
 		Messages: []chatMessage{
 			{Role: openAICodexRoleSystem, Content: "Be brief."},
 			{
@@ -85,6 +88,7 @@ func TestOpenAICodexClientRejectsInvalidTokenWithoutAccountHeader(t *testing.T) 
 		Provider:        newOpenAICodexProviderRequestConfig("not-a-jwt", "", nil, nil, nil),
 		Model:           testOpenAICodexModel,
 		ConfiguredModel: "",
+		SessionID:       "",
 		Messages: []chatMessage{
 			{Role: openAICodexRoleSystem, Content: "Be brief."},
 			{Role: messageRoleUser, Content: testOpenAICodexHelloText},
@@ -101,6 +105,60 @@ func TestOpenAICodexClientRejectsInvalidTokenWithoutAccountHeader(t *testing.T) 
 
 	if !strings.Contains(err.Error(), "extract codex account id") {
 		t.Fatalf("unexpected error text: %v", err)
+	}
+}
+
+func TestOpenAICodexClientStreamChatCompletionIncludesCacheMetadata(t *testing.T) {
+	t.Parallel()
+
+	apiKey := testOpenAICodexJWT(t, testOpenAICodexAccountID)
+	sessionID := "codex-session-123"
+
+	server := httptest.NewServer(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		request *http.Request,
+	) {
+		t.Helper()
+
+		if request.Header.Get(openAICodexHeaderSessionID) != sessionID {
+			t.Fatalf("unexpected session_id header: %q", request.Header.Get(openAICodexHeaderSessionID))
+		}
+
+		assertOpenAICodexRequest(t, request, apiKey, sessionID)
+		streamOpenAICodexHello(t, responseWriter)
+	}))
+	defer server.Close()
+
+	client := newOpenAICodexClient(server.Client())
+	request := chatCompletionRequest{
+		Provider: newOpenAICodexProviderRequestConfig(
+			apiKey,
+			server.URL+"/backend-api",
+			map[string]any{"X-Test": testOpenAICodexHeaderValue},
+			map[string]any{"feature": "enabled"},
+			map[string]any{"verbosity": "high", "reasoning_effort": "medium"},
+		),
+		Model:           testOpenAICodexModel,
+		ConfiguredModel: "codex/gpt-5.2-codex",
+		SessionID:       sessionID,
+		Messages: []chatMessage{
+			{Role: openAICodexRoleSystem, Content: "Be brief."},
+			{
+				Role: messageRoleUser,
+				Content: []contentPart{
+					{"type": contentTypeText, "text": testOpenAICodexHelloText},
+					{"type": contentTypeImageURL, "image_url": map[string]string{"url": "data:image/png;base64,abc"}},
+				},
+			},
+			{Role: messageRoleAssistant, Content: "Previous answer"},
+		},
+	}
+
+	err := client.streamChatCompletion(context.Background(), request, func(streamDelta) error {
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("stream codex chat completion: %v", err)
 	}
 }
 
@@ -122,6 +180,7 @@ func TestBuildOpenAICodexRequestBodyPreservesNestedReasoningConfig(t *testing.T)
 		),
 		Model:           "gpt-5.4",
 		ConfiguredModel: "",
+		SessionID:       "",
 		Messages: []chatMessage{
 			{Role: messageRoleUser, Content: testOpenAICodexHelloText},
 		},
@@ -169,6 +228,7 @@ func TestBuildOpenAICodexRequestBodyClampsNestedReasoningConfigWithoutMutatingOr
 		),
 		Model:           "gpt-5.4",
 		ConfiguredModel: "",
+		SessionID:       "",
 		Messages: []chatMessage{
 			{Role: messageRoleUser, Content: testOpenAICodexHelloText},
 		},
@@ -330,6 +390,46 @@ func TestHandleOpenAICodexStreamPayloadUsesIncompleteDetailsReason(t *testing.T)
 	}
 }
 
+func TestAssignOpenAICodexSessionIDUsesConversationAnchor(t *testing.T) {
+	t.Parallel()
+
+	const testChannelID = "channel-1"
+
+	store := newMessageNodeStore(8)
+	rootMessage := new(discordgo.Message)
+	rootMessage.ID = "100"
+	rootMessage.ChannelID = testChannelID
+
+	assistantMessage := new(discordgo.Message)
+	assistantMessage.ID = "200"
+	assistantMessage.ChannelID = testChannelID
+
+	followUpMessage := new(discordgo.Message)
+	followUpMessage.ID = "300"
+	followUpMessage.ChannelID = testChannelID
+
+	store.getOrCreate(assistantMessage.ID).parentMessage = rootMessage
+	store.getOrCreate(followUpMessage.ID).parentMessage = assistantMessage
+
+	var rootRequest chatCompletionRequest
+
+	rootRequest.Provider.APIKind = providerAPIKindOpenAICodex
+	rootRequest.ConfiguredModel = "codex/gpt-5.4"
+
+	followUpRequest := rootRequest
+
+	assignOpenAICodexSessionID(&rootRequest, assistantMessage, store, 10)
+	assignOpenAICodexSessionID(&followUpRequest, followUpMessage, store, 10)
+
+	if rootRequest.SessionID == "" {
+		t.Fatal("expected non-empty session id")
+	}
+
+	if rootRequest.SessionID != followUpRequest.SessionID {
+		t.Fatalf("expected shared session id, got %q and %q", rootRequest.SessionID, followUpRequest.SessionID)
+	}
+}
+
 func newOpenAICodexProviderRequestConfig(
 	apiKey string,
 	baseURL string,
@@ -356,7 +456,7 @@ func newOpenAICodexStreamingTestServer(t *testing.T, apiKey string) *httptest.Se
 		request *http.Request,
 	) {
 		t.Helper()
-		assertOpenAICodexRequest(t, request, apiKey)
+		assertOpenAICodexRequest(t, request, apiKey, "")
 
 		responseWriter.Header().Set("Content-Type", "text/event-stream")
 
@@ -388,7 +488,12 @@ func newOpenAICodexStreamingTestServer(t *testing.T, apiKey string) *httptest.Se
 	}))
 }
 
-func assertOpenAICodexRequest(t *testing.T, request *http.Request, apiKey string) {
+func assertOpenAICodexRequest(
+	t *testing.T,
+	request *http.Request,
+	apiKey string,
+	expectedSessionID string,
+) {
 	t.Helper()
 
 	if request.URL.Path != "/backend-api/codex/responses" {
@@ -419,6 +524,14 @@ func assertOpenAICodexRequest(t *testing.T, request *http.Request, apiKey string
 		t.Fatalf("unexpected X-Test header: %q", request.Header.Get("X-Test"))
 	}
 
+	if expectedSessionID == "" {
+		if got := request.Header.Get(openAICodexHeaderSessionID); got != "" {
+			t.Fatalf("unexpected session_id header: %q", got)
+		}
+	} else if request.Header.Get(openAICodexHeaderSessionID) != expectedSessionID {
+		t.Fatalf("unexpected session_id header: %q", request.Header.Get(openAICodexHeaderSessionID))
+	}
+
 	var payload map[string]any
 
 	err := json.NewDecoder(request.Body).Decode(&payload)
@@ -426,10 +539,10 @@ func assertOpenAICodexRequest(t *testing.T, request *http.Request, apiKey string
 		t.Fatalf("decode request body: %v", err)
 	}
 
-	assertOpenAICodexPayload(t, payload)
+	assertOpenAICodexPayload(t, payload, expectedSessionID)
 }
 
-func assertOpenAICodexPayload(t *testing.T, payload map[string]any) {
+func assertOpenAICodexPayload(t *testing.T, payload map[string]any, expectedSessionID string) {
 	t.Helper()
 
 	if payload["model"] != testOpenAICodexModel {
@@ -495,6 +608,8 @@ func assertOpenAICodexPayload(t *testing.T, payload map[string]any) {
 		t.Fatalf("unexpected parallel_tool_calls flag: %#v", payload["parallel_tool_calls"])
 	}
 
+	assertOpenAICodexPromptCacheKey(t, payload, expectedSessionID)
+
 	input, typeOK := payload["input"].([]any)
 	if !typeOK {
 		t.Fatalf("unexpected input type: %T", payload["input"])
@@ -506,6 +621,26 @@ func assertOpenAICodexPayload(t *testing.T, payload map[string]any) {
 
 	assertOpenAICodexUserMessage(t, input[0])
 	assertOpenAICodexAssistantMessage(t, input[1])
+}
+
+func assertOpenAICodexPromptCacheKey(
+	t *testing.T,
+	payload map[string]any,
+	expectedSessionID string,
+) {
+	t.Helper()
+
+	if expectedSessionID == "" {
+		if _, exists := payload["prompt_cache_key"]; exists {
+			t.Fatalf("unexpected prompt_cache_key: %#v", payload["prompt_cache_key"])
+		}
+
+		return
+	}
+
+	if payload["prompt_cache_key"] != expectedSessionID {
+		t.Fatalf("unexpected prompt_cache_key: %#v", payload["prompt_cache_key"])
+	}
 }
 
 func assertOpenAICodexUserMessage(t *testing.T, rawMessage any) {

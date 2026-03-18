@@ -256,6 +256,8 @@ func (instance *bot) prepareMessageResponse(
 			fmt.Errorf("build chat completion request: %w", err)
 	}
 
+	assignOpenAICodexSessionID(&request, message, instance.nodes, loadedConfig.MaxMessages)
+
 	progress.advance(requestProgressStageGeneratingResponse)
 	tracker := progress.handoff(request.ConfiguredModel, searchMetadata)
 
@@ -821,6 +823,7 @@ func buildChatCompletionRequest(
 		},
 		Model:           modelName,
 		ConfiguredModel: providerSlashModel,
+		SessionID:       "",
 		Messages:        messages,
 	}, nil
 }

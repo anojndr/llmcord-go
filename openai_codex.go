@@ -22,8 +22,9 @@ const (
 	openAICodexUserAgent       = "llmcord-go"
 	openAICodexHeaderBeta      = "Openai-Beta"
 	openAICodexHeaderAccount   = "Chatgpt-Account-Id"
+	openAICodexHeaderSessionID = "Session_id"
 	openAICodexHeaderOrigin    = "Originator"
-	openAICodexRequestFields   = 7
+	openAICodexRequestFields   = 8
 	openAICodexJWTPartCount    = 3
 	openAICodexRoleSystem      = "system"
 	openAICodexEventError      = "error"
@@ -70,7 +71,7 @@ func (client openAICodexClient) streamChatCompletion(
 		return fmt.Errorf("create codex request: %w", err)
 	}
 
-	err = populateOpenAICodexHeaders(httpRequest, request.Provider)
+	err = populateOpenAICodexHeaders(httpRequest, request.Provider, request.SessionID)
 	if err != nil {
 		return fmt.Errorf("build codex headers: %w", err)
 	}
@@ -143,6 +144,10 @@ func buildOpenAICodexRequestBody(request chatCompletionRequest) (map[string]any,
 	requestBody["include"] = []string{"reasoning.encrypted_content"}
 	requestBody["tool_choice"] = openAICodexAuto
 	requestBody["parallel_tool_calls"] = true
+
+	if strings.TrimSpace(request.SessionID) != "" {
+		requestBody["prompt_cache_key"] = request.SessionID
+	}
 
 	if instructions != "" {
 		requestBody["instructions"] = instructions
@@ -530,7 +535,11 @@ func buildOpenAICodexURL(baseURL string, extraQuery map[string]any) (string, err
 	return parsedURL.String(), nil
 }
 
-func populateOpenAICodexHeaders(httpRequest *http.Request, provider providerRequestConfig) error {
+func populateOpenAICodexHeaders(
+	httpRequest *http.Request,
+	provider providerRequestConfig,
+	sessionID string,
+) error {
 	httpRequest.Header.Set("Accept", "text/event-stream")
 	httpRequest.Header.Set("Content-Type", "application/json")
 	httpRequest.Header.Set(openAICodexHeaderBeta, "responses=experimental")
@@ -543,6 +552,10 @@ func populateOpenAICodexHeaders(httpRequest *http.Request, provider providerRequ
 
 	for key, value := range provider.ExtraHeaders {
 		httpRequest.Header.Set(key, stringifyValue(value))
+	}
+
+	if strings.TrimSpace(sessionID) != "" {
+		httpRequest.Header.Set(openAICodexHeaderSessionID, sessionID)
 	}
 
 	if strings.TrimSpace(httpRequest.Header.Get("Authorization")) == "" {

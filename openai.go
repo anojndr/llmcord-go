@@ -35,6 +35,7 @@ type chatCompletionRequest struct {
 	Provider        providerRequestConfig
 	Model           string
 	ConfiguredModel string
+	SessionID       string
 	Messages        []chatMessage
 }
 

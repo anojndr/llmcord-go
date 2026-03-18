@@ -589,6 +589,7 @@ func newGeminiMediaUploadRequest() chatCompletionRequest {
 		Provider:        provider,
 		Model:           "gemini-3-flash-preview",
 		ConfiguredModel: "",
+		SessionID:       "",
 		Messages: []chatMessage{
 			{
 				Role: messageRoleUser,
@@ -693,6 +694,7 @@ func newGeminiBuildTestRequest() chatCompletionRequest {
 		},
 		Model:           "gemini-3-flash-preview",
 		ConfiguredModel: "",
+		SessionID:       "",
 		Messages: []chatMessage{
 			{Role: "system", Content: "Be concise."},
 			{
@@ -723,6 +725,7 @@ func newSimpleGeminiStreamRequest() chatCompletionRequest {
 		},
 		Model:           "gemini-3-flash-preview",
 		ConfiguredModel: "",
+		SessionID:       "",
 		Messages:        []chatMessage{{Role: messageRoleUser, Content: "hello"}},
 	}
 }
