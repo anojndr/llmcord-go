@@ -280,6 +280,37 @@ func TestBuildChatCompletionRequestRejectsGeminiThinkingAliasWithInvalidThinking
 	}
 }
 
+func TestMessageContentOptionsForModelRestrictsGeminiDocumentsToPDF(t *testing.T) {
+	t.Parallel()
+
+	loadedConfig := testMediaAnalysisConfig()
+
+	options, err := messageContentOptionsForModel(loadedConfig, testMediaAnalysisModel)
+	if err != nil {
+		t.Fatalf("build message content options: %v", err)
+	}
+
+	if !options.allowDocuments {
+		t.Fatal("expected gemini documents to be enabled")
+	}
+
+	if len(options.allowedDocumentMIMETypes) != 1 {
+		t.Fatalf("unexpected gemini document MIME type count: %d", len(options.allowedDocumentMIMETypes))
+	}
+
+	if _, ok := options.allowedDocumentMIMETypes[mimeTypePDF]; !ok {
+		t.Fatalf("expected PDF MIME type to be allowed: %#v", options.allowedDocumentMIMETypes)
+	}
+
+	if _, ok := options.allowedDocumentMIMETypes[mimeTypeDOCX]; ok {
+		t.Fatalf("expected DOCX MIME type to be disallowed: %#v", options.allowedDocumentMIMETypes)
+	}
+
+	if _, ok := options.allowedDocumentMIMETypes[mimeTypePPTX]; ok {
+		t.Fatalf("expected PPTX MIME type to be disallowed: %#v", options.allowedDocumentMIMETypes)
+	}
+}
+
 func TestBuildChatCompletionRequestNormalizesOpenAICodexReasoningAlias(t *testing.T) {
 	t.Parallel()
 

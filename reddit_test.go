@@ -53,6 +53,7 @@ func TestAugmentedUserPromptRenderUsesRedditTemplate(t *testing.T) {
 		YouTubeContent:   "",
 		RedditContent:    "Thread URL: https://www.reddit.com/r/testing/comments/abc123/thread-title/",
 		WebsiteContent:   "",
+		DocumentContent:  "",
 		VisualSearch:     "",
 		WebSearchResults: "",
 	}
@@ -106,6 +107,7 @@ func TestExtractRedditURLsIgnoresURLsInAugmentedPromptSections(t *testing.T) {
 		YouTubeContent:   "Thread URL: https://www.reddit.com/r/testing/comments/abc123/thread-title/",
 		RedditContent:    "Thread URL: https://www.reddit.com/r/testing/comments/def456/second-thread/",
 		WebsiteContent:   "Discussed on https://www.reddit.com/r/testing/comments/ghi789/third-thread/",
+		DocumentContent:  "Archive: https://www.reddit.com/r/testing/comments/pqr678/sixth-thread/",
 		VisualSearch:     "Site match: old.reddit.com/r/testing/comments/jkl012/fourth-thread/",
 		WebSearchResults: "1. https://www.reddit.com/r/testing/comments/mno345/fifth-thread/",
 	}.render()
@@ -264,7 +266,7 @@ func TestMaybeAugmentConversationWithRedditFetchesMultipleURLsConcurrentlyAndKee
 	}
 }
 
-func TestMaybeAugmentConversationWithRedditIgnoresURLsOnlyPresentInPDFContent(t *testing.T) {
+func TestMaybeAugmentConversationWithRedditIgnoresURLsOnlyPresentInDocumentContent(t *testing.T) {
 	t.Parallel()
 
 	reddit := newStubRedditContentClient(func(
@@ -291,7 +293,7 @@ func TestMaybeAugmentConversationWithRedditIgnoresURLsOnlyPresentInPDFContent(t 
 
 	instance := newRedditTestBot(reddit)
 
-	assertURLAugmentationIgnoresPDFOnlyURLs(
+	assertURLAugmentationIgnoresDocumentOnlyURLs(
 		t,
 		"https://www.reddit.com/r/testing/comments/abc123/thread-title/",
 		func(

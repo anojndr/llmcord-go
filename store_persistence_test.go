@@ -289,10 +289,11 @@ func TestPersistentMessageNodeStoreRestoresRetainedSearchHistoryAfterRestart(t *
 		restartedInstance,
 		followUpMessage,
 		messageContentOptions{
-			maxImages:      defaultMaxImages,
-			allowAudio:     false,
-			allowDocuments: false,
-			allowVideo:     false,
+			maxImages:                defaultMaxImages,
+			allowAudio:               false,
+			allowDocuments:           false,
+			allowedDocumentMIMETypes: nil,
+			allowVideo:               false,
 		},
 	)
 
@@ -363,10 +364,11 @@ func TestPersistentMessageNodeStoreRestoresRetainedVideoHistoryAfterRestart(t *t
 		restartedInstance,
 		followUpMessage,
 		messageContentOptions{
-			maxImages:      0,
-			allowAudio:     false,
-			allowDocuments: false,
-			allowVideo:     true,
+			maxImages:                0,
+			allowAudio:               false,
+			allowDocuments:           false,
+			allowedDocumentMIMETypes: nil,
+			allowVideo:               true,
 		},
 	)
 

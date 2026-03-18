@@ -83,6 +83,7 @@ func TestExtractWebsiteURLsIgnoresURLsInAugmentedPromptSections(t *testing.T) {
 		YouTubeContent:   "Transcript source: https://example.com/from-youtube",
 		RedditContent:    "Linked article: https://example.com/from-reddit",
 		WebsiteContent:   "URL: https://example.com/original",
+		DocumentContent:  "Extracted source: https://example.com/from-document",
 		VisualSearch:     "Site match: https://example.com/from-visual",
 		WebSearchResults: "1. https://example.com/from-search",
 	}.render()
@@ -217,7 +218,7 @@ func TestMaybeAugmentConversationWithWebsiteFetchesMultipleURLsConcurrentlyAndKe
 	}
 }
 
-func TestMaybeAugmentConversationWithWebsiteIgnoresURLsOnlyPresentInPDFContent(t *testing.T) {
+func TestMaybeAugmentConversationWithWebsiteIgnoresURLsOnlyPresentInDocumentContent(t *testing.T) {
 	t.Parallel()
 
 	website := newStubWebsiteContentClient(func(
@@ -236,9 +237,9 @@ func TestMaybeAugmentConversationWithWebsiteIgnoresURLsOnlyPresentInPDFContent(t
 
 	instance := newWebsiteTestBot(website)
 
-	assertURLAugmentationIgnoresPDFOnlyURLs(
+	assertURLAugmentationIgnoresDocumentOnlyURLs(
 		t,
-		"https://example.com/from-pdf",
+		"https://example.com/from-document",
 		func(
 			ctx context.Context,
 			conversation []chatMessage,

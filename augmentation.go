@@ -15,17 +15,19 @@ const (
 	youtubeSectionName           = "YouTube URL content"
 	redditSectionName            = "Reddit URL content"
 	websiteSectionName           = "Website URL content"
+	documentContentSectionName   = "Document attachment content"
 	visualSearchSectionName      = "Visual search results"
 	webSearchSectionName         = "Web search results"
 	replyTargetDescription       = "the replied message"
 	youtubeSectionDescription    = "the extracted YouTube URL content"
 	redditSectionDescription     = "the extracted Reddit URL content"
 	websiteSectionDescription    = "the extracted website URL content"
+	documentSectionDescription   = "the extracted document attachment content"
 	visualSearchStandalonePrompt = "the visual search results"
 	visualSearchCombinedPrompt   = "visual search results"
 	webSearchStandalonePrompt    = "the web search results"
 	webSearchCombinedPrompt      = "web search results"
-	maxPromptSections            = 6
+	maxPromptSections            = 7
 )
 
 type augmentedUserPrompt struct {
@@ -34,6 +36,7 @@ type augmentedUserPrompt struct {
 	YouTubeContent   string
 	RedditContent    string
 	WebsiteContent   string
+	DocumentContent  string
 	VisualSearch     string
 	WebSearchResults string
 }
@@ -78,6 +81,7 @@ func parseAugmentedUserPrompt(text string) augmentedUserPrompt {
 			YouTubeContent:   "",
 			RedditContent:    "",
 			WebsiteContent:   "",
+			DocumentContent:  "",
 			VisualSearch:     "",
 			WebSearchResults: "",
 		}
@@ -93,6 +97,7 @@ func parseAugmentedUserPrompt(text string) augmentedUserPrompt {
 			YouTubeContent:   "",
 			RedditContent:    "",
 			WebsiteContent:   "",
+			DocumentContent:  "",
 			VisualSearch:     "",
 			WebSearchResults: "",
 		}
@@ -106,6 +111,7 @@ func parseAugmentedUserPrompt(text string) augmentedUserPrompt {
 			YouTubeContent:   "",
 			RedditContent:    "",
 			WebsiteContent:   "",
+			DocumentContent:  "",
 			VisualSearch:     "",
 			WebSearchResults: "",
 		}
@@ -117,6 +123,7 @@ func parseAugmentedUserPrompt(text string) augmentedUserPrompt {
 		YouTubeContent:   "",
 		RedditContent:    "",
 		WebsiteContent:   "",
+		DocumentContent:  "",
 		VisualSearch:     "",
 		WebSearchResults: "",
 	}
@@ -161,6 +168,15 @@ func appendWebsiteContentToConversation(
 ) ([]chatMessage, error) {
 	return appendContextToConversation(conversation, func(prompt *augmentedUserPrompt) {
 		prompt.WebsiteContent = strings.TrimSpace(formattedContent)
+	})
+}
+
+func appendDocumentContentToConversation(
+	conversation []chatMessage,
+	formattedContent string,
+) ([]chatMessage, error) {
+	return appendContextToConversation(conversation, func(prompt *augmentedUserPrompt) {
+		prompt.DocumentContent = strings.TrimSpace(formattedContent)
 	})
 }
 
@@ -319,6 +335,7 @@ func appendContextToMessageContent(
 			YouTubeContent:   "",
 			RedditContent:    "",
 			WebsiteContent:   "",
+			DocumentContent:  "",
 			VisualSearch:     "",
 			WebSearchResults: "",
 		}
@@ -497,6 +514,15 @@ func (prompt augmentedUserPrompt) activeSections() []promptSection {
 		})
 	}
 
+	if trimmedValue := strings.TrimSpace(prompt.DocumentContent); trimmedValue != "" {
+		sections = append(sections, promptSection{
+			Name:                  documentContentSectionName,
+			Value:                 trimmedValue,
+			StandaloneDescription: documentSectionDescription,
+			CombinedDescription:   documentSectionDescription,
+		})
+	}
+
 	if trimmedValue := strings.TrimSpace(prompt.VisualSearch); trimmedValue != "" {
 		sections = append(sections, promptSection{
 			Name:                  visualSearchSectionName,
@@ -548,6 +574,7 @@ func findPromptSectionMatches(text string) []promptSectionMatch {
 		youtubeSectionName,
 		redditSectionName,
 		websiteSectionName,
+		documentContentSectionName,
 		visualSearchSectionName,
 		webSearchSectionName,
 	} {
@@ -588,6 +615,8 @@ func setPromptSectionValue(prompt *augmentedUserPrompt, sectionName string, valu
 		prompt.RedditContent = trimmedValue
 	case websiteSectionName:
 		prompt.WebsiteContent = trimmedValue
+	case documentContentSectionName:
+		prompt.DocumentContent = trimmedValue
 	case visualSearchSectionName:
 		prompt.VisualSearch = trimmedValue
 	case webSearchSectionName:

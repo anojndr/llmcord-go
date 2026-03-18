@@ -91,6 +91,7 @@ func TestExtractTikTokURLsIgnoresURLsInAugmentedPromptSections(t *testing.T) {
 		YouTubeContent:   "Mirror: https://www.tiktok.com/@mikemhan/video/7614735539660442893",
 		RedditContent:    "Mirror: https://vt.tnktok.com/ZSuhvMpsr/",
 		WebsiteContent:   "Source: https://www.tiktok.com/@example/video/1234567890123456789",
+		DocumentContent:  "Doc source: https://www.tiktok.com/@example/video/4567890123456789012",
 		VisualSearch:     "Site match: https://www.tiktok.com/@another/video/2345678901234567890",
 		WebSearchResults: "1. https://www.tiktok.com/@third/video/3456789012345678901",
 	}.render()
@@ -713,7 +714,7 @@ func TestMaybeAugmentConversationWithTikTokWarnsWithoutGeminiPreprocessor(t *tes
 	}
 }
 
-func TestMaybeAugmentConversationWithTikTokIgnoresURLsOnlyPresentInPDFContent(t *testing.T) {
+func TestMaybeAugmentConversationWithTikTokIgnoresURLsOnlyPresentInDocumentContent(t *testing.T) {
 	t.Parallel()
 
 	instance := newTikTokTestBot(
@@ -732,7 +733,7 @@ func TestMaybeAugmentConversationWithTikTokIgnoresURLsOnlyPresentInPDFContent(t 
 		nil,
 	)
 
-	assertURLAugmentationIgnoresPDFOnlyURLs(
+	assertURLAugmentationIgnoresDocumentOnlyURLs(
 		t,
 		"https://vt.tnktok.com/ZSuhvMpsr/",
 		func(

@@ -209,6 +209,7 @@ func TestExtractFacebookURLsIgnoresURLsInAugmentedPromptSections(t *testing.T) {
 		YouTubeContent:   "Mirror: " + testFacebookURL,
 		RedditContent:    "Mirror: https://fb.watch/vhalCYi2ib/",
 		WebsiteContent:   "Source: https://www.facebook.com/watch/?v=823513456342882",
+		DocumentContent:  "Doc URL: https://www.facebook.com/reel/1111111111111111",
 		VisualSearch:     "Site match: https://www.facebook.com/share/v/19akxExample/",
 		WebSearchResults: "1. https://www.facebook.com/reel/923513456342883",
 	}.render()
@@ -521,7 +522,7 @@ func TestMaybeAugmentConversationWithFacebookWarnsWithoutGeminiPreprocessor(t *t
 	}
 }
 
-func TestMaybeAugmentConversationWithFacebookIgnoresURLsOnlyPresentInPDFContent(t *testing.T) {
+func TestMaybeAugmentConversationWithFacebookIgnoresURLsOnlyPresentInDocumentContent(t *testing.T) {
 	t.Parallel()
 
 	instance := newFacebookTestBot(
@@ -540,7 +541,7 @@ func TestMaybeAugmentConversationWithFacebookIgnoresURLsOnlyPresentInPDFContent(
 		nil,
 	)
 
-	assertURLAugmentationIgnoresPDFOnlyURLs(
+	assertURLAugmentationIgnoresDocumentOnlyURLs(
 		t,
 		testFacebookURL,
 		func(

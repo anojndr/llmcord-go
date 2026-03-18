@@ -20,10 +20,11 @@ func TestPersistAugmentedSourceMessageRetainsURLAndSearchSectionsInFollowUpHisto
 		fixture.instance,
 		fixture.followUpMessage,
 		messageContentOptions{
-			maxImages:      defaultMaxImages,
-			allowAudio:     false,
-			allowDocuments: false,
-			allowVideo:     false,
+			maxImages:                defaultMaxImages,
+			allowAudio:               false,
+			allowDocuments:           false,
+			allowedDocumentMIMETypes: nil,
+			allowVideo:               false,
 		},
 	)
 
@@ -43,10 +44,11 @@ func TestPersistAugmentedSourceMessageRetainsTikTokAndFacebookVideoContextInFoll
 		fixture.instance,
 		fixture.followUpMessage,
 		messageContentOptions{
-			maxImages:      0,
-			allowAudio:     false,
-			allowDocuments: false,
-			allowVideo:     true,
+			maxImages:                0,
+			allowAudio:               false,
+			allowDocuments:           false,
+			allowedDocumentMIMETypes: nil,
+			allowVideo:               true,
 		},
 	)
 
