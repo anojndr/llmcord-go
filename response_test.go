@@ -477,6 +477,7 @@ func emptyChatCompletionRequest() chatCompletionRequest {
 		},
 		Model:           "",
 		ConfiguredModel: "",
+		SessionID:       "",
 		Messages:        nil,
 	}
 }

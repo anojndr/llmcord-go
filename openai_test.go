@@ -141,6 +141,7 @@ func TestOpenAIClientStreamChatCompletion(t *testing.T) {
 		},
 		Model:           "gpt-test",
 		ConfiguredModel: "",
+		SessionID:       "",
 		Messages: []chatMessage{
 			{Role: "user", Content: "hello"},
 		},
@@ -197,6 +198,7 @@ func TestOpenAIClientStreamChatCompletionReturnsStatusErrors(t *testing.T) {
 		},
 		Model:           "gpt-test",
 		ConfiguredModel: "",
+		SessionID:       "",
 		Messages:        []chatMessage{{Role: "user", Content: "hello"}},
 	}
 
@@ -241,6 +243,7 @@ func TestOpenAIClientStreamChatCompletionReturnsStreamEventErrors(t *testing.T) 
 		},
 		Model:           "gpt-test",
 		ConfiguredModel: "",
+		SessionID:       "",
 		Messages:        []chatMessage{{Role: "user", Content: "hello"}},
 	}
 
@@ -287,6 +290,7 @@ func TestOpenAIClientStreamChatCompletionReturnsBlockedFinishReasonErrors(t *tes
 		},
 		Model:           "gpt-test",
 		ConfiguredModel: "",
+		SessionID:       "",
 		Messages:        []chatMessage{{Role: "user", Content: "hello"}},
 	}
 
@@ -327,6 +331,7 @@ func TestOpenAIClientStreamChatCompletionReturnsErrorWithoutDoneMarker(t *testin
 		},
 		Model:           "gpt-test",
 		ConfiguredModel: "",
+		SessionID:       "",
 		Messages:        []chatMessage{{Role: "user", Content: "hello"}},
 	}
 
@@ -439,6 +444,7 @@ func newOpenAIDegradedFunctionRetryRequest(baseURL string) chatCompletionRequest
 		},
 		Model:           "gpt-test",
 		ConfiguredModel: "openai/gpt-test",
+		SessionID:       "",
 		Messages:        []chatMessage{{Role: messageRoleUser, Content: "hello"}},
 	}
 }

@@ -72,6 +72,8 @@ func TestTrimBotMentionLeavesMessagesWithoutMentionsUnchanged(t *testing.T) {
 func TestResolveParentMessageDoesNotChainMessagesContainingAtAIPhrase(t *testing.T) {
 	t.Parallel()
 
+	const testMentionChannelID = "channel-1"
+
 	session, err := discordgo.New("Bot discord-token")
 	if err != nil {
 		t.Fatalf("create discord session: %v", err)
@@ -88,7 +90,7 @@ func TestResolveParentMessageDoesNotChainMessagesContainingAtAIPhrase(t *testing
 	}
 
 	channel := new(discordgo.Channel)
-	channel.ID = "channel-1"
+	channel.ID = testMentionChannelID
 	channel.GuildID = guild.ID
 	channel.Type = discordgo.ChannelTypeGuildText
 
