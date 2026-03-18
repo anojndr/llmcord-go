@@ -126,3 +126,15 @@ func TestAppendReplyTargetToConversationAppendsReplyMedia(t *testing.T) {
 		t.Fatalf("expected replied image part to be appended: %#v", parts[1])
 	}
 }
+
+func TestAppendDocumentContentToConversationPreservesImages(t *testing.T) {
+	t.Parallel()
+
+	assertContextAugmentationPreservesImages(
+		t,
+		"<@123>: summarize this report",
+		"Filename: report.docx\nExtracted text:\nQuarterly revenue grew by 12 percent.",
+		documentContentSectionName,
+		appendDocumentContentToConversation,
+	)
+}

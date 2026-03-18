@@ -82,6 +82,7 @@ func TestExtractYouTubeURLsIgnoresURLsInAugmentedPromptSections(t *testing.T) {
 		YouTubeContent:   "URL: https://www.youtube.com/watch?v=dQw4w9WgXcQ",
 		RedditContent:    "Linked video: https://www.youtube.com/watch?v=abc123def45",
 		WebsiteContent:   "URL: https://www.youtube.com/watch?v=5NV6Rdv1a3I",
+		DocumentContent:  "Doc link: https://www.youtube.com/watch?v=aqz-KE-bpKQ",
 		VisualSearch:     "Site match: https://youtu.be/3JZ_D3ELwOQ",
 		WebSearchResults: "1. https://www.youtube.com/watch?v=oHg5SJYRHA0",
 	}.render()
@@ -234,7 +235,7 @@ func TestMaybeAugmentConversationWithYouTubeFetchesMultipleURLsConcurrentlyAndKe
 	}
 }
 
-func TestMaybeAugmentConversationWithYouTubeIgnoresURLsOnlyPresentInPDFContent(t *testing.T) {
+func TestMaybeAugmentConversationWithYouTubeIgnoresURLsOnlyPresentInDocumentContent(t *testing.T) {
 	t.Parallel()
 
 	youtube := newStubYouTubeContentClient(func(
@@ -255,7 +256,7 @@ func TestMaybeAugmentConversationWithYouTubeIgnoresURLsOnlyPresentInPDFContent(t
 
 	instance := newYouTubeTestBot(youtube)
 
-	assertURLAugmentationIgnoresPDFOnlyURLs(
+	assertURLAugmentationIgnoresDocumentOnlyURLs(
 		t,
 		"https://youtu.be/dQw4w9WgXcQ",
 		func(

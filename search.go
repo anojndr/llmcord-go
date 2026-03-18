@@ -33,7 +33,9 @@ const (
 	contentFieldBytes                = "data"
 	contentFieldFilename             = "filename"
 	contentFieldMIMEType             = "mime_type"
+	mimeTypeDOCX                     = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 	mimeTypePDF                      = "application/pdf"
+	mimeTypePPTX                     = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
 	mimeTypePNG                      = "image/png"
 	searchDeciderDecisionInstruction = "Based on the conversation above, analyze the last user query " +
 		"and respond with your JSON decision."
@@ -541,14 +543,14 @@ func (instance *bot) searchDeciderImagePartsForMessage(
 
 	documentParts, err := instance.documentPartsForMessage(ctx, sourceMessage)
 	if err != nil {
-		return nil, fmt.Errorf("load pdf parts for search decider: %w", err)
+		return nil, fmt.Errorf("load document parts for search decider: %w", err)
 	}
 
 	for index, documentPart := range documentParts {
 		extraction, extractionErr := extractPDFContent(documentPart)
 		if extractionErr != nil {
 			return nil, fmt.Errorf(
-				"extract pdf images for search decider file %d: %w",
+				"extract document images for search decider file %d: %w",
 				index+1,
 				extractionErr,
 			)
@@ -557,7 +559,7 @@ func (instance *bot) searchDeciderImagePartsForMessage(
 		for _, imagePart := range extraction.imageParts {
 			appendErr := appendImagePart(imagePart)
 			if appendErr != nil {
-				return nil, fmt.Errorf("append pdf image for search decider: %w", appendErr)
+				return nil, fmt.Errorf("append document image for search decider: %w", appendErr)
 			}
 
 			if len(candidateImageParts) == maxImageParts {

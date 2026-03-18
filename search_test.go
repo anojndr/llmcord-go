@@ -443,6 +443,10 @@ func TestBuildSearchDeciderConversationAppendsPDFImagesForVisionDecider(t *testi
 		t.Fatalf("expected extracted pdf text in main conversation: %q", mainContent)
 	}
 
+	if !strings.Contains(mainContent, documentContentSectionName+":") {
+		t.Fatalf("expected extracted document section in main conversation: %q", mainContent)
+	}
+
 	searchConversation, err := instance.buildSearchDeciderConversation(
 		context.Background(),
 		loadedConfig,
@@ -469,8 +473,78 @@ func TestBuildSearchDeciderConversationAppendsPDFImagesForVisionDecider(t *testi
 		t.Fatalf("expected extracted pdf image summary in decider prompt: %q", textValue)
 	}
 
+	if !strings.Contains(textValue, documentContentSectionName+":") {
+		t.Fatalf("expected extracted document section in decider prompt: %q", textValue)
+	}
+
 	if parts[1]["type"] != contentTypeImageURL {
 		t.Fatalf("expected extracted pdf image part for vision decider: %#v", parts[1])
+	}
+}
+
+func TestBuildSearchDeciderConversationAppendsPPTXImagesForVisionDecider(t *testing.T) {
+	t.Parallel()
+
+	instance, sourceMessage := newPDFExtractionTestBot(
+		"message-search-pptx",
+		"<@123>: summarize the slides",
+		[]contentPart{
+			testPPTXDocumentPart(t, "Slide text about quarterly revenue growth."),
+		},
+	)
+
+	loadedConfig := testSearchConfig()
+	loadedConfig.MaxImages = 1
+	loadedConfig.SearchDeciderModel = "openai/decider-model:vision"
+
+	mainConversation, err := instance.maybeAugmentConversationWithPDFContents(
+		context.Background(),
+		loadedConfig,
+		"openai/main-model",
+		sourceMessage,
+		[]chatMessage{{Role: messageRoleUser, Content: "<@123>: summarize the slides"}},
+	)
+	if err != nil {
+		t.Fatalf("augment main conversation with pptx contents: %v", err)
+	}
+
+	mainContent, contentOK := mainConversation[0].Content.(string)
+	if !contentOK {
+		t.Fatalf("unexpected main content type: %T", mainConversation[0].Content)
+	}
+
+	if !strings.Contains(mainContent, ooxmlContentOpenTag) {
+		t.Fatalf("expected extracted OOXML text in main conversation: %q", mainContent)
+	}
+
+	searchConversation, err := instance.buildSearchDeciderConversation(
+		context.Background(),
+		loadedConfig,
+		"openai/main-model",
+		loadedConfig.SearchDeciderModel,
+		sourceMessage,
+		mainConversation,
+	)
+	if err != nil {
+		t.Fatalf("build search decider conversation: %v", err)
+	}
+
+	parts, ok := searchConversation[0].Content.([]contentPart)
+	if !ok {
+		t.Fatalf("unexpected search decider content type: %T", searchConversation[0].Content)
+	}
+
+	if len(parts) != 2 {
+		t.Fatalf("unexpected search decider part count: %d", len(parts))
+	}
+
+	textValue, _ := parts[0]["text"].(string)
+	if !strings.Contains(textValue, "Extracted images: 1 total.") {
+		t.Fatalf("expected extracted pptx image summary in decider prompt: %q", textValue)
+	}
+
+	if parts[1]["type"] != contentTypeImageURL {
+		t.Fatalf("expected extracted pptx image part for vision decider: %#v", parts[1])
 	}
 }
 

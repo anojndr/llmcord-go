@@ -284,7 +284,7 @@ func (instance *bot) augmentPreparedMessageResponse(
 	)
 	if err != nil {
 		return nil, nil, nil,
-			fmt.Errorf("augment conversation with extracted pdf content: %w", err)
+			fmt.Errorf("augment conversation with extracted document content: %w", err)
 	}
 
 	messages, err = instance.maybeAugmentConversationWithGeminiMedia(
@@ -457,7 +457,7 @@ func (instance *bot) buildMessageConversation(
 		providerSlashModel,
 	)
 	if err != nil {
-		return nil, nil, fmt.Errorf("check pdf extraction support: %w", err)
+		return nil, nil, fmt.Errorf("check document extraction support: %w", err)
 	}
 
 	messages, warnings := instance.buildConversation(
@@ -511,6 +511,7 @@ func messageContentOptionsForModel(
 	if provider.apiKind() == providerAPIKindGemini {
 		options.allowAudio = true
 		options.allowDocuments = true
+		options.allowedDocumentMIMETypes = allowedGeminiDocumentMIMETypes()
 		options.allowVideo = true
 	}
 

@@ -655,56 +655,7 @@ func geminiPartsFromMessageContent(
 
 		return []*genai.Part{genai.NewPartFromText(typedContent)}, nil
 	case []contentPart:
-		parts := make([]*genai.Part, 0, len(typedContent))
-
-		for _, part := range typedContent {
-			partType, _ := part["type"].(string)
-
-			switch partType {
-			case contentTypeText:
-				textValue, _ := part["text"].(string)
-				if textValue == "" {
-					continue
-				}
-
-				parts = append(parts, genai.NewPartFromText(textValue))
-			case contentTypeImageURL:
-				imageURL, err := geminiImageURL(part)
-				if err != nil {
-					return nil, err
-				}
-
-				if imageURL == "" {
-					continue
-				}
-
-				imageBytes, mimeType, err := geminiInlineImage(imageURL)
-				if err != nil {
-					return nil, err
-				}
-
-				parts = append(parts, genai.NewPartFromBytes(imageBytes, mimeType))
-			case contentTypeAudioData, contentTypeDocument, contentTypeVideoData:
-				uploadedPart, err := geminiUploadedMediaPart(ctx, files, part)
-				if err != nil {
-					return nil, err
-				}
-
-				if uploadedPart == nil {
-					continue
-				}
-
-				parts = append(parts, uploadedPart)
-			default:
-				return nil, fmt.Errorf(
-					"unsupported gemini content part type %q: %w",
-					partType,
-					os.ErrInvalid,
-				)
-			}
-		}
-
-		return parts, nil
+		return geminiPartsFromContentParts(ctx, typedContent, files)
 	default:
 		return nil, fmt.Errorf(
 			"unsupported gemini content type %T: %w",
@@ -712,6 +663,106 @@ func geminiPartsFromMessageContent(
 			os.ErrInvalid,
 		)
 	}
+}
+
+func geminiPartsFromContentParts(
+	ctx context.Context,
+	contentParts []contentPart,
+	files geminiFilesClient,
+) ([]*genai.Part, error) {
+	parts := make([]*genai.Part, 0, len(contentParts))
+
+	for _, part := range contentParts {
+		convertedPart, ok, err := geminiPartFromContentPart(ctx, part, files)
+		if err != nil {
+			return nil, err
+		}
+
+		if !ok {
+			continue
+		}
+
+		parts = append(parts, convertedPart)
+	}
+
+	return parts, nil
+}
+
+func geminiPartFromContentPart(
+	ctx context.Context,
+	part contentPart,
+	files geminiFilesClient,
+) (*genai.Part, bool, error) {
+	partType, _ := part["type"].(string)
+
+	switch partType {
+	case contentTypeText:
+		return geminiTextPart(part)
+	case contentTypeImageURL:
+		convertedPart, ok, err := geminiImagePart(part)
+		if err != nil {
+			return nil, false, err
+		}
+
+		return convertedPart, ok, nil
+	case contentTypeDocument:
+		if !geminiSupportsDocumentPart(part) {
+			return nil, false, nil
+		}
+
+		convertedPart, err := geminiUploadedMediaPart(ctx, files, part)
+		if err != nil {
+			return nil, false, err
+		}
+
+		return convertedPart, convertedPart != nil, nil
+	case contentTypeAudioData, contentTypeVideoData:
+		convertedPart, err := geminiUploadedMediaPart(ctx, files, part)
+		if err != nil {
+			return nil, false, err
+		}
+
+		return convertedPart, convertedPart != nil, nil
+	default:
+		return nil, false, fmt.Errorf(
+			"unsupported gemini content part type %q: %w",
+			partType,
+			os.ErrInvalid,
+		)
+	}
+}
+
+func geminiTextPart(part contentPart) (*genai.Part, bool, error) {
+	textValue, _ := part["text"].(string)
+	if textValue == "" {
+		return nil, false, nil
+	}
+
+	return genai.NewPartFromText(textValue), true, nil
+}
+
+func geminiImagePart(part contentPart) (*genai.Part, bool, error) {
+	imageURL, err := geminiImageURL(part)
+	if err != nil {
+		return nil, false, err
+	}
+
+	if imageURL == "" {
+		return nil, false, nil
+	}
+
+	imageBytes, mimeType, err := geminiInlineImage(imageURL)
+	if err != nil {
+		return nil, false, err
+	}
+
+	return genai.NewPartFromBytes(imageBytes, mimeType), true, nil
+}
+
+func geminiSupportsDocumentPart(part contentPart) bool {
+	mimeType, _ := part[contentFieldMIMEType].(string)
+
+	return normalizedMIMEType(mimeType) == mimeTypePDF
 }
 
 func geminiUploadedMediaPart(

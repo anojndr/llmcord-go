@@ -16,6 +16,7 @@ const (
 	testStreamedHelloText = "Hello"
 	testHeaderPresent     = "present"
 	testGeminiHelloPrompt = "hello"
+	testGeminiDocumentURI = "https://example.com/files/document"
 )
 
 type stubGeminiAPIClient struct {
@@ -444,6 +445,66 @@ func TestBuildGeminiGenerateContentRequestUploadsBinaryFiles(t *testing.T) {
 	assertGeminiUploadedMediaParts(t, contents)
 }
 
+func TestBuildGeminiGenerateContentRequestUploadsOnlyPDFDocuments(t *testing.T) {
+	t.Parallel()
+
+	state := new(geminiUploadState)
+	files := newGeminiMediaUploadStub(t, state)
+	request := newSimpleGeminiStreamRequest()
+	request.Messages = []chatMessage{
+		{
+			Role: messageRoleUser,
+			Content: []contentPart{
+				{"type": contentTypeText, "text": "<@123>: summarize these files"},
+				{
+					"type":               contentTypeDocument,
+					contentFieldBytes:    []byte("pdf-bytes"),
+					contentFieldMIMEType: mimeTypePDF,
+					contentFieldFilename: testPDFFilename,
+				},
+				{
+					"type":               contentTypeDocument,
+					contentFieldBytes:    []byte("docx-bytes"),
+					contentFieldMIMEType: mimeTypeDOCX,
+					contentFieldFilename: testDOCXFilename,
+				},
+				{
+					"type":               contentTypeDocument,
+					contentFieldBytes:    []byte("pptx-bytes"),
+					contentFieldMIMEType: mimeTypePPTX,
+					contentFieldFilename: testPPTXFilename,
+				},
+			},
+		},
+	}
+
+	contents, _, err := buildGeminiGenerateContentRequest(
+		context.Background(),
+		request,
+		files,
+	)
+	if err != nil {
+		t.Fatalf("build gemini generate content request: %v", err)
+	}
+
+	if len(state.calls) != 1 {
+		t.Fatalf("unexpected upload count: %d", len(state.calls))
+	}
+
+	if state.calls[0].mimeType != mimeTypePDF {
+		t.Fatalf("expected first upload to be PDF: %#v", state.calls[0])
+	}
+
+	if len(contents) != 1 || len(contents[0].Parts) != 2 {
+		t.Fatalf("unexpected gemini content shape: %#v", contents)
+	}
+
+	part := contents[0].Parts[1]
+	if part.FileData == nil || part.FileData.FileURI != testGeminiDocumentURI {
+		t.Fatalf("unexpected uploaded PDF file part: %#v", part)
+	}
+}
+
 type geminiUploadCall struct {
 	mimeType    string
 	displayName string
@@ -484,7 +545,12 @@ func newGeminiMediaUploadStub(t *testing.T, state *geminiUploadState) stubGemini
 
 		if config.MIMEType == mimeTypePDF {
 			uploadedFile.Name = "files/document"
-			uploadedFile.URI = "https://example.com/files/document"
+			uploadedFile.URI = testGeminiDocumentURI
+		}
+
+		if config.MIMEType == mimeTypeDOCX || config.MIMEType == mimeTypePPTX {
+			uploadedFile.Name = "files/document"
+			uploadedFile.URI = testGeminiDocumentURI
 		}
 
 		if config.MIMEType == testVideoMIMEType {
@@ -597,7 +663,7 @@ func assertGeminiUploadedMediaParts(t *testing.T, contents []*genai.Content) {
 		t.Fatal("expected uploaded document file part")
 	}
 
-	if contents[0].Parts[2].FileData.FileURI != "https://example.com/files/document" {
+	if contents[0].Parts[2].FileData.FileURI != testGeminiDocumentURI {
 		t.Fatalf("unexpected document URI: %#v", contents[0].Parts[2].FileData)
 	}
 

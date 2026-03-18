@@ -20,13 +20,16 @@ import (
 )
 
 const (
-	pdfContentCloseTag = "</pdf_content>"
-	pdfContentOpenTag  = "<pdf_content>"
+	pdfContentCloseTag   = "</pdf_content>"
+	pdfContentOpenTag    = "<pdf_content>"
+	ooxmlContentOpenTag  = "<ooxml_content>"
+	ooxmlContentCloseTag = "</ooxml_content>"
 )
 
 type extractedPDFContent struct {
 	filename   string
 	imageParts []contentPart
+	mimeType   string
 	text       string
 }
 
@@ -37,7 +40,7 @@ func (instance *bot) maybeAugmentConversationWithPDFContents(
 	sourceMessage *discordgo.Message,
 	conversation []chatMessage,
 ) ([]chatMessage, error) {
-	canExtractPDFs, err := canExtractPDFContents(
+	canExtractDocuments, err := canExtractPDFContents(
 		loadedConfig,
 		providerSlashModel,
 	)
@@ -45,7 +48,7 @@ func (instance *bot) maybeAugmentConversationWithPDFContents(
 		return nil, err
 	}
 
-	if !canExtractPDFs {
+	if !canExtractDocuments {
 		return conversation, nil
 	}
 
@@ -54,10 +57,24 @@ func (instance *bot) maybeAugmentConversationWithPDFContents(
 		instance.attachmentAugmentationMessages(ctx, sourceMessage),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("load pdf parts for extraction: %w", err)
+		return nil, fmt.Errorf("load document parts for extraction: %w", err)
 	}
 
 	if len(documentParts) == 0 {
+		return conversation, nil
+	}
+
+	apiKind, err := configuredModelAPIKind(loadedConfig, providerSlashModel)
+	if err != nil {
+		return nil, err
+	}
+
+	extractableParts, err := extractableDocumentPartsForAPIKind(documentParts, apiKind)
+	if err != nil {
+		return nil, fmt.Errorf("filter document parts for extraction: %w", err)
+	}
+
+	if len(extractableParts) == 0 {
 		return conversation, nil
 	}
 
@@ -66,7 +83,7 @@ func (instance *bot) maybeAugmentConversationWithPDFContents(
 		providerSlashModel,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("build pdf extraction content options: %w", err)
+		return nil, fmt.Errorf("build document extraction content options: %w", err)
 	}
 
 	remainingImageSlots, err := remainingImageSlotsForConversation(
@@ -74,16 +91,47 @@ func (instance *bot) maybeAugmentConversationWithPDFContents(
 		contentOptions.maxImages,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("calculate remaining image slots for pdf extraction: %w", err)
+		return nil, fmt.Errorf("calculate remaining image slots for document extraction: %w", err)
 	}
 
-	extractions := make([]extractedPDFContent, 0, len(documentParts))
+	extractions, imageParts, err := extractedDocumentConversationData(
+		extractableParts,
+		remainingImageSlots,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	augmentedConversation, err := appendPDFContentsToConversation(
+		conversation,
+		extractions,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("append extracted document contents: %w", err)
+	}
+
+	augmentedConversation, err = appendMediaPartsToConversation(
+		augmentedConversation,
+		imageParts,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("append extracted document images: %w", err)
+	}
+
+	return augmentedConversation, nil
+}
+
+func extractedDocumentConversationData(
+	extractableParts []contentPart,
+	remainingImageSlots int,
+) ([]extractedPDFContent, []contentPart, error) {
+	extractions := make([]extractedPDFContent, 0, len(extractableParts))
 	imageParts := make([]contentPart, 0)
 
-	for index, documentPart := range documentParts {
+	for index, documentPart := range extractableParts {
 		extraction, extractionErr := extractPDFContent(documentPart)
 		if extractionErr != nil {
-			return nil, fmt.Errorf("extract pdf file %d: %w", index+1, extractionErr)
+			return nil, nil, fmt.Errorf("extract document file %d: %w", index+1, extractionErr)
 		}
 
 		attachCount := minInt(len(extraction.imageParts), remainingImageSlots)
@@ -95,35 +143,19 @@ func (instance *bot) maybeAugmentConversationWithPDFContents(
 		extractions = append(extractions, extraction)
 	}
 
-	augmentedConversation, err := appendPDFContentsToConversation(
-		conversation,
-		extractions,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("append extracted pdf contents: %w", err)
-	}
-
-	augmentedConversation, err = appendMediaPartsToConversation(
-		augmentedConversation,
-		imageParts,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("append extracted pdf images: %w", err)
-	}
-
-	return augmentedConversation, nil
+	return extractions, imageParts, nil
 }
 
 func canExtractPDFContents(
 	loadedConfig config,
 	providerSlashModel string,
 ) (bool, error) {
-	apiKind, err := configuredModelAPIKind(loadedConfig, providerSlashModel)
+	_, err := configuredModelAPIKind(loadedConfig, providerSlashModel)
 	if err != nil {
 		return false, err
 	}
 
-	return apiKind != providerAPIKindGemini, nil
+	return true, nil
 }
 
 func (instance *bot) documentPartsForMessage(
@@ -146,33 +178,89 @@ func partNeedsPDFExtraction(part contentPart) bool {
 	return partType == contentTypeDocument
 }
 
+func extractableDocumentPartsForAPIKind(
+	documentParts []contentPart,
+	apiKind providerAPIKind,
+) ([]contentPart, error) {
+	extractableParts := make([]contentPart, 0, len(documentParts))
+
+	for index, documentPart := range documentParts {
+		_, mimeType, _, err := attachmentBinaryData(documentPart)
+		if err != nil {
+			return nil, fmt.Errorf("decode document part %d: %w", index+1, err)
+		}
+
+		if !documentNeedsLocalExtraction(mimeType, apiKind) {
+			continue
+		}
+
+		extractableParts = append(extractableParts, documentPart)
+	}
+
+	return extractableParts, nil
+}
+
+func documentNeedsLocalExtraction(
+	mimeType string,
+	apiKind providerAPIKind,
+) bool {
+	normalizedType := normalizedMIMEType(mimeType)
+
+	if normalizedType == mimeTypeDOCX || normalizedType == mimeTypePPTX {
+		return true
+	}
+
+	if normalizedType == mimeTypePDF {
+		return apiKind != providerAPIKindGemini
+	}
+
+	return false
+}
+
 func extractPDFContent(documentPart contentPart) (extractedPDFContent, error) {
 	documentBytes, mimeType, filename, err := attachmentBinaryData(documentPart)
 	if err != nil {
 		return extractedPDFContent{}, err
 	}
 
-	if !strings.HasPrefix(mimeType, mimeTypePDF) {
+	var (
+		text       string
+		imageParts []contentPart
+	)
+
+	switch normalizedMIMEType(mimeType) {
+	case mimeTypePDF:
+		text, err = extractPDFText(documentBytes)
+		if err != nil {
+			return extractedPDFContent{}, err
+		}
+
+		imageParts, err = extractPDFImages(documentBytes)
+		if err != nil {
+			return extractedPDFContent{}, err
+		}
+	case mimeTypeDOCX:
+		text, imageParts, err = extractDOCXContent(documentBytes)
+		if err != nil {
+			return extractedPDFContent{}, err
+		}
+	case mimeTypePPTX:
+		text, imageParts, err = extractPPTXContent(documentBytes)
+		if err != nil {
+			return extractedPDFContent{}, err
+		}
+	default:
 		return extractedPDFContent{}, fmt.Errorf(
-			"unsupported pdf mime type %q: %w",
+			"unsupported document mime type %q: %w",
 			mimeType,
 			os.ErrInvalid,
 		)
 	}
 
-	text, err := extractPDFText(documentBytes)
-	if err != nil {
-		return extractedPDFContent{}, err
-	}
-
-	imageParts, err := extractPDFImages(documentBytes)
-	if err != nil {
-		return extractedPDFContent{}, err
-	}
-
 	return extractedPDFContent{
 		filename:   filename,
 		imageParts: imageParts,
+		mimeType:   normalizedMIMEType(mimeType),
 		text:       text,
 	}, nil
 }
@@ -364,9 +452,12 @@ func appendPDFContentsToConversation(
 		return conversation, nil
 	}
 
-	return appendContextToConversation(conversation, func(prompt *augmentedUserPrompt) {
-		prompt.UserQuery = appendPromptUserQuery(prompt.UserQuery, renderedContent)
-	})
+	augmentedConversation, err := appendDocumentContentToConversation(conversation, renderedContent)
+	if err != nil {
+		return nil, fmt.Errorf("append document attachment content to conversation: %w", err)
+	}
+
+	return augmentedConversation, nil
 }
 
 func renderPDFContents(extractions []extractedPDFContent) string {
@@ -385,7 +476,10 @@ func renderPDFContents(extractions []extractedPDFContent) string {
 }
 
 func renderPDFContent(extraction extractedPDFContent) string {
-	lines := []string{pdfContentOpenTag}
+	contentOpenTag := documentContentOpenTag(extraction)
+	contentCloseTag := documentContentCloseTag(extraction)
+
+	lines := []string{contentOpenTag}
 
 	filename := strings.TrimSpace(extraction.filename)
 	if filename != "" {
@@ -409,9 +503,27 @@ func renderPDFContent(extraction extractedPDFContent) string {
 		lines = append(lines, "No extractable text or images found.")
 	}
 
-	lines = append(lines, pdfContentCloseTag)
+	lines = append(lines, contentCloseTag)
 
 	return strings.Join(lines, "\n")
+}
+
+func documentContentOpenTag(extraction extractedPDFContent) string {
+	switch strings.TrimSpace(extraction.mimeType) {
+	case mimeTypeDOCX, mimeTypePPTX:
+		return ooxmlContentOpenTag
+	default:
+		return pdfContentOpenTag
+	}
+}
+
+func documentContentCloseTag(extraction extractedPDFContent) string {
+	switch strings.TrimSpace(extraction.mimeType) {
+	case mimeTypeDOCX, mimeTypePPTX:
+		return ooxmlContentCloseTag
+	default:
+		return pdfContentCloseTag
+	}
 }
 
 func remainingImageSlotsForConversation(

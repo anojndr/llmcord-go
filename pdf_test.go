@@ -75,6 +75,167 @@ func TestExtractPDFContentReturnsTextWithoutImages(t *testing.T) {
 	}
 }
 
+func TestExtractPDFContentReturnsDOCXTextAndImages(t *testing.T) {
+	t.Parallel()
+
+	documentPart := testDOCXDocumentPart(
+		t,
+		"DOCX quarterly revenue grew by 12 percent.",
+	)
+
+	extraction, err := extractPDFContent(documentPart)
+	if err != nil {
+		t.Fatalf("extract docx content: %v", err)
+	}
+
+	if extraction.filename != testDOCXFilename {
+		t.Fatalf("unexpected filename: %q", extraction.filename)
+	}
+
+	if extraction.mimeType != mimeTypeDOCX {
+		t.Fatalf("unexpected mime type: %q", extraction.mimeType)
+	}
+
+	if !strings.Contains(extraction.text, "DOCX quarterly revenue grew by 12 percent.") {
+		t.Fatalf("unexpected extracted text: %q", extraction.text)
+	}
+
+	if len(extraction.imageParts) != 1 {
+		t.Fatalf("unexpected extracted image count: %d", len(extraction.imageParts))
+	}
+}
+
+func TestExtractPDFContentReturnsPPTXTextAndImages(t *testing.T) {
+	t.Parallel()
+
+	documentPart := testPPTXDocumentPart(
+		t,
+		"PPTX quarterly revenue grew by 18 percent.",
+	)
+
+	extraction, err := extractPDFContent(documentPart)
+	if err != nil {
+		t.Fatalf("extract pptx content: %v", err)
+	}
+
+	if extraction.filename != testPPTXFilename {
+		t.Fatalf("unexpected filename: %q", extraction.filename)
+	}
+
+	if extraction.mimeType != mimeTypePPTX {
+		t.Fatalf("unexpected mime type: %q", extraction.mimeType)
+	}
+
+	if !strings.Contains(extraction.text, "PPTX quarterly revenue grew by 18 percent.") {
+		t.Fatalf("unexpected extracted text: %q", extraction.text)
+	}
+
+	if len(extraction.imageParts) != 1 {
+		t.Fatalf("unexpected extracted image count: %d", len(extraction.imageParts))
+	}
+}
+
+func TestExtractableDocumentPartsForAPIKindSkipsPDFForGemini(t *testing.T) {
+	t.Parallel()
+
+	documentParts := []contentPart{
+		testPDFDocumentPart(t, "PDF text", true),
+		testDOCXDocumentPart(t, "DOCX text"),
+		testPPTXDocumentPart(t, "PPTX text"),
+	}
+
+	extractableParts, err := extractableDocumentPartsForAPIKind(
+		documentParts,
+		providerAPIKindGemini,
+	)
+	if err != nil {
+		t.Fatalf("filter extractable parts: %v", err)
+	}
+
+	if len(extractableParts) != 2 {
+		t.Fatalf("unexpected extractable part count: %d", len(extractableParts))
+	}
+
+	firstMIMEType := extractablePartMIMEType(t, extractableParts[0])
+	secondMIMEType := extractablePartMIMEType(t, extractableParts[1])
+
+	if firstMIMEType != mimeTypeDOCX || secondMIMEType != mimeTypePPTX {
+		t.Fatalf("unexpected extractable MIME types: %q, %q", firstMIMEType, secondMIMEType)
+	}
+}
+
+func TestExtractableDocumentPartsForAPIKindKeepsPDFForNonGemini(t *testing.T) {
+	t.Parallel()
+
+	documentParts := []contentPart{
+		testPDFDocumentPart(t, "PDF text", true),
+		testDOCXDocumentPart(t, "DOCX text"),
+		testPPTXDocumentPart(t, "PPTX text"),
+	}
+
+	extractableParts, err := extractableDocumentPartsForAPIKind(
+		documentParts,
+		providerAPIKindOpenAI,
+	)
+	if err != nil {
+		t.Fatalf("filter extractable parts: %v", err)
+	}
+
+	if len(extractableParts) != 3 {
+		t.Fatalf("unexpected extractable part count: %d", len(extractableParts))
+	}
+
+	for index, expectedMIMEType := range []string{mimeTypePDF, mimeTypeDOCX, mimeTypePPTX} {
+		mimeType := extractablePartMIMEType(t, extractableParts[index])
+		if mimeType != expectedMIMEType {
+			t.Fatalf("unexpected extractable MIME type at index %d: %q", index, mimeType)
+		}
+	}
+}
+
+func TestRenderPDFContentUsesOOXMLTagForDOCXAndPPTX(t *testing.T) {
+	t.Parallel()
+
+	for _, extraction := range []extractedPDFContent{
+		{
+			filename: testDOCXFilename,
+			imageParts: []contentPart{
+				{
+					"type":      contentTypeImageURL,
+					"image_url": map[string]string{"url": "data:image/png;base64,abc"},
+				},
+			},
+			mimeType: mimeTypeDOCX,
+			text:     "DOCX content",
+		},
+		{
+			filename: testPPTXFilename,
+			imageParts: []contentPart{
+				{
+					"type":      contentTypeImageURL,
+					"image_url": map[string]string{"url": "data:image/png;base64,abc"},
+				},
+			},
+			mimeType: mimeTypePPTX,
+			text:     "PPTX content",
+		},
+	} {
+		renderedContent := renderPDFContent(extraction)
+		if !strings.Contains(renderedContent, ooxmlContentOpenTag) ||
+			!strings.Contains(renderedContent, ooxmlContentCloseTag) {
+			t.Fatalf("unexpected OOXML rendered content: %q", renderedContent)
+		}
+	}
+}
+
+func extractablePartMIMEType(t *testing.T, part contentPart) string {
+	t.Helper()
+
+	mimeType, _ := part[contentFieldMIMEType].(string)
+
+	return mimeType
+}
+
 func TestMaybeAugmentConversationWithPDFContentsAppendsTextAndImagesForNonGeminiModel(t *testing.T) {
 	t.Parallel()
 
@@ -113,6 +274,10 @@ func TestMaybeAugmentConversationWithPDFContentsAppendsTextAndImagesForNonGemini
 	}
 
 	textValue, _ := parts[0]["text"].(string)
+	if !strings.Contains(textValue, documentContentSectionName+":") {
+		t.Fatalf("expected extracted document section in prompt: %q", textValue)
+	}
+
 	if !strings.Contains(textValue, pdfContentOpenTag) {
 		t.Fatalf("expected extracted pdf block in text: %q", textValue)
 	}
@@ -177,10 +342,11 @@ func TestPersistAugmentedSourceMessageRetainsExtractedPDFTextAndImagesInFollowUp
 		instance,
 		followUpMessage,
 		messageContentOptions{
-			maxImages:      loadedConfig.MaxImages,
-			allowAudio:     false,
-			allowDocuments: false,
-			allowVideo:     false,
+			maxImages:                loadedConfig.MaxImages,
+			allowAudio:               false,
+			allowDocuments:           false,
+			allowedDocumentMIMETypes: nil,
+			allowVideo:               false,
 		},
 	)
 
@@ -386,7 +552,7 @@ func TestMaybeAugmentConversationWithPDFContentsHonorsImageLimit(t *testing.T) {
 	}
 }
 
-func TestMaybeAugmentConversationWithPDFContentsSkipsGeminiModel(t *testing.T) {
+func TestMaybeAugmentConversationWithPDFContentsSkipsPDFFilesForGeminiModel(t *testing.T) {
 	t.Parallel()
 
 	instance, sourceMessage := newPDFExtractionTestBot(
@@ -421,6 +587,90 @@ func TestMaybeAugmentConversationWithPDFContentsSkipsGeminiModel(t *testing.T) {
 	}
 }
 
+func TestMaybeAugmentConversationWithPDFContentsExtractsOOXMLForGeminiModel(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name      string
+		messageID string
+		query     string
+		document  contentPart
+		expected  string
+	}{
+		{
+			name:      "docx",
+			messageID: "message-3-docx-gemini",
+			query:     "<@123>: summarize the report",
+			document:  testDOCXDocumentPart(t, "DOCX quarterly revenue grew by 12 percent."),
+			expected:  "DOCX quarterly revenue grew by 12 percent.",
+		},
+		{
+			name:      "pptx",
+			messageID: "message-3-pptx-gemini",
+			query:     "<@123>: summarize the slides",
+			document:  testPPTXDocumentPart(t, "PPTX quarterly revenue grew by 18 percent."),
+			expected:  "PPTX quarterly revenue grew by 18 percent.",
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			instance, sourceMessage := newPDFExtractionTestBot(
+				testCase.messageID,
+				testCase.query,
+				[]contentPart{testCase.document},
+			)
+
+			loadedConfig := testMediaAnalysisConfig()
+			loadedConfig.MaxImages = 2
+
+			augmentedConversation, err := instance.maybeAugmentConversationWithPDFContents(
+				context.Background(),
+				loadedConfig,
+				testMediaAnalysisModel,
+				sourceMessage,
+				[]chatMessage{{Role: messageRoleUser, Content: testCase.query}},
+			)
+			if err != nil {
+				t.Fatalf("augment conversation with extracted ooxml content: %v", err)
+			}
+
+			parts, ok := augmentedConversation[0].Content.([]contentPart)
+			if !ok {
+				t.Fatalf("unexpected content type: %T", augmentedConversation[0].Content)
+			}
+
+			if len(parts) != 2 {
+				t.Fatalf("unexpected part count: %d", len(parts))
+			}
+
+			textValue, _ := parts[0]["text"].(string)
+			if !strings.Contains(textValue, documentContentSectionName+":") {
+				t.Fatalf("expected extracted document section in prompt: %q", textValue)
+			}
+
+			if !strings.Contains(textValue, ooxmlContentOpenTag) ||
+				!strings.Contains(textValue, ooxmlContentCloseTag) {
+				t.Fatalf("expected extracted OOXML block in prompt: %q", textValue)
+			}
+
+			if !strings.Contains(textValue, testCase.expected) {
+				t.Fatalf("expected extracted OOXML text in prompt: %q", textValue)
+			}
+
+			if !strings.Contains(textValue, "Extracted images: 1 total.") {
+				t.Fatalf("expected extracted image summary in prompt: %q", textValue)
+			}
+
+			if parts[1]["type"] != contentTypeImageURL {
+				t.Fatalf("expected extracted image part: %#v", parts[1])
+			}
+		})
+	}
+}
+
 func TestBuildConversationSuppressesUnsupportedWarningForExtractedPDFs(t *testing.T) {
 	t.Parallel()
 
@@ -442,10 +692,11 @@ func TestBuildConversationSuppressesUnsupportedWarningForExtractedPDFs(t *testin
 		sourceMessage,
 		defaultMaxText,
 		messageContentOptions{
-			maxImages:      0,
-			allowAudio:     false,
-			allowDocuments: false,
-			allowVideo:     false,
+			maxImages:                0,
+			allowAudio:               false,
+			allowDocuments:           false,
+			allowedDocumentMIMETypes: nil,
+			allowVideo:               false,
 		},
 		defaultMaxMessages,
 		false,
@@ -495,10 +746,11 @@ func TestBuildConversationSuppressesUnsupportedWarningForReplyTargetPDFs(t *test
 		sourceMessage,
 		defaultMaxText,
 		messageContentOptions{
-			maxImages:      0,
-			allowAudio:     false,
-			allowDocuments: false,
-			allowVideo:     false,
+			maxImages:                0,
+			allowAudio:               false,
+			allowDocuments:           false,
+			allowedDocumentMIMETypes: nil,
+			allowVideo:               false,
 		},
 		defaultMaxMessages,
 		false,
@@ -553,10 +805,11 @@ func TestBuildConversationSuppressesUnsupportedWarningForAssistantReplyTargetSou
 		sourceMessage,
 		defaultMaxText,
 		messageContentOptions{
-			maxImages:      0,
-			allowAudio:     false,
-			allowDocuments: false,
-			allowVideo:     false,
+			maxImages:                0,
+			allowAudio:               false,
+			allowDocuments:           false,
+			allowedDocumentMIMETypes: nil,
+			allowVideo:               false,
 		},
 		defaultMaxMessages,
 		false,

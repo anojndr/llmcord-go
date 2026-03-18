@@ -21,10 +21,11 @@ type attachmentPayload struct {
 }
 
 type messageContentOptions struct {
-	maxImages      int
-	allowAudio     bool
-	allowDocuments bool
-	allowVideo     bool
+	maxImages                int
+	allowAudio               bool
+	allowDocuments           bool
+	allowedDocumentMIMETypes map[string]struct{}
+	allowVideo               bool
 }
 
 type messageContentSummary struct {
@@ -178,7 +179,7 @@ func selectMessageMedia(
 
 			selectedMedia = append(selectedMedia, part)
 		case contentTypeDocument:
-			if !options.allowDocuments {
+			if !messageContentOptionsAllowsDocumentPart(options, part) {
 				summary.unsupportedAttachmentCnt++
 
 				continue
@@ -492,7 +493,69 @@ func attachmentIsText(contentType string) bool {
 }
 
 func attachmentIsDocument(contentType string) bool {
-	return strings.HasPrefix(strings.TrimSpace(contentType), mimeTypePDF)
+	switch normalizedMIMEType(contentType) {
+	case mimeTypePDF, mimeTypeDOCX, mimeTypePPTX:
+		return true
+	default:
+		return false
+	}
+}
+
+func messageContentOptionsAllowsDocumentPart(
+	options messageContentOptions,
+	part contentPart,
+) bool {
+	if !options.allowDocuments {
+		return false
+	}
+
+	if len(options.allowedDocumentMIMETypes) == 0 {
+		return true
+	}
+
+	mimeType, _ := part[contentFieldMIMEType].(string)
+
+	_, allowed := options.allowedDocumentMIMETypes[normalizedMIMEType(mimeType)]
+
+	return allowed
+}
+
+func normalizedMIMEType(contentType string) string {
+	trimmedContentType := strings.TrimSpace(contentType)
+	if trimmedContentType == "" {
+		return ""
+	}
+
+	mediaType, _, err := mime.ParseMediaType(trimmedContentType)
+	if err == nil {
+		normalizedMediaType := strings.ToLower(strings.TrimSpace(mediaType))
+		if normalizedMediaType != "" {
+			return normalizedMediaType
+		}
+	}
+
+	fallbackMediaType, _, _ := strings.Cut(trimmedContentType, ";")
+
+	return strings.ToLower(strings.TrimSpace(fallbackMediaType))
+}
+
+func documentMIMETypeSet(mimeTypes ...string) map[string]struct{} {
+	set := make(map[string]struct{}, len(mimeTypes))
+
+	for _, mimeType := range mimeTypes {
+		normalized := normalizedMIMEType(mimeType)
+		if normalized == "" {
+			continue
+		}
+
+		set[normalized] = struct{}{}
+	}
+
+	return set
+}
+
+func allowedGeminiDocumentMIMETypes() map[string]struct{} {
+	return documentMIMETypeSet(mimeTypePDF)
 }
 
 func attachmentContentType(attachment *discordgo.MessageAttachment) string {
@@ -564,7 +627,7 @@ func filterContentPartsForOptions(
 				filteredParts = append(filteredParts, part)
 			}
 		case contentTypeDocument:
-			if options.allowDocuments {
+			if messageContentOptionsAllowsDocumentPart(options, part) {
 				filteredParts = append(filteredParts, part)
 			}
 		case contentTypeVideoData:
@@ -598,7 +661,7 @@ func unsupportedPreprocessedPartCount(
 				count++
 			}
 		case contentTypeDocument:
-			if usePDFExtraction && !options.allowDocuments {
+			if usePDFExtraction && !messageContentOptionsAllowsDocumentPart(options, part) {
 				count++
 			}
 		}
