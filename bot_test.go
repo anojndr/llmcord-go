@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"net/http"
 	"sync/atomic"
 	"testing"
@@ -95,5 +96,52 @@ func TestStartTypingSendsInitialIndicatorBeforeReturning(t *testing.T) {
 
 	if !typingSent.Load() {
 		t.Fatal("expected initial typing indicator before startTyping returned")
+	}
+}
+
+func TestReadyAnnouncementPrintsOnceAfterReadyAndConfiguration(t *testing.T) {
+	t.Parallel()
+
+	buffer := new(bytes.Buffer)
+	instance := new(bot)
+	instance.onlineOutput = buffer
+
+	instance.handleReady(nil, nil)
+
+	if buffer.Len() != 0 {
+		t.Fatalf("expected no announcement before configuration, got %q", buffer.String())
+	}
+
+	instance.markSessionConfigured()
+
+	if buffer.String() != readyMessage+"\n" {
+		t.Fatalf("unexpected announcement after configuration: %q", buffer.String())
+	}
+
+	instance.handleReady(nil, nil)
+	instance.markSessionConfigured()
+
+	if buffer.String() != readyMessage+"\n" {
+		t.Fatalf("expected announcement only once, got %q", buffer.String())
+	}
+}
+
+func TestReadyAnnouncementWaitsForDiscordReadyWhenConfiguredFirst(t *testing.T) {
+	t.Parallel()
+
+	buffer := new(bytes.Buffer)
+	instance := new(bot)
+	instance.onlineOutput = buffer
+
+	instance.markSessionConfigured()
+
+	if buffer.Len() != 0 {
+		t.Fatalf("expected no announcement before ready event, got %q", buffer.String())
+	}
+
+	instance.handleReady(nil, nil)
+
+	if buffer.String() != readyMessage+"\n" {
+		t.Fatalf("unexpected announcement after ready event: %q", buffer.String())
 	}
 }

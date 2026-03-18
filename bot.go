@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -32,6 +33,11 @@ type bot struct {
 	modelMu                   sync.RWMutex
 	editMu                    sync.Mutex
 	nextEditAt                time.Time
+	startupMu                 sync.Mutex
+	discordReady              bool
+	sessionConfigured         bool
+	onlineAnnounced           bool
+	onlineOutput              io.Writer
 }
 
 func newBot(ctx context.Context, configPath string, loadedConfig config) (*bot, error) {
@@ -78,11 +84,13 @@ func newBot(ctx context.Context, configPath string, loadedConfig config) (*bot, 
 
 	instance.currentModel = loadedConfig.firstModel()
 	instance.currentSearchDeciderModel = loadedConfig.SearchDeciderModel
+	instance.onlineOutput = os.Stdout
 
 	discordSession.Identify.Intents = discordgo.IntentsGuilds |
 		discordgo.IntentsGuildMessages |
 		discordgo.IntentsDirectMessages |
 		discordgo.IntentsMessageContent
+	discordSession.AddHandler(instance.handleReady)
 	discordSession.AddHandler(instance.handleInteractionCreate)
 	discordSession.AddHandler(instance.handleMessageCreate)
 
@@ -128,6 +136,8 @@ func (instance *bot) open(loadedConfig config) error {
 		return fmt.Errorf("configure discord session: %w", err)
 	}
 
+	instance.markSessionConfigured()
+
 	if loadedConfig.ClientID != "" {
 		slog.Info(
 			"bot invite url",
@@ -140,6 +150,49 @@ func (instance *bot) open(loadedConfig config) error {
 	}
 
 	return nil
+}
+
+func (instance *bot) handleReady(_ *discordgo.Session, _ *discordgo.Ready) {
+	instance.markDiscordReady()
+}
+
+func (instance *bot) markDiscordReady() {
+	instance.startupMu.Lock()
+	instance.discordReady = true
+	output, announce := instance.onlineAnnouncementLocked()
+	instance.startupMu.Unlock()
+
+	if !announce {
+		return
+	}
+
+	_, _ = fmt.Fprintln(output, readyMessage)
+}
+
+func (instance *bot) markSessionConfigured() {
+	instance.startupMu.Lock()
+	instance.sessionConfigured = true
+	output, announce := instance.onlineAnnouncementLocked()
+	instance.startupMu.Unlock()
+
+	if !announce {
+		return
+	}
+
+	_, _ = fmt.Fprintln(output, readyMessage)
+}
+
+func (instance *bot) onlineAnnouncementLocked() (io.Writer, bool) {
+	if !instance.discordReady || !instance.sessionConfigured || instance.onlineAnnounced {
+		return nil, false
+	}
+
+	instance.onlineAnnounced = true
+	if instance.onlineOutput != nil {
+		return instance.onlineOutput, true
+	}
+
+	return os.Stdout, true
 }
 
 func (instance *bot) configureSession(loadedConfig config) error {

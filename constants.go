@@ -4,6 +4,7 @@ import "time"
 
 const (
 	defaultConfigPath                    = "config.yaml"
+	readyMessage                         = "bot is online"
 	defaultExaMCPEndpoint                = "https://mcp.exa.ai/mcp?tools=web_search_exa"
 	defaultSerpAPIGoogleLensEndpoint     = "https://serpapi.com/search.json"
 	defaultTavilySearchEndpoint          = "https://api.tavily.com/search"
