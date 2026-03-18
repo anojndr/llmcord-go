@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -10,6 +11,8 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 )
+
+const discordUnknownInteractionCode = 10062
 
 func (instance *bot) handleInteractionCreate(
 	session *discordgo.Session,
@@ -31,6 +34,12 @@ func (instance *bot) handleInteractionCreate(
 	}
 
 	if err != nil {
+		if isUnknownInteractionError(err) {
+			slog.Info("discard expired interaction", "interaction_id", interaction.ID, "type", interaction.Type)
+
+			return
+		}
+
 		slog.Error("handle interaction", "error", err)
 	}
 }
@@ -272,15 +281,23 @@ func (instance *bot) handleViewOnRentryButton(
 		)
 	}
 
+	err := respondInteractionDeferredWithFlags(
+		session,
+		interaction.Interaction,
+		discordgo.MessageFlagsEphemeral,
+	)
+	if err != nil {
+		return fmt.Errorf("defer Rentry interaction response: %w", err)
+	}
+
 	rentryURL, err := instance.rentry.createEntry(context.Background(), responseText)
 	if err != nil {
 		slog.Warn("create Rentry entry", "message_id", interaction.Message.ID, "error", err)
 
-		return respondInteractionTextWithFlags(
+		return editInteractionResponseText(
 			session,
 			interaction.Interaction,
 			"Couldn't create a Rentry page right now.",
-			discordgo.MessageFlagsEphemeral,
 		)
 	}
 
@@ -296,11 +313,10 @@ func (instance *bot) handleViewOnRentryButton(
 
 	instance.nodes.persistBestEffort()
 
-	return respondInteractionTextWithFlags(
+	return editInteractionResponseText(
 		session,
 		interaction.Interaction,
 		"View on Rentry: "+rentryURL,
-		discordgo.MessageFlagsEphemeral,
 	)
 }
 
@@ -540,6 +556,26 @@ func respondInteractionTextWithFlags(
 	)
 }
 
+func respondInteractionDeferredWithFlags(
+	session *discordgo.Session,
+	interaction *discordgo.Interaction,
+	flags discordgo.MessageFlags,
+) error {
+	response := new(discordgo.InteractionResponse)
+	response.Type = discordgo.InteractionResponseDeferredChannelMessageWithSource
+
+	responseData := new(discordgo.InteractionResponseData)
+	responseData.Flags = flags
+	response.Data = responseData
+
+	err := session.InteractionRespond(interaction, response)
+	if err != nil {
+		return fmt.Errorf("send deferred interaction response: %w", err)
+	}
+
+	return nil
+}
+
 func respondInteractionMessage(
 	session *discordgo.Session,
 	interaction *discordgo.Interaction,
@@ -569,6 +605,22 @@ func respondInteractionMessage(
 	return nil
 }
 
+func editInteractionResponseText(
+	session *discordgo.Session,
+	interaction *discordgo.Interaction,
+	content string,
+) error {
+	response := new(discordgo.WebhookEdit)
+	response.Content = &content
+
+	_, err := session.InteractionResponseEdit(interaction, response)
+	if err != nil {
+		return fmt.Errorf("edit interaction response: %w", err)
+	}
+
+	return nil
+}
+
 func respondInteractionChoices(
 	session *discordgo.Session,
 	interaction *discordgo.Interaction,
@@ -587,4 +639,24 @@ func respondInteractionChoices(
 	}
 
 	return nil
+}
+
+func isUnknownInteractionError(err error) bool {
+	var restErr *discordgo.RESTError
+	if errors.As(err, &restErr) {
+		return isUnknownInteractionRESTError(restErr)
+	}
+
+	var restErrValue discordgo.RESTError
+	if errors.As(err, &restErrValue) {
+		return isUnknownInteractionRESTError(&restErrValue)
+	}
+
+	return false
+}
+
+func isUnknownInteractionRESTError(err *discordgo.RESTError) bool {
+	return err != nil &&
+		err.Message != nil &&
+		err.Message.Code == discordUnknownInteractionCode
 }
