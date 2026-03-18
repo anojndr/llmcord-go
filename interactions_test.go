@@ -3,11 +3,13 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/bwmarrin/discordgo"
@@ -25,6 +27,18 @@ type fakeRentryClient struct {
 	callCount int
 	texts     []string
 }
+
+type editedInteractionResponse struct {
+	Content string `json:"content"`
+}
+
+type deferredInteractionCapture struct {
+	requestCount     int
+	deferredResponse discordgo.InteractionResponse
+	editedResponse   editedInteractionResponse
+}
+
+var errFakeRentryUnavailable = errors.New("rentry unavailable")
 
 func (client *fakeRentryClient) createEntry(_ context.Context, text string) (string, error) {
 	client.callCount++
@@ -506,11 +520,12 @@ func TestHandleInteractionCreateUpdatesShowSourcesPaginationPage(t *testing.T) {
 func TestHandleInteractionCreateRespondsToViewOnRentryButton(t *testing.T) {
 	t.Parallel()
 
-	var response discordgo.InteractionResponse
-
-	session := newInteractionTestSession(t, &response)
 	rentry := new(fakeRentryClient)
 	rentry.url = "https://rentry.co/example"
+
+	var capture deferredInteractionCapture
+
+	session := newDeferredInteractionTestSession(t, &capture)
 
 	instance := new(bot)
 	instance.nodes = newMessageNodeStore(10)
@@ -526,16 +541,10 @@ func TestHandleInteractionCreateRespondsToViewOnRentryButton(t *testing.T) {
 
 	instance.handleInteractionCreate(session, interaction)
 
-	if response.Data == nil {
-		t.Fatal("expected interaction response data")
-	}
+	assertDeferredEphemeralInteractionResponse(t, &capture.deferredResponse)
 
-	if response.Data.Flags != discordgo.MessageFlagsEphemeral {
-		t.Fatalf("unexpected response flags: %v", response.Data.Flags)
-	}
-
-	if !containsFold(response.Data.Content, rentry.url) {
-		t.Fatalf("expected Rentry url in response content: %q", response.Data.Content)
+	if !containsFold(capture.editedResponse.Content, rentry.url) {
+		t.Fatalf("expected Rentry url in edited response content: %q", capture.editedResponse.Content)
 	}
 
 	if rentry.callCount != 1 {
@@ -551,6 +560,10 @@ func TestHandleInteractionCreateRespondsToViewOnRentryButton(t *testing.T) {
 
 	if node.rentryURL != rentry.url {
 		t.Fatalf("unexpected cached Rentry url: %q", node.rentryURL)
+	}
+
+	if capture.requestCount != 2 {
+		t.Fatalf("unexpected request count: %d", capture.requestCount)
 	}
 }
 
@@ -587,6 +600,79 @@ func TestHandleInteractionCreateReusesCachedRentryURL(t *testing.T) {
 
 	if rentry.callCount != 0 {
 		t.Fatalf("expected cached Rentry url to skip creation, got %d calls", rentry.callCount)
+	}
+}
+
+func TestHandleInteractionCreateRespondsToViewOnRentryButtonFailure(t *testing.T) {
+	t.Parallel()
+
+	rentry := new(fakeRentryClient)
+	rentry.err = errFakeRentryUnavailable
+
+	var capture deferredInteractionCapture
+
+	session := newDeferredInteractionTestSession(t, &capture)
+
+	instance := new(bot)
+	instance.nodes = newMessageNodeStore(10)
+	instance.rentry = rentry
+
+	node := instance.nodes.getOrCreate("response-message")
+	node.mu.Lock()
+	node.text = testAssistantReply
+	node.initialized = true
+	node.mu.Unlock()
+
+	interaction := newComponentInteraction("response-message", viewOnRentryButtonCustomID)
+
+	instance.handleInteractionCreate(session, interaction)
+
+	assertDeferredEphemeralInteractionResponse(t, &capture.deferredResponse)
+
+	expectedContent := "Couldn't create a Rentry page right now."
+	if capture.editedResponse.Content != expectedContent {
+		t.Fatalf(
+			"unexpected edited failure response content: got %q want %q",
+			capture.editedResponse.Content,
+			expectedContent,
+		)
+	}
+
+	node.mu.Lock()
+	defer node.mu.Unlock()
+
+	if node.rentryURL != "" {
+		t.Fatalf("expected empty cached Rentry url, got %q", node.rentryURL)
+	}
+
+	if capture.requestCount != 2 {
+		t.Fatalf("unexpected request count: %d", capture.requestCount)
+	}
+}
+
+func TestIsUnknownInteractionError(t *testing.T) {
+	t.Parallel()
+
+	err := fmt.Errorf(
+		"wrap: %w",
+		newDiscordRESTError(discordUnknownInteractionCode, "Unknown interaction"),
+	)
+
+	if !isUnknownInteractionError(err) {
+		t.Fatal("expected unknown interaction error to be detected")
+	}
+}
+
+func TestIsUnknownInteractionErrorIgnoresOtherErrors(t *testing.T) {
+	t.Parallel()
+
+	err := fmt.Errorf(
+		"wrap: %w",
+		newDiscordRESTError(http.StatusNotFound, "Not Found"),
+	)
+
+	if isUnknownInteractionError(err) {
+		t.Fatal("expected non-interaction error to be ignored")
 	}
 }
 
@@ -627,13 +713,7 @@ func newInteractionTestSession(
 ) *discordgo.Session {
 	t.Helper()
 
-	session, err := discordgo.New("Bot discord-token")
-	if err != nil {
-		t.Fatalf("create discord session: %v", err)
-	}
-
-	client := new(http.Client)
-	client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+	return newInteractionTestSessionWithTransport(t, roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		t.Helper()
 
 		if request.Method != http.MethodPost {
@@ -688,10 +768,52 @@ func newInteractionTestSession(
 		}
 
 		return newNoContentResponse(request), nil
-	})
+	}))
+}
+
+func newInteractionTestSessionWithTransport(
+	t *testing.T,
+	transport roundTripFunc,
+) *discordgo.Session {
+	t.Helper()
+
+	session, err := discordgo.New("Bot discord-token")
+	if err != nil {
+		t.Fatalf("create discord session: %v", err)
+	}
+
+	client := new(http.Client)
+	client.Transport = transport
 	session.Client = client
 
 	return session
+}
+
+func newDeferredInteractionTestSession(
+	t *testing.T,
+	capture *deferredInteractionCapture,
+) *discordgo.Session {
+	t.Helper()
+
+	return newInteractionTestSessionWithTransport(
+		t,
+		roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			t.Helper()
+
+			capture.requestCount++
+
+			switch capture.requestCount {
+			case 1:
+				return captureDeferredInteractionRequest(t, request, &capture.deferredResponse)
+			case 2:
+				return captureEditedInteractionRequest(t, request, &capture.editedResponse)
+			default:
+				t.Fatalf("unexpected interaction request count: %d", capture.requestCount)
+
+				return nil, errUnexpectedTestRequest
+			}
+		}),
+	)
 }
 
 func newNoContentResponse(request *http.Request) *http.Response {
@@ -704,6 +826,125 @@ func newNoContentResponse(request *http.Request) *http.Response {
 	response.Request = request
 
 	return response
+}
+
+func newInteractionJSONResponse(request *http.Request, statusCode int, body string) *http.Response {
+	response := new(http.Response)
+	response.Status = fmt.Sprintf("%d %s", statusCode, http.StatusText(statusCode))
+	response.StatusCode = statusCode
+	response.Body = io.NopCloser(strings.NewReader(body))
+	response.ContentLength = int64(len(body))
+	response.Header = make(http.Header)
+	response.Header.Set("Content-Type", "application/json")
+	response.Request = request
+
+	return response
+}
+
+func captureDeferredInteractionRequest(
+	t *testing.T,
+	request *http.Request,
+	response *discordgo.InteractionResponse,
+) (*http.Response, error) {
+	t.Helper()
+
+	if request.Method != http.MethodPost {
+		t.Fatalf("unexpected method: %s", request.Method)
+	}
+
+	expectedPath := "/api/v9/interactions/interaction-id/interaction-token/callback"
+	if request.URL.Path != expectedPath {
+		t.Fatalf("unexpected request path: got %q want %q", request.URL.Path, expectedPath)
+	}
+
+	responseBody, err := io.ReadAll(request.Body)
+	if err != nil {
+		t.Fatalf("read deferred response body: %v", err)
+	}
+
+	var decoded struct {
+		Type discordgo.InteractionResponseType `json:"type"`
+		Data *struct {
+			Flags discordgo.MessageFlags `json:"flags,omitempty"`
+		} `json:"data"`
+	}
+
+	err = json.Unmarshal(responseBody, &decoded)
+	if err != nil {
+		t.Fatalf("decode deferred interaction response: %v", err)
+	}
+
+	response.Type = decoded.Type
+	if decoded.Data != nil {
+		response.Data = new(discordgo.InteractionResponseData)
+		response.Data.Flags = decoded.Data.Flags
+	}
+
+	return newNoContentResponse(request), nil
+}
+
+func captureEditedInteractionRequest(
+	t *testing.T,
+	request *http.Request,
+	response *editedInteractionResponse,
+) (*http.Response, error) {
+	t.Helper()
+
+	if request.Method != http.MethodPatch {
+		t.Fatalf("unexpected edit method: %s", request.Method)
+	}
+
+	expectedPath := "/api/v9/webhooks/application-id/interaction-token/messages/@original"
+	if request.URL.Path != expectedPath {
+		t.Fatalf("unexpected edit path: got %q want %q", request.URL.Path, expectedPath)
+	}
+
+	responseBody, err := io.ReadAll(request.Body)
+	if err != nil {
+		t.Fatalf("read edited response body: %v", err)
+	}
+
+	err = json.Unmarshal(responseBody, response)
+	if err != nil {
+		t.Fatalf("decode edited interaction response: %v", err)
+	}
+
+	return newInteractionJSONResponse(request, http.StatusOK, `{"id":"edited-message"}`), nil
+}
+
+func assertDeferredEphemeralInteractionResponse(
+	t *testing.T,
+	response *discordgo.InteractionResponse,
+) {
+	t.Helper()
+
+	if response.Type != discordgo.InteractionResponseDeferredChannelMessageWithSource {
+		t.Fatalf(
+			"unexpected deferred response type: got %v want %v",
+			response.Type,
+			discordgo.InteractionResponseDeferredChannelMessageWithSource,
+		)
+	}
+
+	if response.Data == nil {
+		t.Fatal("expected deferred interaction response data")
+	}
+
+	if response.Data.Flags != discordgo.MessageFlagsEphemeral {
+		t.Fatalf("unexpected deferred response flags: %v", response.Data.Flags)
+	}
+}
+
+func newDiscordRESTError(code int, message string) *discordgo.RESTError {
+	return &discordgo.RESTError{
+		Request:      nil,
+		Response:     nil,
+		ResponseBody: nil,
+		Message: &discordgo.APIErrorMessage{
+			Code:    code,
+			Message: message,
+		},
+	}
 }
 
 func newModelTestBot(configPath string) *bot {
@@ -778,6 +1019,7 @@ func newConfiguredModelCommandInteraction(
 
 	interaction := new(discordgo.Interaction)
 	interaction.ID = "interaction-id"
+	interaction.AppID = "application-id"
 	interaction.Token = "interaction-token"
 	interaction.Type = discordgo.InteractionApplicationCommand
 	interaction.ChannelID = channelID
@@ -800,6 +1042,7 @@ func newComponentInteraction(messageID string, customID string) *discordgo.Inter
 
 	interaction := new(discordgo.Interaction)
 	interaction.ID = "interaction-id"
+	interaction.AppID = "application-id"
 	interaction.Token = "interaction-token"
 	interaction.Type = discordgo.InteractionMessageComponent
 	interaction.Message = message
