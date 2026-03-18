@@ -23,10 +23,12 @@ const (
 	openAICodexHeaderBeta      = "Openai-Beta"
 	openAICodexHeaderAccount   = "Chatgpt-Account-Id"
 	openAICodexHeaderOrigin    = "Originator"
-	openAICodexRequestFields   = 4
+	openAICodexRequestFields   = 7
 	openAICodexJWTPartCount    = 3
 	openAICodexRoleSystem      = "system"
 	openAICodexEventError      = "error"
+	openAICodexAuto            = "auto"
+	openAICodexReasoningHigh   = "high"
 	openAICodexVerbosityMedium = "medium"
 )
 
@@ -103,15 +105,25 @@ func (client openAICodexClient) streamChatCompletion(
 		}
 	}
 
+	terminalEventSeen := false
+
 	doneSeen, err := consumeServerSentEvents(httpResponse.Body, func(payload []byte) error {
-		return handleOpenAICodexStreamPayload(payload, handle)
+		terminal, payloadErr := handleOpenAICodexStreamPayload(payload, handle)
+		if terminal {
+			terminalEventSeen = true
+		}
+
+		return payloadErr
 	})
 	if err != nil {
 		return fmt.Errorf("consume codex stream: %w", err)
 	}
 
-	if !doneSeen {
-		return fmt.Errorf("codex stream ended before [DONE]: %w", io.ErrUnexpectedEOF)
+	if !doneSeen && !terminalEventSeen {
+		return fmt.Errorf(
+			"codex stream ended before a terminal response event or [DONE]: %w",
+			io.ErrUnexpectedEOF,
+		)
 	}
 
 	return nil
@@ -128,13 +140,16 @@ func buildOpenAICodexRequestBody(request chatCompletionRequest) (map[string]any,
 	requestBody["store"] = false
 	requestBody["stream"] = true
 	requestBody["input"] = input
+	requestBody["include"] = []string{"reasoning.encrypted_content"}
+	requestBody["tool_choice"] = openAICodexAuto
+	requestBody["parallel_tool_calls"] = true
 
 	if instructions != "" {
 		requestBody["instructions"] = instructions
 	}
 
 	maps.Copy(requestBody, request.Provider.ExtraBody)
-	normalizeOpenAICodexRequestBody(requestBody)
+	normalizeOpenAICodexRequestBody(requestBody, request.Model)
 
 	return requestBody, nil
 }
@@ -151,7 +166,7 @@ func normalizeOpenAICodexModelAlias(model string, extraBody map[string]any) (str
 	}
 
 	reasoningConfig := openAICodexReasoningConfigExtraBody(normalizedExtraBody)
-	reasoningConfig["effort"] = reasoningEffort
+	reasoningConfig["effort"] = normalizeOpenAICodexReasoningEffort(resolvedModel, reasoningEffort)
 	normalizedExtraBody["reasoning"] = reasoningConfig
 	delete(normalizedExtraBody, "reasoning_effort")
 
@@ -199,7 +214,37 @@ func openAICodexReasoningEffortAlias(model string) (string, string, bool) {
 	return "", "", false
 }
 
-func normalizeOpenAICodexRequestBody(requestBody map[string]any) {
+func normalizeOpenAICodexReasoningEffort(model string, effort string) string {
+	normalizedEffort := strings.ToLower(strings.TrimSpace(effort))
+	if normalizedEffort == "" {
+		return ""
+	}
+
+	modelID := strings.TrimSpace(model)
+	if slashIndex := strings.LastIndex(modelID, "/"); slashIndex >= 0 {
+		modelID = modelID[slashIndex+1:]
+	}
+
+	switch {
+	case modelID == "gpt-5.1-codex-mini":
+		switch normalizedEffort {
+		case openAICodexReasoningHigh, "xhigh":
+			return openAICodexReasoningHigh
+		default:
+			return openAICodexVerbosityMedium
+		}
+	case modelID == "gpt-5.1" && normalizedEffort == "xhigh":
+		return openAICodexReasoningHigh
+	case (strings.HasPrefix(modelID, "gpt-5.2") ||
+		strings.HasPrefix(modelID, "gpt-5.3") ||
+		strings.HasPrefix(modelID, "gpt-5.4")) && normalizedEffort == "minimal":
+		return "low"
+	default:
+		return normalizedEffort
+	}
+}
+
+func normalizeOpenAICodexRequestBody(requestBody map[string]any, model string) {
 	if verbosity, ok := requestBody["verbosity"]; ok {
 		textConfig := nestedRequestBodyMap(requestBody, "text")
 		textConfig["verbosity"] = verbosity
@@ -229,6 +274,22 @@ func normalizeOpenAICodexRequestBody(requestBody map[string]any) {
 
 		delete(requestBody, "reasoning_summary")
 	}
+
+	if _, reasoningConfigOK := requestBody["reasoning"].(map[string]any); !reasoningConfigOK {
+		return
+	}
+
+	reasoningConfig := nestedRequestBodyMap(requestBody, "reasoning")
+
+	effort, effortOK := reasoningConfig["effort"].(string)
+	if !effortOK {
+		return
+	}
+
+	reasoningConfig["effort"] = normalizeOpenAICodexReasoningEffort(model, effort)
+	if _, exists := reasoningConfig["summary"]; !exists {
+		reasoningConfig["summary"] = openAICodexAuto
+	}
 }
 
 func openAICodexReasoningConfigExtraBody(extraBody map[string]any) map[string]any {
@@ -256,7 +317,10 @@ func nestedRequestBodyMap(requestBody map[string]any, key string) map[string]any
 
 	nested, typeOK := existing.(map[string]any)
 	if typeOK {
-		return nested
+		cloned := maps.Clone(nested)
+		requestBody[key] = cloned
+
+		return cloned
 	}
 
 	nested = make(map[string]any)
@@ -380,7 +444,7 @@ func openAICodexUserParts(content any) ([]map[string]any, error) {
 				parts = append(parts, map[string]any{
 					"type":      "input_image",
 					"image_url": imageURL,
-					"detail":    "auto",
+					"detail":    openAICodexAuto,
 				})
 			default:
 				return nil, fmt.Errorf(
@@ -557,7 +621,7 @@ func openAICodexAccountID(token string) (string, error) {
 	return accountID, nil
 }
 
-func handleOpenAICodexStreamPayload(payload []byte, handle func(streamDelta) error) error {
+func handleOpenAICodexStreamPayload(payload []byte, handle func(streamDelta) error) (bool, error) {
 	var envelope struct {
 		Type     string `json:"type"`
 		Delta    string `json:"delta"`
@@ -569,37 +633,59 @@ func handleOpenAICodexStreamPayload(payload []byte, handle func(streamDelta) err
 				Code    string `json:"code"`
 				Message string `json:"message"`
 			} `json:"error"`
+			IncompleteDetails struct {
+				Reason string `json:"reason"`
+			} `json:"incomplete_details"`
 		} `json:"response"`
 	}
 
 	err := json.Unmarshal(payload, &envelope)
 	if err != nil {
-		return fmt.Errorf("decode codex stream payload: %w", err)
+		return false, fmt.Errorf("decode codex stream payload: %w", err)
 	}
 
 	switch envelope.Type {
-	case "response.output_text.delta":
+	case "response.output_text.delta", "response.refusal.delta":
 		if envelope.Delta == "" {
-			return nil
+			return false, nil
 		}
 
-		return handle(streamDelta{Content: envelope.Delta, FinishReason: ""})
-	case "response.completed", "response.done":
-		if envelope.Response.Status == "" {
-			return handle(streamDelta{Content: "", FinishReason: finishReasonStop})
+		return false, handle(streamDelta{Content: envelope.Delta, FinishReason: ""})
+	case "response.completed", "response.done", "response.incomplete":
+		status := strings.TrimSpace(envelope.Response.Status)
+		if status == "" && envelope.Type == "response.incomplete" {
+			status = "incomplete"
 		}
 
-		return handle(streamDelta{
+		finishReason := finishReasonStop
+		if status != "" {
+			finishReason = openAICodexFinishReason(status)
+		}
+
+		return true, handle(streamDelta{
 			Content:      "",
-			FinishReason: openAICodexFinishReason(envelope.Response.Status),
+			FinishReason: finishReason,
 		})
 	case "response.failed":
+		errorCode := strings.TrimSpace(envelope.Response.Error.Code)
 		errorText := strings.TrimSpace(envelope.Response.Error.Message)
+
+		if errorCode != "" && errorText != "" {
+			errorText = errorCode + ": " + errorText
+		}
+
+		if errorText == "" {
+			incompleteReason := strings.TrimSpace(envelope.Response.IncompleteDetails.Reason)
+			if incompleteReason != "" {
+				errorText = "incomplete: " + incompleteReason
+			}
+		}
+
 		if errorText == "" {
 			errorText = "codex response failed"
 		}
 
-		return fmt.Errorf("%s: %w", errorText, os.ErrInvalid)
+		return false, fmt.Errorf("%s: %w", errorText, os.ErrInvalid)
 	case openAICodexEventError:
 		errorText := strings.TrimSpace(envelope.Message)
 		if errorText == "" {
@@ -610,18 +696,18 @@ func handleOpenAICodexStreamPayload(payload []byte, handle func(streamDelta) err
 			errorText = "codex stream error"
 		}
 
-		return fmt.Errorf("%s: %w", errorText, os.ErrInvalid)
+		return false, fmt.Errorf("%s: %w", errorText, os.ErrInvalid)
 	default:
-		return nil
+		return false, nil
 	}
 }
 
 func openAICodexFinishReason(status string) string {
 	switch strings.ToLower(strings.TrimSpace(status)) {
-	case "", "completed":
+	case "", "completed", "in_progress", "queued":
 		return finishReasonStop
 	case "incomplete":
-		return "length"
+		return finishReasonLength
 	default:
 		return "error"
 	}

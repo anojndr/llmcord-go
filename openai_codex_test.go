@@ -86,7 +86,9 @@ func TestOpenAICodexClientRejectsInvalidTokenWithoutAccountHeader(t *testing.T) 
 		Model:           testOpenAICodexModel,
 		ConfiguredModel: "",
 		Messages: []chatMessage{
+			{Role: openAICodexRoleSystem, Content: "Be brief."},
 			{Role: messageRoleUser, Content: testOpenAICodexHelloText},
+			{Role: messageRoleAssistant, Content: "Previous answer"},
 		},
 	}
 
@@ -145,6 +147,186 @@ func TestBuildOpenAICodexRequestBodyPreservesNestedReasoningConfig(t *testing.T)
 
 	if reasoningConfig["summary"] != "concise" {
 		t.Fatalf("unexpected reasoning summary: %#v", reasoningConfig["summary"])
+	}
+}
+
+func TestBuildOpenAICodexRequestBodyClampsNestedReasoningConfigWithoutMutatingOriginal(t *testing.T) {
+	t.Parallel()
+
+	originalReasoningConfig := map[string]any{
+		"effort": "minimal",
+	}
+
+	request := chatCompletionRequest{
+		Provider: newOpenAICodexProviderRequestConfig(
+			"",
+			"",
+			nil,
+			nil,
+			map[string]any{
+				"reasoning": originalReasoningConfig,
+			},
+		),
+		Model:           "gpt-5.4",
+		ConfiguredModel: "",
+		Messages: []chatMessage{
+			{Role: messageRoleUser, Content: testOpenAICodexHelloText},
+		},
+	}
+
+	requestBody, err := buildOpenAICodexRequestBody(request)
+	if err != nil {
+		t.Fatalf("build codex request body: %v", err)
+	}
+
+	reasoningConfig, ok := requestBody["reasoning"].(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected reasoning config type: %T", requestBody["reasoning"])
+	}
+
+	if reasoningConfig["effort"] != "low" {
+		t.Fatalf("unexpected clamped reasoning effort: %#v", reasoningConfig["effort"])
+	}
+
+	if reasoningConfig["summary"] != openAICodexAuto {
+		t.Fatalf("unexpected default reasoning summary: %#v", reasoningConfig["summary"])
+	}
+
+	if originalReasoningConfig["effort"] != "minimal" {
+		t.Fatalf("unexpected mutation of original reasoning effort: %#v", originalReasoningConfig)
+	}
+
+	if _, exists := originalReasoningConfig["summary"]; exists {
+		t.Fatalf("unexpected mutation of original reasoning summary: %#v", originalReasoningConfig)
+	}
+}
+
+func TestNormalizeOpenAICodexReasoningEffort(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name     string
+		model    string
+		effort   string
+		expected string
+	}{
+		{
+			name:     "gpt-5.4 minimal clamps to low",
+			model:    "gpt-5.4",
+			effort:   "minimal",
+			expected: "low",
+		},
+		{
+			name:     "gpt-5.1 xhigh clamps to high",
+			model:    "gpt-5.1",
+			effort:   "xhigh",
+			expected: "high",
+		},
+		{
+			name:     "gpt-5.1-codex-mini none clamps to medium",
+			model:    "gpt-5.1-codex-mini",
+			effort:   "none",
+			expected: "medium",
+		},
+		{
+			name:     "gpt-5.1-codex-mini xhigh clamps to high",
+			model:    "gpt-5.1-codex-mini",
+			effort:   "xhigh",
+			expected: "high",
+		},
+		{
+			name:     "unrecognized effort normalizes casing",
+			model:    "gpt-5.2-codex",
+			effort:   "MEDIUM",
+			expected: "medium",
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			actual := normalizeOpenAICodexReasoningEffort(testCase.model, testCase.effort)
+			if actual != testCase.expected {
+				t.Fatalf("unexpected reasoning effort: got %q want %q", actual, testCase.expected)
+			}
+		})
+	}
+}
+
+func TestOpenAICodexConsumeServerSentEventsAcceptsTerminalIncompleteEventWithoutDone(t *testing.T) {
+	t.Parallel()
+
+	var (
+		joinedContent strings.Builder
+		finishReason  string
+		terminalSeen  bool
+	)
+
+	doneSeen, err := consumeServerSentEvents(
+		strings.NewReader(
+			"data: {\"type\":\"response.output_text.delta\",\"delta\":\"Hello\"}\n\n"+
+				"data: {\"type\":\"response.incomplete\",\"response\":{\"status\":\"incomplete\"}}\n\n",
+		),
+		func(payload []byte) error {
+			terminal, payloadErr := handleOpenAICodexStreamPayload(payload, func(delta streamDelta) error {
+				joinedContent.WriteString(delta.Content)
+
+				if delta.FinishReason != "" {
+					finishReason = delta.FinishReason
+				}
+
+				return nil
+			})
+			if terminal {
+				terminalSeen = true
+			}
+
+			return payloadErr
+		},
+	)
+	if err != nil {
+		t.Fatalf("consume codex stream: %v", err)
+	}
+
+	if doneSeen {
+		t.Fatal("did not expect [DONE] marker")
+	}
+
+	if !terminalSeen {
+		t.Fatal("expected terminal response event to be observed")
+	}
+
+	if joinedContent.String() != testOpenAICodexHelloText {
+		t.Fatalf("unexpected streamed content: %q", joinedContent.String())
+	}
+
+	if finishReason != "length" {
+		t.Fatalf("unexpected finish reason: %q", finishReason)
+	}
+}
+
+func TestHandleOpenAICodexStreamPayloadUsesIncompleteDetailsReason(t *testing.T) {
+	t.Parallel()
+
+	terminal, err := handleOpenAICodexStreamPayload(
+		[]byte(`{"type":"response.failed","response":{"incomplete_details":{"reason":"max_output_tokens"}}}`),
+		func(delta streamDelta) error {
+			t.Fatalf("unexpected stream delta: %#v", delta)
+
+			return nil
+		},
+	)
+	if err == nil {
+		t.Fatal("expected response.failed to return an error")
+	}
+
+	if terminal {
+		t.Fatal("expected response.failed not to be marked terminal")
+	}
+
+	if !strings.Contains(err.Error(), "incomplete: max_output_tokens") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
@@ -290,6 +472,27 @@ func assertOpenAICodexPayload(t *testing.T, payload map[string]any) {
 
 	if reasoningConfig["effort"] != "medium" {
 		t.Fatalf("unexpected reasoning effort: %#v", reasoningConfig["effort"])
+	}
+
+	if reasoningConfig["summary"] != openAICodexAuto {
+		t.Fatalf("unexpected reasoning summary: %#v", reasoningConfig["summary"])
+	}
+
+	include, includeOK := payload["include"].([]any)
+	if !includeOK {
+		t.Fatalf("unexpected include type: %T", payload["include"])
+	}
+
+	if len(include) != 1 || include[0] != "reasoning.encrypted_content" {
+		t.Fatalf("unexpected include field: %#v", include)
+	}
+
+	if payload["tool_choice"] != openAICodexAuto {
+		t.Fatalf("unexpected tool_choice: %#v", payload["tool_choice"])
+	}
+
+	if payload["parallel_tool_calls"] != true {
+		t.Fatalf("unexpected parallel_tool_calls flag: %#v", payload["parallel_tool_calls"])
 	}
 
 	input, typeOK := payload["input"].([]any)

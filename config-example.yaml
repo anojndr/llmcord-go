@@ -95,7 +95,7 @@ models:
     reasoning_effort: high
     verbosity: medium
 
-  openai-codex/gpt-5.2-codex:
+  openai-codex/gpt-5.4:
     reasoning_effort: high
     verbosity: medium
 
