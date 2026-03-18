@@ -650,7 +650,7 @@ func openAIStreamEventError(message string, eventType string, code any) error {
 
 func openAIStreamFinishReasonError(finishReason string) error {
 	switch strings.ToLower(strings.TrimSpace(finishReason)) {
-	case "", finishReasonStop, "end_turn", "length":
+	case "", finishReasonStop, "end_turn", finishReasonLength:
 		return nil
 	case openAIContentFilterFinishReason:
 		return fmt.Errorf("provider blocked the response (finish_reason=%s): %w", finishReason, os.ErrInvalid)

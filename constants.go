@@ -40,6 +40,7 @@ const (
 	viewOnRentryButtonLabel              = "View on Rentry"
 	messageRoleAssistant                 = "assistant"
 	finishReasonStop                     = "stop"
+	finishReasonLength                   = "length"
 	maxSearchQueries                     = 500
 	defaultWebSearchMaxURLs              = 5
 	maxYouTubeComments                   = 50
