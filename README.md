@@ -51,6 +51,8 @@ This bot turns Discord into a reply-chain frontend for OpenAI-compatible LLM API
    go run .
    ```
 
+   After Discord finishes connecting and the bot is ready to respond, startup prints `bot is online`.
+
 5. Or run it with Docker.
 
    ```bash

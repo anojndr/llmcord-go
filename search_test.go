@@ -281,19 +281,12 @@ func TestSearchDeciderPromptRetainsCriticalInstructions(t *testing.T) {
 	t.Parallel()
 
 	expectedSnippets := []string{
-		`You are a classifier that decides whether answering the user's request requires ` +
-			`a web search.`,
-		`3. If the user's request explicitly says "search the web" or something clearly ` +
-			`equivalent, always return:`,
-		`4. If the user's request explicitly says "don't search the web" or something ` +
-			`clearly equivalent, always return:`,
-		`2. If the user refers to prior context like "verify this", "is that true", ` +
-			`"search this", or "look it up", use the actual claim or entity from the ` +
-			`conversation, not the literal follow-up words.`,
-		`7. If the request says to search everything mentioned in attached text or ` +
-			`images, extract the actual items and use them as queries.`,
-		`- questions about a specific webpage, document, article, company update, or ` +
-			`public figure where current information matters`,
+		`You are a search-decision model.`,
+		`1. Check explicit search instructions first.`,
+		`2. Use conversation context to resolve references.`,
+		`3. Use both text and images.`,
+		`5. Return {"needs_search": true, "queries": [...]} when a web search is necessary.`,
+		`14. Preserve the substance of the claim when the user asks to verify it.`,
 	}
 
 	instant := time.Date(2026, time.March, 9, 13, 14, 15, 0, time.FixedZone("PHT", 8*60*60))
