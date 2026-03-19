@@ -94,42 +94,20 @@ func (instance *bot) buildConversation(
 			messages = append(messages, message)
 		}
 
-		if runeCount(node.text) > maxText {
-			appendUniqueWarning(
-				warningSet,
-				fmt.Sprintf("Warning: max %d characters per message", maxText),
-			)
-		}
-
-		if summary.imageCount > contentOptions.maxImages {
-			warningText := "Warning: can't see images"
-			if contentOptions.maxImages > 0 {
-				warningText = fmt.Sprintf(
-					"Warning: max %d images per message",
-					contentOptions.maxImages,
-				)
-			}
-
-			appendUniqueWarning(warningSet, warningText)
-		}
-
-		if node.hasBadAttachments || summary.unsupportedAttachmentCnt > 0 {
-			appendUniqueWarning(warningSet, "Warning: unsupported attachments")
-		}
-
-		if node.attachmentDownloadFailed {
-			appendUniqueWarning(warningSet, attachmentDownloadWarningText)
-		}
-
-		if node.fetchParentFailed ||
-			(node.parentMessage != nil && len(messages) == maxMessages) {
-			appendUniqueWarning(
-				warningSet,
-				fmt.Sprintf("Warning: only using last %d messages", len(messages)),
-			)
-		}
+		appendConversationWarnings(
+			warningSet,
+			node,
+			summary,
+			maxText,
+			contentOptions,
+			len(messages),
+			maxMessages,
+		)
 
 		parentMessage := node.parentMessage
+		if stopsAtDirectReplyTarget(sourceMessage, currentMessage, node.role) {
+			parentMessage = nil
+		}
 		node.mu.Unlock()
 
 		currentMessage = parentMessage
@@ -138,6 +116,67 @@ func (instance *bot) buildConversation(
 	reverseChatMessages(messages)
 
 	return messages, sortedWarnings(warningSet)
+}
+
+func appendConversationWarnings(
+	warningSet map[string]struct{},
+	node *messageNode,
+	summary messageContentSummary,
+	maxText int,
+	contentOptions messageContentOptions,
+	messageCount int,
+	maxMessages int,
+) {
+	if runeCount(node.text) > maxText {
+		appendUniqueWarning(
+			warningSet,
+			fmt.Sprintf("Warning: max %d characters per message", maxText),
+		)
+	}
+
+	if summary.imageCount > contentOptions.maxImages {
+		warningText := "Warning: can't see images"
+		if contentOptions.maxImages > 0 {
+			warningText = fmt.Sprintf(
+				"Warning: max %d images per message",
+				contentOptions.maxImages,
+			)
+		}
+
+		appendUniqueWarning(warningSet, warningText)
+	}
+
+	if node.hasBadAttachments || summary.unsupportedAttachmentCnt > 0 {
+		appendUniqueWarning(warningSet, "Warning: unsupported attachments")
+	}
+
+	if node.attachmentDownloadFailed {
+		appendUniqueWarning(warningSet, attachmentDownloadWarningText)
+	}
+
+	if node.fetchParentFailed || (node.parentMessage != nil && messageCount == maxMessages) {
+		appendUniqueWarning(
+			warningSet,
+			fmt.Sprintf("Warning: only using last %d messages", messageCount),
+		)
+	}
+}
+
+func stopsAtDirectReplyTarget(
+	sourceMessage *discordgo.Message,
+	currentMessage *discordgo.Message,
+	currentRole string,
+) bool {
+	if sourceMessage == nil || sourceMessage.MessageReference == nil || currentMessage == nil {
+		return false
+	}
+
+	replyTargetID := strings.TrimSpace(sourceMessage.MessageReference.MessageID)
+	if replyTargetID == "" || strings.TrimSpace(currentMessage.ID) != replyTargetID {
+		return false
+	}
+
+	return currentRole != messageRoleAssistant
 }
 
 func buildMessageContent(
