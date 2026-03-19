@@ -54,7 +54,7 @@ func TestSegmentAccumulatorSplitsByRunes(t *testing.T) {
 func TestBuildRenderSpecsMarksSettledAndStreamingSegments(t *testing.T) {
 	t.Parallel()
 
-	specs := buildRenderSpecs([]string{"first", "second"}, "length", false, false)
+	specs := buildRenderSpecs([]string{"first", "second"}, "length", false, false, false)
 	if len(specs) != 2 {
 		t.Fatalf("unexpected spec count: %#v", specs)
 	}
@@ -68,7 +68,7 @@ func TestBuildRenderSpecsMarksSettledAndStreamingSegments(t *testing.T) {
 		t.Fatalf("unexpected second spec: %#v", specs[1])
 	}
 
-	finalSpecs := buildRenderSpecs([]string{"only"}, "stop", true, false)
+	finalSpecs := buildRenderSpecs([]string{"only"}, "stop", true, false, false)
 	if len(finalSpecs) != 1 {
 		t.Fatalf("unexpected final spec count: %#v", finalSpecs)
 	}
@@ -95,16 +95,16 @@ func TestVisibleResponseSegmentsPrefixesThinking(t *testing.T) {
 func TestBuildRenderSpecsAddsSourcesButtonOnlyToFinalSearchedSegment(t *testing.T) {
 	t.Parallel()
 
-	specs := buildRenderSpecs([]string{"first", "second"}, "stop", true, true)
+	specs := buildRenderSpecs([]string{"first", "second"}, "stop", true, true, false)
 	if len(specs) != 2 {
 		t.Fatalf("unexpected spec count: %#v", specs)
 	}
 
-	if specs[0].actions.showSources || specs[0].actions.showRentry {
+	if specs[0].actions.showSources || specs[0].actions.showThinking || specs[0].actions.showRentry {
 		t.Fatalf("expected no action buttons on first segment: %#v", specs[0])
 	}
 
-	if !specs[1].actions.showSources || !specs[1].actions.showRentry {
+	if !specs[1].actions.showSources || specs[1].actions.showThinking || !specs[1].actions.showRentry {
 		t.Fatalf("expected sources and Rentry buttons on final segment: %#v", specs[1])
 	}
 }
@@ -112,17 +112,34 @@ func TestBuildRenderSpecsAddsSourcesButtonOnlyToFinalSearchedSegment(t *testing.
 func TestBuildRenderSpecsAddsRentryButtonToFinalNonSearchedSegment(t *testing.T) {
 	t.Parallel()
 
-	specs := buildRenderSpecs([]string{"only"}, "stop", true, false)
+	specs := buildRenderSpecs([]string{"only"}, "stop", true, false, false)
 	if len(specs) != 1 {
 		t.Fatalf("unexpected spec count: %#v", specs)
 	}
 
-	if specs[0].actions.showSources {
+	if specs[0].actions.showSources || specs[0].actions.showThinking {
 		t.Fatalf("expected no sources button on non-searched response: %#v", specs[0])
 	}
 
 	if !specs[0].actions.showRentry {
 		t.Fatalf("expected Rentry button on final non-searched response: %#v", specs[0])
+	}
+}
+
+func TestBuildRenderSpecsAddsThinkingButtonOnlyToFinalSegment(t *testing.T) {
+	t.Parallel()
+
+	specs := buildRenderSpecs([]string{"first", "second"}, "stop", true, false, true)
+	if len(specs) != 2 {
+		t.Fatalf("unexpected spec count: %#v", specs)
+	}
+
+	if specs[0].actions.showThinking {
+		t.Fatalf("expected no thinking button on first segment: %#v", specs[0])
+	}
+
+	if !specs[1].actions.showThinking {
+		t.Fatalf("expected thinking button on final segment: %#v", specs[1])
 	}
 }
 
@@ -172,8 +189,9 @@ func TestBuildPlainComponentsAddsActionButtons(t *testing.T) {
 	t.Parallel()
 
 	components := buildPlainComponents("hello", responseActions{
-		showSources: true,
-		showRentry:  true,
+		showSources:  true,
+		showThinking: true,
+		showRentry:   true,
 	})
 	if len(components) != 2 {
 		t.Fatalf("unexpected component count: %#v", components)
@@ -193,7 +211,7 @@ func TestBuildPlainComponentsAddsActionButtons(t *testing.T) {
 		t.Fatalf("expected action row component, got %T", components[1])
 	}
 
-	if len(row.Components) != 2 {
+	if len(row.Components) != 3 {
 		t.Fatalf("unexpected action row button count: %#v", row.Components)
 	}
 
@@ -202,7 +220,7 @@ func TestBuildPlainComponentsAddsActionButtons(t *testing.T) {
 		t.Fatalf("expected first row button, got %T", row.Components[0])
 	}
 
-	if firstButton.CustomID != showSourcesButtonCustomID {
+	if firstButton.CustomID != showThinkingButtonCustomID {
 		t.Fatalf("unexpected first button custom id: %q", firstButton.CustomID)
 	}
 
@@ -211,8 +229,17 @@ func TestBuildPlainComponentsAddsActionButtons(t *testing.T) {
 		t.Fatalf("expected second row button, got %T", row.Components[1])
 	}
 
-	if secondButton.CustomID != viewOnRentryButtonCustomID {
+	if secondButton.CustomID != showSourcesButtonCustomID {
 		t.Fatalf("unexpected second button custom id: %q", secondButton.CustomID)
+	}
+
+	thirdButton, thirdButtonOK := row.Components[2].(*discordgo.Button)
+	if !thirdButtonOK {
+		t.Fatalf("expected third row button, got %T", row.Components[2])
+	}
+
+	if thirdButton.CustomID != viewOnRentryButtonCustomID {
+		t.Fatalf("unexpected third button custom id: %q", thirdButton.CustomID)
 	}
 }
 
@@ -281,6 +308,7 @@ func TestRenderEmbedResponseIncludesConfiguredModelAsAuthor(t *testing.T) {
 		[]string{responseBody},
 		finishReasonStop,
 		true,
+		false,
 	)
 	if err != nil {
 		t.Fatalf("render embed response: %v", err)
@@ -325,6 +353,7 @@ func TestRenderEmbedResponseDeletesExtraMessagesWhenSegmentCountShrinks(t *testi
 		[]string{"first", "second"},
 		finishReasonStop,
 		false,
+		false,
 	)
 	if err != nil {
 		t.Fatalf("render initial embed response: %v", err)
@@ -337,6 +366,7 @@ func TestRenderEmbedResponseDeletesExtraMessagesWhenSegmentCountShrinks(t *testi
 		[]string{"first"},
 		finishReasonStop,
 		true,
+		false,
 	)
 	if err != nil {
 		t.Fatalf("render collapsed embed response: %v", err)
@@ -477,6 +507,7 @@ func TestSendPlainResponseEditsExistingProgressMessage(t *testing.T) {
 		context.Background(),
 		tracker,
 		[]string{plainContent},
+		false,
 	)
 	if err != nil {
 		t.Fatalf("send plain response: %v", err)

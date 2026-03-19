@@ -14,6 +14,7 @@ type contentPart map[string]any
 type messageNode struct {
 	role                     string
 	text                     string
+	thinkingText             string
 	urlScanText              string
 	rentryURL                string
 	media                    []contentPart

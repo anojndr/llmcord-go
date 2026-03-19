@@ -330,7 +330,7 @@ func TestHandleInteractionCreateRespondsToShowSourcesButtonAfterPendingRelease(t
 		},
 	}
 
-	tracker.release(instance.nodes, "assistant reply")
+	tracker.release(instance.nodes, "assistant reply", "")
 
 	interaction := newShowSourcesInteraction()
 
@@ -437,6 +437,206 @@ func TestHandleInteractionCreateRespondsToPaginatedShowSourcesButton(t *testing.
 
 	if messageID != "response-message" || pageIndex != 1 {
 		t.Fatalf("unexpected next button target: message=%q page=%d", messageID, pageIndex)
+	}
+}
+
+func TestHandleInteractionCreateRespondsToShowThinkingButton(t *testing.T) {
+	t.Parallel()
+
+	var response discordgo.InteractionResponse
+
+	session := newInteractionTestSession(t, &response)
+	instance := new(bot)
+	instance.nodes = newMessageNodeStore(10)
+
+	node := instance.nodes.getOrCreate("response-message")
+	node.mu.Lock()
+	node.text = visibleResponseText("Plan first.", "Final answer.")
+	node.thinkingText = "Plan first."
+	node.initialized = true
+	node.mu.Unlock()
+
+	interaction := newShowThinkingInteraction()
+
+	instance.handleInteractionCreate(session, interaction)
+
+	if response.Type != discordgo.InteractionResponseChannelMessageWithSource {
+		t.Fatalf("unexpected response type: %v", response.Type)
+	}
+
+	if response.Data == nil {
+		t.Fatal("expected interaction response data")
+	}
+
+	if response.Data.Flags != discordgo.MessageFlagsEphemeral {
+		t.Fatalf("unexpected response flags: %v", response.Data.Flags)
+	}
+
+	if !containsFold(response.Data.Content, "Thinking Process") {
+		t.Fatalf("expected thinking header in response content: %q", response.Data.Content)
+	}
+
+	if !containsFold(response.Data.Content, "Plan first.") {
+		t.Fatalf("expected thinking content in response: %q", response.Data.Content)
+	}
+}
+
+func TestHandleInteractionCreateRespondsToShowThinkingButtonUsingPersistedFallback(t *testing.T) {
+	t.Parallel()
+
+	var response discordgo.InteractionResponse
+
+	session := newInteractionTestSession(t, &response)
+	instance := new(bot)
+	instance.nodes = newMessageNodeStore(10)
+
+	node := instance.nodes.getOrCreate("response-message")
+	node.mu.Lock()
+	node.text = visibleResponseText("Plan first.", "Final answer.")
+	node.initialized = true
+	node.mu.Unlock()
+
+	interaction := newShowThinkingInteraction()
+
+	instance.handleInteractionCreate(session, interaction)
+
+	if response.Data == nil {
+		t.Fatal("expected interaction response data")
+	}
+
+	if !containsFold(response.Data.Content, "Plan first.") {
+		t.Fatalf("expected extracted thinking content in response: %q", response.Data.Content)
+	}
+}
+
+func TestHandleInteractionCreateRespondsToPaginatedShowThinkingButton(t *testing.T) {
+	t.Parallel()
+
+	var response discordgo.InteractionResponse
+
+	session := newInteractionTestSession(t, &response)
+	instance := new(bot)
+	instance.nodes = newMessageNodeStore(10)
+
+	node := instance.nodes.getOrCreate("response-message")
+	node.mu.Lock()
+	node.thinkingText = strings.Repeat("Thoughts on the problem.\n", 200)
+	node.initialized = true
+	node.mu.Unlock()
+
+	interaction := newShowThinkingInteraction()
+
+	instance.handleInteractionCreate(session, interaction)
+
+	if response.Type != discordgo.InteractionResponseChannelMessageWithSource {
+		t.Fatalf("unexpected response type: %v", response.Type)
+	}
+
+	if response.Data == nil {
+		t.Fatal("expected interaction response data")
+	}
+
+	if !containsFold(response.Data.Content, "page 1/") {
+		t.Fatalf("expected first page indicator in response content: %q", response.Data.Content)
+	}
+
+	if len(response.Data.Components) != 1 {
+		t.Fatalf("unexpected component count: %d", len(response.Data.Components))
+	}
+
+	row, rowOK := response.Data.Components[0].(*discordgo.ActionsRow)
+	if !rowOK {
+		t.Fatalf("expected actions row, got %T", response.Data.Components[0])
+	}
+
+	if len(row.Components) != 2 {
+		t.Fatalf("unexpected pagination button count: %d", len(row.Components))
+	}
+
+	nextButton, nextOK := row.Components[1].(*discordgo.Button)
+	if !nextOK {
+		t.Fatalf("expected next button, got %T", row.Components[1])
+	}
+
+	messageID, pageIndex, ok := parseShowThinkingPageButtonCustomID(nextButton.CustomID)
+	if !ok {
+		t.Fatalf("expected parsable next button custom id: %q", nextButton.CustomID)
+	}
+
+	if messageID != "response-message" || pageIndex != 1 {
+		t.Fatalf("unexpected next button target: message=%q page=%d", messageID, pageIndex)
+	}
+}
+
+func TestHandleInteractionCreateUpdatesShowThinkingPaginationPage(t *testing.T) {
+	t.Parallel()
+
+	var response discordgo.InteractionResponse
+
+	session := newInteractionTestSession(t, &response)
+	instance := new(bot)
+	instance.nodes = newMessageNodeStore(10)
+
+	node := instance.nodes.getOrCreate("response-message")
+	node.mu.Lock()
+	node.thinkingText = strings.Repeat("Thoughts on the problem.\n", 200)
+	node.mu.Unlock()
+
+	pageCount := len(formatThinkingPages(node.thinkingText))
+	if pageCount < 2 {
+		t.Fatalf("expected multiple pages, got %d", pageCount)
+	}
+
+	targetPageIndex := pageCount - 1
+	interaction := newComponentInteraction(
+		"ephemeral-message",
+		showThinkingPageButtonCustomID("response-message", targetPageIndex),
+	)
+
+	instance.handleInteractionCreate(session, interaction)
+
+	if response.Type != discordgo.InteractionResponseUpdateMessage {
+		t.Fatalf("unexpected response type: %v", response.Type)
+	}
+
+	if response.Data == nil {
+		t.Fatal("expected interaction response data")
+	}
+
+	expectedPageIndicator := fmt.Sprintf("page %d/%d", targetPageIndex+1, pageCount)
+	if !containsFold(response.Data.Content, expectedPageIndicator) {
+		t.Fatalf("expected page indicator %q in response content: %q", expectedPageIndicator, response.Data.Content)
+	}
+
+	if len(response.Data.Components) != 1 {
+		t.Fatalf("unexpected component count: %d", len(response.Data.Components))
+	}
+
+	row, rowOK := response.Data.Components[0].(*discordgo.ActionsRow)
+	if !rowOK {
+		t.Fatalf("expected actions row, got %T", response.Data.Components[0])
+	}
+
+	if len(row.Components) != 2 {
+		t.Fatalf("unexpected pagination button count: %d", len(row.Components))
+	}
+
+	previousButton, previousOK := row.Components[0].(*discordgo.Button)
+	if !previousOK {
+		t.Fatalf("expected previous button, got %T", row.Components[0])
+	}
+
+	if previousButton.Disabled {
+		t.Fatal("expected previous button to be enabled on the final page")
+	}
+
+	nextButton, nextOK := row.Components[1].(*discordgo.Button)
+	if !nextOK {
+		t.Fatalf("expected next button, got %T", row.Components[1])
+	}
+
+	if !nextButton.Disabled {
+		t.Fatal("expected next button to be disabled on the final page")
 	}
 }
 
@@ -1034,6 +1234,10 @@ func newConfiguredModelCommandInteraction(
 
 func newShowSourcesInteraction() *discordgo.InteractionCreate {
 	return newComponentInteraction("response-message", showSourcesButtonCustomID)
+}
+
+func newShowThinkingInteraction() *discordgo.InteractionCreate {
+	return newComponentInteraction("response-message", showThinkingButtonCustomID)
 }
 
 func newComponentInteraction(messageID string, customID string) *discordgo.InteractionCreate {

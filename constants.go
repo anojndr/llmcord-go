@@ -35,6 +35,9 @@ const (
 	showSourcesButtonCustomID            = "show_sources"
 	showSourcesPageButtonCustomIDPrefix  = "show_sources_page:"
 	showSourcesButtonLabel               = "Show Sources"
+	showThinkingButtonCustomID           = "show_thinking"
+	showThinkingPageButtonCustomIDPrefix = "show_thinking_page:"
+	showThinkingButtonLabel              = "Show Thinking"
 	showSourcesPreviousButtonLabel       = "Previous"
 	showSourcesNextButtonLabel           = "Next"
 	viewOnRentryButtonCustomID           = "view_on_rentry"
@@ -47,6 +50,9 @@ const (
 	maxYouTubeComments                   = 50
 	showSourcesMessageMaxLength          = 1900
 	showSourcesPageBodyMaxLength         = showSourcesMessageMaxLength - 64
+	showThinkingUnavailableText          = "No thinking process available."
+	showThinkingMessageMaxLength         = 1900
+	showThinkingPageBodyMaxLength        = showThinkingMessageMaxLength - 64
 	attachmentRequestTimeout             = 30 * time.Second
 	attachmentDownloadMaxAttempts        = 3
 	attachmentRetryBaseDelay             = 100 * time.Millisecond

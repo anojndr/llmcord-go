@@ -12,6 +12,7 @@ import (
 
 const (
 	testAssistantReply = "assistant reply"
+	testThinkingReply  = "thinking reply"
 	testVideoBody      = "video-bytes"
 	testVideoMIMEType  = "video/mp4"
 	testDOCXFilename   = "report.docx"

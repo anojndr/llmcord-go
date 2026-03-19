@@ -24,8 +24,9 @@ type renderSpec struct {
 }
 
 type responseActions struct {
-	showSources bool
-	showRentry  bool
+	showSources  bool
+	showThinking bool
+	showRentry   bool
 }
 
 type pendingResponse struct {
@@ -94,6 +95,25 @@ func visibleResponseText(thinkingText string, answerText string) string {
 	}
 }
 
+const thinkingResponsePrefix = "**Thinking**\n"
+const answerResponseSeparator = "\n\n**Answer**\n"
+
+func extractThinkingText(fullText string) string {
+	trimmedText := strings.TrimSpace(fullText)
+	if !strings.HasPrefix(trimmedText, thinkingResponsePrefix) {
+		return ""
+	}
+
+	thinkingBody := strings.TrimPrefix(trimmedText, thinkingResponsePrefix)
+
+	thinkingOnly, _, found := strings.Cut(thinkingBody, answerResponseSeparator)
+	if !found {
+		return strings.TrimSpace(thinkingBody)
+	}
+
+	return strings.TrimSpace(thinkingOnly)
+}
+
 func visibleResponseSegments(thinkingText string, answerText string, maxLength int) []string {
 	displayText := visibleResponseText(thinkingText, answerText)
 	if displayText == "" {
@@ -132,10 +152,11 @@ func newResponseTracker(
 	return tracker
 }
 
-func (tracker *responseTracker) release(store *messageNodeStore, fullText string) {
+func (tracker *responseTracker) release(store *messageNodeStore, fullText string, thinkingText string) {
 	for _, pending := range tracker.pendingResponses {
 		pending.node.role = messageRoleAssistant
 		pending.node.text = fullText
+		pending.node.thinkingText = thinkingText
 		pending.node.urlScanText = ""
 		pending.node.searchMetadata = cloneSearchMetadata(tracker.searchMetadata)
 		pending.node.parentMessage = tracker.sourceMessage
@@ -192,6 +213,7 @@ func (instance *bot) generateAndSendResponse(
 		tracker,
 		warnings,
 		&accumulator,
+		thinkingAccumulator.joined(),
 		finishReason,
 		usePlainResponses,
 	)
@@ -212,7 +234,7 @@ func (instance *bot) generateAndSendResponse(
 		}
 	}
 
-	tracker.release(instance.nodes, finalText)
+	tracker.release(instance.nodes, finalText, thinkingAccumulator.joined())
 	instance.nodes.persistBestEffort()
 
 	return responseErr
@@ -263,6 +285,7 @@ func (instance *bot) handleGeneratedStreamDelta(
 		segments,
 		*finishReason,
 		false,
+		false,
 	)
 	if err != nil {
 		return fmt.Errorf("render embed response: %w", err)
@@ -293,6 +316,7 @@ func (instance *bot) renderFinalResponse(
 	tracker *responseTracker,
 	warnings []string,
 	accumulator *segmentAccumulator,
+	thinkingText string,
 	finishReason string,
 	usePlainResponses bool,
 ) error {
@@ -301,6 +325,7 @@ func (instance *bot) renderFinalResponse(
 			ctx,
 			tracker,
 			accumulator.renderSegments(),
+			strings.TrimSpace(thinkingText) != "",
 		)
 		if err != nil {
 			return fmt.Errorf("send plain response: %w", err)
@@ -316,6 +341,7 @@ func (instance *bot) renderFinalResponse(
 		accumulator.renderSegments(),
 		finishReason,
 		true,
+		strings.TrimSpace(thinkingText) != "",
 	)
 	if err != nil {
 		return fmt.Errorf("render final embed response: %w", err)
@@ -471,13 +497,13 @@ func (instance *bot) renderFailureResponse(
 		sentMessage, pending, err = instance.sendPlainMessage(
 			fallbackTracker,
 			errorText,
-			responseActions{showSources: false, showRentry: false},
+			responseActions{showSources: false, showThinking: false, showRentry: false},
 		)
 	} else {
 		sentMessage, pending, err = instance.sendEmbedMessage(
 			fallbackTracker,
 			failureEmbed,
-			responseActions{showSources: false, showRentry: false},
+			responseActions{showSources: false, showThinking: false, showRentry: false},
 		)
 	}
 
@@ -526,6 +552,7 @@ func buildRenderSpecs(
 	finishReason string,
 	final bool,
 	hasSearchMetadata bool,
+	hasThinking bool,
 ) []renderSpec {
 	specs := make([]renderSpec, 0, len(segments))
 
@@ -536,8 +563,9 @@ func buildRenderSpecs(
 			content: segment,
 			color:   0,
 			actions: responseActions{
-				showSources: final && hasSearchMetadata && index == len(segments)-1,
-				showRentry:  final && index == len(segments)-1,
+				showSources:  final && hasSearchMetadata && index == len(segments)-1,
+				showThinking: final && hasThinking && index == len(segments)-1,
+				showRentry:   final && index == len(segments)-1,
 			},
 		}
 
@@ -564,6 +592,7 @@ func (instance *bot) renderEmbedResponse(
 	segments []string,
 	finishReason string,
 	final bool,
+	hasThinking bool,
 ) error {
 	if len(segments) == 0 {
 		return nil
@@ -574,6 +603,7 @@ func (instance *bot) renderEmbedResponse(
 		finishReason,
 		final,
 		tracker.searchMetadata != nil,
+		hasThinking,
 	)
 	for index, spec := range desiredSpecs {
 		if index < len(tracker.renderedSpecs) && tracker.renderedSpecs[index] == spec {
@@ -690,11 +720,13 @@ func (instance *bot) sendPlainResponse(
 	_ context.Context,
 	tracker *responseTracker,
 	segments []string,
+	hasThinking bool,
 ) error {
 	for index, segment := range segments {
 		actions := responseActions{
-			showSources: tracker.searchMetadata != nil && index == len(segments)-1,
-			showRentry:  index == len(segments)-1,
+			showSources:  tracker.searchMetadata != nil && index == len(segments)-1,
+			showThinking: hasThinking && index == len(segments)-1,
+			showRentry:   index == len(segments)-1,
 		}
 
 		if index < len(tracker.responseMessages) {
@@ -895,9 +927,18 @@ func buildPlainComponents(content string, actions responseActions) []discordgo.M
 }
 
 func buildResponseButtons(actions responseActions) []discordgo.MessageComponent {
-	const maxResponseButtons = 2
+	const maxResponseButtons = 3
 
 	buttons := make([]discordgo.MessageComponent, 0, maxResponseButtons)
+
+	if actions.showThinking {
+		button := new(discordgo.Button)
+		button.CustomID = showThinkingButtonCustomID
+		button.Label = showThinkingButtonLabel
+		button.Style = discordgo.SecondaryButton
+
+		buttons = append(buttons, button)
+	}
 
 	if actions.showSources {
 		button := new(discordgo.Button)

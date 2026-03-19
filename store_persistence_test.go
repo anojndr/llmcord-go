@@ -167,6 +167,7 @@ func TestPersistentMessageNodeStoreLoadsAndPersistsSnapshot(t *testing.T) {
 	node.mu.Lock()
 	if node.role != messageRoleAssistant ||
 		node.text != testAssistantReply ||
+		node.thinkingText != testThinkingReply ||
 		!node.initialized {
 		node.mu.Unlock()
 		t.Fatalf("unexpected restored node: %#v", node)
@@ -190,6 +191,7 @@ func TestPersistentMessageNodeStoreLoadsAndPersistsSnapshot(t *testing.T) {
 
 	if persistedNode.Role != messageRoleAssistant ||
 		persistedNode.Text != testAssistantReply ||
+		persistedNode.ThinkingText != testThinkingReply ||
 		!persistedNode.Initialized {
 		t.Fatalf("unexpected persisted node: %#v", persistedNode)
 	}
@@ -199,6 +201,7 @@ func testAssistantMessageNodeSnapshot() messageNodeSnapshot {
 	return messageNodeSnapshot{
 		Role:                     messageRoleAssistant,
 		Text:                     testAssistantReply,
+		ThinkingText:             testThinkingReply,
 		URLScanText:              "",
 		RentryURL:                "",
 		Media:                    nil,
@@ -309,6 +312,11 @@ func TestPersistentMessageNodeStoreRestoresRetainedSearchHistoryAfterRestart(t *
 		expectedMetadata.VisualSearchSources,
 		"https://rentry.co/example",
 	)
+
+	gotThinkingText := restartedInstance.thinkingTextForMessage(assistantMessageID)
+	if gotThinkingText != testThinkingReply {
+		t.Fatalf("unexpected restored thinking text: got %q want %q", gotThinkingText, testThinkingReply)
+	}
 }
 
 func TestPersistentMessageNodeStoreRestoresRetainedVideoHistoryAfterRestart(t *testing.T) {
