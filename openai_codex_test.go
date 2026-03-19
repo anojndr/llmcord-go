@@ -23,7 +23,7 @@ const (
 func TestOpenAICodexClientStreamChatCompletion(t *testing.T) {
 	t.Parallel()
 
-	apiKey := testOpenAICodexJWT(t, testOpenAICodexAccountID)
+	apiKey := testOpenAICodexJWT(t)
 
 	server := newOpenAICodexStreamingTestServer(t, apiKey)
 	defer server.Close()
@@ -111,7 +111,7 @@ func TestOpenAICodexClientRejectsInvalidTokenWithoutAccountHeader(t *testing.T) 
 func TestOpenAICodexClientStreamChatCompletionIncludesCacheMetadata(t *testing.T) {
 	t.Parallel()
 
-	apiKey := testOpenAICodexJWT(t, testOpenAICodexAccountID)
+	apiKey := testOpenAICodexJWT(t)
 	sessionID := "codex-session-123"
 
 	server := httptest.NewServer(http.HandlerFunc(func(
@@ -424,6 +424,130 @@ func TestHandleOpenAICodexStreamPayloadUsesIncompleteDetailsReason(t *testing.T)
 	}
 
 	if !strings.Contains(err.Error(), "incomplete: max_output_tokens") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestHandleOpenAICodexStreamPayloadReturnsFailedTerminalStatusErrors(t *testing.T) {
+	t.Parallel()
+
+	terminal, err := handleOpenAICodexStreamPayload(
+		[]byte(
+			`{"type":"response.done","response":{"status":"failed","error":{"code":"server_error",`+
+				`"message":"agent backend crashed"}}}`,
+		),
+		func(delta streamDelta) error {
+			t.Fatalf("unexpected stream delta: %#v", delta)
+
+			return nil
+		},
+	)
+	if err == nil {
+		t.Fatal("expected failed terminal status to return an error")
+	}
+
+	if !terminal {
+		t.Fatal("expected response.done to be marked terminal")
+	}
+
+	if !strings.Contains(err.Error(), "server_error: agent backend crashed") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestHandleOpenAICodexStreamPayloadReturnsContentFilterIncompleteErrors(t *testing.T) {
+	t.Parallel()
+
+	terminal, err := handleOpenAICodexStreamPayload(
+		[]byte(
+			`{"type":"response.incomplete","response":{"status":"incomplete",`+
+				`"incomplete_details":{"reason":"content_filter"}}}`,
+		),
+		func(delta streamDelta) error {
+			t.Fatalf("unexpected stream delta: %#v", delta)
+
+			return nil
+		},
+	)
+	if err == nil {
+		t.Fatal("expected content filter incomplete response to return an error")
+	}
+
+	if !terminal {
+		t.Fatal("expected response.incomplete to be marked terminal")
+	}
+
+	if !strings.Contains(err.Error(), "incomplete: content_filter") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestOpenAICodexClientStreamChatCompletionParsesJSONStatusErrors(t *testing.T) {
+	t.Parallel()
+
+	apiKey := testOpenAICodexJWT(t)
+
+	server := httptest.NewServer(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		_ *http.Request,
+	) {
+		responseWriter.Header().Set("Content-Type", "application/json")
+		responseWriter.WriteHeader(http.StatusTooManyRequests)
+		writeStreamChunk(
+			t,
+			responseWriter,
+			`{"error":{"code":"usage_limit_reached","message":"Usage limit reached","plan_type":"PLUS"}}`,
+		)
+	}))
+	defer server.Close()
+
+	client := newOpenAICodexClient(server.Client())
+	request := chatCompletionRequest{
+		Provider:        newOpenAICodexProviderRequestConfig(apiKey, server.URL, nil, nil, nil),
+		Model:           testOpenAICodexModel,
+		ConfiguredModel: "",
+		SessionID:       "",
+		Messages:        []chatMessage{{Role: messageRoleUser, Content: testOpenAICodexHelloText}},
+	}
+
+	err := client.streamChatCompletion(context.Background(), request, func(streamDelta) error {
+		return nil
+	})
+	if err == nil {
+		t.Fatal("expected JSON status error")
+	}
+
+	for _, fragment := range []string{
+		"status 429",
+		"You have hit your ChatGPT usage limit",
+		"code=usage_limit_reached",
+	} {
+		if !strings.Contains(err.Error(), fragment) {
+			t.Fatalf("expected %q in error, got %v", fragment, err)
+		}
+	}
+}
+
+func TestHandleOpenAICodexStreamPayloadIncludesEventErrorCode(t *testing.T) {
+	t.Parallel()
+
+	terminal, err := handleOpenAICodexStreamPayload(
+		[]byte(`{"type":"error","message":"usage exhausted","code":"usage_limit_reached"}`),
+		func(delta streamDelta) error {
+			t.Fatalf("unexpected stream delta: %#v", delta)
+
+			return nil
+		},
+	)
+	if err == nil {
+		t.Fatal("expected error event to return an error")
+	}
+
+	if terminal {
+		t.Fatal("expected error event not to be marked terminal")
+	}
+
+	if !strings.Contains(err.Error(), "usage_limit_reached: usage exhausted") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -798,7 +922,7 @@ func assertOpenAICodexAssistantMessage(t *testing.T, rawMessage any) {
 	}
 }
 
-func testOpenAICodexJWT(t *testing.T, accountID string) string {
+func testOpenAICodexJWT(t *testing.T) string {
 	t.Helper()
 
 	headerBytes, err := json.Marshal(map[string]any{
@@ -811,7 +935,7 @@ func testOpenAICodexJWT(t *testing.T, accountID string) string {
 
 	payloadBytes, err := json.Marshal(map[string]any{
 		openAICodexJWTClaimPath: map[string]any{
-			"chatgpt_account_id": accountID,
+			"chatgpt_account_id": testOpenAICodexAccountID,
 		},
 	})
 	if err != nil {
