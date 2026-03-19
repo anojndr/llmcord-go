@@ -924,17 +924,15 @@ func geminiWaitForFileActive(
 	files geminiFilesClient,
 	file *genai.File,
 ) (*genai.File, error) {
-	if file == nil {
-		return nil, fmt.Errorf("missing uploaded gemini file: %w", os.ErrInvalid)
+	currentFile := file
+
+	active, err := geminiFileActive(currentFile)
+	if err != nil {
+		return nil, err
 	}
 
-	currentFile := file
-	switch currentFile.State {
-	case "", genai.FileStateActive:
+	if active {
 		return currentFile, nil
-	case genai.FileStateProcessing, genai.FileStateUnspecified:
-	case genai.FileStateFailed:
-		return nil, geminiFileStateError(currentFile)
 	}
 
 	waitContext, cancel := context.WithTimeout(ctx, geminiFileProcessingTimeout)
@@ -957,16 +955,47 @@ func geminiWaitForFileActive(
 				return nil, fmt.Errorf("refresh gemini file %q: %w", currentFile.Name, err)
 			}
 
+			if updatedFile == nil {
+				return nil, fmt.Errorf(
+					"refresh gemini file %q: missing file state: %w",
+					currentFile.Name,
+					os.ErrInvalid,
+				)
+			}
+
 			currentFile = updatedFile
 
-			switch currentFile.State {
-			case "", genai.FileStateActive:
+			active, err = geminiFileActive(currentFile)
+			if err != nil {
+				return nil, err
+			}
+
+			if active {
 				return currentFile, nil
-			case genai.FileStateProcessing, genai.FileStateUnspecified:
-			case genai.FileStateFailed:
-				return nil, geminiFileStateError(currentFile)
 			}
 		}
+	}
+}
+
+func geminiFileActive(file *genai.File) (bool, error) {
+	if file == nil {
+		return false, fmt.Errorf("missing uploaded gemini file: %w", os.ErrInvalid)
+	}
+
+	switch file.State {
+	case "", genai.FileStateActive:
+		return true, nil
+	case genai.FileStateProcessing, genai.FileStateUnspecified:
+		return false, nil
+	case genai.FileStateFailed:
+		return false, geminiFileStateError(file)
+	default:
+		return false, fmt.Errorf(
+			"gemini file %q returned unsupported processing state %q: %w",
+			file.Name,
+			strings.TrimSpace(string(file.State)),
+			os.ErrInvalid,
+		)
 	}
 }
 

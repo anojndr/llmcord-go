@@ -352,11 +352,13 @@ func (instance *bot) renderFinalResponse(
 
 func userFacingResponseError(err error) string {
 	const (
-		genericResponseErrorText   = "Couldn't generate a response right now. Try again."
-		rateLimitResponseErrorText = "Usage limit reached for this model. Try other models."
-		accessResponseErrorText    = "This model is unavailable right now. Try other models."
-		timeoutResponseErrorText   = "Request timed out. Try again."
-		canceledResponseErrorText  = "Request cancelled."
+		genericResponseErrorText     = "Couldn't generate a response right now. Try again."
+		rateLimitResponseErrorText   = "Usage limit reached for this model. Try other models."
+		accessResponseErrorText      = "This model is unavailable right now. Try other models."
+		missingResponseErrorText     = "A required resource was not found. Try again."
+		unavailableResponseErrorText = "The model provider is temporarily unavailable. Try again."
+		timeoutResponseErrorText     = "Request timed out. Try again."
+		canceledResponseErrorText    = "Request cancelled."
 	)
 
 	switch {
@@ -364,15 +366,37 @@ func userFacingResponseError(err error) string {
 		return genericResponseErrorText
 	case errors.Is(err, context.Canceled):
 		return canceledResponseErrorText
-	case errors.Is(err, context.DeadlineExceeded):
+	case isTimeoutResponseError(err):
 		return timeoutResponseErrorText
 	case isRateLimitResponseError(err):
 		return rateLimitResponseErrorText
 	case isAccessResponseError(err):
 		return accessResponseErrorText
+	case isMissingResponseError(err):
+		return missingResponseErrorText
+	case isUnavailableResponseError(err):
+		return unavailableResponseErrorText
 	default:
 		return genericResponseErrorText
 	}
+}
+
+func isTimeoutResponseError(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+
+	statusCode, ok := responseErrorStatusCode(err)
+	if ok && statusCode == http.StatusGatewayTimeout {
+		return true
+	}
+
+	return responseErrorContains(
+		err,
+		"deadline exceeded",
+		"timed out",
+		"timeout",
+	)
 }
 
 func isRateLimitResponseError(err error) bool {
@@ -397,7 +421,7 @@ func isAccessResponseError(err error) bool {
 	statusCode, ok := responseErrorStatusCode(err)
 	if ok {
 		switch statusCode {
-		case http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound:
+		case http.StatusUnauthorized, http.StatusForbidden:
 			return true
 		}
 	}
@@ -419,10 +443,48 @@ func isAccessResponseError(err error) bool {
 	)
 }
 
+func isMissingResponseError(err error) bool {
+	statusCode, ok := responseErrorStatusCode(err)
+	if ok && statusCode == http.StatusNotFound {
+		return true
+	}
+
+	return responseErrorContains(
+		err,
+		"attachment not found",
+		"file not found",
+		"not found",
+		"resource not found",
+	)
+}
+
+func isUnavailableResponseError(err error) bool {
+	statusCode, ok := responseErrorStatusCode(err)
+	if ok {
+		switch statusCode {
+		case http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable:
+			return true
+		}
+	}
+
+	return responseErrorContains(
+		err,
+		"bad gateway",
+		"internal server error",
+		"service unavailable",
+		"temporarily unavailable",
+	)
+}
+
 func responseErrorStatusCode(err error) (int, bool) {
 	var statusErr providerStatusError
 	if errors.As(err, &statusErr) {
 		return statusErr.StatusCode, true
+	}
+
+	var geminiErrPtr *genai.APIError
+	if errors.As(err, &geminiErrPtr) && geminiErrPtr != nil {
+		return geminiErrPtr.Code, true
 	}
 
 	var geminiErr genai.APIError
