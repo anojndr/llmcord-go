@@ -149,8 +149,12 @@ func (client geminiClient) streamChatCompletion(
 
 		delta, processErr := geminiStreamDelta(response)
 		if processErr != nil {
-			if delta.Content != "" {
-				err = handle(streamDelta{Content: delta.Content, FinishReason: ""})
+			if delta.Thinking != "" || delta.Content != "" {
+				err = handle(streamDelta{
+					Thinking:     delta.Thinking,
+					Content:      delta.Content,
+					FinishReason: "",
+				})
 				if err != nil {
 					return fmt.Errorf("handle stream delta: %w", err)
 				}
@@ -159,8 +163,12 @@ func (client geminiClient) streamChatCompletion(
 			return fmt.Errorf("process gemini stream response: %w", processErr)
 		}
 
-		if delta.Content != "" {
-			err = handle(streamDelta{Content: delta.Content, FinishReason: ""})
+		if delta.Thinking != "" || delta.Content != "" {
+			err = handle(streamDelta{
+				Thinking:     delta.Thinking,
+				Content:      delta.Content,
+				FinishReason: "",
+			})
 			if err != nil {
 				return fmt.Errorf("handle stream delta: %w", err)
 			}
@@ -172,7 +180,7 @@ func (client geminiClient) streamChatCompletion(
 
 		finishSeen = true
 
-		err = handle(streamDelta{Content: "", FinishReason: delta.FinishReason})
+		err = handle(streamDelta{Thinking: "", Content: "", FinishReason: delta.FinishReason})
 		if err != nil {
 			return fmt.Errorf("handle stream delta: %w", err)
 		}
@@ -204,6 +212,11 @@ func buildGeminiGenerateContentRequest(
 	}
 
 	extraBody, err := geminiExtraBody(request.Provider.ExtraBody)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	extraBody, err = defaultGeminiThoughtSummaries(extraBody)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -344,6 +357,39 @@ func geminiThinkingConfig(
 	delete(normalizedExtraBody, "thinkingConfig")
 
 	return &thinkingConfig, normalizedExtraBody, nil
+}
+
+func defaultGeminiThoughtSummaries(extraBody map[string]any) (map[string]any, error) {
+	normalizedExtraBody := maps.Clone(extraBody)
+	if normalizedExtraBody == nil {
+		normalizedExtraBody = make(map[string]any, 1)
+	}
+
+	existingThinkingConfig, thinkingConfigExists := normalizedExtraBody["thinkingConfig"]
+	if !thinkingConfigExists || existingThinkingConfig == nil {
+		normalizedExtraBody["thinkingConfig"] = map[string]any{
+			"includeThoughts": true,
+		}
+
+		return normalizedExtraBody, nil
+	}
+
+	thinkingConfig, ok := existingThinkingConfig.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf(
+			"gemini extra_body thinkingConfig must be an object: %w",
+			os.ErrInvalid,
+		)
+	}
+
+	clonedThinkingConfig := maps.Clone(thinkingConfig)
+	if _, exists := clonedThinkingConfig["includeThoughts"]; !exists {
+		clonedThinkingConfig["includeThoughts"] = true
+	}
+
+	normalizedExtraBody["thinkingConfig"] = clonedThinkingConfig
+
+	return normalizedExtraBody, nil
 }
 
 func buildGeminiClientConfig(
@@ -953,18 +999,49 @@ func geminiStreamDelta(response *genai.GenerateContentResponse) (streamDelta, er
 		return delta, err
 	}
 
-	delta.Content = response.Text()
 	if len(response.Candidates) > 0 {
 		candidate := response.Candidates[0]
+		delta.Thinking = geminiThoughtText(candidate)
+		delta.Content = geminiCandidateText(candidate)
 		delta.FinishReason = normalizedGeminiFinishReason(candidate.FinishReason)
 
 		err = geminiFinishReasonError(candidate)
 		if err != nil {
-			return streamDelta{Content: delta.Content, FinishReason: ""}, err
+			return streamDelta{
+				Thinking:     delta.Thinking,
+				Content:      delta.Content,
+				FinishReason: "",
+			}, err
 		}
 	}
 
 	return delta, nil
+}
+
+func geminiThoughtText(candidate *genai.Candidate) string {
+	return geminiCandidatePartText(candidate, true)
+}
+
+func geminiCandidateText(candidate *genai.Candidate) string {
+	return geminiCandidatePartText(candidate, false)
+}
+
+func geminiCandidatePartText(candidate *genai.Candidate, thought bool) string {
+	if candidate == nil || candidate.Content == nil || len(candidate.Content.Parts) == 0 {
+		return ""
+	}
+
+	var builder strings.Builder
+
+	for _, part := range candidate.Content.Parts {
+		if part == nil || part.Text == "" || part.Thought != thought {
+			continue
+		}
+
+		builder.WriteString(part.Text)
+	}
+
+	return builder.String()
 }
 
 func normalizedGeminiFinishReason(finishReason genai.FinishReason) string {

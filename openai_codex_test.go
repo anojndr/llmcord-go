@@ -209,6 +209,44 @@ func TestBuildOpenAICodexRequestBodyPreservesNestedReasoningConfig(t *testing.T)
 	}
 }
 
+func TestBuildOpenAICodexRequestBodyDefaultsReasoningSummaryWithoutEffort(t *testing.T) {
+	t.Parallel()
+
+	request := chatCompletionRequest{
+		Provider: newOpenAICodexProviderRequestConfig(
+			"",
+			"",
+			nil,
+			nil,
+			nil,
+		),
+		Model:           "gpt-5.4",
+		ConfiguredModel: "",
+		SessionID:       "",
+		Messages: []chatMessage{
+			{Role: messageRoleUser, Content: testOpenAICodexHelloText},
+		},
+	}
+
+	requestBody, err := buildOpenAICodexRequestBody(request)
+	if err != nil {
+		t.Fatalf("build codex request body: %v", err)
+	}
+
+	reasoningConfig, ok := requestBody["reasoning"].(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected reasoning config type: %T", requestBody["reasoning"])
+	}
+
+	if reasoningConfig["summary"] != openAICodexAuto {
+		t.Fatalf("unexpected reasoning summary: %#v", reasoningConfig["summary"])
+	}
+
+	if _, exists := reasoningConfig["effort"]; exists {
+		t.Fatalf("unexpected reasoning effort: %#v", reasoningConfig["effort"])
+	}
+}
+
 func TestBuildOpenAICodexRequestBodyClampsNestedReasoningConfigWithoutMutatingOriginal(t *testing.T) {
 	t.Parallel()
 
@@ -387,6 +425,48 @@ func TestHandleOpenAICodexStreamPayloadUsesIncompleteDetailsReason(t *testing.T)
 
 	if !strings.Contains(err.Error(), "incomplete: max_output_tokens") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestHandleOpenAICodexStreamPayloadEmitsReasoningSummaries(t *testing.T) {
+	t.Parallel()
+
+	var thoughtText strings.Builder
+
+	terminal, err := handleOpenAICodexStreamPayload(
+		[]byte(`{"type":"response.reasoning_summary_text.delta","delta":"Inspecting..."}`),
+		func(delta streamDelta) error {
+			thoughtText.WriteString(delta.Thinking)
+
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("handle reasoning summary delta: %v", err)
+	}
+
+	if terminal {
+		t.Fatal("expected reasoning summary delta not to be terminal")
+	}
+
+	terminal, err = handleOpenAICodexStreamPayload(
+		[]byte(`{"type":"response.reasoning_summary_part.done"}`),
+		func(delta streamDelta) error {
+			thoughtText.WriteString(delta.Thinking)
+
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("handle reasoning summary part done: %v", err)
+	}
+
+	if terminal {
+		t.Fatal("expected reasoning summary part done not to be terminal")
+	}
+
+	if thoughtText.String() != "Inspecting...\n\n" {
+		t.Fatalf("unexpected reasoning summary text: %q", thoughtText.String())
 	}
 }
 

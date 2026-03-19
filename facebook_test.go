@@ -422,6 +422,7 @@ func TestMaybeAugmentConversationWithFacebookPreprocessesForNonGeminiModels(t *t
 		callCount++
 
 		return handle(streamDelta{
+			Thinking:     "",
 			Content:      expectedAnalysis[0],
 			FinishReason: finishReasonStop,
 		})

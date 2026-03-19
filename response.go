@@ -83,17 +83,36 @@ func (accumulator *segmentAccumulator) joined() string {
 	return strings.Join(accumulator.segments, "")
 }
 
-func (accumulator *segmentAccumulator) renderSegments(final bool) []string {
+func visibleResponseText(thinkingText string, answerText string) string {
+	switch {
+	case thinkingText == "":
+		return answerText
+	case answerText == "":
+		return "**Thinking**\n" + thinkingText
+	default:
+		return "**Thinking**\n" + thinkingText + "\n\n**Answer**\n" + answerText
+	}
+}
+
+func visibleResponseSegments(thinkingText string, answerText string, maxLength int) []string {
+	displayText := visibleResponseText(thinkingText, answerText)
+	if displayText == "" {
+		return nil
+	}
+
+	accumulator := newSegmentAccumulator(maxLength)
+	_ = accumulator.appendText(displayText)
+
+	return accumulator.renderSegments()
+}
+
+func (accumulator *segmentAccumulator) renderSegments() []string {
 	if len(accumulator.segments) == 0 {
 		return nil
 	}
 
 	segments := make([]string, 0, len(accumulator.segments))
 	segments = append(segments, accumulator.segments...)
-
-	if !final && segments[len(segments)-1] == "" {
-		segments = segments[:len(segments)-1]
-	}
 
 	if len(segments) == 1 && segments[0] == "" {
 		return nil
@@ -143,6 +162,7 @@ func (instance *bot) generateAndSendResponse(
 	}
 
 	accumulator := newSegmentAccumulator(maxLength)
+	thinkingAccumulator := newSegmentAccumulator(maxLength)
 	tracker.modelName = strings.TrimSpace(request.ConfiguredModel)
 
 	var finishReason string
@@ -150,38 +170,18 @@ func (instance *bot) generateAndSendResponse(
 	lastRenderTime := time.Time{}
 
 	streamErr := instance.chatCompletions.streamChatCompletion(ctx, request, func(delta streamDelta) error {
-		splitOccurred := false
-		if delta.Content != "" {
-			splitOccurred = accumulator.appendText(delta.Content)
-		}
-
-		if delta.FinishReason != "" {
-			finishReason = delta.FinishReason
-		}
-
-		if usePlainResponses {
-			return nil
-		}
-
-		if !shouldRenderProgress(accumulator.renderSegments(false), splitOccurred, lastRenderTime) {
-			return nil
-		}
-
-		err := instance.renderEmbedResponse(
+		return instance.handleGeneratedStreamDelta(
 			ctx,
 			tracker,
 			warnings,
-			accumulator.renderSegments(false),
-			finishReason,
-			false,
+			&accumulator,
+			&thinkingAccumulator,
+			delta,
+			&finishReason,
+			&lastRenderTime,
+			maxLength,
+			usePlainResponses,
 		)
-		if err != nil {
-			return fmt.Errorf("render embed response: %w", err)
-		}
-
-		lastRenderTime = time.Now()
-
-		return nil
 	})
 	if streamErr != nil && finishReason == "" {
 		finishReason = "error"
@@ -199,7 +199,7 @@ func (instance *bot) generateAndSendResponse(
 		responseErr = fmt.Errorf("stream response: %w", streamErr)
 	}
 
-	finalText := accumulator.joined()
+	finalText := visibleResponseText(thinkingAccumulator.joined(), accumulator.joined())
 
 	if responseErr != nil {
 		errorText := userFacingResponseError(responseErr)
@@ -216,6 +216,61 @@ func (instance *bot) generateAndSendResponse(
 	instance.nodes.persistBestEffort()
 
 	return responseErr
+}
+
+func (instance *bot) handleGeneratedStreamDelta(
+	ctx context.Context,
+	tracker *responseTracker,
+	warnings []string,
+	answerAccumulator *segmentAccumulator,
+	thinkingAccumulator *segmentAccumulator,
+	delta streamDelta,
+	finishReason *string,
+	lastRenderTime *time.Time,
+	maxLength int,
+	usePlainResponses bool,
+) error {
+	splitOccurred := false
+	if delta.Thinking != "" {
+		splitOccurred = thinkingAccumulator.appendText(delta.Thinking) || splitOccurred
+	}
+
+	if delta.Content != "" {
+		splitOccurred = answerAccumulator.appendText(delta.Content) || splitOccurred
+	}
+
+	if delta.FinishReason != "" {
+		*finishReason = delta.FinishReason
+	}
+
+	if usePlainResponses {
+		return nil
+	}
+
+	segments := visibleResponseSegments(
+		thinkingAccumulator.joined(),
+		answerAccumulator.joined(),
+		maxLength,
+	)
+	if !shouldRenderProgress(segments, splitOccurred, *lastRenderTime) {
+		return nil
+	}
+
+	err := instance.renderEmbedResponse(
+		ctx,
+		tracker,
+		warnings,
+		segments,
+		*finishReason,
+		false,
+	)
+	if err != nil {
+		return fmt.Errorf("render embed response: %w", err)
+	}
+
+	*lastRenderTime = time.Now()
+
+	return nil
 }
 
 func responseTextWithError(responseText string, errorText string) string {
@@ -245,7 +300,7 @@ func (instance *bot) renderFinalResponse(
 		err := instance.sendPlainResponse(
 			ctx,
 			tracker,
-			accumulator.renderSegments(true),
+			accumulator.renderSegments(),
 		)
 		if err != nil {
 			return fmt.Errorf("send plain response: %w", err)
@@ -258,7 +313,7 @@ func (instance *bot) renderFinalResponse(
 		ctx,
 		tracker,
 		warnings,
-		accumulator.renderSegments(true),
+		accumulator.renderSegments(),
 		finishReason,
 		true,
 	)
@@ -571,9 +626,64 @@ func (instance *bot) renderEmbedResponse(
 		}
 	}
 
+	err := instance.trimExtraEmbedResponses(ctx, tracker, len(desiredSpecs))
+	if err != nil {
+		return err
+	}
+
 	tracker.responseVisible = true
 
 	return nil
+}
+
+func (instance *bot) trimExtraEmbedResponses(
+	ctx context.Context,
+	tracker *responseTracker,
+	keepCount int,
+) error {
+	for len(tracker.responseMessages) > keepCount {
+		lastIndex := len(tracker.responseMessages) - 1
+		message := tracker.responseMessages[lastIndex]
+		pending := tracker.pendingResponses[lastIndex]
+
+		err := instance.waitForEditSlot(ctx)
+		if err != nil {
+			return fmt.Errorf("wait before embed cleanup: %w", err)
+		}
+
+		err = instance.session.ChannelMessageDelete(message.ChannelID, message.ID)
+		if err != nil {
+			return fmt.Errorf("delete extra embed message: %w", err)
+		}
+
+		tracker.responseMessages = tracker.responseMessages[:lastIndex]
+		tracker.pendingResponses = tracker.pendingResponses[:lastIndex]
+
+		discardPendingResponse(instance.nodes, pending)
+	}
+
+	if len(tracker.renderedSpecs) > keepCount {
+		tracker.renderedSpecs = tracker.renderedSpecs[:keepCount]
+	}
+
+	return nil
+}
+
+func discardPendingResponse(store *messageNodeStore, pending pendingResponse) {
+	if pending.node == nil {
+		return
+	}
+
+	if store != nil {
+		store.mu.Lock()
+		if currentNode, ok := store.nodes[pending.messageID]; ok && currentNode == pending.node {
+			delete(store.nodes, pending.messageID)
+		}
+		store.mu.Unlock()
+		store.deleteCachedSnapshot(pending.messageID)
+	}
+
+	pending.node.mu.Unlock()
 }
 
 func (instance *bot) sendPlainResponse(
