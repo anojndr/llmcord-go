@@ -7,9 +7,11 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"os"
 	"testing"
 
 	"github.com/bwmarrin/discordgo"
+	"google.golang.org/genai"
 )
 
 type fakeChatCompletionClient struct {
@@ -29,6 +31,82 @@ func (client fakeChatCompletionClient) streamChatCompletion(
 	}
 
 	return nil
+}
+
+func newTestGeminiAPIError(code int, message string) error {
+	apiErr := new(genai.APIError)
+	apiErr.Code = code
+	apiErr.Message = message
+
+	return *apiErr
+}
+
+func newTestGeminiAPIErrorPointer(code int, message string) error {
+	apiErr := new(genai.APIError)
+	apiErr.Code = code
+	apiErr.Message = message
+
+	return apiErr
+}
+
+func TestUserFacingResponseErrorClassifiesProviderFailures(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		err      error
+		expected string
+	}{
+		{
+			name:     "gemini rate limit",
+			err:      newTestGeminiAPIError(http.StatusTooManyRequests, "rate limited"),
+			expected: "Usage limit reached for this model. Try other models.",
+		},
+		{
+			name:     "gemini access denied",
+			err:      newTestGeminiAPIError(http.StatusForbidden, "permission denied"),
+			expected: "This model is unavailable right now. Try other models.",
+		},
+		{
+			name: "model not found remains access error",
+			err: providerStatusError{
+				StatusCode: http.StatusNotFound,
+				Message:    "model not found",
+				Err:        os.ErrInvalid,
+			},
+			expected: "This model is unavailable right now. Try other models.",
+		},
+		{
+			name:     "gemini missing file",
+			err:      newTestGeminiAPIError(http.StatusNotFound, "file not found"),
+			expected: "A required resource was not found. Try again.",
+		},
+		{
+			name:     "gemini gateway timeout",
+			err:      newTestGeminiAPIError(http.StatusGatewayTimeout, "deadline exceeded"),
+			expected: "Request timed out. Try again.",
+		},
+		{
+			name:     "gemini service unavailable pointer error",
+			err:      newTestGeminiAPIErrorPointer(http.StatusServiceUnavailable, "service unavailable"),
+			expected: "The model provider is temporarily unavailable. Try again.",
+		},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := userFacingResponseError(testCase.err)
+			if got != testCase.expected {
+				t.Fatalf(
+					"unexpected user-facing error: got %q want %q",
+					got,
+					testCase.expected,
+				)
+			}
+		})
+	}
 }
 
 func TestSegmentAccumulatorSplitsByRunes(t *testing.T) {

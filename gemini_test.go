@@ -459,6 +459,61 @@ func TestGeminiClientStreamChatCompletionReturnsCandidateFinishReasonErrors(t *t
 	}
 }
 
+func TestGeminiClientStreamChatCompletionReturnsUnknownFinishReasonErrors(t *testing.T) {
+	t.Parallel()
+
+	client := geminiClient{
+		httpClient: new(http.Client),
+		newClient: func(
+			_ context.Context,
+			_ *genai.ClientConfig,
+		) (geminiAPIClient, error) {
+			var stubClient stubGeminiAPIClient
+
+			stubClient.generateContentStream = func(
+				_ context.Context,
+				_ string,
+				_ []*genai.Content,
+				_ *genai.GenerateContentConfig,
+			) iter.Seq2[*genai.GenerateContentResponse, error] {
+				return func(yield func(*genai.GenerateContentResponse, error) bool) {
+					response := newGeminiGenerateContentResponse(
+						"partial",
+						genai.FinishReason("TOO_MANY_TOOL_CALLS"),
+					)
+
+					_ = yield(response, nil)
+				}
+			}
+
+			return stubClient, nil
+		},
+	}
+
+	var joinedText strings.Builder
+
+	err := client.streamChatCompletion(
+		context.Background(),
+		newSimpleGeminiStreamRequest(),
+		func(delta streamDelta) error {
+			joinedText.WriteString(delta.Content)
+
+			return nil
+		},
+	)
+	if err == nil {
+		t.Fatal("expected finish reason error")
+	}
+
+	if joinedText.String() != "partial" {
+		t.Fatalf("expected partial content before error, got %q", joinedText.String())
+	}
+
+	if !containsFold(err.Error(), "too_many_tool_calls") {
+		t.Fatalf("unexpected error text: %v", err)
+	}
+}
+
 func TestGeminiClientStreamChatCompletionReturnsErrorWithoutFinishReason(t *testing.T) {
 	t.Parallel()
 
@@ -499,6 +554,49 @@ func TestGeminiClientStreamChatCompletionReturnsErrorWithoutFinishReason(t *test
 	if !containsFold(err.Error(), "without finish reason") {
 		t.Fatalf("unexpected error text: %v", err)
 	}
+}
+
+func TestGeminiWaitForFileActiveRejectsUnknownStates(t *testing.T) {
+	t.Parallel()
+
+	file := new(genai.File)
+	file.Name = "files/test"
+	file.State = genai.FileState("ARCHIVED")
+
+	_, err := geminiWaitForFileActive(context.Background(), nil, file)
+	if err == nil {
+		t.Fatal("expected unknown file state to fail")
+	}
+
+	if !containsFold(err.Error(), "unsupported processing state") {
+		t.Fatalf("unexpected error text: %v", err)
+	}
+}
+
+func TestGeminiWaitForFileActiveRejectsMissingRefreshState(t *testing.T) {
+	t.Parallel()
+
+	file := new(genai.File)
+	file.Name = "files/test"
+	file.State = genai.FileStateProcessing
+
+	files := new(stubGeminiAPIClient)
+	files.getFile = func(context.Context, string, *genai.GetFileConfig) (*genai.File, error) {
+		return nilGeminiFile(), nil
+	}
+
+	_, err := geminiWaitForFileActive(context.Background(), files, file)
+	if err == nil {
+		t.Fatal("expected missing refreshed file to fail")
+	}
+
+	if !containsFold(err.Error(), "missing file state") {
+		t.Fatalf("unexpected error text: %v", err)
+	}
+}
+
+func nilGeminiFile() *genai.File {
+	return nil
 }
 
 func TestBuildGeminiGenerateContentRequestUploadsBinaryFiles(t *testing.T) {
