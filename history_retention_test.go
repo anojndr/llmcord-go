@@ -391,6 +391,7 @@ func setCachedAssistantNode(
 
 	node.role = messageRoleAssistant
 	node.text = testAssistantReply
+	node.thinkingText = testThinkingReply
 	node.urlScanText = testAssistantReply
 	node.parentMessage = parentMessage
 	node.initialized = true

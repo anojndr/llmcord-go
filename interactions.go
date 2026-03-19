@@ -85,10 +85,14 @@ func (instance *bot) handleMessageComponentInteraction(
 	switch {
 	case componentData.CustomID == showSourcesButtonCustomID:
 		return instance.handleShowSourcesButton(session, interaction)
+	case componentData.CustomID == showThinkingButtonCustomID:
+		return instance.handleShowThinkingButton(session, interaction)
 	case componentData.CustomID == viewOnRentryButtonCustomID:
 		return instance.handleViewOnRentryButton(session, interaction)
 	case strings.HasPrefix(componentData.CustomID, showSourcesPageButtonCustomIDPrefix):
 		return instance.handleShowSourcesPageButton(session, interaction)
+	case strings.HasPrefix(componentData.CustomID, showThinkingPageButtonCustomIDPrefix):
+		return instance.handleShowThinkingPageButton(session, interaction)
 	default:
 		return nil
 	}
@@ -103,6 +107,26 @@ func (instance *bot) handleShowSourcesButton(
 	}
 
 	content, components := instance.showSourcesPageResponse(interaction.Message.ID, 0)
+
+	return respondInteractionMessage(
+		session,
+		interaction.Interaction,
+		discordgo.InteractionResponseChannelMessageWithSource,
+		content,
+		components,
+		discordgo.MessageFlagsEphemeral,
+	)
+}
+
+func (instance *bot) handleShowThinkingButton(
+	session *discordgo.Session,
+	interaction *discordgo.InteractionCreate,
+) error {
+	if interaction == nil || interaction.Message == nil {
+		return fmt.Errorf("show thinking interaction without message: %w", os.ErrInvalid)
+	}
+
+	content, components := instance.showThinkingPageResponse(interaction.Message.ID, 0)
 
 	return respondInteractionMessage(
 		session,
@@ -139,6 +163,31 @@ func (instance *bot) handleShowSourcesPageButton(
 	)
 }
 
+func (instance *bot) handleShowThinkingPageButton(
+	session *discordgo.Session,
+	interaction *discordgo.InteractionCreate,
+) error {
+	if interaction == nil {
+		return fmt.Errorf("show thinking page interaction without interaction: %w", os.ErrInvalid)
+	}
+
+	messageID, pageIndex, ok := parseShowThinkingPageButtonCustomID(interaction.MessageComponentData().CustomID)
+	if !ok {
+		return fmt.Errorf("invalid show thinking page interaction custom id: %w", os.ErrInvalid)
+	}
+
+	content, components := instance.showThinkingPageResponse(messageID, pageIndex)
+
+	return respondInteractionMessage(
+		session,
+		interaction.Interaction,
+		discordgo.InteractionResponseUpdateMessage,
+		content,
+		components,
+		0,
+	)
+}
+
 func (instance *bot) showSourcesPageResponse(messageID string, pageIndex int) (string, []discordgo.MessageComponent) {
 	searchMetadata := instance.searchMetadataForMessage(messageID)
 	pages := formatSearchSourcesPages(searchMetadata)
@@ -153,6 +202,20 @@ func (instance *bot) showSourcesPageResponse(messageID string, pageIndex int) (s
 		buildShowSourcesPaginationComponents(messageID, pageIndex, len(pages))
 }
 
+func (instance *bot) showThinkingPageResponse(messageID string, pageIndex int) (string, []discordgo.MessageComponent) {
+	thinkingText := instance.thinkingTextForMessage(messageID)
+	pages := formatThinkingPages(thinkingText)
+
+	if pageIndex < 0 {
+		pageIndex = 0
+	} else if pageIndex >= len(pages) {
+		pageIndex = len(pages) - 1
+	}
+
+	return formatThinkingPageContent(pages, pageIndex),
+		buildShowThinkingPaginationComponents(messageID, pageIndex, len(pages))
+}
+
 func (instance *bot) searchMetadataForMessage(messageID string) *searchMetadata {
 	messageNode, ok := instance.nodes.get(messageID)
 	if !ok {
@@ -163,6 +226,23 @@ func (instance *bot) searchMetadataForMessage(messageID string) *searchMetadata 
 	defer messageNode.mu.Unlock()
 
 	return cloneSearchMetadata(messageNode.searchMetadata)
+}
+
+func (instance *bot) thinkingTextForMessage(messageID string) string {
+	messageNode, ok := instance.nodes.get(messageID)
+	if !ok {
+		return ""
+	}
+
+	messageNode.mu.Lock()
+	defer messageNode.mu.Unlock()
+
+	thinkingText := strings.TrimSpace(messageNode.thinkingText)
+	if thinkingText != "" {
+		return thinkingText
+	}
+
+	return extractThinkingText(messageNode.text)
 }
 
 func buildShowSourcesPaginationComponents(
@@ -202,8 +282,49 @@ func buildShowSourcesPaginationComponents(
 	return []discordgo.MessageComponent{row}
 }
 
+func buildShowThinkingPaginationComponents(
+	messageID string,
+	pageIndex int,
+	pageCount int,
+) []discordgo.MessageComponent {
+	if pageCount <= 1 {
+		return []discordgo.MessageComponent{}
+	}
+
+	previousPageIndex := pageIndex
+	if previousPageIndex > 0 {
+		previousPageIndex--
+	}
+
+	nextPageIndex := pageIndex
+	if nextPageIndex < pageCount-1 {
+		nextPageIndex++
+	}
+
+	previousButton := new(discordgo.Button)
+	previousButton.CustomID = showThinkingPageButtonCustomID(messageID, previousPageIndex)
+	previousButton.Label = showSourcesPreviousButtonLabel
+	previousButton.Style = discordgo.SecondaryButton
+	previousButton.Disabled = pageIndex == 0
+
+	nextButton := new(discordgo.Button)
+	nextButton.CustomID = showThinkingPageButtonCustomID(messageID, nextPageIndex)
+	nextButton.Label = showSourcesNextButtonLabel
+	nextButton.Style = discordgo.SecondaryButton
+	nextButton.Disabled = pageIndex >= pageCount-1
+
+	row := new(discordgo.ActionsRow)
+	row.Components = []discordgo.MessageComponent{previousButton, nextButton}
+
+	return []discordgo.MessageComponent{row}
+}
+
 func showSourcesPageButtonCustomID(messageID string, pageIndex int) string {
 	return fmt.Sprintf("%s%s:%d", showSourcesPageButtonCustomIDPrefix, messageID, pageIndex)
+}
+
+func showThinkingPageButtonCustomID(messageID string, pageIndex int) string {
+	return fmt.Sprintf("%s%s:%d", showThinkingPageButtonCustomIDPrefix, messageID, pageIndex)
 }
 
 func parseShowSourcesPageButtonCustomID(customID string) (string, int, bool) {
@@ -228,6 +349,57 @@ func parseShowSourcesPageButtonCustomID(customID string) (string, int, bool) {
 	}
 
 	return messageID, pageIndex, true
+}
+
+func parseShowThinkingPageButtonCustomID(customID string) (string, int, bool) {
+	remainder, ok := strings.CutPrefix(customID, showThinkingPageButtonCustomIDPrefix)
+	if !ok {
+		return "", 0, false
+	}
+
+	separatorIndex := strings.LastIndex(remainder, ":")
+	if separatorIndex <= 0 || separatorIndex >= len(remainder)-1 {
+		return "", 0, false
+	}
+
+	pageIndex, err := strconv.Atoi(remainder[separatorIndex+1:])
+	if err != nil || pageIndex < 0 {
+		return "", 0, false
+	}
+
+	messageID := strings.TrimSpace(remainder[:separatorIndex])
+	if messageID == "" {
+		return "", 0, false
+	}
+
+	return messageID, pageIndex, true
+}
+
+func formatThinkingPages(thinkingText string) []string {
+	trimmedThinkingText := strings.TrimSpace(thinkingText)
+	if trimmedThinkingText == "" {
+		return []string{showThinkingUnavailableText}
+	}
+
+	return splitMessagePages(trimmedThinkingText, showThinkingPageBodyMaxLength)
+}
+
+func formatThinkingPageContent(pages []string, pageIndex int) string {
+	if len(pages) == 0 {
+		return showThinkingUnavailableText
+	}
+
+	if pageIndex < 0 {
+		pageIndex = 0
+	} else if pageIndex >= len(pages) {
+		pageIndex = len(pages) - 1
+	}
+
+	if len(pages) == 1 {
+		return "Thinking Process\n\n" + pages[pageIndex]
+	}
+
+	return fmt.Sprintf("Thinking Process (page %d/%d)\n\n%s", pageIndex+1, len(pages), pages[pageIndex])
 }
 
 func (instance *bot) handleViewOnRentryButton(

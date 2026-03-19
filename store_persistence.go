@@ -49,6 +49,7 @@ type messageNodeSnapshotPayload struct {
 type messageNodeSnapshot struct {
 	Role                     string                  `json:"role"`
 	Text                     string                  `json:"text"`
+	ThinkingText             string                  `json:"thinking_text"`
 	URLScanText              string                  `json:"url_scan_text"`
 	RentryURL                string                  `json:"rentry_url"`
 	Media                    []contentPartSnapshot   `json:"media"`
@@ -553,6 +554,7 @@ func messageNodeSnapshotFromLockedNode(node *messageNode) (messageNodeSnapshot, 
 	snapshot := messageNodeSnapshot{
 		Role:                     node.role,
 		Text:                     node.text,
+		ThinkingText:             node.thinkingText,
 		URLScanText:              node.urlScanText,
 		RentryURL:                node.rentryURL,
 		Media:                    mediaSnapshots,
@@ -571,6 +573,7 @@ func (snapshot messageNodeSnapshot) messageNode() *messageNode {
 	node := new(messageNode)
 	node.role = snapshot.Role
 	node.text = snapshot.Text
+	node.thinkingText = snapshot.ThinkingText
 	node.urlScanText = snapshot.URLScanText
 	node.rentryURL = snapshot.RentryURL
 	node.media = make([]contentPart, 0, len(snapshot.Media))
