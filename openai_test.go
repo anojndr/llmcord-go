@@ -214,6 +214,61 @@ func TestOpenAIClientStreamChatCompletionReturnsStatusErrors(t *testing.T) {
 	}
 }
 
+func TestOpenAIClientStreamChatCompletionParsesJSONStatusErrors(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		_ *http.Request,
+	) {
+		responseWriter.Header().Set("Content-Type", "application/json")
+		responseWriter.WriteHeader(http.StatusBadRequest)
+		writeStreamChunk(
+			t,
+			responseWriter,
+			`{"error":{"message":"Unsupported response_format","type":"invalid_request_error",`+
+				`"param":"response_format","code":"unsupported_parameter"}}`,
+		)
+	}))
+	defer server.Close()
+
+	client := newOpenAIClient(server.Client())
+	request := chatCompletionRequest{
+		Provider: providerRequestConfig{
+			APIKind:      providerAPIKindOpenAI,
+			BaseURL:      server.URL,
+			APIKey:       "test-key",
+			APIKeys:      nil,
+			ExtraHeaders: nil,
+			ExtraQuery:   nil,
+			ExtraBody:    nil,
+		},
+		Model:           "gpt-test",
+		ConfiguredModel: "",
+		SessionID:       "",
+		Messages:        []chatMessage{{Role: "user", Content: "hello"}},
+	}
+
+	err := client.streamChatCompletion(context.Background(), request, func(streamDelta) error {
+		return nil
+	})
+	if err == nil {
+		t.Fatal("expected JSON status error")
+	}
+
+	for _, fragment := range []string{
+		"status 400",
+		"Unsupported response_format",
+		"code=unsupported_parameter",
+		"type=invalid_request_error",
+		"param=response_format",
+	} {
+		if !strings.Contains(err.Error(), fragment) {
+			t.Fatalf("expected %q in error, got %v", fragment, err)
+		}
+	}
+}
+
 func TestOpenAIClientStreamChatCompletionReturnsStreamEventErrors(t *testing.T) {
 	t.Parallel()
 

@@ -189,7 +189,7 @@ func TestChatCompletionRouterRetriesOpenAIAPIKeysAfterStreamFailure(t *testing.T
 func TestChatCompletionRouterRetriesOpenAICodexAPIKeys(t *testing.T) {
 	t.Parallel()
 
-	validAPIKey := testOpenAICodexJWT(t, testOpenAICodexAccountID)
+	validAPIKey := testOpenAICodexJWT(t)
 	requestCounter := new(countCapture)
 
 	server := newOpenAICodexRetryTestServer(t, requestCounter, validAPIKey)

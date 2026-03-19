@@ -95,15 +95,13 @@ func (client openAICodexClient) streamChatCompletion(
 			)
 		}
 
-		return providerStatusError{
-			StatusCode: httpResponse.StatusCode,
-			Message: fmt.Sprintf(
-				"codex request failed with status %d: %s",
-				httpResponse.StatusCode,
-				strings.TrimSpace(string(responseBody)),
-			),
-			Err: os.ErrInvalid,
-		}
+		return newOpenAIProviderStatusError(
+			"codex request failed",
+			httpResponse.StatusCode,
+			httpResponse.Status,
+			responseBody,
+			true,
+		)
 	}
 
 	terminalEventSeen := false
@@ -667,6 +665,9 @@ func handleOpenAICodexStreamPayload(payload []byte, handle func(streamDelta) err
 		return true, openAICodexHandleTerminalResponse(
 			envelope.Type,
 			envelope.Response.Status,
+			envelope.Response.Error.Code,
+			envelope.Response.Error.Message,
+			envelope.Response.IncompleteDetails.Reason,
 			handle,
 		)
 	case "response.failed":
@@ -709,23 +710,43 @@ func openAICodexHandleContentDelta(delta string, handle func(streamDelta) error)
 func openAICodexHandleTerminalResponse(
 	eventType string,
 	status string,
+	errorCode string,
+	errorMessage string,
+	incompleteReason string,
 	handle func(streamDelta) error,
 ) error {
-	normalizedStatus := strings.TrimSpace(status)
-	if normalizedStatus == "" && eventType == "response.incomplete" {
-		normalizedStatus = "incomplete"
+	normalizedStatus := strings.ToLower(strings.TrimSpace(status))
+	if normalizedStatus == "" {
+		switch eventType {
+		case "response.completed":
+			normalizedStatus = "completed"
+		case "response.incomplete":
+			normalizedStatus = "incomplete"
+		}
 	}
 
-	finishReason := finishReasonStop
-	if normalizedStatus != "" {
-		finishReason = openAICodexFinishReason(normalizedStatus)
-	}
+	switch normalizedStatus {
+	case "", "completed", "queued", "in_progress":
+		return handle(streamDelta{
+			Thinking:     "",
+			Content:      "",
+			FinishReason: finishReasonStop,
+		})
+	case "incomplete":
+		if strings.EqualFold(strings.TrimSpace(incompleteReason), openAIContentFilterFinishReason) {
+			return openAICodexFailedResponseError("", "", incompleteReason)
+		}
 
-	return handle(streamDelta{
-		Thinking:     "",
-		Content:      "",
-		FinishReason: finishReason,
-	})
+		return handle(streamDelta{
+			Thinking:     "",
+			Content:      "",
+			FinishReason: finishReasonLength,
+		})
+	case "failed", "cancelled":
+		return openAICodexFailedResponseError(errorCode, errorMessage, incompleteReason)
+	default:
+		return fmt.Errorf("unexpected codex response status %q: %w", status, os.ErrInvalid)
+	}
 }
 
 func openAICodexFailedResponseError(
@@ -736,8 +757,11 @@ func openAICodexFailedResponseError(
 	trimmedCode := strings.TrimSpace(errorCode)
 	errorText := strings.TrimSpace(errorMessage)
 
-	if trimmedCode != "" && errorText != "" {
+	switch {
+	case trimmedCode != "" && errorText != "":
 		errorText = trimmedCode + ": " + errorText
+	case trimmedCode != "":
+		errorText = trimmedCode
 	}
 
 	if errorText == "" {
@@ -755,9 +779,14 @@ func openAICodexFailedResponseError(
 }
 
 func openAICodexEventStreamError(message string, code string) error {
+	trimmedCode := strings.TrimSpace(code)
+
 	errorText := strings.TrimSpace(message)
-	if errorText == "" {
-		errorText = strings.TrimSpace(code)
+	switch {
+	case trimmedCode != "" && errorText != "":
+		errorText = trimmedCode + ": " + errorText
+	case errorText == "":
+		errorText = trimmedCode
 	}
 
 	if errorText == "" {
@@ -765,15 +794,4 @@ func openAICodexEventStreamError(message string, code string) error {
 	}
 
 	return fmt.Errorf("%s: %w", errorText, os.ErrInvalid)
-}
-
-func openAICodexFinishReason(status string) string {
-	switch strings.ToLower(strings.TrimSpace(status)) {
-	case "", "completed", "in_progress", "queued":
-		return finishReasonStop
-	case "incomplete":
-		return finishReasonLength
-	default:
-		return "error"
-	}
 }
