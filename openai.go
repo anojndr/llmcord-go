@@ -50,6 +50,7 @@ type providerRequestConfig struct {
 }
 
 type streamDelta struct {
+	Thinking     string
 	Content      string
 	FinishReason string
 }
@@ -550,7 +551,7 @@ func handleStreamPayload(payload []byte, handle func(streamDelta) error) error {
 	}
 
 	if delta.Content != "" {
-		err = handle(streamDelta{Content: delta.Content, FinishReason: ""})
+		err = handle(streamDelta{Thinking: "", Content: delta.Content, FinishReason: ""})
 		if err != nil {
 			return fmt.Errorf("handle stream delta: %w", err)
 		}
@@ -562,7 +563,7 @@ func handleStreamPayload(payload []byte, handle func(streamDelta) error) error {
 			return err
 		}
 
-		err = handle(streamDelta{Content: "", FinishReason: delta.FinishReason})
+		err = handle(streamDelta{Thinking: "", Content: "", FinishReason: delta.FinishReason})
 		if err != nil {
 			return fmt.Errorf("handle stream delta: %w", err)
 		}
@@ -596,11 +597,11 @@ func openAIStreamPayloadDelta(payload []byte) (streamDelta, error) {
 
 	err := json.Unmarshal(payload, &envelope)
 	if err != nil {
-		return streamDelta{Content: "", FinishReason: ""}, fmt.Errorf("decode stream payload: %w", err)
+		return streamDelta{Thinking: "", Content: "", FinishReason: ""}, fmt.Errorf("decode stream payload: %w", err)
 	}
 
 	if envelope.Error != nil {
-		return streamDelta{Content: "", FinishReason: ""}, openAIStreamEventError(
+		return streamDelta{Thinking: "", Content: "", FinishReason: ""}, openAIStreamEventError(
 			envelope.Error.Message,
 			envelope.Error.Type,
 			envelope.Error.Code,
@@ -608,10 +609,11 @@ func openAIStreamPayloadDelta(payload []byte) (streamDelta, error) {
 	}
 
 	if len(envelope.Choices) == 0 {
-		return streamDelta{Content: "", FinishReason: ""}, nil
+		return streamDelta{Thinking: "", Content: "", FinishReason: ""}, nil
 	}
 
 	delta := streamDelta{
+		Thinking:     "",
 		Content:      envelope.Choices[0].Delta.Content,
 		FinishReason: "",
 	}

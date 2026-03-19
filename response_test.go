@@ -41,7 +41,7 @@ func TestSegmentAccumulatorSplitsByRunes(t *testing.T) {
 		t.Fatal("expected content to split across segments")
 	}
 
-	segments := accumulator.renderSegments(true)
+	segments := accumulator.renderSegments()
 	if len(segments) != 2 {
 		t.Fatalf("unexpected segment count: %#v", segments)
 	}
@@ -75,6 +75,20 @@ func TestBuildRenderSpecsMarksSettledAndStreamingSegments(t *testing.T) {
 
 	if finalSpecs[0].content != "only" || finalSpecs[0].color != embedColorComplete {
 		t.Fatalf("unexpected final spec: %#v", finalSpecs[0])
+	}
+}
+
+func TestVisibleResponseSegmentsPrefixesThinking(t *testing.T) {
+	t.Parallel()
+
+	segments := visibleResponseSegments("Plan first.", "Final answer.", embedResponseMaxLength)
+	if len(segments) != 1 {
+		t.Fatalf("unexpected segment count: %#v", segments)
+	}
+
+	expected := "**Thinking**\nPlan first.\n\n**Answer**\nFinal answer."
+	if segments[0] != expected {
+		t.Fatalf("unexpected visible response: %q", segments[0])
 	}
 }
 
@@ -271,6 +285,142 @@ func TestRenderEmbedResponseIncludesConfiguredModelAsAuthor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("render embed response: %v", err)
 	}
+}
+
+func TestRenderEmbedResponseDeletesExtraMessagesWhenSegmentCountShrinks(t *testing.T) {
+	t.Parallel()
+
+	const (
+		channelID     = "channel-1"
+		sourceID      = "source-message"
+		firstReplyID  = "assistant-message-1"
+		secondReplyID = "assistant-message-2"
+	)
+
+	sourceMessage := new(discordgo.Message)
+	sourceMessage.ID = sourceID
+	sourceMessage.ChannelID = channelID
+
+	postCount := 0
+	deleteCount := 0
+	session := newEmbedShrinkTestSession(
+		t,
+		channelID,
+		firstReplyID,
+		secondReplyID,
+		&postCount,
+		&deleteCount,
+	)
+
+	instance := new(bot)
+	instance.session = session
+	instance.nodes = newMessageNodeStore(10)
+
+	tracker := newResponseTracker(sourceMessage, "openai/gpt-5.1")
+
+	err := instance.renderEmbedResponse(
+		context.Background(),
+		tracker,
+		nil,
+		[]string{"first", "second"},
+		finishReasonStop,
+		false,
+	)
+	if err != nil {
+		t.Fatalf("render initial embed response: %v", err)
+	}
+
+	err = instance.renderEmbedResponse(
+		context.Background(),
+		tracker,
+		nil,
+		[]string{"first"},
+		finishReasonStop,
+		true,
+	)
+	if err != nil {
+		t.Fatalf("render collapsed embed response: %v", err)
+	}
+
+	if deleteCount != 1 {
+		t.Fatalf("expected one deleted extra message, got %d", deleteCount)
+	}
+
+	if len(tracker.responseMessages) != 1 {
+		t.Fatalf("unexpected response message count: %d", len(tracker.responseMessages))
+	}
+
+	if len(tracker.pendingResponses) != 1 {
+		t.Fatalf("unexpected pending response count: %d", len(tracker.pendingResponses))
+	}
+
+	if len(tracker.renderedSpecs) != 1 {
+		t.Fatalf("unexpected rendered spec count: %d", len(tracker.renderedSpecs))
+	}
+
+	if _, ok := instance.nodes.get(secondReplyID); ok {
+		t.Fatal("expected deleted extra response node to be removed from the store")
+	}
+}
+
+func newEmbedShrinkTestSession(
+	t *testing.T,
+	channelID string,
+	firstReplyID string,
+	secondReplyID string,
+	postCount *int,
+	deleteCount *int,
+) *discordgo.Session {
+	t.Helper()
+
+	session, err := discordgo.New("Bot discord-token")
+	if err != nil {
+		t.Fatalf("create discord session: %v", err)
+	}
+
+	client := new(http.Client)
+	client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		t.Helper()
+
+		switch {
+		case request.Method == http.MethodPost &&
+			request.URL.Path == "/api/v9/channels/"+channelID+"/messages":
+			(*postCount)++
+
+			sentMessage := new(discordgo.Message)
+			sentMessage.ChannelID = channelID
+
+			switch *postCount {
+			case 1:
+				sentMessage.ID = firstReplyID
+			case 2:
+				sentMessage.ID = secondReplyID
+			default:
+				t.Fatalf("unexpected post count: %d", *postCount)
+			}
+
+			return newJSONResponse(t, request, sentMessage), nil
+		case request.Method == http.MethodPatch &&
+			request.URL.Path == "/api/v9/channels/"+channelID+"/messages/"+firstReplyID:
+			firstMessage := new(discordgo.Message)
+			firstMessage.ID = firstReplyID
+			firstMessage.ChannelID = channelID
+
+			return newJSONResponse(t, request, firstMessage), nil
+		case request.Method == http.MethodDelete &&
+			request.URL.Path == "/api/v9/channels/"+channelID+"/messages/"+secondReplyID:
+			(*deleteCount)++
+
+			return newNoContentResponse(request), nil
+		default:
+			t.Fatalf("unexpected request: %s %s", request.Method, request.URL.Path)
+
+			return nil, errUnexpectedTestRequest
+		}
+	})
+	session.Client = client
+
+	return session
 }
 
 func TestSendPlainResponseEditsExistingProgressMessage(t *testing.T) {
@@ -548,6 +698,169 @@ func TestGenerateAndSendResponseKeepsAssistantReplyInConversationHistory(t *test
 	)
 }
 
+func TestGenerateAndSendResponseShowsThinkingDuringStreamButNotFinalResponse(t *testing.T) {
+	t.Parallel()
+
+	const (
+		botUserID          = "bot-user"
+		channelID          = "channel-1"
+		userID             = "user-1"
+		sourceMessageID    = "user-message-1"
+		assistantMessageID = "assistant-message-1"
+		thoughtText        = "Plan first."
+		answerText         = "Final answer."
+	)
+
+	sourceMessage := newPromptMessage(sourceMessageID, channelID, userID, botUserID)
+	assistantMessage := new(discordgo.Message)
+	assistantMessage.ID = assistantMessageID
+	assistantMessage.ChannelID = channelID
+	assistantMessage.Author = newDiscordUser(botUserID, true)
+	assistantMessage.MessageReference = sourceMessage.Reference()
+	assistantMessage.Type = discordgo.MessageTypeReply
+
+	messageDescriptions := make([]string, 0, 2)
+	patchDescriptions := make([]string, 0, 2)
+	messageSendCount := 0
+	session := newPartialFailureResponseSession(
+		t,
+		channelID,
+		botUserID,
+		assistantMessage,
+		&messageDescriptions,
+		&patchDescriptions,
+		&messageSendCount,
+	)
+
+	instance := new(bot)
+	instance.session = session
+	instance.nodes = newMessageNodeStore(10)
+	instance.chatCompletions = fakeChatCompletionClient{
+		deltas: []streamDelta{
+			{Thinking: thoughtText, Content: "", FinishReason: ""},
+			{Thinking: "", Content: answerText, FinishReason: ""},
+			{Thinking: "", Content: "", FinishReason: finishReasonStop},
+		},
+	}
+
+	tracker := newResponseTracker(sourceMessage, "")
+
+	err := instance.generateAndSendResponse(
+		context.Background(),
+		emptyChatCompletionRequest(),
+		tracker,
+		nil,
+		false,
+	)
+	if err != nil {
+		t.Fatalf("generate and send response: %v", err)
+	}
+
+	if len(messageDescriptions) == 0 {
+		t.Fatal("expected rendered response message")
+	}
+
+	if len(messageDescriptions) != 1 {
+		t.Fatalf("expected one streamed response send, got %d", len(messageDescriptions))
+	}
+
+	if !containsFold(messageDescriptions[0], thoughtText) {
+		t.Fatalf("expected streaming response to include thinking: %q", messageDescriptions[0])
+	}
+
+	if len(patchDescriptions) != 1 {
+		t.Fatalf("expected one final answer edit, got %d", len(patchDescriptions))
+	}
+
+	if containsFold(patchDescriptions[0], thoughtText) {
+		t.Fatalf("expected final response to remove thinking: %q", patchDescriptions[len(patchDescriptions)-1])
+	}
+
+	if !containsFold(patchDescriptions[0], answerText) {
+		t.Fatalf("expected final response to include answer: %q", patchDescriptions[0])
+	}
+
+	if len(tracker.pendingResponses) != 1 {
+		t.Fatalf("unexpected pending response count: %d", len(tracker.pendingResponses))
+	}
+
+	expectedStoredText := visibleResponseText(thoughtText, answerText)
+	if tracker.pendingResponses[0].node.text != expectedStoredText {
+		t.Fatalf("unexpected stored assistant text: %q", tracker.pendingResponses[0].node.text)
+	}
+}
+
+func TestGenerateAndSendResponsePersistsThinkingInConversationHistory(t *testing.T) {
+	t.Parallel()
+
+	const (
+		botUserID          = "bot-user"
+		channelID          = "channel-1"
+		userID             = "user-1"
+		sourceMessageID    = "user-message-1"
+		assistantMessageID = "assistant-message-1"
+		thoughtText        = "Plan first."
+		answerText         = "Final answer."
+	)
+
+	sourceMessage := newPromptMessage(sourceMessageID, channelID, userID, botUserID)
+	assistantMessage := new(discordgo.Message)
+	assistantMessage.ID = assistantMessageID
+	assistantMessage.ChannelID = channelID
+	assistantMessage.Author = newDiscordUser(botUserID, true)
+	assistantMessage.MessageReference = sourceMessage.Reference()
+	assistantMessage.Type = discordgo.MessageTypeReply
+
+	session := newResponseHistoryTestSession(t, channelID, botUserID, assistantMessage)
+	instance := new(bot)
+	instance.session = session
+	instance.nodes = newMessageNodeStore(10)
+	instance.chatCompletions = fakeChatCompletionClient{
+		deltas: []streamDelta{
+			{Thinking: thoughtText, Content: "", FinishReason: ""},
+			{Thinking: "", Content: answerText, FinishReason: ""},
+			{Thinking: "", Content: "", FinishReason: finishReasonStop},
+		},
+	}
+
+	tracker := newResponseTracker(sourceMessage, "")
+
+	err := instance.generateAndSendResponse(
+		context.Background(),
+		emptyChatCompletionRequest(),
+		tracker,
+		nil,
+		true,
+	)
+	if err != nil {
+		t.Fatalf("generate and send response: %v", err)
+	}
+
+	followUpMessage := newFollowUpReplyMessage("user-message-2", channelID, userID, assistantMessage)
+
+	var contentOptions messageContentOptions
+
+	conversation, warnings := instance.buildConversation(
+		context.Background(),
+		followUpMessage,
+		defaultMaxText,
+		contentOptions,
+		defaultMaxMessages,
+		false,
+		false,
+	)
+	if len(warnings) != 0 {
+		t.Fatalf("unexpected warnings: %#v", warnings)
+	}
+
+	assertConversationHistory(
+		t,
+		conversation,
+		userID,
+		visibleResponseText(thoughtText, answerText),
+	)
+}
+
 func newResponseHistoryTestSession(
 	t *testing.T,
 	channelID string,
@@ -751,6 +1064,7 @@ func newDiscordUser(userID string, bot bool) *discordgo.User {
 func newStreamDelta(content string, finishReason string) streamDelta {
 	var delta streamDelta
 
+	delta.Thinking = ""
 	delta.Content = content
 	delta.FinishReason = finishReason
 

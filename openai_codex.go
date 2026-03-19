@@ -280,18 +280,13 @@ func normalizeOpenAICodexRequestBody(requestBody map[string]any, model string) {
 		delete(requestBody, "reasoning_summary")
 	}
 
-	if _, reasoningConfigOK := requestBody["reasoning"].(map[string]any); !reasoningConfigOK {
-		return
-	}
-
 	reasoningConfig := nestedRequestBodyMap(requestBody, "reasoning")
 
 	effort, effortOK := reasoningConfig["effort"].(string)
-	if !effortOK {
-		return
+	if effortOK {
+		reasoningConfig["effort"] = normalizeOpenAICodexReasoningEffort(model, effort)
 	}
 
-	reasoningConfig["effort"] = normalizeOpenAICodexReasoningEffort(model, effort)
 	if _, exists := reasoningConfig["summary"]; !exists {
 		reasoningConfig["summary"] = openAICodexAuto
 	}
@@ -658,61 +653,118 @@ func handleOpenAICodexStreamPayload(payload []byte, handle func(streamDelta) err
 	}
 
 	switch envelope.Type {
-	case "response.output_text.delta", "response.refusal.delta":
-		if envelope.Delta == "" {
-			return false, nil
-		}
-
-		return false, handle(streamDelta{Content: envelope.Delta, FinishReason: ""})
-	case "response.completed", "response.done", "response.incomplete":
-		status := strings.TrimSpace(envelope.Response.Status)
-		if status == "" && envelope.Type == "response.incomplete" {
-			status = "incomplete"
-		}
-
-		finishReason := finishReasonStop
-		if status != "" {
-			finishReason = openAICodexFinishReason(status)
-		}
-
-		return true, handle(streamDelta{
+	case "response.reasoning_summary_text.delta":
+		return false, openAICodexHandleThinkingDelta(envelope.Delta, handle)
+	case "response.reasoning_summary_part.done":
+		return false, handle(streamDelta{
+			Thinking:     "\n\n",
 			Content:      "",
-			FinishReason: finishReason,
+			FinishReason: "",
 		})
+	case "response.output_text.delta", "response.refusal.delta":
+		return false, openAICodexHandleContentDelta(envelope.Delta, handle)
+	case "response.completed", "response.done", "response.incomplete":
+		return true, openAICodexHandleTerminalResponse(
+			envelope.Type,
+			envelope.Response.Status,
+			handle,
+		)
 	case "response.failed":
-		errorCode := strings.TrimSpace(envelope.Response.Error.Code)
-		errorText := strings.TrimSpace(envelope.Response.Error.Message)
-
-		if errorCode != "" && errorText != "" {
-			errorText = errorCode + ": " + errorText
-		}
-
-		if errorText == "" {
-			incompleteReason := strings.TrimSpace(envelope.Response.IncompleteDetails.Reason)
-			if incompleteReason != "" {
-				errorText = "incomplete: " + incompleteReason
-			}
-		}
-
-		if errorText == "" {
-			errorText = "codex response failed"
-		}
-
-		return false, fmt.Errorf("%s: %w", errorText, os.ErrInvalid)
+		return false, openAICodexFailedResponseError(
+			envelope.Response.Error.Code,
+			envelope.Response.Error.Message,
+			envelope.Response.IncompleteDetails.Reason,
+		)
 	case openAICodexEventError:
-		errorText := strings.TrimSpace(envelope.Message)
-		if errorText == "" {
-			errorText = strings.TrimSpace(envelope.Code)
-		}
-
-		if errorText == "" {
-			errorText = "codex stream error"
-		}
-
-		return false, fmt.Errorf("%s: %w", errorText, os.ErrInvalid)
+		return false, openAICodexEventStreamError(envelope.Message, envelope.Code)
 	default:
 		return false, nil
 	}
+}
+
+func openAICodexHandleThinkingDelta(delta string, handle func(streamDelta) error) error {
+	if delta == "" {
+		return nil
+	}
+
+	return handle(streamDelta{
+		Thinking:     delta,
+		Content:      "",
+		FinishReason: "",
+	})
+}
+
+func openAICodexHandleContentDelta(delta string, handle func(streamDelta) error) error {
+	if delta == "" {
+		return nil
+	}
+
+	return handle(streamDelta{
+		Thinking:     "",
+		Content:      delta,
+		FinishReason: "",
+	})
+}
+
+func openAICodexHandleTerminalResponse(
+	eventType string,
+	status string,
+	handle func(streamDelta) error,
+) error {
+	normalizedStatus := strings.TrimSpace(status)
+	if normalizedStatus == "" && eventType == "response.incomplete" {
+		normalizedStatus = "incomplete"
+	}
+
+	finishReason := finishReasonStop
+	if normalizedStatus != "" {
+		finishReason = openAICodexFinishReason(normalizedStatus)
+	}
+
+	return handle(streamDelta{
+		Thinking:     "",
+		Content:      "",
+		FinishReason: finishReason,
+	})
+}
+
+func openAICodexFailedResponseError(
+	errorCode string,
+	errorMessage string,
+	incompleteReason string,
+) error {
+	trimmedCode := strings.TrimSpace(errorCode)
+	errorText := strings.TrimSpace(errorMessage)
+
+	if trimmedCode != "" && errorText != "" {
+		errorText = trimmedCode + ": " + errorText
+	}
+
+	if errorText == "" {
+		trimmedReason := strings.TrimSpace(incompleteReason)
+		if trimmedReason != "" {
+			errorText = "incomplete: " + trimmedReason
+		}
+	}
+
+	if errorText == "" {
+		errorText = "codex response failed"
+	}
+
+	return fmt.Errorf("%s: %w", errorText, os.ErrInvalid)
+}
+
+func openAICodexEventStreamError(message string, code string) error {
+	errorText := strings.TrimSpace(message)
+	if errorText == "" {
+		errorText = strings.TrimSpace(code)
+	}
+
+	if errorText == "" {
+		errorText = "codex stream error"
+	}
+
+	return fmt.Errorf("%s: %w", errorText, os.ErrInvalid)
 }
 
 func openAICodexFinishReason(status string) string {

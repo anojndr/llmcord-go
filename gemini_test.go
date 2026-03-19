@@ -202,6 +202,27 @@ func TestBuildGeminiGenerateContentRequestPromotesThinkingConfigFromExtraBody(t 
 	}
 }
 
+func TestBuildGeminiGenerateContentRequestDefaultsThoughtSummaries(t *testing.T) {
+	t.Parallel()
+
+	_, config, err := buildGeminiGenerateContentRequest(
+		context.Background(),
+		newSimpleGeminiStreamRequest(),
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("build gemini generate content request: %v", err)
+	}
+
+	if config == nil || config.ThinkingConfig == nil {
+		t.Fatalf("unexpected gemini config: %#v", config)
+	}
+
+	if !config.ThinkingConfig.IncludeThoughts {
+		t.Fatalf("expected includeThoughts to default on: %#v", config.ThinkingConfig)
+	}
+}
+
 func TestBuildGeminiGenerateContentRequestRejectsInvalidThinkingConfig(t *testing.T) {
 	t.Parallel()
 
@@ -269,6 +290,70 @@ func TestGeminiClientStreamChatCompletionEmitsTextAndFinishReason(t *testing.T) 
 	}
 
 	assertGeminiClientConfig(t, capturedConfig)
+}
+
+func TestGeminiClientStreamChatCompletionEmitsThoughtsSeparately(t *testing.T) {
+	t.Parallel()
+
+	client := geminiClient{
+		httpClient: new(http.Client),
+		newClient: func(
+			_ context.Context,
+			_ *genai.ClientConfig,
+		) (geminiAPIClient, error) {
+			var stubClient stubGeminiAPIClient
+
+			stubClient.generateContentStream = func(
+				_ context.Context,
+				_ string,
+				_ []*genai.Content,
+				_ *genai.GenerateContentConfig,
+			) iter.Seq2[*genai.GenerateContentResponse, error] {
+				return func(yield func(*genai.GenerateContentResponse, error) bool) {
+					if !yield(
+						newGeminiGenerateContentResponseWithParts(
+							[]*genai.Part{
+								{Text: "Plan.", Thought: true},
+								{Text: "Answer."},
+							},
+							genai.FinishReasonStop,
+						),
+						nil,
+					) {
+						return
+					}
+				}
+			}
+
+			return stubClient, nil
+		},
+	}
+
+	var thoughtText strings.Builder
+
+	var answerText strings.Builder
+
+	err := client.streamChatCompletion(
+		context.Background(),
+		newSimpleGeminiStreamRequest(),
+		func(delta streamDelta) error {
+			thoughtText.WriteString(delta.Thinking)
+			answerText.WriteString(delta.Content)
+
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("stream chat completion: %v", err)
+	}
+
+	if thoughtText.String() != "Plan." {
+		t.Fatalf("unexpected thought text: %q", thoughtText.String())
+	}
+
+	if answerText.String() != "Answer." {
+		t.Fatalf("unexpected answer text: %q", answerText.String())
+	}
 }
 
 func TestGeminiClientStreamChatCompletionReturnsPromptFeedbackErrors(t *testing.T) {
@@ -795,6 +880,10 @@ func assertGeminiGenerateContentConfig(
 	if got, ok := config.HTTPOptions.ExtraBody["temperature"].(float64); !ok || got != 0.2 {
 		t.Fatalf("unexpected gemini extra body: %#v", config.HTTPOptions.ExtraBody)
 	}
+
+	if config.ThinkingConfig == nil || !config.ThinkingConfig.IncludeThoughts {
+		t.Fatalf("expected gemini thought summaries to be enabled: %#v", config.ThinkingConfig)
+	}
 }
 
 func streamGeminiTestChunks(
@@ -829,6 +918,10 @@ func streamGeminiTestChunks(
 			t.Fatalf("unexpected gemini config contents: %#v", config)
 		}
 
+		if config.ThinkingConfig == nil || !config.ThinkingConfig.IncludeThoughts {
+			t.Fatalf("expected gemini thought summaries to be enabled: %#v", config)
+		}
+
 		return func(yield func(*genai.GenerateContentResponse, error) bool) {
 			if !yield(newGeminiGenerateContentResponse("Hel", ""), nil) {
 				return
@@ -846,10 +939,23 @@ func newGeminiGenerateContentResponse(
 	text string,
 	finishReason genai.FinishReason,
 ) *genai.GenerateContentResponse {
+	return newGeminiGenerateContentResponseWithParts(
+		[]*genai.Part{{Text: text}},
+		finishReason,
+	)
+}
+
+func newGeminiGenerateContentResponseWithParts(
+	parts []*genai.Part,
+	finishReason genai.FinishReason,
+) *genai.GenerateContentResponse {
 	return &genai.GenerateContentResponse{
 		Candidates: []*genai.Candidate{
 			{
-				Content:      genai.NewContentFromText(text, genai.RoleModel),
+				Content: &genai.Content{
+					Role:  string(genai.RoleModel),
+					Parts: parts,
+				},
 				FinishReason: finishReason,
 			},
 		},

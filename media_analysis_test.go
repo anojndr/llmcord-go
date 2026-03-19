@@ -538,6 +538,7 @@ func newGeminiMediaAnalysisChatClient(
 		)
 
 		err := handle(streamDelta{
+			Thinking:     "",
 			Content:      expectedAnalyses[callIndex],
 			FinishReason: finishReasonStop,
 		})
