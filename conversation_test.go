@@ -182,6 +182,93 @@ func TestBuildConversationAddsFallbackTextWhenAttachmentDownloadFails(t *testing
 	}
 }
 
+func TestBuildConversationStopsAtDirectRepliedUserMessage(t *testing.T) {
+	t.Parallel()
+
+	const (
+		botUserID       = "bot-user"
+		channelID       = "channel-1"
+		userID          = "user-1"
+		rootMessageID   = "root-message"
+		assistantID     = "assistant-message"
+		replyTargetID   = "reply-target-message"
+		followUpID      = "follow-up-message"
+		replyTargetText = "test"
+	)
+
+	instance := newHistoryRetentionTestBot(t, botUserID, channelID)
+
+	rootMessage := new(discordgo.Message)
+	rootMessage.ID = rootMessageID
+	rootMessage.ChannelID = channelID
+	rootMessage.Author = newDiscordUser(userID, false)
+	rootMessage.Content = "at ai original prompt"
+
+	assistantMessage := new(discordgo.Message)
+	assistantMessage.ID = assistantID
+	assistantMessage.ChannelID = channelID
+	assistantMessage.Author = newDiscordUser(botUserID, true)
+	assistantMessage.MessageReference = rootMessage.Reference()
+	assistantMessage.Type = discordgo.MessageTypeReply
+	setCachedAssistantNode(instance, assistantMessage, rootMessage)
+
+	replyTargetMessage := new(discordgo.Message)
+	replyTargetMessage.ID = replyTargetID
+	replyTargetMessage.ChannelID = channelID
+	replyTargetMessage.Author = newDiscordUser(userID, false)
+	replyTargetMessage.Content = replyTargetText
+	replyTargetMessage.MessageReference = assistantMessage.Reference()
+	replyTargetMessage.ReferencedMessage = assistantMessage
+	setCachedUserNode(
+		instance,
+		replyTargetMessage,
+		assistantMessage,
+		"<@"+userID+">: "+replyTargetText,
+	)
+
+	followUpMessage := new(discordgo.Message)
+	followUpMessage.ID = followUpID
+	followUpMessage.ChannelID = channelID
+	followUpMessage.Author = newDiscordUser(userID, false)
+	followUpMessage.Content = "at ai hi"
+	followUpMessage.MessageReference = replyTargetMessage.Reference()
+	followUpMessage.ReferencedMessage = replyTargetMessage
+
+	conversation, warnings := instance.buildConversation(
+		context.Background(),
+		followUpMessage,
+		defaultMaxText,
+		messageContentOptions{
+			maxImages:                defaultMaxImages,
+			allowAudio:               false,
+			allowDocuments:           false,
+			allowedDocumentMIMETypes: nil,
+			allowVideo:               false,
+		},
+		defaultMaxMessages,
+		false,
+		false,
+	)
+
+	if len(warnings) != 0 {
+		t.Fatalf("unexpected warnings: %#v", warnings)
+	}
+
+	if len(conversation) != 2 {
+		t.Fatalf("unexpected conversation length: %d", len(conversation))
+	}
+
+	if conversation[0].Role != messageRoleUser ||
+		conversation[0].Content != "<@"+userID+">: "+replyTargetText {
+		t.Fatalf("unexpected reply target message: %#v", conversation[0])
+	}
+
+	if conversation[1].Role != messageRoleUser ||
+		conversation[1].Content != "<@"+userID+">: hi" {
+		t.Fatalf("unexpected follow-up message: %#v", conversation[1])
+	}
+}
+
 func slicesContainsString(items []string, target string) bool {
 	for _, item := range items {
 		if strings.TrimSpace(item) == target {
