@@ -93,7 +93,7 @@ The goal is to make Discord feel like a practical, stateful frontend for LLM wor
 - Automatic Facebook URL handling
 - Automatic YouTube transcript, title, channel, and comment extraction
 - Automatic Reddit thread and comment extraction
-- Automatic generic website content extraction for other links
+- Automatic generic website content extraction for other links, preferring Exa Contents when `web_search.exa.api_key` is set, then Tavily Extract, then the local HTML/text extractor
 - Reply-target propagation so prompts can use replied-message attachments as current-turn context
 
 ### Search and visual search
@@ -211,8 +211,8 @@ The config schema stays close to the original Python project.
 | --- | --- |
 | `web_search.primary_provider` | Which search backend to try first. Supported values: `mcp` and `tavily`. Default: `mcp`. `mcp` selects Exa and uses the Exa Search API when `web_search.exa.api_key` is configured, otherwise Exa MCP. |
 | `web_search.max_urls` | Maximum number of URLs to request from Exa or Tavily for each search query and to display in `Show Sources`. Default: `5`. |
-| `web_search.exa.api_key` | Optional Exa Search API key config. Can be a single string or a YAML list. When set, Exa web search uses `POST https://api.exa.ai/search`; without it, the bot continues using Exa MCP. |
-| `web_search.tavily.api_key` | Tavily API key config. Can be a single string or a YAML list. |
+| `web_search.exa.api_key` | Optional Exa API key config. Can be a single string or a YAML list. When set, web search uses `POST https://api.exa.ai/search`, and generic website extraction prefers `POST https://api.exa.ai/contents` before any fallback path. Without it, web search continues using Exa MCP. |
+| `web_search.tavily.api_key` | Tavily API key config. Can be a single string or a YAML list. Generic website extraction uses Tavily Extract when no Exa API key is configured, and also as the fallback when Exa Contents fails. |
 | `visual_search.serpapi.api_key` | Optional SerpApi Google Lens API key config for `vsearch`. Can be a single string or a YAML list. |
 
 ## Usage
@@ -290,7 +290,7 @@ golangci-lint run --default=all
   - Facebook
   - YouTube
   - Reddit
-  - generic websites
+  - generic websites, using Exa Contents first when configured, then Tavily Extract, then the built-in HTML/text parser
 
 ### Persistence behavior
 

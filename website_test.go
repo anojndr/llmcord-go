@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,22 +14,23 @@ import (
 type stubWebsiteContentClient struct {
 	mu      sync.Mutex
 	calls   []string
-	fetchFn func(context.Context, string) (websitePageContent, error)
+	fetchFn func(context.Context, config, string) (websitePageContent, error)
 }
 
 func (client *stubWebsiteContentClient) fetch(
 	ctx context.Context,
+	loadedConfig config,
 	rawURL string,
 ) (websitePageContent, error) {
 	client.mu.Lock()
 	client.calls = append(client.calls, rawURL)
 	client.mu.Unlock()
 
-	return client.fetchFn(ctx, rawURL)
+	return client.fetchFn(ctx, loadedConfig, rawURL)
 }
 
 func newStubWebsiteContentClient(
-	fetchFn func(context.Context, string) (websitePageContent, error),
+	fetchFn func(context.Context, config, string) (websitePageContent, error),
 ) *stubWebsiteContentClient {
 	client := new(stubWebsiteContentClient)
 	client.fetchFn = fetchFn
@@ -41,6 +43,55 @@ func newWebsiteTestBot(website websiteContentClient) *bot {
 	instance.website = website
 
 	return instance
+}
+
+func newWebsiteTestClient(httpClient *http.Client, exaURL string, tavilyURL string) websiteClient {
+	return websiteClient{
+		httpClient:            httpClient,
+		userAgent:             youtubeUserAgent,
+		exaContentsEndpoint:   exaURL,
+		tavilyExtractEndpoint: tavilyURL,
+	}
+}
+
+func testWebsiteExaAndTavilyConfig() config {
+	loadedConfig := testExaAPIWebSearchConfig()
+	loadedConfig.WebSearch.Exa = exaSearchConfig{
+		APIKey:  testExaPrimaryValue,
+		APIKeys: []string{testExaPrimaryValue},
+	}
+	loadedConfig.WebSearch.Tavily = tavilySearchConfig{
+		APIKey:  testTavilyPrimaryAPIKey,
+		APIKeys: []string{testTavilyPrimaryAPIKey},
+	}
+
+	return loadedConfig
+}
+
+func testWebsiteTavilyOnlyConfig() config {
+	loadedConfig := testSearchConfig()
+	loadedConfig.WebSearch.Tavily = tavilySearchConfig{
+		APIKey:  testTavilyPrimaryAPIKey,
+		APIKeys: []string{testTavilyPrimaryAPIKey},
+	}
+
+	return loadedConfig
+}
+
+func mustFetchWebsite(
+	t *testing.T,
+	client websiteClient,
+	loadedConfig config,
+	rawURL string,
+) websitePageContent {
+	t.Helper()
+
+	result, err := client.fetch(context.Background(), loadedConfig, rawURL)
+	if err != nil {
+		t.Fatalf("fetch website content: %v", err)
+	}
+
+	return result
 }
 
 func TestExtractWebsiteURLsNormalizesDeduplicatesAndSkipsSpecializedHosts(t *testing.T) {
@@ -173,6 +224,7 @@ func TestMaybeAugmentConversationWithWebsiteFetchesMultipleURLsConcurrentlyAndKe
 
 	website := newStubWebsiteContentClient(func(
 		_ context.Context,
+		_ config,
 		rawURL string,
 	) (websitePageContent, error) {
 		startedMu.Lock()
@@ -216,6 +268,7 @@ func TestMaybeAugmentConversationWithWebsiteFetchesMultipleURLsConcurrentlyAndKe
 
 	augmentedConversation, warnings, err := instance.maybeAugmentConversationWithWebsite(
 		ctx,
+		testSearchConfig(),
 		conversation,
 		messageContentText(conversation[0].Content),
 	)
@@ -249,6 +302,7 @@ func TestMaybeAugmentConversationWithWebsiteIgnoresURLsOnlyPresentInDocumentCont
 
 	website := newStubWebsiteContentClient(func(
 		_ context.Context,
+		_ config,
 		rawURL string,
 	) (websitePageContent, error) {
 		t.Fatalf("unexpected website fetch for %q", rawURL)
@@ -273,6 +327,7 @@ func TestMaybeAugmentConversationWithWebsiteIgnoresURLsOnlyPresentInDocumentCont
 		) ([]chatMessage, []string, error) {
 			return instance.maybeAugmentConversationWithWebsite(
 				ctx,
+				testSearchConfig(),
 				conversation,
 				urlExtractionText,
 			)
@@ -314,11 +369,17 @@ func TestWebsiteClientFetchExtractsMainContentAndIgnoresChrome(t *testing.T) {
 	defer server.Close()
 
 	client := websiteClient{
-		httpClient: server.Client(),
-		userAgent:  youtubeUserAgent,
+		httpClient:            server.Client(),
+		userAgent:             youtubeUserAgent,
+		exaContentsEndpoint:   defaultExaContentsEndpoint,
+		tavilyExtractEndpoint: defaultTavilyExtractEndpoint,
 	}
 
-	result, err := client.fetch(context.Background(), server.URL+"/wiki/Go_(programming_language)")
+	result, err := client.fetch(
+		context.Background(),
+		testSearchConfig(),
+		server.URL+"/wiki/Go_(programming_language)",
+	)
 	if err != nil {
 		t.Fatalf("fetch website content: %v", err)
 	}
@@ -357,12 +418,391 @@ func TestWebsiteClientFetchRejectsUnsupportedContentType(t *testing.T) {
 	defer server.Close()
 
 	client := websiteClient{
-		httpClient: server.Client(),
-		userAgent:  youtubeUserAgent,
+		httpClient:            server.Client(),
+		userAgent:             youtubeUserAgent,
+		exaContentsEndpoint:   defaultExaContentsEndpoint,
+		tavilyExtractEndpoint: defaultTavilyExtractEndpoint,
 	}
 
-	_, err := client.fetch(context.Background(), server.URL+"/file.bin")
+	_, err := client.fetch(context.Background(), testSearchConfig(), server.URL+"/file.bin")
 	if err == nil {
 		t.Fatal("expected unsupported content type to fail")
+	}
+}
+
+func TestWebsiteClientFetchUsesExaContentsWhenConfigured(t *testing.T) {
+	t.Parallel()
+
+	var (
+		exaCallCount    int
+		tavilyCallCount int
+	)
+
+	exaServer := httptest.NewServer(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		request *http.Request,
+	) {
+		exaCallCount++
+
+		if request.Header.Get("X-Api-Key") != testExaPrimaryAuthHeader {
+			t.Fatalf("unexpected Exa auth header: %q", request.Header.Get("X-Api-Key"))
+		}
+
+		var body map[string]any
+
+		err := json.NewDecoder(request.Body).Decode(&body)
+		if err != nil {
+			t.Fatalf("decode Exa contents request: %v", err)
+		}
+
+		assertExaContentsRequest(t, body, "https://example.com/article")
+
+		responseWriter.Header().Set("Content-Type", "application/json")
+
+		responseBody := map[string]any{
+			"results": []map[string]any{{
+				"title": "Example Article",
+				"url":   "https://example.com/article",
+				"id":    "https://example.com/article",
+				"text":  "# Example Article\n\nExa extracted body.",
+			}},
+			"statuses": []map[string]any{{
+				"id":     "https://example.com/article",
+				"status": "success",
+			}},
+		}
+
+		err = json.NewEncoder(responseWriter).Encode(responseBody)
+		if err != nil {
+			t.Fatalf("encode Exa contents response: %v", err)
+		}
+	}))
+	defer exaServer.Close()
+
+	tavilyServer := httptest.NewServer(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		_ *http.Request,
+	) {
+		tavilyCallCount++
+
+		http.Error(responseWriter, "unexpected Tavily call", http.StatusInternalServerError)
+	}))
+	defer tavilyServer.Close()
+
+	loadedConfig := testWebsiteExaAndTavilyConfig()
+	client := newWebsiteTestClient(exaServer.Client(), exaServer.URL, tavilyServer.URL)
+
+	result := mustFetchWebsite(t, client, loadedConfig, "https://example.com/article")
+
+	if exaCallCount != 1 {
+		t.Fatalf("unexpected Exa call count: %d", exaCallCount)
+	}
+
+	if tavilyCallCount != 0 {
+		t.Fatalf("unexpected Tavily call count: %d", tavilyCallCount)
+	}
+
+	if result.Title != "Example Article" {
+		t.Fatalf("unexpected title: %q", result.Title)
+	}
+
+	if !containsFold(result.Content, "Exa extracted body.") {
+		t.Fatalf("unexpected content: %q", result.Content)
+	}
+}
+
+func TestWebsiteClientFetchUsesTavilyWhenNoExaAPIKeyConfigured(t *testing.T) {
+	t.Parallel()
+
+	var (
+		exaCallCount    int
+		tavilyCallCount int
+	)
+
+	exaServer := httptest.NewServer(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		_ *http.Request,
+	) {
+		exaCallCount++
+
+		http.Error(responseWriter, "unexpected Exa call", http.StatusInternalServerError)
+	}))
+	defer exaServer.Close()
+
+	tavilyServer := httptest.NewServer(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		request *http.Request,
+	) {
+		tavilyCallCount++
+
+		if request.Header.Get("Authorization") != testTavilyPrimaryAuthHeader {
+			t.Fatalf("unexpected Tavily auth header: %q", request.Header.Get("Authorization"))
+		}
+
+		var body map[string]any
+
+		err := json.NewDecoder(request.Body).Decode(&body)
+		if err != nil {
+			t.Fatalf("decode Tavily extract request: %v", err)
+		}
+
+		assertTavilyExtractRequest(t, body, "https://example.com/article")
+
+		responseWriter.Header().Set("Content-Type", "application/json")
+
+		responseBody := map[string]any{
+			"results": []map[string]any{{
+				"url":         "https://example.com/article",
+				"raw_content": "# Tavily Heading\n\nTavily extracted body.",
+			}},
+			"failed_results": []any{},
+		}
+
+		err = json.NewEncoder(responseWriter).Encode(responseBody)
+		if err != nil {
+			t.Fatalf("encode Tavily extract response: %v", err)
+		}
+	}))
+	defer tavilyServer.Close()
+
+	loadedConfig := testWebsiteTavilyOnlyConfig()
+	client := newWebsiteTestClient(tavilyServer.Client(), exaServer.URL, tavilyServer.URL)
+
+	result := mustFetchWebsite(t, client, loadedConfig, "https://example.com/article")
+
+	if exaCallCount != 0 {
+		t.Fatalf("unexpected Exa call count: %d", exaCallCount)
+	}
+
+	if tavilyCallCount != 1 {
+		t.Fatalf("unexpected Tavily call count: %d", tavilyCallCount)
+	}
+
+	if result.Title != "https://example.com/article" {
+		t.Fatalf("unexpected title: %q", result.Title)
+	}
+
+	if !containsFold(result.Content, "Tavily extracted body.") {
+		t.Fatalf("unexpected content: %q", result.Content)
+	}
+}
+
+func TestWebsiteClientFetchFallsBackToTavilyWhenExaContentsFails(t *testing.T) {
+	t.Parallel()
+
+	var (
+		exaCallCount    int
+		tavilyCallCount int
+	)
+
+	exaServer := httptest.NewServer(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		request *http.Request,
+	) {
+		exaCallCount++
+
+		var body map[string]any
+
+		err := json.NewDecoder(request.Body).Decode(&body)
+		if err != nil {
+			t.Fatalf("decode Exa contents request: %v", err)
+		}
+
+		assertExaContentsRequest(t, body, "https://example.com/article")
+
+		responseWriter.Header().Set("Content-Type", "application/json")
+
+		responseBody := map[string]any{
+			"results": []any{},
+			"statuses": []map[string]any{{
+				"id":     "https://example.com/article",
+				"status": "error",
+				"error": map[string]any{
+					"tag": "CRAWL_TIMEOUT",
+				},
+			}},
+		}
+
+		err = json.NewEncoder(responseWriter).Encode(responseBody)
+		if err != nil {
+			t.Fatalf("encode Exa contents error response: %v", err)
+		}
+	}))
+	defer exaServer.Close()
+
+	tavilyServer := httptest.NewServer(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		request *http.Request,
+	) {
+		tavilyCallCount++
+
+		var body map[string]any
+
+		err := json.NewDecoder(request.Body).Decode(&body)
+		if err != nil {
+			t.Fatalf("decode Tavily extract request: %v", err)
+		}
+
+		assertTavilyExtractRequest(t, body, "https://example.com/article")
+
+		responseWriter.Header().Set("Content-Type", "application/json")
+
+		responseBody := map[string]any{
+			"results": []map[string]any{{
+				"url":         "https://example.com/article",
+				"raw_content": "Tavily fallback body.",
+			}},
+			"failed_results": []any{},
+		}
+
+		err = json.NewEncoder(responseWriter).Encode(responseBody)
+		if err != nil {
+			t.Fatalf("encode Tavily extract response: %v", err)
+		}
+	}))
+	defer tavilyServer.Close()
+
+	loadedConfig := testWebsiteExaAndTavilyConfig()
+	client := newWebsiteTestClient(exaServer.Client(), exaServer.URL, tavilyServer.URL)
+
+	result := mustFetchWebsite(t, client, loadedConfig, "https://example.com/article")
+
+	if exaCallCount != 1 {
+		t.Fatalf("unexpected Exa call count: %d", exaCallCount)
+	}
+
+	if tavilyCallCount != 1 {
+		t.Fatalf("unexpected Tavily call count: %d", tavilyCallCount)
+	}
+
+	if !containsFold(result.Content, "Tavily fallback body.") {
+		t.Fatalf("unexpected content: %q", result.Content)
+	}
+}
+
+func TestWebsiteClientFetchFallsBackToCurrentImplementationWhenExaAndTavilyFail(t *testing.T) {
+	t.Parallel()
+
+	var (
+		exaCallCount    int
+		tavilyCallCount int
+	)
+
+	localServer := httptest.NewServer(http.HandlerFunc(func(
+		writer http.ResponseWriter,
+		_ *http.Request,
+	) {
+		writer.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = writer.Write([]byte(strings.Join([]string{
+			"<!doctype html>",
+			"<html><head><title>Local Fallback</title></head>",
+			"<body><main><p>Current implementation body.</p></main></body></html>",
+		}, "")))
+	}))
+	defer localServer.Close()
+
+	exaServer := httptest.NewServer(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		_ *http.Request,
+	) {
+		exaCallCount++
+
+		responseWriter.Header().Set("Content-Type", "application/json")
+
+		responseBody := map[string]any{
+			"results": []any{},
+			"statuses": []map[string]any{{
+				"id":     localServer.URL + "/article",
+				"status": "error",
+				"error": map[string]any{
+					"tag": "CRAWL_TIMEOUT",
+				},
+			}},
+		}
+
+		err := json.NewEncoder(responseWriter).Encode(responseBody)
+		if err != nil {
+			t.Fatalf("encode Exa contents error response: %v", err)
+		}
+	}))
+	defer exaServer.Close()
+
+	tavilyServer := httptest.NewServer(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		_ *http.Request,
+	) {
+		tavilyCallCount++
+
+		http.Error(responseWriter, "upstream failure", http.StatusInternalServerError)
+	}))
+	defer tavilyServer.Close()
+
+	loadedConfig := testWebsiteExaAndTavilyConfig()
+	client := newWebsiteTestClient(localServer.Client(), exaServer.URL, tavilyServer.URL)
+
+	result := mustFetchWebsite(t, client, loadedConfig, localServer.URL+"/article")
+
+	if exaCallCount != 1 {
+		t.Fatalf("unexpected Exa call count: %d", exaCallCount)
+	}
+
+	if tavilyCallCount != 1 {
+		t.Fatalf("unexpected Tavily call count: %d", tavilyCallCount)
+	}
+
+	if result.Title != "Local Fallback" {
+		t.Fatalf("unexpected title: %q", result.Title)
+	}
+
+	if !containsFold(result.Content, "Current implementation body.") {
+		t.Fatalf("unexpected content: %q", result.Content)
+	}
+}
+
+func assertExaContentsRequest(t *testing.T, request map[string]any, requestURL string) {
+	t.Helper()
+
+	rawURLs, urlsOK := request["urls"].([]any)
+	if !urlsOK || len(rawURLs) != 1 || rawURLs[0] != requestURL {
+		t.Fatalf("unexpected Exa contents urls: %#v", request["urls"])
+	}
+
+	rawText, ok := request["text"].(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected Exa contents text payload: %#v", request["text"])
+	}
+
+	if mapIntValue(rawText, "maxCharacters") != maxWebsiteContentRunes {
+		t.Fatalf("unexpected Exa contents max characters: %d", mapIntValue(rawText, "maxCharacters"))
+	}
+
+	if mapStringValue(rawText, "verbosity") != "compact" {
+		t.Fatalf("unexpected Exa contents verbosity: %q", mapStringValue(rawText, "verbosity"))
+	}
+
+	if mapIntValue(request, "livecrawlTimeout") != exaContentsLivecrawlTimeoutMS {
+		t.Fatalf("unexpected Exa livecrawl timeout: %d", mapIntValue(request, "livecrawlTimeout"))
+	}
+}
+
+func assertTavilyExtractRequest(t *testing.T, request map[string]any, requestURL string) {
+	t.Helper()
+
+	rawURLs, urlsOK := request["urls"].([]any)
+	if !urlsOK || len(rawURLs) != 1 || rawURLs[0] != requestURL {
+		t.Fatalf("unexpected Tavily extract urls: %#v", request["urls"])
+	}
+
+	if mapStringValue(request, "extract_depth") != "advanced" {
+		t.Fatalf("unexpected Tavily extract depth: %q", mapStringValue(request, "extract_depth"))
+	}
+
+	if mapStringValue(request, "format") != "markdown" {
+		t.Fatalf("unexpected Tavily extract format: %q", mapStringValue(request, "format"))
+	}
+
+	timeout, ok := request["timeout"].(float64)
+	if !ok || timeout != tavilyExtractTimeoutSeconds {
+		t.Fatalf("unexpected Tavily extract timeout: %#v", request["timeout"])
 	}
 }

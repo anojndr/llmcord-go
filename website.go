@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -22,6 +24,7 @@ const (
 	maxWebsiteDescriptionRunes          = 500
 	maxWebsiteResponseBytes             = 2 * 1024 * 1024
 	minimumWebsiteContentSelectionRunes = 300
+	websiteFetchAttemptCapacity         = 3
 	websiteContentCandidateCapacity     = 7
 	websiteSegmentCapacity              = 32
 )
@@ -31,12 +34,14 @@ var websiteURLRegexp = regexp.MustCompile(
 )
 
 type websiteContentClient interface {
-	fetch(ctx context.Context, rawURL string) (websitePageContent, error)
+	fetch(ctx context.Context, loadedConfig config, rawURL string) (websitePageContent, error)
 }
 
 type websiteClient struct {
-	httpClient *http.Client
-	userAgent  string
+	httpClient            *http.Client
+	userAgent             string
+	exaContentsEndpoint   string
+	tavilyExtractEndpoint string
 }
 
 type websitePageContent struct {
@@ -48,13 +53,16 @@ type websitePageContent struct {
 
 func newWebsiteClient(httpClient *http.Client) websiteClient {
 	return websiteClient{
-		httpClient: httpClient,
-		userAgent:  youtubeUserAgent,
+		httpClient:            httpClient,
+		userAgent:             youtubeUserAgent,
+		exaContentsEndpoint:   defaultExaContentsEndpoint,
+		tavilyExtractEndpoint: defaultTavilyExtractEndpoint,
 	}
 }
 
 func (instance *bot) maybeAugmentConversationWithWebsite(
 	ctx context.Context,
+	loadedConfig config,
 	conversation []chatMessage,
 	urlExtractionText string,
 ) ([]chatMessage, []string, error) {
@@ -71,7 +79,9 @@ func (instance *bot) maybeAugmentConversationWithWebsite(
 		ctx,
 		conversation,
 		websiteURLs,
-		instance.website.fetch,
+		func(fetchContext context.Context, rawURL string) (websitePageContent, error) {
+			return instance.website.fetch(fetchContext, loadedConfig, rawURL)
+		},
 		"fetch website content",
 		websiteWarningText,
 		formatWebsiteURLContent,
@@ -91,7 +101,49 @@ func latestUserPromptQuery(conversation []chatMessage) (string, error) {
 	return parseAugmentedUserPrompt(text).UserQuery, nil
 }
 
-func (client websiteClient) fetch(ctx context.Context, rawURL string) (websitePageContent, error) {
+type exaContentsResponse struct {
+	Results  []exaContentsResponseResult
+	Statuses []exaContentsResponseStatus
+}
+
+type exaContentsResponseResult struct {
+	Title string
+	URL   string
+	ID    string
+	Text  string
+}
+
+type exaContentsResponseStatus struct {
+	ID     string
+	Status string
+	Error  *exaContentsResponseErrorInfo
+}
+
+type exaContentsResponseErrorInfo struct {
+	Tag            string
+	HTTPStatusCode *int
+}
+
+type tavilyExtractResponse struct {
+	Results       []tavilyExtractResponseResult
+	FailedResults []tavilyFailedExtractResult
+}
+
+type tavilyExtractResponseResult struct {
+	URL        string
+	RawContent string
+}
+
+type tavilyFailedExtractResult struct {
+	URL   string
+	Error string
+}
+
+func (client websiteClient) fetch(
+	ctx context.Context,
+	loadedConfig config,
+	rawURL string,
+) (websitePageContent, error) {
 	normalizedURL, err := normalizeWebsiteURL(rawURL)
 	if err != nil {
 		return websitePageContent{}, err
@@ -100,39 +152,622 @@ func (client websiteClient) fetch(ctx context.Context, rawURL string) (websitePa
 	requestContext, cancel := context.WithTimeout(ctx, websiteRequestTimeout)
 	defer cancel()
 
-	responseBody, responseURL, contentType, err := client.doRequest(requestContext, normalizedURL)
-	if err != nil {
+	attemptErrors := make([]error, 0, websiteFetchAttemptCapacity)
+
+	if loadedConfig.WebSearch.exaUsesAPI() {
+		pageContent, exaErr := client.fetchWithExaContents(
+			requestContext,
+			normalizedURL,
+			loadedConfig.WebSearch.Exa.apiKeysForAttempts(),
+		)
+		if exaErr == nil {
+			return pageContent, nil
+		}
+
+		attemptErrors = append(attemptErrors, fmt.Errorf("exa contents API: %w", exaErr))
+	}
+
+	if tavilyAPIKeys := loadedConfig.WebSearch.Tavily.apiKeysForAttempts(); len(tavilyAPIKeys) > 0 {
+		pageContent, tavilyErr := client.fetchWithTavilyExtract(
+			requestContext,
+			normalizedURL,
+			tavilyAPIKeys,
+		)
+		if tavilyErr == nil {
+			return pageContent, nil
+		}
+
+		attemptErrors = append(attemptErrors, fmt.Errorf("tavily extract: %w", tavilyErr))
+	}
+
+	pageContent, err := client.fetchWithCurrentImplementation(requestContext, normalizedURL)
+	if err == nil {
+		return pageContent, nil
+	}
+
+	if len(attemptErrors) == 0 {
 		return websitePageContent{}, fmt.Errorf("fetch website %q: %w", rawURL, err)
+	}
+
+	attemptErrors = append(attemptErrors, fmt.Errorf("current implementation: %w", err))
+
+	return websitePageContent{}, fmt.Errorf("fetch website %q: %w", rawURL, errors.Join(attemptErrors...))
+}
+
+func (client websiteClient) fetchWithCurrentImplementation(
+	ctx context.Context,
+	requestURL string,
+) (websitePageContent, error) {
+	responseBody, responseURL, contentType, err := client.doRequest(ctx, requestURL)
+	if err != nil {
+		return websitePageContent{}, fmt.Errorf("fetch website %q: %w", requestURL, err)
 	}
 
 	switch {
 	case isHTMLContentType(contentType):
 		pageContent, parseErr := parseWebsiteHTML(responseURL, responseBody)
 		if parseErr != nil {
-			return websitePageContent{}, fmt.Errorf("parse website html %q: %w", rawURL, parseErr)
+			return websitePageContent{}, fmt.Errorf("parse website html %q: %w", requestURL, parseErr)
 		}
 
 		return pageContent, nil
 	case isPlainTextContentType(contentType):
-		content := truncateRunes(strings.TrimSpace(string(responseBody)), maxWebsiteContentRunes)
-		if content == "" {
-			return websitePageContent{}, fmt.Errorf("empty website text for %q: %w", rawURL, os.ErrInvalid)
-		}
-
-		return websitePageContent{
-			URL:         responseURL,
-			Title:       responseURL,
-			Description: "",
-			Content:     content,
-		}, nil
+		return newWebsitePageContent(responseURL, responseURL, "", string(responseBody))
 	default:
 		return websitePageContent{}, fmt.Errorf(
 			"unsupported website content type %q for %q: %w",
 			contentType,
-			rawURL,
+			requestURL,
 			os.ErrInvalid,
 		)
 	}
+}
+
+func (client websiteClient) fetchWithExaContents(
+	ctx context.Context,
+	requestURL string,
+	apiKeys []string,
+) (websitePageContent, error) {
+	attemptErrors := make([]error, 0, len(apiKeys))
+
+	for index, apiKey := range apiKeys {
+		pageContent, err := client.fetchWithExaContentsOnce(ctx, requestURL, apiKey)
+		if err == nil {
+			return pageContent, nil
+		}
+
+		attemptErrors = append(attemptErrors, err)
+		if ctx.Err() != nil || index == len(apiKeys)-1 {
+			if len(attemptErrors) == 1 {
+				return websitePageContent{}, err
+			}
+
+			if ctx.Err() != nil {
+				return websitePageContent{}, err
+			}
+
+			return websitePageContent{}, fmt.Errorf(
+				"all configured Exa API keys failed for %q: %w",
+				requestURL,
+				errors.Join(attemptErrors...),
+			)
+		}
+	}
+
+	return websitePageContent{}, fmt.Errorf("missing Exa API key attempt for %q: %w", requestURL, os.ErrInvalid)
+}
+
+func (client websiteClient) fetchWithExaContentsOnce(
+	ctx context.Context,
+	requestURL string,
+	apiKey string,
+) (websitePageContent, error) {
+	requestBytes, err := json.Marshal(exaContentsRequestBody(requestURL))
+	if err != nil {
+		return websitePageContent{}, fmt.Errorf("marshal Exa contents request for %q: %w", requestURL, err)
+	}
+
+	httpRequest, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodPost,
+		client.exaContentsEndpoint,
+		bytes.NewReader(requestBytes),
+	)
+	if err != nil {
+		return websitePageContent{}, fmt.Errorf("create Exa contents request for %q: %w", requestURL, err)
+	}
+
+	httpRequest.Header.Set("Accept", "application/json")
+	httpRequest.Header.Set("Content-Type", "application/json")
+	httpRequest.Header.Set("X-Api-Key", strings.TrimSpace(apiKey))
+
+	httpResponse, err := client.httpClient.Do(httpRequest)
+	if err != nil {
+		return websitePageContent{}, fmt.Errorf("send Exa contents request for %q: %w", requestURL, err)
+	}
+
+	defer func() {
+		_ = httpResponse.Body.Close()
+	}()
+
+	if httpResponse.StatusCode < http.StatusOK || httpResponse.StatusCode >= http.StatusMultipleChoices {
+		responseBody, readErr := io.ReadAll(httpResponse.Body)
+		if readErr != nil {
+			return websitePageContent{}, fmt.Errorf(
+				"read Exa contents error response for %q after status %d: %w",
+				requestURL,
+				httpResponse.StatusCode,
+				readErr,
+			)
+		}
+
+		return websitePageContent{}, exaStatusError{
+			StatusCode: httpResponse.StatusCode,
+			Message: fmt.Sprintf(
+				"exa contents request failed for %q with status %d: %s",
+				requestURL,
+				httpResponse.StatusCode,
+				strings.TrimSpace(extractStructuredAPIErrorMessage(responseBody)),
+			),
+			Err: os.ErrInvalid,
+		}
+	}
+
+	var rawResponse map[string]any
+
+	err = json.NewDecoder(httpResponse.Body).Decode(&rawResponse)
+	if err != nil {
+		return websitePageContent{}, fmt.Errorf("decode exa contents response for %q: %w", requestURL, err)
+	}
+
+	response, err := parseExaContentsResponse(rawResponse)
+	if err != nil {
+		return websitePageContent{}, fmt.Errorf("parse exa contents response for %q: %w", requestURL, err)
+	}
+
+	err = exaContentsResponseError(response, requestURL)
+	if err != nil {
+		return websitePageContent{}, err
+	}
+
+	result, resultFound := exaContentsResultForURL(response, requestURL)
+	if !resultFound {
+		return websitePageContent{}, fmt.Errorf(
+			"exa contents response contained no result for %q: %w",
+			requestURL,
+			os.ErrNotExist,
+		)
+	}
+
+	resultURL := firstNonEmptyString(result.URL, result.ID, requestURL)
+
+	return newWebsitePageContent(resultURL, result.Title, "", result.Text)
+}
+
+func exaContentsRequestBody(requestURL string) map[string]any {
+	return map[string]any{
+		"urls": []string{requestURL},
+		"text": map[string]any{
+			"maxCharacters": maxWebsiteContentRunes,
+			"verbosity":     "compact",
+			"excludeSections": []string{
+				"header",
+				"navigation",
+				"banner",
+				"sidebar",
+				"footer",
+			},
+		},
+		"livecrawlTimeout": exaContentsLivecrawlTimeoutMS,
+	}
+}
+
+func parseExaContentsResponse(rawResponse map[string]any) (exaContentsResponse, error) {
+	response := exaContentsResponse{
+		Results:  nil,
+		Statuses: nil,
+	}
+
+	rawResults, hasResults := rawResponse["results"]
+	if hasResults && rawResults != nil {
+		results, isList := rawResults.([]any)
+		if !isList {
+			return exaContentsResponse{}, fmt.Errorf("decode Exa contents results: %w", os.ErrInvalid)
+		}
+
+		response.Results = make([]exaContentsResponseResult, 0, len(results))
+
+		for _, rawResult := range results {
+			resultMap, ok := rawResult.(map[string]any)
+			if !ok {
+				return exaContentsResponse{}, fmt.Errorf("decode Exa contents result: %w", os.ErrInvalid)
+			}
+
+			response.Results = append(response.Results, exaContentsResponseResult{
+				Title: mapStringValue(resultMap, "title"),
+				URL:   mapStringValue(resultMap, "url"),
+				ID:    mapStringValue(resultMap, "id"),
+				Text:  mapStringValue(resultMap, "text"),
+			})
+		}
+	}
+
+	rawStatuses, hasStatuses := rawResponse["statuses"]
+	if !hasStatuses || rawStatuses == nil {
+		return response, nil
+	}
+
+	statuses, isList := rawStatuses.([]any)
+	if !isList {
+		return exaContentsResponse{}, fmt.Errorf("decode Exa contents statuses: %w", os.ErrInvalid)
+	}
+
+	response.Statuses = make([]exaContentsResponseStatus, 0, len(statuses))
+
+	for _, rawStatus := range statuses {
+		statusMap, ok := rawStatus.(map[string]any)
+		if !ok {
+			return exaContentsResponse{}, fmt.Errorf("decode Exa contents status: %w", os.ErrInvalid)
+		}
+
+		response.Statuses = append(response.Statuses, exaContentsResponseStatus{
+			ID:     mapStringValue(statusMap, "id"),
+			Status: mapStringValue(statusMap, "status"),
+			Error:  exaContentsResponseErrorInfoValue(statusMap),
+		})
+	}
+
+	return response, nil
+}
+
+func exaContentsResponseErrorInfoValue(values map[string]any) *exaContentsResponseErrorInfo {
+	rawError, ok := values["error"].(map[string]any)
+	if !ok {
+		return nil
+	}
+
+	errorInfo := &exaContentsResponseErrorInfo{
+		Tag:            mapStringValue(rawError, "tag"),
+		HTTPStatusCode: mapOptionalIntValue(rawError, "httpStatusCode"),
+	}
+
+	if strings.TrimSpace(errorInfo.Tag) == "" && errorInfo.HTTPStatusCode == nil {
+		return nil
+	}
+
+	return errorInfo
+}
+
+func exaContentsResponseError(response exaContentsResponse, requestURL string) error {
+	for _, status := range response.Statuses {
+		if !exaContentsStatusMatchesURL(status, requestURL) {
+			continue
+		}
+
+		if !strings.EqualFold(strings.TrimSpace(status.Status), "error") {
+			return nil
+		}
+
+		if status.Error == nil {
+			return fmt.Errorf("exa contents reported an error for %q: %w", requestURL, os.ErrInvalid)
+		}
+
+		errorParts := []string{strings.TrimSpace(status.Error.Tag)}
+		if status.Error.HTTPStatusCode != nil {
+			errorParts = append(errorParts, fmt.Sprintf("HTTP %d", *status.Error.HTTPStatusCode))
+		}
+
+		return fmt.Errorf(
+			"exa contents reported an error for %q: %s: %w",
+			requestURL,
+			strings.Join(errorParts, ", "),
+			os.ErrInvalid,
+		)
+	}
+
+	return nil
+}
+
+func exaContentsStatusMatchesURL(status exaContentsResponseStatus, requestURL string) bool {
+	statusID := strings.TrimSpace(status.ID)
+	if statusID == "" {
+		return false
+	}
+
+	return strings.EqualFold(statusID, requestURL)
+}
+
+func exaContentsResultForURL(
+	response exaContentsResponse,
+	requestURL string,
+) (exaContentsResponseResult, bool) {
+	for _, result := range response.Results {
+		if strings.EqualFold(strings.TrimSpace(result.URL), requestURL) ||
+			strings.EqualFold(strings.TrimSpace(result.ID), requestURL) {
+			return result, true
+		}
+	}
+
+	if len(response.Results) == 0 {
+		var emptyResult exaContentsResponseResult
+
+		return emptyResult, false
+	}
+
+	return response.Results[0], true
+}
+
+func (client websiteClient) fetchWithTavilyExtract(
+	ctx context.Context,
+	requestURL string,
+	apiKeys []string,
+) (websitePageContent, error) {
+	attemptErrors := make([]error, 0, len(apiKeys))
+
+	for index, apiKey := range apiKeys {
+		pageContent, err := client.fetchWithTavilyExtractOnce(ctx, requestURL, apiKey)
+		if err == nil {
+			return pageContent, nil
+		}
+
+		attemptErrors = append(attemptErrors, err)
+		if ctx.Err() != nil || index == len(apiKeys)-1 {
+			if len(attemptErrors) == 1 {
+				return websitePageContent{}, err
+			}
+
+			if ctx.Err() != nil {
+				return websitePageContent{}, err
+			}
+
+			return websitePageContent{}, fmt.Errorf(
+				"all configured Tavily API keys failed for %q: %w",
+				requestURL,
+				errors.Join(attemptErrors...),
+			)
+		}
+	}
+
+	return websitePageContent{}, fmt.Errorf("missing Tavily API key attempt for %q: %w", requestURL, os.ErrInvalid)
+}
+
+func (client websiteClient) fetchWithTavilyExtractOnce(
+	ctx context.Context,
+	requestURL string,
+	apiKey string,
+) (websitePageContent, error) {
+	requestBytes, err := json.Marshal(tavilyExtractRequestBody(requestURL))
+	if err != nil {
+		return websitePageContent{}, fmt.Errorf("marshal Tavily extract request for %q: %w", requestURL, err)
+	}
+
+	httpRequest, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodPost,
+		client.tavilyExtractEndpoint,
+		bytes.NewReader(requestBytes),
+	)
+	if err != nil {
+		return websitePageContent{}, fmt.Errorf("create Tavily extract request for %q: %w", requestURL, err)
+	}
+
+	httpRequest.Header.Set("Accept", "application/json")
+	httpRequest.Header.Set("Authorization", "Bearer "+strings.TrimSpace(apiKey))
+	httpRequest.Header.Set("Content-Type", "application/json")
+
+	httpResponse, err := client.httpClient.Do(httpRequest)
+	if err != nil {
+		return websitePageContent{}, fmt.Errorf("send Tavily extract request for %q: %w", requestURL, err)
+	}
+
+	defer func() {
+		_ = httpResponse.Body.Close()
+	}()
+
+	if httpResponse.StatusCode < http.StatusOK || httpResponse.StatusCode >= http.StatusMultipleChoices {
+		responseBody, readErr := io.ReadAll(httpResponse.Body)
+		if readErr != nil {
+			return websitePageContent{}, fmt.Errorf(
+				"read Tavily extract error response for %q after status %d: %w",
+				requestURL,
+				httpResponse.StatusCode,
+				readErr,
+			)
+		}
+
+		return websitePageContent{}, tavilyStatusError{
+			StatusCode: httpResponse.StatusCode,
+			Message: fmt.Sprintf(
+				"tavily extract request failed for %q with status %d: %s",
+				requestURL,
+				httpResponse.StatusCode,
+				strings.TrimSpace(extractStructuredAPIErrorMessage(responseBody)),
+			),
+			Err: os.ErrInvalid,
+		}
+	}
+
+	var rawResponse map[string]any
+
+	err = json.NewDecoder(httpResponse.Body).Decode(&rawResponse)
+	if err != nil {
+		return websitePageContent{}, fmt.Errorf("decode tavily extract response for %q: %w", requestURL, err)
+	}
+
+	response, err := parseTavilyExtractResponse(rawResponse)
+	if err != nil {
+		return websitePageContent{}, fmt.Errorf("parse tavily extract response for %q: %w", requestURL, err)
+	}
+
+	err = tavilyExtractResponseError(response, requestURL)
+	if err != nil {
+		return websitePageContent{}, err
+	}
+
+	result, resultFound := tavilyExtractResultForURL(response, requestURL)
+	if !resultFound {
+		return websitePageContent{}, fmt.Errorf(
+			"tavily extract response contained no result for %q: %w",
+			requestURL,
+			os.ErrNotExist,
+		)
+	}
+
+	return newWebsitePageContent(firstNonEmptyString(result.URL, requestURL), "", "", result.RawContent)
+}
+
+func tavilyExtractRequestBody(requestURL string) map[string]any {
+	return map[string]any{
+		"urls":          []string{requestURL},
+		"extract_depth": "advanced",
+		"format":        "markdown",
+		"timeout":       tavilyExtractTimeoutSeconds,
+	}
+}
+
+func parseTavilyExtractResponse(rawResponse map[string]any) (tavilyExtractResponse, error) {
+	response := tavilyExtractResponse{
+		Results:       nil,
+		FailedResults: nil,
+	}
+
+	rawResults, hasResults := rawResponse["results"]
+	if hasResults && rawResults != nil {
+		results, isList := rawResults.([]any)
+		if !isList {
+			return tavilyExtractResponse{}, fmt.Errorf("decode Tavily extract results: %w", os.ErrInvalid)
+		}
+
+		response.Results = make([]tavilyExtractResponseResult, 0, len(results))
+
+		for _, rawResult := range results {
+			resultMap, ok := rawResult.(map[string]any)
+			if !ok {
+				return tavilyExtractResponse{}, fmt.Errorf("decode Tavily extract result: %w", os.ErrInvalid)
+			}
+
+			response.Results = append(response.Results, tavilyExtractResponseResult{
+				URL:        mapStringValue(resultMap, "url"),
+				RawContent: mapStringValue(resultMap, "raw_content"),
+			})
+		}
+	}
+
+	rawFailedResults, hasFailedResults := rawResponse["failed_results"]
+	if !hasFailedResults || rawFailedResults == nil {
+		return response, nil
+	}
+
+	failedResults, isList := rawFailedResults.([]any)
+	if !isList {
+		return tavilyExtractResponse{}, fmt.Errorf("decode Tavily extract failed results: %w", os.ErrInvalid)
+	}
+
+	response.FailedResults = make([]tavilyFailedExtractResult, 0, len(failedResults))
+
+	for _, rawFailedResult := range failedResults {
+		failedResultMap, ok := rawFailedResult.(map[string]any)
+		if !ok {
+			return tavilyExtractResponse{}, fmt.Errorf("decode Tavily extract failed result: %w", os.ErrInvalid)
+		}
+
+		response.FailedResults = append(response.FailedResults, tavilyFailedExtractResult{
+			URL:   mapStringValue(failedResultMap, "url"),
+			Error: mapStringValue(failedResultMap, "error"),
+		})
+	}
+
+	return response, nil
+}
+
+func tavilyExtractResponseError(response tavilyExtractResponse, requestURL string) error {
+	for _, failedResult := range response.FailedResults {
+		if !strings.EqualFold(strings.TrimSpace(failedResult.URL), requestURL) {
+			continue
+		}
+
+		return fmt.Errorf(
+			"tavily extract reported an error for %q: %s: %w",
+			requestURL,
+			strings.TrimSpace(failedResult.Error),
+			os.ErrInvalid,
+		)
+	}
+
+	return nil
+}
+
+func tavilyExtractResultForURL(
+	response tavilyExtractResponse,
+	requestURL string,
+) (tavilyExtractResponseResult, bool) {
+	for _, result := range response.Results {
+		if strings.EqualFold(strings.TrimSpace(result.URL), requestURL) {
+			return result, true
+		}
+	}
+
+	if len(response.Results) == 0 {
+		var emptyResult tavilyExtractResponseResult
+
+		return emptyResult, false
+	}
+
+	return response.Results[0], true
+}
+
+func mapOptionalIntValue(values map[string]any, key string) *int {
+	value, exists := values[key]
+	if !exists || value == nil {
+		return nil
+	}
+
+	switch typedValue := value.(type) {
+	case float64:
+		intValue := int(typedValue)
+
+		return &intValue
+	case int:
+		intValue := typedValue
+
+		return &intValue
+	default:
+		return nil
+	}
+}
+
+func extractStructuredAPIErrorMessage(responseBody []byte) string {
+	var response map[string]any
+
+	err := json.Unmarshal(responseBody, &response)
+	if err != nil {
+		return string(responseBody)
+	}
+
+	if detail, ok := response["detail"].(map[string]any); ok {
+		if detailError := mapStringValue(detail, "error"); detailError != "" {
+			return detailError
+		}
+	}
+
+	for _, key := range []string{"error", "message"} {
+		if message := mapStringValue(response, key); message != "" {
+			return message
+		}
+	}
+
+	return string(responseBody)
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		trimmedValue := strings.TrimSpace(value)
+		if trimmedValue != "" {
+			return trimmedValue
+		}
+	}
+
+	return ""
 }
 
 func (client websiteClient) doRequest(
@@ -217,6 +852,7 @@ func extractWebsiteURLs(text string) []string {
 
 	return normalizedURLs
 }
+
 func normalizeWebsiteURL(rawURL string) (string, error) {
 	cleanedURL := cleanWebsiteURL(rawURL)
 
@@ -332,24 +968,46 @@ func parseWebsiteHTML(pageURL string, responseBody []byte) (websitePageContent, 
 		maxWebsiteDescriptionRunes,
 	)
 
-	content := truncateRunes(extractWebsiteBodyText(document), maxWebsiteContentRunes)
-	if content == "" {
-		content = description
+	return newWebsitePageContent(
+		pageURL,
+		title,
+		description,
+		extractWebsiteBodyText(document),
+	)
+}
+
+func newWebsitePageContent(
+	pageURL string,
+	title string,
+	description string,
+	content string,
+) (websitePageContent, error) {
+	trimmedURL := strings.TrimSpace(pageURL)
+	if trimmedURL == "" {
+		return websitePageContent{}, fmt.Errorf("missing website url: %w", os.ErrInvalid)
 	}
 
-	if content == "" {
+	trimmedTitle := strings.TrimSpace(title)
+	trimmedDescription := truncateRunes(strings.TrimSpace(description), maxWebsiteDescriptionRunes)
+
+	trimmedContent := truncateRunes(strings.TrimSpace(content), maxWebsiteContentRunes)
+	if trimmedContent == "" {
+		trimmedContent = trimmedDescription
+	}
+
+	if trimmedContent == "" {
 		return websitePageContent{}, fmt.Errorf("extract website content: %w", os.ErrInvalid)
 	}
 
-	if title == "" {
-		title = pageURL
+	if trimmedTitle == "" {
+		trimmedTitle = trimmedURL
 	}
 
 	return websitePageContent{
-		URL:         pageURL,
-		Title:       title,
-		Description: description,
-		Content:     content,
+		URL:         trimmedURL,
+		Title:       trimmedTitle,
+		Description: trimmedDescription,
+		Content:     trimmedContent,
 	}, nil
 }
 

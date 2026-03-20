@@ -6,9 +6,11 @@ const (
 	defaultConfigPath                    = "config.yaml"
 	readyMessage                         = "bot is online"
 	defaultExaSearchEndpoint             = "https://api.exa.ai/search"
+	defaultExaContentsEndpoint           = "https://api.exa.ai/contents"
 	defaultExaMCPEndpoint                = "https://mcp.exa.ai/mcp?tools=web_search_exa"
 	defaultSerpAPIGoogleLensEndpoint     = "https://serpapi.com/search.json"
 	defaultTavilySearchEndpoint          = "https://api.tavily.com/search"
+	defaultTavilyExtractEndpoint         = "https://api.tavily.com/extract"
 	defaultRentryEndpoint                = "https://rentry.co/"
 	defaultStatusMessage                 = "github.com/jakobdylanc/llmcord"
 	defaultMaxText                       = 100000
@@ -49,6 +51,7 @@ const (
 	maxSearchQueries                     = 500
 	defaultWebSearchMaxURLs              = 5
 	exaSearchHighlightsMaxCharacters     = 4000
+	exaContentsLivecrawlTimeoutMS        = 12000
 	maxYouTubeComments                   = 50
 	showSourcesMessageMaxLength          = 1900
 	showSourcesPageBodyMaxLength         = showSourcesMessageMaxLength - 64
@@ -72,6 +75,7 @@ const (
 	rentryRequestTimeout                 = 30 * time.Second
 	redditRequestTimeout                 = 30 * time.Second
 	websiteRequestTimeout                = 30 * time.Second
+	tavilyExtractTimeoutSeconds          = 10
 	youtubeRequestTimeout                = 30 * time.Second
 	typingRefreshInterval                = 8 * time.Second
 	editDelay                            = time.Second
