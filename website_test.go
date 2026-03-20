@@ -48,7 +48,7 @@ func TestExtractWebsiteURLsNormalizesDeduplicatesAndSkipsSpecializedHosts(t *tes
 
 	text := strings.Join([]string{
 		"read https://en.wikipedia.org/wiki/Go_(programming_language)#History",
-		"and en.wikipedia.org/wiki/Go_(programming_language),",
+		"and https://en.wikipedia.org/wiki/Go_(programming_language),",
 		"plus https://example.com/article?ref=1.",
 		"ignore https://www.youtube.com/watch?v=dQw4w9WgXcQ",
 		"ignore https://www.reddit.com/r/testing/comments/abc123/thread-title/",
@@ -61,6 +61,32 @@ func TestExtractWebsiteURLsNormalizesDeduplicatesAndSkipsSpecializedHosts(t *tes
 	expected := []string{
 		"https://en.wikipedia.org/wiki/Go_(programming_language)",
 		"https://example.com/article?ref=1",
+	}
+
+	if len(urls) != len(expected) {
+		t.Fatalf("unexpected url count: got %d want %d (%#v)", len(urls), len(expected), urls)
+	}
+
+	for index, expectedURL := range expected {
+		if urls[index] != expectedURL {
+			t.Fatalf("unexpected url at index %d: got %q want %q", index, urls[index], expectedURL)
+		}
+	}
+}
+
+func TestExtractWebsiteURLsRequiresExplicitScheme(t *testing.T) {
+	t.Parallel()
+
+	text := strings.Join([]string{
+		"ignore google.com and www.google.com/search?q=test",
+		"but keep https://www.google.com/ and http://example.com/path.",
+	}, " ")
+
+	urls := extractWebsiteURLs(text)
+
+	expected := []string{
+		"https://www.google.com/",
+		"http://example.com/path",
 	}
 
 	if len(urls) != len(expected) {
