@@ -278,7 +278,7 @@ golangci-lint run --default=all
 - Streaming failures, blocked responses, and prematurely terminated streams are surfaced to users as visible errors.
 - Providers pointing at `https://openrouter.ai/...` automatically send `transforms: ["middle-out"]` unless overridden.
 - OpenAI-compatible chat completions retry once without degraded tools or functions when applicable.
-- If a provider has multiple API keys, the bot tries them in order until one succeeds or all fail. Gemini, OpenAI, and OpenAI Codex rate-limit responses wait on the same key once when the provider returns a retry delay, then rotate to the next key if needed, but only before any response chunks have been streamed.
+- If a provider has multiple API keys, the bot tries them in order until one succeeds or all fail. Gemini, OpenAI, and OpenAI Codex rate-limit responses wait on the same key once when the provider returns a retry delay of 1 minute or less, then rotate to the next key if needed. Longer retry delays skip straight to the next key when one is configured, and rotation only happens before any response chunks have been streamed.
 
 ### Attachment and enrichment behavior
 
