@@ -76,7 +76,8 @@ func newSerpAPIProviderError(
 			statusCode,
 			parseSerpAPIHTTPErrorMessage(statusCode, statusText, responseBody),
 		),
-		Err: os.ErrInvalid,
+		RetryDelay: 0,
+		Err:        os.ErrInvalid,
 	}
 
 	switch statusCode {
@@ -103,7 +104,8 @@ func newSerpAPISearchStatusError(imageURL string, status string, responseError s
 			trimmedStatus,
 			trimmedError,
 		),
-		Err: os.ErrInvalid,
+		RetryDelay: 0,
+		Err:        os.ErrInvalid,
 	}
 }
 

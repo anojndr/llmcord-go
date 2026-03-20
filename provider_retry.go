@@ -23,6 +23,7 @@ var geminiRetryDelayPattern = regexp.MustCompile(
 type providerStatusError struct {
 	StatusCode int
 	Message    string
+	RetryDelay time.Duration
 	Err        error
 }
 
@@ -79,10 +80,19 @@ func retryDelayForProvider(apiKind providerAPIKind, err error) (time.Duration, b
 	case providerAPIKindGemini:
 		return geminiRetryDelay(err)
 	case providerAPIKindOpenAI, providerAPIKindOpenAICodex:
-		return 0, false
+		return openAIRetryDelay(err)
 	default:
 		return 0, false
 	}
+}
+
+func openAIRetryDelay(err error) (time.Duration, bool) {
+	var statusErr providerStatusError
+	if !errors.As(err, &statusErr) || statusErr.RetryDelay <= 0 {
+		return 0, false
+	}
+
+	return statusErr.RetryDelay, true
 }
 
 func geminiRetryDelay(err error) (time.Duration, bool) {

@@ -2,6 +2,9 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
 	"iter"
 	"net/http"
 	"net/http/httptest"
@@ -160,6 +163,80 @@ func TestChatCompletionRouterRetriesOpenAIAPIKeysOnInternalServerError(t *testin
 	}
 }
 
+func TestChatCompletionRouterWaitsForOpenAIRetryDelayBeforeFallbackKey(t *testing.T) {
+	t.Parallel()
+
+	authCapture := new(stringCapture)
+	delayCapture := new(durationCapture)
+
+	var (
+		attemptsMu    sync.Mutex
+		attemptsByKey = make(map[string]int)
+	)
+
+	server := httptest.NewServer(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		request *http.Request,
+	) {
+		t.Helper()
+
+		authHeader := request.Header.Get("Authorization")
+		authCapture.append(authHeader)
+
+		attemptsMu.Lock()
+		attemptsByKey[authHeader]++
+		attempt := attemptsByKey[authHeader]
+		attemptsMu.Unlock()
+
+		switch {
+		case authHeader == testRetryPrimaryAuthHeader && attempt == 1:
+			responseWriter.Header().Set(openAIRateLimitRemainingRequests, "0")
+			responseWriter.Header().Set(openAIRateLimitResetRequests, "1500ms")
+			http.Error(responseWriter, "rate limited", http.StatusTooManyRequests)
+		case authHeader == testRetryPrimaryAuthHeader:
+			http.Error(responseWriter, "permission denied", http.StatusForbidden)
+		default:
+			streamOpenAIHello(t, responseWriter)
+		}
+	}))
+	defer server.Close()
+
+	router := chatCompletionRouter{
+		openAI:      newOpenAIClient(server.Client()),
+		openAICodex: newOpenAICodexClient(nil),
+		gemini:      newGeminiClient(nil),
+		waitForRetry: func(_ context.Context, delay time.Duration) error {
+			delayCapture.append(delay)
+
+			return nil
+		},
+	}
+
+	content, err := collectStreamedContent(
+		context.Background(),
+		router,
+		newOpenAIRetryRequest(server.URL+"/v1"),
+	)
+	if err != nil {
+		t.Fatalf("stream chat completion: %v", err)
+	}
+
+	if !slices.Equal(
+		authCapture.snapshot(),
+		[]string{testRetryPrimaryAuthHeader, testRetryPrimaryAuthHeader, testRetryBackupAuthHeader},
+	) {
+		t.Fatalf("unexpected authorization attempts: %#v", authCapture.snapshot())
+	}
+
+	if !slices.Equal(delayCapture.snapshot(), []time.Duration{1500 * time.Millisecond}) {
+		t.Fatalf("unexpected retry delays: %#v", delayCapture.snapshot())
+	}
+
+	if content != testStreamedHelloText {
+		t.Fatalf("unexpected streamed content: %q", content)
+	}
+}
+
 func TestChatCompletionRouterRetriesOpenAIAPIKeysAfterStreamFailure(t *testing.T) {
 	t.Parallel()
 
@@ -236,6 +313,91 @@ func TestChatCompletionRouterRetriesOpenAICodexAPIKeys(t *testing.T) {
 
 	if requestCounter.value() != 1 {
 		t.Fatalf("unexpected codex request count: %d", requestCounter.value())
+	}
+
+	if content != testOpenAICodexHelloText {
+		t.Fatalf("unexpected streamed content: %q", content)
+	}
+}
+
+func TestChatCompletionRouterWaitsForOpenAICodexRetryDelayBeforeFallbackKey(t *testing.T) {
+	t.Parallel()
+
+	primaryAPIKey := testOpenAICodexJWTWithSignature(t, "primary")
+	backupAPIKey := testOpenAICodexJWTWithSignature(t, "backup")
+	delayCapture := new(durationCapture)
+	authCapture := new(stringCapture)
+
+	var (
+		attemptsMu    sync.Mutex
+		attemptsByKey = make(map[string]int)
+	)
+
+	server := httptest.NewServer(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		request *http.Request,
+	) {
+		t.Helper()
+
+		authHeader := request.Header.Get("Authorization")
+		authCapture.append(authHeader)
+
+		attemptsMu.Lock()
+		attemptsByKey[authHeader]++
+		attempt := attemptsByKey[authHeader]
+		attemptsMu.Unlock()
+
+		switch {
+		case authHeader == "Bearer "+primaryAPIKey && attempt == 1:
+			responseWriter.Header().Set("Content-Type", "application/json")
+			responseWriter.Header().Set(openAIRateLimitRemainingRequests, "0")
+			responseWriter.Header().Set(openAIRateLimitResetRequests, "2s")
+			responseWriter.WriteHeader(http.StatusTooManyRequests)
+			writeStreamChunk(
+				t,
+				responseWriter,
+				`{"error":{"message":"Rate limited","type":"server_error","code":"rate_limit_exceeded"}}`,
+			)
+		case authHeader == "Bearer "+primaryAPIKey:
+			http.Error(responseWriter, "permission denied", http.StatusForbidden)
+		default:
+			streamOpenAICodexHello(t, responseWriter)
+		}
+	}))
+	defer server.Close()
+
+	router := chatCompletionRouter{
+		openAI:      newOpenAIClient(nil),
+		openAICodex: newOpenAICodexClient(server.Client()),
+		gemini:      newGeminiClient(nil),
+		waitForRetry: func(_ context.Context, delay time.Duration) error {
+			delayCapture.append(delay)
+
+			return nil
+		},
+	}
+
+	request := newOpenAICodexRetryRequest(server.URL+"/backend-api", primaryAPIKey)
+	request.Provider.APIKeys = []string{primaryAPIKey, backupAPIKey}
+
+	content, err := collectStreamedContent(
+		context.Background(),
+		router,
+		request,
+	)
+	if err != nil {
+		t.Fatalf("stream codex completion: %v", err)
+	}
+
+	if !slices.Equal(
+		authCapture.snapshot(),
+		[]string{"Bearer " + primaryAPIKey, "Bearer " + primaryAPIKey, "Bearer " + backupAPIKey},
+	) {
+		t.Fatalf("unexpected codex authorization attempts: %#v", authCapture.snapshot())
+	}
+
+	if !slices.Equal(delayCapture.snapshot(), []time.Duration{2 * time.Second}) {
+		t.Fatalf("unexpected retry delays: %#v", delayCapture.snapshot())
 	}
 
 	if content != testOpenAICodexHelloText {
@@ -702,4 +864,31 @@ func newTestGeminiRetryDelayError(message string, retryDelay string) error {
 	}}
 
 	return *apiErr
+}
+
+func testOpenAICodexJWTWithSignature(t *testing.T, signature string) string {
+	t.Helper()
+
+	headerBytes, err := json.Marshal(map[string]any{
+		"alg": "HS256",
+		"typ": "JWT",
+	})
+	if err != nil {
+		t.Fatalf("marshal jwt header: %v", err)
+	}
+
+	payloadBytes, err := json.Marshal(map[string]any{
+		openAICodexJWTClaimPath: map[string]any{
+			"chatgpt_account_id": testOpenAICodexAccountID,
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal jwt payload: %v", err)
+	}
+
+	encode := func(data []byte) string {
+		return base64.RawURLEncoding.EncodeToString(data)
+	}
+
+	return fmt.Sprintf("%s.%s.%s", encode(headerBytes), encode(payloadBytes), signature)
 }
