@@ -99,7 +99,7 @@ The goal is to make Discord feel like a practical, stateful frontend for LLM wor
 ### Search and visual search
 
 - Search-decider flow to choose whether current web search is needed
-- Exa MCP and Tavily support with configurable primary/fallback order
+- Exa Search API or Exa MCP, plus Tavily, with configurable primary/fallback order
 - Host date/time injected into the search-decider prompt for relative queries like `today`
 - `vsearch` reverse-image lookup using Yandex Images
 - Optional concurrent Google Lens results via SerpApi
@@ -209,8 +209,9 @@ The config schema stays close to the original Python project.
 
 | Setting | Description |
 | --- | --- |
-| `web_search.primary_provider` | Which search backend to try first. Supported values: `mcp` and `tavily`. Default: `mcp`. |
+| `web_search.primary_provider` | Which search backend to try first. Supported values: `mcp` and `tavily`. Default: `mcp`. `mcp` selects Exa and uses the Exa Search API when `web_search.exa.api_key` is configured, otherwise Exa MCP. |
 | `web_search.max_urls` | Maximum number of URLs to request from Exa or Tavily for each search query and to display in `Show Sources`. Default: `5`. |
+| `web_search.exa.api_key` | Optional Exa Search API key config. Can be a single string or a YAML list. When set, Exa web search uses `POST https://api.exa.ai/search`; without it, the bot continues using Exa MCP. |
 | `web_search.tavily.api_key` | Tavily API key config. Can be a single string or a YAML list. |
 | `visual_search.serpapi.api_key` | Optional SerpApi Google Lens API key config for `vsearch`. Can be a single string or a YAML list. |
 

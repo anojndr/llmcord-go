@@ -5,6 +5,7 @@ import "time"
 const (
 	defaultConfigPath                    = "config.yaml"
 	readyMessage                         = "bot is online"
+	defaultExaSearchEndpoint             = "https://api.exa.ai/search"
 	defaultExaMCPEndpoint                = "https://mcp.exa.ai/mcp?tools=web_search_exa"
 	defaultSerpAPIGoogleLensEndpoint     = "https://serpapi.com/search.json"
 	defaultTavilySearchEndpoint          = "https://api.tavily.com/search"
@@ -47,6 +48,7 @@ const (
 	finishReasonLength                   = "length"
 	maxSearchQueries                     = 500
 	defaultWebSearchMaxURLs              = 5
+	exaSearchHighlightsMaxCharacters     = 4000
 	maxYouTubeComments                   = 50
 	showSourcesMessageMaxLength          = 1900
 	showSourcesPageBodyMaxLength         = showSourcesMessageMaxLength - 64

@@ -126,6 +126,14 @@ func (settings tavilySearchConfig) apiKeys() []string {
 	return providerAPIKeys(settings.APIKey, settings.APIKeys)
 }
 
+func (settings exaSearchConfig) apiKeys() []string {
+	return providerAPIKeys(settings.APIKey, settings.APIKeys)
+}
+
+func (settings exaSearchConfig) apiKeysForAttempts() []string {
+	return settings.apiKeys()
+}
+
 func (settings tavilySearchConfig) apiKeysForAttempts() []string {
 	return settings.apiKeys()
 }

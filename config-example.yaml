@@ -123,11 +123,20 @@ search_decider_model: google/gemini-3.1-flash-lite-preview
 media_analysis_model: google/gemini-3.1-flash-lite-preview
 
 web_search:
-  # `mcp` keeps Exa MCP as primary and uses Tavily as fallback.
-  # `tavily` flips the order and uses Exa MCP as fallback.
+  # `mcp` keeps Exa as primary and uses Tavily as fallback.
+  # When `web_search.exa.api_key` is set, Exa uses the Search API.
+  # Without an Exa API key, Exa falls back to the Exa MCP.
+  # `tavily` flips the order and uses Exa as fallback.
   primary_provider: mcp
   # Maximum URLs to request from Exa or Tavily for each search query.
   max_urls: 5
+  exa:
+    # Optional. When set, the web search flow uses Exa's Search API instead of
+    # Exa MCP. `api_key` also accepts a YAML list. Keys are tried in order.
+    # api_key:
+    #   - exa-primary-key
+    #   - exa-backup-key
+    api_key:
   tavily:
     # Optional when `primary_provider: mcp`; required if you want Tavily as either
     # primary or fallback. `api_key` also accepts a YAML list. Keys are tried in order.
