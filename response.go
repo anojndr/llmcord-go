@@ -679,36 +679,9 @@ func (instance *bot) renderEmbedResponse(
 			warnings,
 		)
 
-		err := instance.waitForEditSlot(ctx)
+		err := instance.renderEmbedSpec(ctx, tracker, index, embed, spec.actions)
 		if err != nil {
-			return fmt.Errorf("wait before embed update: %w", err)
-		}
-
-		if index < len(tracker.responseMessages) {
-			err := instance.editEmbedMessage(
-				tracker.responseMessages[index],
-				embed,
-				buildEmbedComponents(spec.actions),
-			)
-			if err != nil {
-				return fmt.Errorf("edit embed message: %w", err)
-			}
-
-			if index == 0 {
-				tracker.progressActive = false
-			}
-		} else {
-			sentMessage, pending, err := instance.sendEmbedMessage(
-				tracker,
-				embed,
-				spec.actions,
-			)
-			if err != nil {
-				return fmt.Errorf("send embed message: %w", err)
-			}
-
-			tracker.responseMessages = append(tracker.responseMessages, sentMessage)
-			tracker.pendingResponses = append(tracker.pendingResponses, pending)
+			return err
 		}
 
 		if index < len(tracker.renderedSpecs) {
@@ -728,6 +701,49 @@ func (instance *bot) renderEmbedResponse(
 	return nil
 }
 
+func (instance *bot) renderEmbedSpec(
+	ctx context.Context,
+	tracker *responseTracker,
+	index int,
+	embed *discordgo.MessageEmbed,
+	actions responseActions,
+) error {
+	if index >= len(tracker.responseMessages) {
+		sentMessage, pending, err := instance.sendEmbedMessage(tracker, embed, actions)
+		if err != nil {
+			return fmt.Errorf("send embed message: %w", err)
+		}
+
+		tracker.responseMessages = append(tracker.responseMessages, sentMessage)
+		tracker.pendingResponses = append(tracker.pendingResponses, pending)
+
+		return nil
+	}
+
+	err := instance.waitForEditSlotForMessage(
+		ctx,
+		tracker.responseMessages[index].ID,
+	)
+	if err != nil {
+		return fmt.Errorf("wait before embed update: %w", err)
+	}
+
+	err = instance.editEmbedMessage(
+		tracker.responseMessages[index],
+		embed,
+		buildEmbedComponents(actions),
+	)
+	if err != nil {
+		return fmt.Errorf("edit embed message: %w", err)
+	}
+
+	if index == 0 {
+		tracker.progressActive = false
+	}
+
+	return nil
+}
+
 func (instance *bot) trimExtraEmbedResponses(
 	ctx context.Context,
 	tracker *responseTracker,
@@ -738,7 +754,7 @@ func (instance *bot) trimExtraEmbedResponses(
 		message := tracker.responseMessages[lastIndex]
 		pending := tracker.pendingResponses[lastIndex]
 
-		err := instance.waitForEditSlot(ctx)
+		err := instance.waitForEditSlotForMessage(ctx, message.ID)
 		if err != nil {
 			return fmt.Errorf("wait before embed cleanup: %w", err)
 		}

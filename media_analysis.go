@@ -53,6 +53,8 @@ Audio transcription per timestamp:
 20s to 30s: Why are you meowing? What do you want?
 </output>`
 
+const geminiMediaAnalysisConcurrency = 4
+
 func (instance *bot) maybeAugmentConversationWithGeminiMedia(
 	ctx context.Context,
 	loadedConfig config,
@@ -87,23 +89,30 @@ func (instance *bot) maybeAugmentConversationWithGeminiMedia(
 	}
 
 	analyses := make([]string, 0, len(mediaParts))
+	results := runTasksConcurrently(
+		ctx,
+		geminiMediaAnalysisConcurrency,
+		len(mediaParts),
+		func(taskContext context.Context, index int) (string, error) {
+			return instance.analyzeMediaWithGemini(
+				taskContext,
+				loadedConfig,
+				geminiModel,
+				cloneContentPart(mediaParts[index]),
+			)
+		},
+	)
 
-	for index, mediaPart := range mediaParts {
-		analysis, analysisErr := instance.analyzeMediaWithGemini(
-			ctx,
-			loadedConfig,
-			geminiModel,
-			mediaPart,
-		)
-		if analysisErr != nil {
+	for index, result := range results {
+		if result.err != nil {
 			return nil, fmt.Errorf(
 				"analyze media file %d with gemini: %w",
 				index+1,
-				analysisErr,
+				result.err,
 			)
 		}
 
-		analyses = append(analyses, analysis)
+		analyses = append(analyses, result.value)
 	}
 
 	augmentedConversation, err := appendMediaAnalysesToConversation(

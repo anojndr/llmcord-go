@@ -12,14 +12,16 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 	_ "github.com/lib/pq"
 )
 
 const (
-	messageNodeStoreSnapshotVersion = 1
-	messageNodeStoreTableName       = "message_history_snapshots"
+	messageNodeStoreSnapshotVersion     = 1
+	messageNodeStoreTableName           = "message_history_snapshots"
+	defaultMessageNodeStorePersistDelay = 250 * time.Millisecond
 )
 
 var errMessageNodeStorePersistenceDisabled = errors.New("message history persistence disabled")
@@ -334,6 +336,8 @@ func newPersistentMessageNodeStore(
 	snapshot, err := backend.loadSnapshot(trimmedStoreKey, capacity)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
+			store.startSaveWorker()
+
 			return store, nil
 		}
 
@@ -342,6 +346,7 @@ func newPersistentMessageNodeStore(
 
 	store.nodes = snapshotNodesToStoreNodes(snapshot.Nodes)
 	store.snapshotCache = maps.Clone(snapshot.Nodes)
+	store.startSaveWorker()
 
 	return store, nil
 }
@@ -367,12 +372,22 @@ func messageNodeStoreKey(configPath string, configuredStoreKey string) string {
 }
 
 func (store *messageNodeStore) persistBestEffort() {
-	err := store.persist()
-	if err == nil {
+	if store == nil || strings.TrimSpace(store.storeKey) == "" || store.backend == nil {
 		return
 	}
 
-	slog.Warn("persist message history", "store_key", store.storeKey, "error", err)
+	store.saveWorkerMu.Lock()
+	saveRequests := store.saveRequests
+	store.saveWorkerMu.Unlock()
+
+	if saveRequests == nil {
+		return
+	}
+
+	select {
+	case saveRequests <- struct{}{}:
+	default:
+	}
 }
 
 func (store *messageNodeStore) persist() error {
@@ -482,20 +497,140 @@ func (store *messageNodeStore) nodeEntries() map[string]*messageNode {
 
 	return maps.Clone(store.nodes)
 }
-
 func (store *messageNodeStore) close() error {
 	if store == nil || store.backend == nil {
 		return nil
 	}
 
-	err := store.backend.close()
-	if err != nil {
-		return err
+	store.stopSaveWorker()
+
+	persistErr := store.persist()
+
+	closeErr := store.backend.close()
+	if closeErr == nil {
+		store.backend = nil
+	}
+
+	switch {
+	case persistErr != nil && closeErr != nil:
+		return errors.Join(persistErr, closeErr)
+	case persistErr != nil:
+		return persistErr
+	case closeErr != nil:
+		return closeErr
 	}
 
 	store.backend = nil
 
 	return nil
+}
+
+func (store *messageNodeStore) startSaveWorker() {
+	if store == nil || strings.TrimSpace(store.storeKey) == "" || store.backend == nil {
+		return
+	}
+
+	store.saveWorkerMu.Lock()
+	defer store.saveWorkerMu.Unlock()
+
+	if store.saveRequests != nil {
+		return
+	}
+
+	saveRequests := make(chan struct{}, 1)
+	saveStop := make(chan struct{})
+	saveDone := make(chan struct{})
+
+	store.saveRequests = saveRequests
+	store.saveStop = saveStop
+	store.saveDone = saveDone
+
+	go store.runSaveWorker(saveRequests, saveStop, saveDone)
+}
+
+func (store *messageNodeStore) stopSaveWorker() {
+	if store == nil {
+		return
+	}
+
+	store.saveWorkerMu.Lock()
+	saveStop := store.saveStop
+	saveDone := store.saveDone
+	store.saveRequests = nil
+	store.saveStop = nil
+	store.saveDone = nil
+	store.saveWorkerMu.Unlock()
+
+	if saveStop == nil || saveDone == nil {
+		return
+	}
+
+	close(saveStop)
+	<-saveDone
+}
+
+func (store *messageNodeStore) runSaveWorker(
+	saveRequests <-chan struct{},
+	saveStop <-chan struct{},
+	saveDone chan<- struct{},
+) {
+	defer close(saveDone)
+
+	persistDelay := max(store.persistDelay, time.Duration(0))
+
+	timer := time.NewTimer(persistDelay)
+	stopTimer(timer)
+
+	persistPending := false
+
+	for {
+		var timerChannel <-chan time.Time
+		if persistPending {
+			timerChannel = timer.C
+		}
+
+		select {
+		case <-saveRequests:
+			persistPending = true
+
+			resetTimer(timer, persistDelay)
+		case <-timerChannel:
+			persistPending = false
+
+			err := store.persist()
+			if err != nil {
+				slog.Warn(
+					"persist message history",
+					"store_key",
+					store.storeKey,
+					"error",
+					err,
+				)
+			}
+		case <-saveStop:
+			stopTimer(timer)
+
+			return
+		}
+	}
+}
+
+func stopTimer(timer *time.Timer) {
+	if timer == nil {
+		return
+	}
+
+	if !timer.Stop() {
+		select {
+		case <-timer.C:
+		default:
+		}
+	}
+}
+
+func resetTimer(timer *time.Timer, delay time.Duration) {
+	stopTimer(timer)
+	timer.Reset(delay)
 }
 
 func trimSnapshotNodes(

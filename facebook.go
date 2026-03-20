@@ -92,13 +92,40 @@ func (instance *bot) maybeAugmentConversationWithFacebook(
 	conversation []chatMessage,
 	urlExtractionText string,
 ) ([]chatMessage, []string, error) {
+	preparedAugmentation, err := instance.prepareFacebookAugmentation(
+		ctx,
+		loadedConfig,
+		providerSlashModel,
+		urlExtractionText,
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	augmentedConversation, err := applyPreparedConversationAugmentation(
+		conversation,
+		preparedAugmentation,
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return augmentedConversation, preparedAugmentation.warnings, nil
+}
+
+func (instance *bot) prepareFacebookAugmentation(
+	ctx context.Context,
+	loadedConfig config,
+	providerSlashModel string,
+	urlExtractionText string,
+) (preparedConversationAugmentation, error) {
 	if instance.facebook == nil {
-		return conversation, nil, nil
+		return emptyPreparedConversationAugmentation(), nil
 	}
 
 	facebookURLs := extractFacebookURLs(urlExtractionText)
 	if len(facebookURLs) == 0 {
-		return conversation, nil, nil
+		return emptyPreparedConversationAugmentation(), nil
 	}
 
 	videoContents, warnings := fetchDownloadedVideos(
@@ -109,15 +136,14 @@ func (instance *bot) maybeAugmentConversationWithFacebook(
 		facebookWarningText,
 	)
 	if len(videoContents) == 0 {
-		return conversation, warnings, nil
+		return warningPreparedConversationAugmentation(warnings), nil
 	}
 
-	return augmentConversationWithDownloadedVideos(
+	return prepareDownloadedVideoAugmentation(
 		ctx,
 		instance,
 		loadedConfig,
 		providerSlashModel,
-		conversation,
 		videoContents,
 		warnings,
 		facebookWarningText,

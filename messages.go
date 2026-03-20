@@ -434,6 +434,66 @@ func normalizedURLExtractionText(text string) string {
 	return strings.TrimSpace(parseAugmentedUserPrompt(text).UserQuery)
 }
 
+type preparedAugmentationStage struct {
+	name    string
+	prepare func(context.Context) (preparedConversationAugmentation, error)
+}
+
+func prepareAugmentationStages(
+	ctx context.Context,
+	stages []preparedAugmentationStage,
+) []boundedTaskResult[preparedConversationAugmentation] {
+	return runTasksConcurrently(
+		ctx,
+		len(stages),
+		len(stages),
+		func(taskContext context.Context, index int) (preparedConversationAugmentation, error) {
+			return stages[index].prepare(taskContext)
+		},
+	)
+}
+
+func applyAugmentationStages(
+	messages []chatMessage,
+	warnings []string,
+	stages []preparedAugmentationStage,
+	stageResults []boundedTaskResult[preparedConversationAugmentation],
+) ([]chatMessage, *searchMetadata, []string, error) {
+	augmentedMessages := messages
+
+	var searchMetadata *searchMetadata
+
+	for index, stage := range stages {
+		result := stageResults[index]
+		if result.err != nil {
+			return nil, nil, nil, fmt.Errorf(
+				"augment conversation with %s: %w",
+				stage.name,
+				result.err,
+			)
+		}
+
+		updatedMessages, err := applyPreparedConversationAugmentation(
+			augmentedMessages,
+			result.value,
+		)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf(
+				"augment conversation with %s: %w",
+				stage.name,
+				err,
+			)
+		}
+
+		augmentedMessages = updatedMessages
+		searchMetadata = mergeSearchMetadata(searchMetadata, result.value.metadata)
+
+		warnings = append(warnings, result.value.warnings...)
+	}
+
+	return augmentedMessages, searchMetadata, warnings, nil
+}
+
 func (instance *bot) augmentConversationWithVideoURLs(
 	ctx context.Context,
 	loadedConfig config,
@@ -441,33 +501,44 @@ func (instance *bot) augmentConversationWithVideoURLs(
 	messages []chatMessage,
 	urlExtractionText string,
 ) ([]chatMessage, []string, error) {
-	augmentedMessages, warnings, err := instance.maybeAugmentConversationWithTikTok(
-		ctx,
-		loadedConfig,
-		providerSlashModel,
+	stages := []preparedAugmentationStage{
+		{
+			name: "tiktok",
+			prepare: func(taskContext context.Context) (preparedConversationAugmentation, error) {
+				return instance.prepareTikTokAugmentation(
+					taskContext,
+					loadedConfig,
+					providerSlashModel,
+					urlExtractionText,
+				)
+			},
+		},
+		{
+			name: "facebook",
+			prepare: func(taskContext context.Context) (preparedConversationAugmentation, error) {
+				return instance.prepareFacebookAugmentation(
+					taskContext,
+					loadedConfig,
+					providerSlashModel,
+					urlExtractionText,
+				)
+			},
+		},
+	}
+
+	stageResults := prepareAugmentationStages(ctx, stages)
+
+	augmentedMessages, _, preparedWarnings, err := applyAugmentationStages(
 		messages,
-		urlExtractionText,
+		nil,
+		stages,
+		stageResults,
 	)
 	if err != nil {
-		return nil, nil, fmt.Errorf("augment conversation with tiktok: %w", err)
+		return nil, nil, err
 	}
 
-	var facebookWarnings []string
-
-	augmentedMessages, facebookWarnings, err = instance.maybeAugmentConversationWithFacebook(
-		ctx,
-		loadedConfig,
-		providerSlashModel,
-		augmentedMessages,
-		urlExtractionText,
-	)
-	if err != nil {
-		return nil, nil, fmt.Errorf("augment conversation with facebook: %w", err)
-	}
-
-	warnings = append(warnings, facebookWarnings...)
-
-	return augmentedMessages, warnings, nil
+	return augmentedMessages, preparedWarnings, nil
 }
 
 func (instance *bot) buildMessageConversation(
@@ -617,52 +688,53 @@ func (instance *bot) augmentConversation(
 	warnings []string,
 	urlExtractionText string,
 ) ([]chatMessage, *searchMetadata, []string, error) {
-	augmentedMessages, visualSearchMetadata, visualSearchWarnings, err :=
-		instance.maybeAugmentConversationWithVisualSearch(
-			ctx,
-			loadedConfig,
-			sourceMessage,
-			messages,
-		)
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("augment conversation with visual search: %w", err)
+	stages := []preparedAugmentationStage{
+		{
+			name: "visual search",
+			prepare: func(taskContext context.Context) (preparedConversationAugmentation, error) {
+				return instance.prepareVisualSearchAugmentation(
+					taskContext,
+					loadedConfig,
+					sourceMessage,
+					messages,
+				)
+			},
+		},
+		{
+			name: "website",
+			prepare: func(taskContext context.Context) (preparedConversationAugmentation, error) {
+				return instance.prepareWebsiteAugmentation(
+					taskContext,
+					loadedConfig,
+					urlExtractionText,
+				)
+			},
+		},
+		{
+			name: "youtube",
+			prepare: func(taskContext context.Context) (preparedConversationAugmentation, error) {
+				return instance.prepareYouTubeAugmentation(taskContext, urlExtractionText)
+			},
+		},
+		{
+			name: "reddit",
+			prepare: func(taskContext context.Context) (preparedConversationAugmentation, error) {
+				return instance.prepareRedditAugmentation(taskContext, urlExtractionText)
+			},
+		},
 	}
 
-	warnings = append(warnings, visualSearchWarnings...)
+	stageResults := prepareAugmentationStages(ctx, stages)
 
-	augmentedMessages, websiteWarnings, err := instance.maybeAugmentConversationWithWebsite(
-		ctx,
-		loadedConfig,
-		augmentedMessages,
-		urlExtractionText,
+	augmentedMessages, searchMetadata, warnings, err := applyAugmentationStages(
+		messages,
+		warnings,
+		stages,
+		stageResults,
 	)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("augment conversation with website: %w", err)
+		return nil, nil, nil, err
 	}
-
-	warnings = append(warnings, websiteWarnings...)
-
-	augmentedMessages, youtubeWarnings, err := instance.maybeAugmentConversationWithYouTube(
-		ctx,
-		augmentedMessages,
-		urlExtractionText,
-	)
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("augment conversation with youtube: %w", err)
-	}
-
-	warnings = append(warnings, youtubeWarnings...)
-
-	augmentedMessages, redditWarnings, err := instance.maybeAugmentConversationWithReddit(
-		ctx,
-		augmentedMessages,
-		urlExtractionText,
-	)
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("augment conversation with reddit: %w", err)
-	}
-
-	warnings = append(warnings, redditWarnings...)
 
 	augmentedMessages, webSearchMetadata, searchWarnings, err := instance.maybeAugmentConversationWithWebSearch(
 		ctx,
@@ -677,7 +749,7 @@ func (instance *bot) augmentConversation(
 
 	warnings = append(warnings, searchWarnings...)
 
-	return augmentedMessages, mergeSearchMetadata(visualSearchMetadata, webSearchMetadata), warnings, nil
+	return augmentedMessages, mergeSearchMetadata(searchMetadata, webSearchMetadata), warnings, nil
 }
 
 func (instance *bot) sourceMessageURLExtractionText(

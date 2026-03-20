@@ -235,6 +235,72 @@ func TestMaybeAugmentConversationWithYouTubeFetchesMultipleURLsConcurrentlyAndKe
 	}
 }
 
+func TestYouTubeFetchStartsWatchPageBeforeTranscriptCompletes(t *testing.T) {
+	t.Parallel()
+
+	const (
+		videoID       = "dQw4w9WgXcQ"
+		youtubeAPIKey = "youtube-api-key"
+		clientVersion = "1.20250301.00.00"
+		commentsToken = "page-1"
+		videoURL      = "https://www.youtube.com/watch?v=" + videoID
+	)
+
+	watchStarted := make(chan struct{})
+
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/notegpt/video-transcript":
+			select {
+			case <-watchStarted:
+			case <-request.Context().Done():
+				http.Error(writer, request.Context().Err().Error(), http.StatusGatewayTimeout)
+
+				return
+			}
+
+			writeJSON(writer, newSuccessNoteGPTVideoTranscriptResponse(mockNoteGPTTranscriptData(videoID)))
+		case "/watch":
+			close(watchStarted)
+			writer.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = writer.Write([]byte(mockYouTubeWatchHTML(youtubeAPIKey, clientVersion, commentsToken)))
+		case "/youtubei/v1/next":
+			writeJSON(writer, mockYouTubeCommentsPageResponse("reloadContinuationItemsCommand", 1, 1, ""))
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	client := youtubeClient{
+		httpClient:        server.Client(),
+		watchURL:          server.URL + "/watch",
+		apiBaseURL:        server.URL + "/youtubei/v1",
+		noteGPTAPIBaseURL: server.URL + "/notegpt",
+		userAgent:         youtubeUserAgent,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	content, err := client.fetch(ctx, videoURL)
+	if err != nil {
+		t.Fatalf("fetch youtube content: %v", err)
+	}
+
+	if content.URL != videoURL {
+		t.Fatalf("unexpected canonical URL: %q", content.URL)
+	}
+
+	if strings.TrimSpace(content.Transcript) == "" {
+		t.Fatal("expected transcript to be populated")
+	}
+
+	if len(content.Comments) != 1 {
+		t.Fatalf("unexpected comments: %#v", content.Comments)
+	}
+}
+
 func TestMaybeAugmentConversationWithYouTubeIgnoresURLsOnlyPresentInDocumentContent(t *testing.T) {
 	t.Parallel()
 

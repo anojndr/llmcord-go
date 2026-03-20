@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -32,7 +33,7 @@ type bot struct {
 	currentSearchDeciderModel string
 	modelMu                   sync.RWMutex
 	editMu                    sync.Mutex
-	nextEditAt                time.Time
+	nextEditAtByMessage       map[string]time.Time
 	startupMu                 sync.Mutex
 	discordReady              bool
 	sessionConfigured         bool
@@ -319,8 +320,11 @@ func (instance *bot) sendTypingIndicator(channelID string) {
 	}
 }
 
-func (instance *bot) waitForEditSlot(ctx context.Context) error {
-	waitDuration := instance.reserveEditDelay()
+func (instance *bot) waitForEditSlotForMessage(
+	ctx context.Context,
+	messageID string,
+) error {
+	waitDuration := instance.reserveEditDelay(messageID)
 	if waitDuration <= 0 {
 		return nil
 	}
@@ -336,19 +340,29 @@ func (instance *bot) waitForEditSlot(ctx context.Context) error {
 	}
 }
 
-func (instance *bot) reserveEditDelay() time.Duration {
+func (instance *bot) reserveEditDelay(messageID string) time.Duration {
 	instance.editMu.Lock()
 	defer instance.editMu.Unlock()
 
+	editKey := strings.TrimSpace(messageID)
+	if editKey == "" {
+		return 0
+	}
+
+	if instance.nextEditAtByMessage == nil {
+		instance.nextEditAtByMessage = make(map[string]time.Time)
+	}
+
 	now := time.Now()
+	nextEditAt := instance.nextEditAtByMessage[editKey]
 
 	waitDuration := time.Duration(0)
 
-	if now.Before(instance.nextEditAt) {
-		waitDuration = time.Until(instance.nextEditAt)
+	if now.Before(nextEditAt) {
+		waitDuration = time.Until(nextEditAt)
 	}
 
-	instance.nextEditAt = now.Add(waitDuration).Add(editDelay)
+	instance.nextEditAtByMessage[editKey] = now.Add(waitDuration).Add(editDelay)
 
 	return waitDuration
 }

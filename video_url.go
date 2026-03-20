@@ -13,165 +13,237 @@ type downloadedURLVideoContent interface {
 	mediaPart() contentPart
 }
 
-func appendDownloadedVideosToConversation[T downloadedURLVideoContent](
-	conversation []chatMessage,
+func downloadedVideoMediaParts[T downloadedURLVideoContent](
 	videoContents []T,
-	warnings []string,
-) ([]chatMessage, []string, error) {
+) []contentPart {
 	mediaParts := make([]contentPart, 0, len(videoContents))
 	for _, videoContent := range videoContents {
 		mediaParts = append(mediaParts, cloneContentPart(videoContent.mediaPart()))
 	}
 
-	augmentedConversation, err := appendMediaPartsToConversation(
-		conversation,
-		mediaParts,
-	)
-	if err != nil {
-		return nil, nil, fmt.Errorf("append downloaded video media to conversation: %w", err)
-	}
-
-	return augmentedConversation, warnings, nil
+	return mediaParts
 }
 
-func augmentConversationWithDownloadedVideos[T downloadedURLVideoContent](
+func buildDownloadedVideoAugmentation(
+	label string,
+	warnings []string,
+	mediaParts []contentPart,
+	analyses []string,
+) preparedConversationAugmentation {
+	return newPreparedConversationAugmentation(
+		warnings,
+		nil,
+		func(conversation []chatMessage) ([]chatMessage, error) {
+			augmentedConversation := conversation
+
+			if len(mediaParts) > 0 {
+				updatedConversation, appendErr := appendMediaPartsToConversation(
+					augmentedConversation,
+					mediaParts,
+				)
+				if appendErr != nil {
+					return nil, fmt.Errorf(
+						"append %s video media to conversation: %w",
+						label,
+						appendErr,
+					)
+				}
+
+				augmentedConversation = updatedConversation
+			}
+
+			if len(analyses) == 0 {
+				return augmentedConversation, nil
+			}
+
+			updatedConversation, appendErr := appendMediaAnalysesToConversation(
+				augmentedConversation,
+				analyses,
+			)
+			if appendErr != nil {
+				return nil, fmt.Errorf(
+					"append %s media analyses: %w",
+					label,
+					appendErr,
+				)
+			}
+
+			return updatedConversation, nil
+		},
+	)
+}
+
+func resolveDownloadedVideoAugmentation[T downloadedURLVideoContent](
 	ctx context.Context,
 	instance *bot,
 	loadedConfig config,
 	providerSlashModel string,
-	conversation []chatMessage,
 	videoContents []T,
 	warnings []string,
 	warningText string,
 	label string,
-) ([]chatMessage, []string, error) {
+) ([]contentPart, []string, []string, error) {
 	replyModelAPIKind, err := configuredModelAPIKind(loadedConfig, providerSlashModel)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	searchDeciderNeedsAnalysis, err := instance.searchDeciderNeedsURLVideoAnalysis(
 		loadedConfig,
 	)
 	if err != nil {
-		return nil, nil, fmt.Errorf("check %s search decider support: %w", label, err)
+		return nil, nil, nil, fmt.Errorf(
+			"check %s search decider support: %w",
+			label,
+			err,
+		)
 	}
 
-	if replyModelAPIKind == providerAPIKindGemini {
-		augmentedConversation, augmentedWarnings, appendErr := appendDownloadedVideosToConversation(
-			conversation,
-			videoContents,
-			warnings,
-		)
-		if appendErr != nil {
-			return nil, nil, appendErr
-		}
+	mediaParts := downloadedVideoMediaParts(videoContents)
 
-		if !searchDeciderNeedsAnalysis {
-			return augmentedConversation, augmentedWarnings, nil
-		}
-
-		return appendDownloadedVideoAnalysesWithGemini(
+	switch {
+	case replyModelAPIKind == providerAPIKindGemini && !searchDeciderNeedsAnalysis:
+		return mediaParts, nil, warnings, nil
+	case replyModelAPIKind == providerAPIKindGemini && searchDeciderNeedsAnalysis:
+		analyses, analysisErr := downloadedVideoAnalysesWithGemini(
 			ctx,
 			instance,
 			loadedConfig,
-			augmentedConversation,
 			videoContents,
-			augmentedWarnings,
+			label,
+		)
+		if analysisErr != nil {
+			return nil, nil, nil, analysisErr
+		}
+
+		return mediaParts, analyses, warnings, nil
+	default:
+		return resolveDownloadedVideoAnalysesForNonGeminiModel(
+			ctx,
+			instance,
+			loadedConfig,
+			providerSlashModel,
+			videoContents,
+			warnings,
+			warningText,
 			label,
 		)
 	}
-
-	return preprocessDownloadedVideosWithGemini(
-		ctx,
-		instance,
-		loadedConfig,
-		providerSlashModel,
-		conversation,
-		videoContents,
-		warnings,
-		warningText,
-		label,
-	)
 }
 
-func preprocessDownloadedVideosWithGemini[T downloadedURLVideoContent](
+func resolveDownloadedVideoAnalysesForNonGeminiModel[T downloadedURLVideoContent](
 	ctx context.Context,
 	instance *bot,
 	loadedConfig config,
 	providerSlashModel string,
-	conversation []chatMessage,
 	videoContents []T,
 	warnings []string,
 	warningText string,
 	label string,
-) ([]chatMessage, []string, error) {
+) ([]contentPart, []string, []string, error) {
 	canUseMediaAnalysis, err := canUseGeminiMediaAnalysis(
 		loadedConfig,
 		providerSlashModel,
 	)
 	if err != nil {
-		return nil, nil, fmt.Errorf("check %s media analysis support: %w", label, err)
+		return nil, nil, nil, fmt.Errorf(
+			"check %s media analysis support: %w",
+			label,
+			err,
+		)
 	}
 
 	if !canUseMediaAnalysis {
-		return conversation, mergeURLVideoWarnings(warnings, warningText), nil
+		return nil, nil, mergeURLVideoWarnings(warnings, warningText), nil
 	}
 
-	return appendDownloadedVideoAnalysesWithGemini(
+	analyses, err := downloadedVideoAnalysesWithGemini(
 		ctx,
 		instance,
 		loadedConfig,
-		conversation,
 		videoContents,
-		warnings,
 		label,
 	)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	return nil, analyses, warnings, nil
 }
 
-func appendDownloadedVideoAnalysesWithGemini[T downloadedURLVideoContent](
+func prepareDownloadedVideoAugmentation[T downloadedURLVideoContent](
 	ctx context.Context,
 	instance *bot,
 	loadedConfig config,
-	conversation []chatMessage,
+	providerSlashModel string,
 	videoContents []T,
 	warnings []string,
+	warningText string,
 	label string,
-) ([]chatMessage, []string, error) {
+) (preparedConversationAugmentation, error) {
+	mediaParts, analyses, resolvedWarnings, err := resolveDownloadedVideoAugmentation(
+		ctx,
+		instance,
+		loadedConfig,
+		providerSlashModel,
+		videoContents,
+		warnings,
+		warningText,
+		label,
+	)
+	if err != nil {
+		return emptyPreparedConversationAugmentation(), err
+	}
+
+	return buildDownloadedVideoAugmentation(
+		label,
+		resolvedWarnings,
+		mediaParts,
+		analyses,
+	), nil
+}
+
+func downloadedVideoAnalysesWithGemini[T downloadedURLVideoContent](
+	ctx context.Context,
+	instance *bot,
+	loadedConfig config,
+	videoContents []T,
+	label string,
+) ([]string, error) {
 	geminiModel, err := configuredGeminiMediaModel(loadedConfig)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
 	analyses := make([]string, 0, len(videoContents))
-	for index, videoContent := range videoContents {
-		analysis, analysisErr := instance.analyzeMediaWithGemini(
-			ctx,
-			loadedConfig,
-			geminiModel,
-			cloneContentPart(videoContent.mediaPart()),
-		)
-		if analysisErr != nil {
-			return nil, nil, fmt.Errorf(
+	results := runTasksConcurrently(
+		ctx,
+		geminiMediaAnalysisConcurrency,
+		len(videoContents),
+		func(taskContext context.Context, index int) (string, error) {
+			return instance.analyzeMediaWithGemini(
+				taskContext,
+				loadedConfig,
+				geminiModel,
+				cloneContentPart(videoContents[index].mediaPart()),
+			)
+		},
+	)
+
+	for index, result := range results {
+		if result.err != nil {
+			return nil, fmt.Errorf(
 				"analyze %s video %d with gemini: %w",
 				label,
 				index+1,
-				analysisErr,
+				result.err,
 			)
 		}
 
-		analyses = append(analyses, analysis)
+		analyses = append(analyses, result.value)
 	}
 
-	augmentedConversation, err := appendMediaAnalysesToConversation(
-		conversation,
-		analyses,
-	)
-	if err != nil {
-		return nil, nil, fmt.Errorf("append %s media analyses: %w", label, err)
-	}
-
-	return augmentedConversation, warnings, nil
+	return analyses, nil
 }
 
 func (instance *bot) searchDeciderNeedsURLVideoAnalysis(

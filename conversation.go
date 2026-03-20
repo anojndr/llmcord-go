@@ -14,6 +14,7 @@ import (
 	"os"
 	"path"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
@@ -43,6 +44,8 @@ const (
 	maxAttachmentRetryShift        = 6
 	discordAttachmentCDNHost       = "cdn.discordapp.com"
 	discordAttachmentMediaHost     = "media.discordapp.net"
+	attachmentDownloadConcurrency  = 4
+	nodeInitializationTaskCount    = 2
 )
 
 var errAttachmentRetryContextDone = errors.New("attachment retry context done")
@@ -264,10 +267,37 @@ func (instance *bot) initializeNode(
 	message *discordgo.Message,
 	node *messageNode,
 ) {
-	cleanedContent := trimBotMention(message.Content, instance.session.State.User.ID)
-	payloads, attachmentDownloadFailed := instance.fetchSupportedAttachments(ctx, message.Attachments)
+	botUserID := instance.session.State.User.ID
+	cleanedContent := trimBotMention(message.Content, botUserID)
 
-	node.role = messageRole(message, instance.session.State.User.ID)
+	var (
+		payloads                 []attachmentPayload
+		attachmentDownloadFailed bool
+		parentMessage            *discordgo.Message
+		fetchParentFailed        bool
+		initializationWaitGroup  sync.WaitGroup
+	)
+
+	initializationWaitGroup.Add(nodeInitializationTaskCount)
+
+	go func() {
+		defer initializationWaitGroup.Done()
+
+		payloads, attachmentDownloadFailed = instance.fetchSupportedAttachments(
+			ctx,
+			message.Attachments,
+		)
+	}()
+
+	go func() {
+		defer initializationWaitGroup.Done()
+
+		parentMessage, fetchParentFailed = instance.resolveParentMessage(message)
+	}()
+
+	initializationWaitGroup.Wait()
+
+	node.role = messageRole(message, botUserID)
 	node.text = buildMessageText(message, cleanedContent, payloads)
 	node.urlScanText = ""
 	node.attachmentDownloadFailed = attachmentDownloadFailed
@@ -296,7 +326,8 @@ func (instance *bot) initializeNode(
 	}
 
 	node.hasBadAttachments = len(message.Attachments) > supportedAttachmentCount(message.Attachments)
-	node.parentMessage, node.fetchParentFailed = instance.resolveParentMessage(message)
+	node.parentMessage = parentMessage
+	node.fetchParentFailed = fetchParentFailed
 	node.initialized = true
 	instance.nodes.cacheLockedNode(message.ID, node)
 }
@@ -481,8 +512,7 @@ func (instance *bot) fetchSupportedAttachments(
 	timeoutContext, cancelTimeout := context.WithTimeout(ctx, attachmentRequestTimeout)
 	defer cancelTimeout()
 
-	payloads := make([]attachmentPayload, 0, len(attachments))
-	anyDownloadFailed := false
+	supportedAttachments := make([]*discordgo.MessageAttachment, 0, len(attachments))
 
 	for _, attachment := range attachments {
 		if attachment == nil {
@@ -493,26 +523,46 @@ func (instance *bot) fetchSupportedAttachments(
 			continue
 		}
 
-		downloadURL, downloadURLErr := discordAttachmentDownloadURL(attachment.URL)
-		if downloadURLErr != nil {
-			slog.Warn("invalid attachment url", "error", downloadURLErr)
+		supportedAttachments = append(supportedAttachments, attachment)
+	}
 
+	results := runTasksConcurrently(
+		timeoutContext,
+		attachmentDownloadConcurrency,
+		len(supportedAttachments),
+		func(taskContext context.Context, index int) (attachmentPayload, error) {
+			attachment := supportedAttachments[index]
+
+			downloadURL, err := discordAttachmentDownloadURL(attachment.URL)
+			if err != nil {
+				slog.Warn("invalid attachment url", "error", err)
+
+				return attachmentPayload{}, err
+			}
+
+			body, err := instance.fetchAttachmentWithRetry(taskContext, downloadURL)
+			if err != nil {
+				return attachmentPayload{}, err
+			}
+
+			return attachmentPayload{
+				attachment: attachment,
+				body:       body,
+			}, nil
+		},
+	)
+
+	payloads := make([]attachmentPayload, 0, len(results))
+	anyDownloadFailed := false
+
+	for _, result := range results {
+		if result.err != nil {
 			anyDownloadFailed = true
 
 			continue
 		}
 
-		body, fetchErr := instance.fetchAttachmentWithRetry(timeoutContext, downloadURL)
-		if fetchErr != nil {
-			anyDownloadFailed = true
-
-			continue
-		}
-
-		payloads = append(payloads, attachmentPayload{
-			attachment: attachment,
-			body:       body,
-		})
+		payloads = append(payloads, result.value)
 	}
 
 	return payloads, anyDownloadFailed

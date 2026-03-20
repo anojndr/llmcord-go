@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 )
@@ -34,6 +35,11 @@ type messageNodeStore struct {
 	storeKey      string
 	backend       messageNodeStoreBackend
 	saveMu        sync.Mutex
+	saveWorkerMu  sync.Mutex
+	saveRequests  chan struct{}
+	saveStop      chan struct{}
+	saveDone      chan struct{}
+	persistDelay  time.Duration
 	snapshotMu    sync.Mutex
 	snapshotCache map[string]messageNodeSnapshot
 }
@@ -42,6 +48,7 @@ func newMessageNodeStore(capacity int) *messageNodeStore {
 	store := new(messageNodeStore)
 	store.nodes = make(map[string]*messageNode)
 	store.capacity = capacity
+	store.persistDelay = defaultMessageNodeStorePersistDelay
 	store.snapshotCache = make(map[string]messageNodeSnapshot)
 
 	return store

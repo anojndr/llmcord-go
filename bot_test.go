@@ -145,3 +145,25 @@ func TestReadyAnnouncementWaitsForDiscordReadyWhenConfiguredFirst(t *testing.T) 
 		t.Fatalf("unexpected announcement after ready event: %q", buffer.String())
 	}
 }
+
+func TestReserveEditDelayUsesSeparateMessageBuckets(t *testing.T) {
+	t.Parallel()
+
+	instance := new(bot)
+
+	firstMessageWait := instance.reserveEditDelay("message-1")
+	secondMessageWait := instance.reserveEditDelay("message-2")
+	repeatedFirstMessageWait := instance.reserveEditDelay("message-1")
+
+	if firstMessageWait != 0 {
+		t.Fatalf("unexpected initial wait for first message: %s", firstMessageWait)
+	}
+
+	if secondMessageWait != 0 {
+		t.Fatalf("unexpected initial wait for second message: %s", secondMessageWait)
+	}
+
+	if repeatedFirstMessageWait <= 0 {
+		t.Fatalf("expected repeated first-message wait to be throttled, got %s", repeatedFirstMessageWait)
+	}
+}

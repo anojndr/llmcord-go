@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 )
@@ -18,11 +19,32 @@ type testMessageNodeStoreBackend struct {
 	snapshots map[string]messageNodeStoreSnapshot
 }
 
+type blockingSaveMessageNodeStoreBackend struct {
+	mu          sync.Mutex
+	saveCalls   int
+	saveStarted chan struct{}
+	releaseSave chan struct{}
+	snapshot    messageNodeStoreSnapshot
+}
+
 func newTestMessageNodeStoreBackend() *testMessageNodeStoreBackend {
 	backend := new(testMessageNodeStoreBackend)
 	backend.snapshots = make(map[string]messageNodeStoreSnapshot)
 
 	return backend
+}
+
+func newBlockingSaveMessageNodeStoreBackend() *blockingSaveMessageNodeStoreBackend {
+	return &blockingSaveMessageNodeStoreBackend{
+		mu:          sync.Mutex{},
+		saveCalls:   0,
+		saveStarted: make(chan struct{}, 1),
+		releaseSave: make(chan struct{}),
+		snapshot: messageNodeStoreSnapshot{
+			Version: 0,
+			Nodes:   nil,
+		},
+	}
 }
 
 func (backend *testMessageNodeStoreBackend) loadSnapshot(
@@ -61,6 +83,39 @@ func (backend *testMessageNodeStoreBackend) close() error {
 	return nil
 }
 
+func (backend *blockingSaveMessageNodeStoreBackend) loadSnapshot(
+	_ string,
+	_ int,
+) (messageNodeStoreSnapshot, error) {
+	return messageNodeStoreSnapshot{}, os.ErrNotExist
+}
+
+func (backend *blockingSaveMessageNodeStoreBackend) saveSnapshot(
+	_ string,
+	snapshot messageNodeStoreSnapshot,
+) error {
+	backend.mu.Lock()
+	backend.saveCalls++
+	backend.snapshot = messageNodeStoreSnapshot{
+		Version: snapshot.Version,
+		Nodes:   maps.Clone(snapshot.Nodes),
+	}
+	backend.mu.Unlock()
+
+	select {
+	case backend.saveStarted <- struct{}{}:
+	default:
+	}
+
+	<-backend.releaseSave
+
+	return nil
+}
+
+func (backend *blockingSaveMessageNodeStoreBackend) close() error {
+	return nil
+}
+
 func (backend *testMessageNodeStoreBackend) setSnapshot(
 	storeKey string,
 	snapshot messageNodeStoreSnapshot,
@@ -91,6 +146,20 @@ func (backend *testMessageNodeStoreBackend) snapshot(
 		Version: snapshot.Version,
 		Nodes:   maps.Clone(snapshot.Nodes),
 	}, true
+}
+
+func cacheInitializedStoreNode(
+	store *messageNodeStore,
+	messageID string,
+	text string,
+) {
+	node := store.getOrCreate(messageID)
+	node.mu.Lock()
+	node.role = messageRoleUser
+	node.text = text
+	node.initialized = true
+	store.cacheLockedNode(messageID, node)
+	node.mu.Unlock()
 }
 
 func TestDefaultMessageNodeStoreKeyUsesExpectedPrefix(t *testing.T) {
@@ -132,6 +201,86 @@ func TestDefaultMessageNodeStoreKeyIsStableForEquivalentPaths(t *testing.T) {
 
 	if leftStoreKey != rightStoreKey {
 		t.Fatalf("unexpected store key mismatch: left=%q right=%q", leftStoreKey, rightStoreKey)
+	}
+}
+
+func TestMessageNodeStorePersistBestEffortIsAsyncAndDebounced(t *testing.T) {
+	t.Parallel()
+
+	backend := newBlockingSaveMessageNodeStoreBackend()
+	store := newMessageNodeStore(10)
+	store.storeKey = "async-store"
+	store.backend = backend
+	store.persistDelay = 20 * time.Millisecond
+	store.startSaveWorker()
+
+	cacheInitializedStoreNode(store, "message-1", "cached text")
+
+	done := make(chan struct{})
+
+	go func() {
+		store.persistBestEffort()
+		store.persistBestEffort()
+		store.persistBestEffort()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("persistBestEffort blocked the caller")
+	}
+
+	select {
+	case <-backend.saveStarted:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for background save to start")
+	}
+
+	close(backend.releaseSave)
+	store.stopSaveWorker()
+
+	time.Sleep(100 * time.Millisecond)
+
+	backend.mu.Lock()
+	saveCalls := backend.saveCalls
+	backend.mu.Unlock()
+
+	if saveCalls != 1 {
+		t.Fatalf("expected a single debounced save, got %d", saveCalls)
+	}
+}
+
+func TestMessageNodeStoreCloseFlushesPendingPersist(t *testing.T) {
+	t.Parallel()
+
+	backend := newTestMessageNodeStoreBackend()
+	store := newMessageNodeStore(10)
+	store.storeKey = "close-store"
+	store.backend = backend
+	store.persistDelay = time.Hour
+	store.startSaveWorker()
+
+	cacheInitializedStoreNode(store, "message-1", "cached text")
+	store.persistBestEffort()
+
+	err := store.close()
+	if err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	snapshot, ok := backend.snapshot("close-store")
+	if !ok {
+		t.Fatal("expected close to flush a snapshot")
+	}
+
+	node, found := snapshot.Nodes["message-1"]
+	if !found {
+		t.Fatalf("expected flushed node in snapshot: %#v", snapshot.Nodes)
+	}
+
+	if node.Text != "cached text" {
+		t.Fatalf("unexpected flushed node text: %#v", node)
 	}
 }
 
