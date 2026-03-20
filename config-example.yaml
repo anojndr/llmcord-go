@@ -132,14 +132,17 @@ web_search:
   max_urls: 5
   exa:
     # Optional. When set, the web search flow uses Exa's Search API instead of
-    # Exa MCP. `api_key` also accepts a YAML list. Keys are tried in order.
+    # Exa MCP, and generic website extraction prefers Exa's Contents API first.
+    # `api_key` also accepts a YAML list. Keys are tried in order.
     # api_key:
     #   - exa-primary-key
     #   - exa-backup-key
     api_key:
   tavily:
     # Optional when `primary_provider: mcp`; required if you want Tavily as either
-    # primary or fallback. `api_key` also accepts a YAML list. Keys are tried in order.
+    # primary or fallback. Generic website extraction uses Tavily Extract when no
+    # Exa API key is set, and as fallback when Exa Contents fails. `api_key`
+    # also accepts a YAML list. Keys are tried in order.
     # api_key:
     #   - tvly-primary-key
     #   - tvly-backup-key

@@ -632,6 +632,7 @@ func (instance *bot) augmentConversation(
 
 	augmentedMessages, websiteWarnings, err := instance.maybeAugmentConversationWithWebsite(
 		ctx,
+		loadedConfig,
 		augmentedMessages,
 		urlExtractionText,
 	)
