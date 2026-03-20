@@ -237,7 +237,7 @@ func TestChatCompletionRouterWaitsForOpenAIRetryDelayBeforeFallbackKey(t *testin
 	}
 }
 
-func TestChatCompletionRouterRetriesOpenAIAPIKeysAfterStreamFailure(t *testing.T) {
+func TestChatCompletionRouterDoesNotRetryOpenAIAPIKeysAfterPartialStream(t *testing.T) {
 	t.Parallel()
 
 	authCapture := new(stringCapture)
@@ -268,21 +268,31 @@ func TestChatCompletionRouterRetriesOpenAIAPIKeysAfterStreamFailure(t *testing.T
 		waitForRetry: nil,
 	}
 
-	content, err := collectStreamedContent(
+	var joinedContent strings.Builder
+
+	err := router.streamChatCompletion(
 		context.Background(),
-		router,
 		newOpenAIRetryRequest(server.URL+"/v1"),
+		func(delta streamDelta) error {
+			joinedContent.WriteString(delta.Content)
+
+			return nil
+		},
 	)
-	if err != nil {
-		t.Fatalf("stream chat completion: %v", err)
+	if err == nil {
+		t.Fatal("expected partial stream failure")
 	}
 
-	if !slices.Equal(authCapture.snapshot(), []string{testRetryPrimaryAuthHeader, testRetryBackupAuthHeader}) {
+	if !slices.Equal(authCapture.snapshot(), []string{testRetryPrimaryAuthHeader}) {
 		t.Fatalf("unexpected authorization attempts: %#v", authCapture.snapshot())
 	}
 
-	if content != testStreamedHelloText {
-		t.Fatalf("unexpected streamed content: %q", content)
+	if joinedContent.String() != "Hel" {
+		t.Fatalf("unexpected streamed content: %q", joinedContent.String())
+	}
+
+	if !strings.Contains(err.Error(), "unexpected EOF") {
+		t.Fatalf("unexpected stream error: %v", err)
 	}
 }
 
@@ -405,6 +415,54 @@ func TestChatCompletionRouterWaitsForOpenAICodexRetryDelayBeforeFallbackKey(t *t
 	}
 }
 
+func TestChatCompletionRouterStreamsOpenAICodexImmediately(t *testing.T) {
+	t.Parallel()
+
+	validAPIKey := testOpenAICodexJWT(t)
+	releaseStream, release := newReleaseSignal()
+	firstDeltaSeen := make(chan struct{})
+	chunkCapture := new(stringCapture)
+
+	server := newBlockingOpenAICodexStreamServer(t, validAPIKey, releaseStream)
+	defer server.Close()
+	defer release()
+
+	router := chatCompletionRouter{
+		openAI:       newOpenAIClient(nil),
+		openAICodex:  newOpenAICodexClient(server.Client()),
+		gemini:       newGeminiClient(nil),
+		waitForRetry: nil,
+	}
+
+	request := newOpenAICodexRetryRequest(server.URL+"/backend-api", validAPIKey)
+	request.Provider.APIKeys = []string{validAPIKey}
+
+	streamErr := startStreamingContentCapture(
+		context.Background(),
+		router,
+		request,
+		chunkCapture,
+		firstDeltaSeen,
+	)
+
+	waitForFirstStreamedDelta(t, "codex", firstDeltaSeen)
+
+	if !slices.Equal(chunkCapture.snapshot(), []string{"Hel"}) {
+		t.Fatalf("unexpected codex chunks before release: %#v", chunkCapture.snapshot())
+	}
+
+	release()
+
+	err := <-streamErr
+	if err != nil {
+		t.Fatalf("stream codex completion: %v", err)
+	}
+
+	if strings.Join(chunkCapture.snapshot(), "") != testOpenAICodexHelloText {
+		t.Fatalf("unexpected streamed codex content: %q", strings.Join(chunkCapture.snapshot(), ""))
+	}
+}
+
 func TestChatCompletionRouterRetriesSingleGeminiAPIKeyAfterRetryDelay(t *testing.T) {
 	t.Parallel()
 
@@ -428,10 +486,6 @@ func TestChatCompletionRouterRetriesSingleGeminiAPIKeyAfterRetryDelay(t *testing
 			) iter.Seq2[*genai.GenerateContentResponse, error] {
 				return func(yield func(*genai.GenerateContentResponse, error) bool) {
 					if attempt == 0 {
-						if !yield(newGeminiGenerateContentResponse("No", genai.FinishReasonUnspecified), nil) {
-							return
-						}
-
 						_ = yield(
 							nil,
 							newTestGeminiRetryDelayError("Please retry in 47.453198619s.", "47s"),
@@ -533,6 +587,181 @@ func TestChatCompletionRouterWaitsForGeminiRetryDelayBeforeFallbackKey(t *testin
 
 	if content != testStreamedHelloText {
 		t.Fatalf("unexpected streamed content: %q", content)
+	}
+}
+
+func TestChatCompletionRouterStreamsGeminiImmediately(t *testing.T) {
+	t.Parallel()
+
+	releaseStream, release := newReleaseSignal()
+	firstDeltaSeen := make(chan struct{})
+	chunkCapture := new(stringCapture)
+
+	router := newBlockingGeminiStreamRouter(releaseStream)
+
+	defer release()
+
+	streamErr := startStreamingContentCapture(
+		context.Background(),
+		router,
+		newSimpleGeminiStreamRequest(),
+		chunkCapture,
+		firstDeltaSeen,
+	)
+
+	waitForFirstStreamedDelta(t, "gemini", firstDeltaSeen)
+
+	if !slices.Equal(chunkCapture.snapshot(), []string{"Hel"}) {
+		t.Fatalf("unexpected gemini chunks before release: %#v", chunkCapture.snapshot())
+	}
+
+	release()
+
+	err := <-streamErr
+	if err != nil {
+		t.Fatalf("stream gemini completion: %v", err)
+	}
+
+	if strings.Join(chunkCapture.snapshot(), "") != testStreamedHelloText {
+		t.Fatalf("unexpected streamed gemini content: %q", strings.Join(chunkCapture.snapshot(), ""))
+	}
+}
+
+func newReleaseSignal() (chan struct{}, func()) {
+	releaseStream := make(chan struct{})
+
+	var releaseOnce sync.Once
+
+	release := func() {
+		releaseOnce.Do(func() {
+			close(releaseStream)
+		})
+	}
+
+	return releaseStream, release
+}
+
+func newBlockingOpenAICodexStreamServer(
+	t *testing.T,
+	apiKey string,
+	releaseStream <-chan struct{},
+) *httptest.Server {
+	t.Helper()
+
+	return httptest.NewServer(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		request *http.Request,
+	) {
+		t.Helper()
+
+		assertOpenAICodexRequest(t, request, apiKey, "")
+		responseWriter.Header().Set("Content-Type", "text/event-stream")
+
+		flusher, ok := responseWriter.(http.Flusher)
+		if !ok {
+			t.Fatal("expected response writer to support flushing")
+		}
+
+		writeStreamChunk(
+			t,
+			responseWriter,
+			"data: {\"type\":\"response.output_text.delta\",\"delta\":\"Hel\"}\n\n",
+		)
+		flusher.Flush()
+
+		<-releaseStream
+
+		writeStreamChunk(
+			t,
+			responseWriter,
+			"data: {\"type\":\"response.output_text.delta\",\"delta\":\"lo\"}\n\n",
+		)
+		flusher.Flush()
+		writeStreamChunk(
+			t,
+			responseWriter,
+			"data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n",
+		)
+		flusher.Flush()
+		writeStreamChunk(t, responseWriter, "data: [DONE]\n\n")
+		flusher.Flush()
+	}))
+}
+
+func newBlockingGeminiStreamRouter(releaseStream <-chan struct{}) chatCompletionRouter {
+	return chatCompletionRouter{
+		openAI:      newOpenAIClient(nil),
+		openAICodex: newOpenAICodexClient(nil),
+		waitForRetry: func(context.Context, time.Duration) error {
+			return nil
+		},
+		gemini: geminiClient{
+			httpClient: new(http.Client),
+			newClient: func(
+				_ context.Context,
+				_ *genai.ClientConfig,
+			) (geminiAPIClient, error) {
+				return stubGeminiAPIClient{
+					generateContentStream: func(
+						_ context.Context,
+						_ string,
+						_ []*genai.Content,
+						_ *genai.GenerateContentConfig,
+					) iter.Seq2[*genai.GenerateContentResponse, error] {
+						return func(yield func(*genai.GenerateContentResponse, error) bool) {
+							if !yield(newGeminiGenerateContentResponse("Hel", genai.FinishReasonUnspecified), nil) {
+								return
+							}
+
+							<-releaseStream
+
+							_ = yield(newGeminiGenerateContentResponse("lo", genai.FinishReasonStop), nil)
+						}
+					},
+					uploadFile: nil,
+					getFile:    nil,
+				}, nil
+			},
+		},
+	}
+}
+
+func startStreamingContentCapture(
+	ctx context.Context,
+	router chatCompletionRouter,
+	request chatCompletionRequest,
+	chunkCapture *stringCapture,
+	firstDeltaSeen chan struct{},
+) <-chan error {
+	streamErr := make(chan error, 1)
+
+	var firstDeltaOnce sync.Once
+
+	go func() {
+		streamErr <- router.streamChatCompletion(ctx, request, func(delta streamDelta) error {
+			if delta.Content == "" {
+				return nil
+			}
+
+			chunkCapture.append(delta.Content)
+			firstDeltaOnce.Do(func() {
+				close(firstDeltaSeen)
+			})
+
+			return nil
+		})
+	}()
+
+	return streamErr
+}
+
+func waitForFirstStreamedDelta(t *testing.T, provider string, firstDeltaSeen <-chan struct{}) {
+	t.Helper()
+
+	select {
+	case <-firstDeltaSeen:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("expected %s delta before stream completion", provider)
 	}
 }
 
