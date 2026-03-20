@@ -69,7 +69,7 @@ The goal is to make Discord feel like a practical, stateful frontend for LLM wor
 ### Better Discord output
 
 - Immediate progress embeds as soon as a request arrives
-- Streaming embed responses with automatic message splitting
+- True incremental streaming embed responses with automatic message splitting
 - Plain-response mode using Discord text display components
 - Model labels shown in embed author text
 - User-facing error text when upstream streaming fails instead of silently stopping
@@ -278,7 +278,7 @@ golangci-lint run --default=all
 - Streaming failures, blocked responses, and prematurely terminated streams are surfaced to users as visible errors.
 - Providers pointing at `https://openrouter.ai/...` automatically send `transforms: ["middle-out"]` unless overridden.
 - OpenAI-compatible chat completions retry once without degraded tools or functions when applicable.
-- If a provider has multiple API keys, the bot tries them in order until one succeeds or all fail. Gemini, OpenAI, and OpenAI Codex rate-limit responses wait on the same key once when the provider returns a retry delay, then rotate to the next key if needed.
+- If a provider has multiple API keys, the bot tries them in order until one succeeds or all fail. Gemini, OpenAI, and OpenAI Codex rate-limit responses wait on the same key once when the provider returns a retry delay, then rotate to the next key if needed, but only before any response chunks have been streamed.
 
 ### Attachment and enrichment behavior
 
