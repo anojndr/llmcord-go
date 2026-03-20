@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"google.golang.org/genai"
 )
@@ -58,6 +59,25 @@ func (capture *countCapture) value() int {
 	return capture.count
 }
 
+type durationCapture struct {
+	mutex  sync.Mutex
+	values []time.Duration
+}
+
+func (capture *durationCapture) append(value time.Duration) {
+	capture.mutex.Lock()
+	defer capture.mutex.Unlock()
+
+	capture.values = append(capture.values, value)
+}
+
+func (capture *durationCapture) snapshot() []time.Duration {
+	capture.mutex.Lock()
+	defer capture.mutex.Unlock()
+
+	return append([]time.Duration(nil), capture.values...)
+}
+
 func TestChatCompletionRouterRetriesOpenAIAPIKeys(t *testing.T) {
 	t.Parallel()
 
@@ -67,9 +87,10 @@ func TestChatCompletionRouterRetriesOpenAIAPIKeys(t *testing.T) {
 	defer server.Close()
 
 	router := chatCompletionRouter{
-		openAI:      newOpenAIClient(server.Client()),
-		openAICodex: newOpenAICodexClient(nil),
-		gemini:      newGeminiClient(nil),
+		openAI:       newOpenAIClient(server.Client()),
+		openAICodex:  newOpenAICodexClient(nil),
+		gemini:       newGeminiClient(nil),
+		waitForRetry: nil,
 	}
 
 	content, err := collectStreamedContent(
@@ -115,9 +136,10 @@ func TestChatCompletionRouterRetriesOpenAIAPIKeysOnInternalServerError(t *testin
 	defer server.Close()
 
 	router := chatCompletionRouter{
-		openAI:      newOpenAIClient(server.Client()),
-		openAICodex: newOpenAICodexClient(nil),
-		gemini:      newGeminiClient(nil),
+		openAI:       newOpenAIClient(server.Client()),
+		openAICodex:  newOpenAICodexClient(nil),
+		gemini:       newGeminiClient(nil),
+		waitForRetry: nil,
 	}
 
 	content, err := collectStreamedContent(
@@ -163,9 +185,10 @@ func TestChatCompletionRouterRetriesOpenAIAPIKeysAfterStreamFailure(t *testing.T
 	defer server.Close()
 
 	router := chatCompletionRouter{
-		openAI:      newOpenAIClient(server.Client()),
-		openAICodex: newOpenAICodexClient(nil),
-		gemini:      newGeminiClient(nil),
+		openAI:       newOpenAIClient(server.Client()),
+		openAICodex:  newOpenAICodexClient(nil),
+		gemini:       newGeminiClient(nil),
+		waitForRetry: nil,
 	}
 
 	content, err := collectStreamedContent(
@@ -196,9 +219,10 @@ func TestChatCompletionRouterRetriesOpenAICodexAPIKeys(t *testing.T) {
 	defer server.Close()
 
 	router := chatCompletionRouter{
-		openAI:      newOpenAIClient(nil),
-		openAICodex: newOpenAICodexClient(server.Client()),
-		gemini:      newGeminiClient(nil),
+		openAI:       newOpenAIClient(nil),
+		openAICodex:  newOpenAICodexClient(server.Client()),
+		gemini:       newGeminiClient(nil),
+		waitForRetry: nil,
 	}
 
 	content, err := collectStreamedContent(
@@ -215,6 +239,137 @@ func TestChatCompletionRouterRetriesOpenAICodexAPIKeys(t *testing.T) {
 	}
 
 	if content != testOpenAICodexHelloText {
+		t.Fatalf("unexpected streamed content: %q", content)
+	}
+}
+
+func TestChatCompletionRouterRetriesSingleGeminiAPIKeyAfterRetryDelay(t *testing.T) {
+	t.Parallel()
+
+	attemptCapture := new(stringCapture)
+	delayCapture := new(durationCapture)
+
+	router := newGeminiRetryRouterWithFactory(
+		attemptCapture,
+		delayCapture,
+		func(_ string, attempt int) func(
+			context.Context,
+			string,
+			[]*genai.Content,
+			*genai.GenerateContentConfig,
+		) iter.Seq2[*genai.GenerateContentResponse, error] {
+			return func(
+				_ context.Context,
+				_ string,
+				_ []*genai.Content,
+				_ *genai.GenerateContentConfig,
+			) iter.Seq2[*genai.GenerateContentResponse, error] {
+				return func(yield func(*genai.GenerateContentResponse, error) bool) {
+					if attempt == 0 {
+						if !yield(newGeminiGenerateContentResponse("No", genai.FinishReasonUnspecified), nil) {
+							return
+						}
+
+						_ = yield(
+							nil,
+							newTestGeminiRetryDelayError("Please retry in 47.453198619s.", "47s"),
+						)
+
+						return
+					}
+
+					if !yield(newGeminiGenerateContentResponse("Hel", genai.FinishReasonUnspecified), nil) {
+						return
+					}
+
+					_ = yield(newGeminiGenerateContentResponse("lo", genai.FinishReasonStop), nil)
+				}
+			}
+		},
+	)
+
+	content, err := collectStreamedContent(
+		context.Background(),
+		router,
+		newSimpleGeminiStreamRequest(),
+	)
+	if err != nil {
+		t.Fatalf("stream gemini completion: %v", err)
+	}
+
+	if !slices.Equal(attemptCapture.snapshot(), []string{"gemini-key", "gemini-key"}) {
+		t.Fatalf("unexpected gemini API key attempts: %#v", attemptCapture.snapshot())
+	}
+
+	if !slices.Equal(delayCapture.snapshot(), []time.Duration{47*time.Second + 453198619*time.Nanosecond}) {
+		t.Fatalf("unexpected retry delays: %#v", delayCapture.snapshot())
+	}
+
+	if content != testStreamedHelloText {
+		t.Fatalf("unexpected streamed content: %q", content)
+	}
+}
+
+func TestChatCompletionRouterWaitsForGeminiRetryDelayBeforeFallbackKey(t *testing.T) {
+	t.Parallel()
+
+	attemptCapture := new(stringCapture)
+	delayCapture := new(durationCapture)
+
+	router := newGeminiRetryRouterWithFactory(
+		attemptCapture,
+		delayCapture,
+		func(apiKey string, attempt int) func(
+			context.Context,
+			string,
+			[]*genai.Content,
+			*genai.GenerateContentConfig,
+		) iter.Seq2[*genai.GenerateContentResponse, error] {
+			return func(
+				_ context.Context,
+				_ string,
+				_ []*genai.Content,
+				_ *genai.GenerateContentConfig,
+			) iter.Seq2[*genai.GenerateContentResponse, error] {
+				return func(yield func(*genai.GenerateContentResponse, error) bool) {
+					switch {
+					case apiKey == testRetryPrimaryAPIKey && attempt == 0:
+						_ = yield(nil, newTestGeminiRetryDelayError("Please retry in 47.453198619s.", "47s"))
+					case apiKey == testRetryPrimaryAPIKey:
+						_ = yield(nil, newTestGeminiAPIError(http.StatusForbidden, "permission denied"))
+					default:
+						if !yield(newGeminiGenerateContentResponse("Hel", genai.FinishReasonUnspecified), nil) {
+							return
+						}
+
+						_ = yield(newGeminiGenerateContentResponse("lo", genai.FinishReasonStop), nil)
+					}
+				}
+			}
+		},
+	)
+
+	content, err := collectStreamedContent(
+		context.Background(),
+		router,
+		newGeminiRetryRequest(),
+	)
+	if err != nil {
+		t.Fatalf("stream gemini completion: %v", err)
+	}
+
+	if !slices.Equal(
+		attemptCapture.snapshot(),
+		[]string{testRetryPrimaryAPIKey, testRetryPrimaryAPIKey, testRetryBackupAPIKey},
+	) {
+		t.Fatalf("unexpected gemini API key attempts: %#v", attemptCapture.snapshot())
+	}
+
+	if !slices.Equal(delayCapture.snapshot(), []time.Duration{47*time.Second + 453198619*time.Nanosecond}) {
+		t.Fatalf("unexpected retry delays: %#v", delayCapture.snapshot())
+	}
+
+	if content != testStreamedHelloText {
 		t.Fatalf("unexpected streamed content: %q", content)
 	}
 }
@@ -419,9 +574,50 @@ func streamOpenAICodexHello(t *testing.T, responseWriter http.ResponseWriter) {
 }
 
 func newGeminiRetryRouter(attemptCapture *stringCapture) chatCompletionRouter {
+	return newGeminiRetryRouterWithFactory(
+		attemptCapture,
+		nil,
+		func(apiKey string, _ int) func(
+			context.Context,
+			string,
+			[]*genai.Content,
+			*genai.GenerateContentConfig,
+		) iter.Seq2[*genai.GenerateContentResponse, error] {
+			return newGeminiRetryStream(apiKey)
+		},
+	)
+}
+
+type geminiRetryStreamFactory func(
+	string,
+	int,
+) func(
+	context.Context,
+	string,
+	[]*genai.Content,
+	*genai.GenerateContentConfig,
+) iter.Seq2[*genai.GenerateContentResponse, error]
+
+func newGeminiRetryRouterWithFactory(
+	attemptCapture *stringCapture,
+	delayCapture *durationCapture,
+	streamFactory geminiRetryStreamFactory,
+) chatCompletionRouter {
+	var (
+		attemptsMu    sync.Mutex
+		attemptsByKey = make(map[string]int)
+	)
+
 	return chatCompletionRouter{
 		openAI:      newOpenAIClient(nil),
 		openAICodex: newOpenAICodexClient(nil),
+		waitForRetry: func(_ context.Context, delay time.Duration) error {
+			if delayCapture != nil {
+				delayCapture.append(delay)
+			}
+
+			return nil
+		},
 		gemini: geminiClient{
 			httpClient: new(http.Client),
 			newClient: func(
@@ -430,9 +626,14 @@ func newGeminiRetryRouter(attemptCapture *stringCapture) chatCompletionRouter {
 			) (geminiAPIClient, error) {
 				attemptCapture.append(config.APIKey)
 
+				attemptsMu.Lock()
+				attempt := attemptsByKey[config.APIKey]
+				attemptsByKey[config.APIKey] = attempt + 1
+				attemptsMu.Unlock()
+
 				var stubClient stubGeminiAPIClient
 
-				stubClient.generateContentStream = newGeminiRetryStream(config.APIKey)
+				stubClient.generateContentStream = streamFactory(config.APIKey, attempt)
 
 				return stubClient, nil
 			},
@@ -488,4 +689,17 @@ func newGeminiRetryStream(apiKey string) func(
 			_ = yield(newGeminiGenerateContentResponse("lo", genai.FinishReasonStop), nil)
 		}
 	}
+}
+
+func newTestGeminiRetryDelayError(message string, retryDelay string) error {
+	apiErr := new(genai.APIError)
+	apiErr.Code = http.StatusTooManyRequests
+	apiErr.Message = message
+	apiErr.Status = "RESOURCE_EXHAUSTED"
+	apiErr.Details = []map[string]any{{
+		"@type":      geminiRetryInfoType,
+		"retryDelay": retryDelay,
+	}}
+
+	return *apiErr
 }
