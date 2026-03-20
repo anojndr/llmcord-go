@@ -376,9 +376,9 @@ providers:
   openai:
     base_url: https://api.example.com/v1
     api_key:
-      - primary-key
-      - backup-key
-      - primary-key
+      - ` + testTavilyPrimaryAPIKey + `
+      - ` + testTavilyBackupAPIKey + `
+      - ` + testTavilyPrimaryAPIKey + `
 models:
   openai/first-model:
 `
@@ -393,13 +393,13 @@ models:
 		t.Fatalf("load config: %v", err)
 	}
 
-	if loadedConfig.Providers["openai"].APIKey != "primary-key" {
+	if loadedConfig.Providers["openai"].APIKey != testTavilyPrimaryAPIKey {
 		t.Fatalf("unexpected primary provider API key: %q", loadedConfig.Providers["openai"].APIKey)
 	}
 
 	if !slices.Equal(
 		loadedConfig.Providers["openai"].APIKeys,
-		[]string{"primary-key", "backup-key"},
+		[]string{testTavilyPrimaryAPIKey, testTavilyBackupAPIKey},
 	) {
 		t.Fatalf("unexpected provider API keys: %#v", loadedConfig.Providers["openai"].APIKeys)
 	}

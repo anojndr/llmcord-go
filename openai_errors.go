@@ -42,7 +42,7 @@ func parseOpenAIHTTPErrorResponse(
 	}
 
 	if errorInfo.Message == "" {
-		errorInfo.Message = "Request failed"
+		errorInfo.Message = providerRequestFailedText
 	}
 
 	var envelope struct {
@@ -133,7 +133,7 @@ func formatOpenAIHTTPError(errorInfo openAIHTTPErrorInfo) string {
 
 	switch {
 	case primaryMessage == "" && len(metadata) == 0:
-		return "Request failed"
+		return providerRequestFailedText
 	case primaryMessage == "":
 		return strings.Join(metadata, " ")
 	case len(metadata) == 0:

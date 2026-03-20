@@ -2,7 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
+	"net/http"
 	"strings"
 	"sync"
 	"testing"
@@ -807,6 +810,429 @@ func TestParseSerpAPIGoogleLensResponseExtractsStructuredResults(t *testing.T) {
 
 	if len(result.RelatedContent) != 1 || result.RelatedContent[0].Query != testVisualSearchTitle {
 		t.Fatalf("unexpected SerpApi related content: %#v", result.RelatedContent)
+	}
+}
+
+func newTestHTTPClient(transport roundTripFunc) *http.Client {
+	httpClient := new(http.Client)
+	httpClient.Transport = transport
+
+	return httpClient
+}
+
+func newTestHTTPResponse(request *http.Request, statusCode int, body string) *http.Response {
+	response := new(http.Response)
+	response.StatusCode = statusCode
+	response.Status = http.StatusText(statusCode)
+	response.Body = io.NopCloser(strings.NewReader(body))
+	response.Header = make(http.Header)
+	response.Request = request
+
+	return response
+}
+
+func marshalSerpAPIErrorResponse(t *testing.T, errorMessage string) string {
+	t.Helper()
+
+	response := new(serpAPIErrorResponse)
+	response.Error = errorMessage
+
+	responseBody, err := json.Marshal(response)
+	if err != nil {
+		t.Fatalf("marshal SerpApi error response: %v", err)
+	}
+
+	return string(responseBody)
+}
+
+func newTestSerpAPIGoogleLensResponse(
+	status string,
+	googleLensURL string,
+	errorMessage string,
+) serpAPIGoogleLensResponse {
+	response := new(serpAPIGoogleLensResponse)
+	response.SearchMetadata = serpAPIGoogleLensSearchMetadata{
+		Status:        status,
+		JSONEndpoint:  "",
+		GoogleLensURL: googleLensURL,
+	}
+	response.VisualMatches = nil
+	response.RelatedContent = nil
+	response.Error = errorMessage
+
+	return *response
+}
+
+func marshalSerpAPIGoogleLensResponse(
+	t *testing.T,
+	status string,
+	googleLensURL string,
+	errorMessage string,
+) string {
+	t.Helper()
+
+	responseBody, err := json.Marshal(newTestSerpAPIGoogleLensResponse(status, googleLensURL, errorMessage))
+	if err != nil {
+		t.Fatalf("marshal SerpApi response: %v", err)
+	}
+
+	return string(responseBody)
+}
+
+func runSerpAPIGoogleLensHTTPStatusErrorTest(
+	t *testing.T,
+	statusCode int,
+	errorMessage string,
+	wantAPIKeyError bool,
+) {
+	t.Helper()
+
+	httpClient := newTestHTTPClient(roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		return newTestHTTPResponse(
+			request,
+			statusCode,
+			marshalSerpAPIErrorResponse(t, errorMessage),
+		), nil
+	}))
+
+	client := newSerpAPIVisualSearchClient(httpClient)
+
+	_, err := client.searchOnce(context.Background(), testVisualSearchAttachmentURL, "serp-key")
+	if err == nil {
+		t.Fatal("expected SerpApi error")
+	}
+
+	var statusErr providerStatusError
+	if !errors.As(err, &statusErr) {
+		t.Fatalf("expected provider status error, got %T", err)
+	}
+
+	if statusErr.StatusCode != statusCode {
+		t.Fatalf("unexpected status code: got %d want %d", statusErr.StatusCode, statusCode)
+	}
+
+	var apiKeyErr providerAPIKeyError
+	if got := errors.As(err, &apiKeyErr); got != wantAPIKeyError {
+		t.Fatalf("unexpected api key classification for %v: got %t want %t", err, got, wantAPIKeyError)
+	}
+
+	if !strings.Contains(err.Error(), errorMessage) {
+		t.Fatalf("expected error message %q in %q", errorMessage, err.Error())
+	}
+}
+
+func runSerpAPIGoogleLensNonSuccessStatusTest(t *testing.T, status string) {
+	t.Helper()
+
+	client := newSerpAPIVisualSearchClient(new(http.Client))
+
+	_, err := client.parseResponse(
+		"https://serpapi.com/search.json?engine=google_lens",
+		"https://cdn.example.com/image.png",
+		[]byte(marshalSerpAPIGoogleLensResponse(
+			t,
+			status,
+			"",
+			"We couldn't get valid results for this search. Please try again later.",
+		)),
+	)
+	if err == nil {
+		t.Fatal("expected SerpApi status error")
+	}
+
+	var statusErr providerStatusError
+	if !errors.As(err, &statusErr) {
+		t.Fatalf("expected provider status error, got %T", err)
+	}
+
+	if statusErr.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf(
+			"unexpected status code for search status %q: got %d want %d",
+			status,
+			statusErr.StatusCode,
+			http.StatusServiceUnavailable,
+		)
+	}
+
+	if !strings.Contains(err.Error(), status) {
+		t.Fatalf("expected status %q in error %q", status, err.Error())
+	}
+}
+
+func runSerpAPIGoogleLensRetryableFailureTest(
+	t *testing.T,
+	statusCode int,
+	errorMessage string,
+) {
+	t.Helper()
+
+	var (
+		requestedKeys []string
+		requestsMu    sync.Mutex
+	)
+
+	httpClient := newTestHTTPClient(roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		apiKey := request.URL.Query().Get("api_key")
+
+		requestsMu.Lock()
+
+		requestedKeys = append(requestedKeys, apiKey)
+
+		requestsMu.Unlock()
+
+		if apiKey == testTavilyPrimaryAPIKey {
+			return newTestHTTPResponse(
+				request,
+				statusCode,
+				marshalSerpAPIErrorResponse(t, errorMessage),
+			), nil
+		}
+
+		if apiKey != testTavilyBackupAPIKey {
+			t.Fatalf("unexpected api key: %q", apiKey)
+		}
+
+		return newTestHTTPResponse(
+			request,
+			http.StatusOK,
+			marshalSerpAPIGoogleLensResponse(
+				t,
+				serpAPISearchStatusSuccess,
+				"https://lens.google.com/uploadbyurl?url=https%3A%2F%2Fcdn.example.com%2Fimage.png",
+				"",
+			),
+		), nil
+	}))
+
+	client := newSerpAPIVisualSearchClient(httpClient)
+	loadedConfig := testSearchConfig()
+	loadedConfig.VisualSearch.SerpAPI = serpAPIVisualSearchConfig{
+		APIKey:  testTavilyPrimaryAPIKey,
+		APIKeys: []string{testTavilyBackupAPIKey},
+	}
+
+	result, err := client.search(context.Background(), loadedConfig, testVisualSearchAttachmentURL)
+	if err != nil {
+		t.Fatalf("search SerpApi Google Lens: %v", err)
+	}
+
+	if result.Provider != serpAPIVisualSearchProviderName {
+		t.Fatalf("unexpected provider: %#v", result)
+	}
+
+	if len(requestedKeys) != 2 ||
+		requestedKeys[0] != testTavilyPrimaryAPIKey ||
+		requestedKeys[1] != testTavilyBackupAPIKey {
+		t.Fatalf("unexpected requested keys: %#v", requestedKeys)
+	}
+}
+
+func TestSerpAPIGoogleLensSearchOnceHandlesDocumentedHTTPStatusErrors(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name            string
+		statusCode      int
+		errorMessage    string
+		wantAPIKeyError bool
+	}{
+		{
+			name:            "bad request",
+			statusCode:      http.StatusBadRequest,
+			errorMessage:    "Missing query `q` parameter.",
+			wantAPIKeyError: false,
+		},
+		{
+			name:            "unauthorized",
+			statusCode:      http.StatusUnauthorized,
+			errorMessage:    "Invalid API key. Your API key should be here: https://serpapi.com/manage-api-key",
+			wantAPIKeyError: true,
+		},
+		{
+			name:            "forbidden",
+			statusCode:      http.StatusForbidden,
+			errorMessage:    "The account associated with this API key doesn't have permission to perform the request.",
+			wantAPIKeyError: true,
+		},
+		{
+			name:            "not found",
+			statusCode:      http.StatusNotFound,
+			errorMessage:    "The requested resource doesn't exist.",
+			wantAPIKeyError: false,
+		},
+		{
+			name:            "gone",
+			statusCode:      http.StatusGone,
+			errorMessage:    "The search expired and has been deleted from the archive.",
+			wantAPIKeyError: false,
+		},
+		{
+			name:            "too many requests",
+			statusCode:      http.StatusTooManyRequests,
+			errorMessage:    "Your account has run out of searches.",
+			wantAPIKeyError: false,
+		},
+		{
+			name:            "internal server error",
+			statusCode:      http.StatusInternalServerError,
+			errorMessage:    "Something went wrong on SerpApi's end. Please contact support@serpapi.com for assistance.",
+			wantAPIKeyError: false,
+		},
+		{
+			name:            "service unavailable",
+			statusCode:      http.StatusServiceUnavailable,
+			errorMessage:    "Something went wrong on SerpApi's end. Please contact support@serpapi.com for assistance.",
+			wantAPIKeyError: false,
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			runSerpAPIGoogleLensHTTPStatusErrorTest(
+				t,
+				testCase.statusCode,
+				testCase.errorMessage,
+				testCase.wantAPIKeyError,
+			)
+		})
+	}
+}
+
+func TestSerpAPIGoogleLensParseResponseAllowsSuccessWithEmptyResultsError(t *testing.T) {
+	t.Parallel()
+
+	client := newSerpAPIVisualSearchClient(new(http.Client))
+
+	result, err := client.parseResponse(
+		"https://serpapi.com/search.json?engine=google_lens",
+		"https://cdn.example.com/image.png",
+		[]byte(marshalSerpAPIGoogleLensResponse(
+			t,
+			serpAPISearchStatusSuccess,
+			"https://lens.google.com/uploadbyurl?url=https%3A%2F%2Fcdn.example.com%2Fimage.png",
+			"Google hasn't returned any results for this query.",
+		)),
+	)
+	if err != nil {
+		t.Fatalf("parse SerpApi response: %v", err)
+	}
+
+	if result.Provider != serpAPIVisualSearchProviderName {
+		t.Fatalf("unexpected provider: %#v", result)
+	}
+
+	if result.SearchURL != "https://lens.google.com/uploadbyurl?url=https%3A%2F%2Fcdn.example.com%2Fimage.png" {
+		t.Fatalf("unexpected search url: %#v", result)
+	}
+
+	if result.TopMatch != emptyVisualSearchTopMatch() {
+		t.Fatalf("expected empty top match for empty results: %#v", result.TopMatch)
+	}
+}
+
+func TestSerpAPIGoogleLensParseResponseRejectsNonSuccessSearchStatuses(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name   string
+		status string
+	}{
+		{name: "queued", status: serpAPISearchStatusQueued},
+		{name: "processing", status: serpAPISearchStatusProcessing},
+		{name: "error", status: serpAPISearchStatusError},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			runSerpAPIGoogleLensNonSuccessStatusTest(t, testCase.status)
+		})
+	}
+}
+
+func TestSerpAPIGoogleLensSearchRetriesBackupKeyForRetryableFailures(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name         string
+		statusCode   int
+		errorMessage string
+	}{
+		{
+			name:         "unauthorized",
+			statusCode:   http.StatusUnauthorized,
+			errorMessage: "Invalid API key. Your API key should be here: https://serpapi.com/manage-api-key",
+		},
+		{
+			name:         "forbidden",
+			statusCode:   http.StatusForbidden,
+			errorMessage: "The account associated with this API key doesn't have permission to perform the request.",
+		},
+		{
+			name:         "too many requests",
+			statusCode:   http.StatusTooManyRequests,
+			errorMessage: "Your account has run out of searches.",
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			runSerpAPIGoogleLensRetryableFailureTest(
+				t,
+				testCase.statusCode,
+				testCase.errorMessage,
+			)
+		})
+	}
+}
+
+func TestSerpAPIGoogleLensSearchStopsAfterNonRetryableFailure(t *testing.T) {
+	t.Parallel()
+
+	var (
+		requestedKeys []string
+		requestsMu    sync.Mutex
+	)
+
+	httpClient := newTestHTTPClient(roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		apiKey := request.URL.Query().Get("api_key")
+
+		requestsMu.Lock()
+
+		requestedKeys = append(requestedKeys, apiKey)
+
+		requestsMu.Unlock()
+
+		return newTestHTTPResponse(
+			request,
+			http.StatusBadRequest,
+			marshalSerpAPIErrorResponse(t, "Missing query `q` parameter."),
+		), nil
+	}))
+
+	client := newSerpAPIVisualSearchClient(httpClient)
+	loadedConfig := testSearchConfig()
+	loadedConfig.VisualSearch.SerpAPI = serpAPIVisualSearchConfig{
+		APIKey:  testTavilyPrimaryAPIKey,
+		APIKeys: []string{testTavilyBackupAPIKey},
+	}
+
+	_, err := client.search(context.Background(), loadedConfig, testVisualSearchAttachmentURL)
+	if err == nil {
+		t.Fatal("expected SerpApi search error")
+	}
+
+	if !strings.Contains(err.Error(), "Missing query `q` parameter.") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(requestedKeys) != 1 || requestedKeys[0] != testTavilyPrimaryAPIKey {
+		t.Fatalf("expected only the primary key attempt, got %#v", requestedKeys)
 	}
 }
 

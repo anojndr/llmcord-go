@@ -4,6 +4,8 @@ import (
 	"os"
 )
 
+const providerRequestFailedText = "Request failed"
+
 type providerStatusError struct {
 	StatusCode int
 	Message    string
