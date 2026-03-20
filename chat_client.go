@@ -16,6 +16,8 @@ type chatCompletionRouter struct {
 	waitForRetry func(context.Context, time.Duration) error
 }
 
+const sameKeyRetryDelayLimit = time.Minute
+
 func newChatCompletionRouter(httpClient *http.Client) chatCompletionRouter {
 	return chatCompletionRouter{
 		openAI:       newOpenAIClient(httpClient),
@@ -37,7 +39,12 @@ func (client chatCompletionRouter) streamChatCompletion(
 		keyedRequest := request
 		keyedRequest.Provider = request.Provider.withSingleAPIKey(apiKey)
 
-		streamStarted, err := client.streamChatCompletionForKey(ctx, keyedRequest, handle)
+		streamStarted, err := client.streamChatCompletionForKey(
+			ctx,
+			keyedRequest,
+			index < len(apiKeys)-1,
+			handle,
+		)
 		if err == nil {
 			return nil
 		}
@@ -62,6 +69,7 @@ func (client chatCompletionRouter) streamChatCompletion(
 func (client chatCompletionRouter) streamChatCompletionForKey(
 	ctx context.Context,
 	request chatCompletionRequest,
+	hasFallbackKey bool,
 	handle func(streamDelta) error,
 ) (bool, error) {
 	waitForRetry := client.retryDelayWaiter()
@@ -85,6 +93,10 @@ func (client chatCompletionRouter) streamChatCompletionForKey(
 
 		retryDelay, ok := retryDelayForProvider(request.Provider.APIKind, err)
 		if !ok {
+			return streamStarted, err
+		}
+
+		if retryDelay > sameKeyRetryDelayLimit && hasFallbackKey {
 			return streamStarted, err
 		}
 
