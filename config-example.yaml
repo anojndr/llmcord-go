@@ -42,6 +42,11 @@ providers:
 
   google:
     type: gemini
+    # `api_key` also accepts a YAML list. Gemini waits for server-provided retry
+    # delays on the current key before falling back to the next one.
+    # api_key:
+    #   - primary-key
+    #   - backup-key
     api_key: 
     # Optional:
     # base_url: https://generativelanguage.googleapis.com

@@ -6,19 +6,22 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"time"
 )
 
 type chatCompletionRouter struct {
-	openAI      openAIClient
-	openAICodex openAICodexClient
-	gemini      geminiClient
+	openAI       openAIClient
+	openAICodex  openAICodexClient
+	gemini       geminiClient
+	waitForRetry func(context.Context, time.Duration) error
 }
 
 func newChatCompletionRouter(httpClient *http.Client) chatCompletionRouter {
 	return chatCompletionRouter{
-		openAI:      newOpenAIClient(httpClient),
-		openAICodex: newOpenAICodexClient(httpClient),
-		gemini:      newGeminiClient(httpClient),
+		openAI:       newOpenAIClient(httpClient),
+		openAICodex:  newOpenAICodexClient(httpClient),
+		gemini:       newGeminiClient(httpClient),
+		waitForRetry: waitForRetryDelay,
 	}
 }
 
@@ -28,22 +31,15 @@ func (client chatCompletionRouter) streamChatCompletion(
 	handle func(streamDelta) error,
 ) error {
 	apiKeys := request.Provider.apiKeysForAttempts()
-	if len(apiKeys) == 1 {
-		keyedRequest := request
-		keyedRequest.Provider = request.Provider.withSingleAPIKey(apiKeys[0])
-
-		return client.streamChatCompletionOnce(ctx, keyedRequest, handle)
-	}
-
 	attemptErrors := make([]error, 0, len(apiKeys))
 
 	for index, apiKey := range apiKeys {
 		keyedRequest := request
 		keyedRequest.Provider = request.Provider.withSingleAPIKey(apiKey)
 
-		bufferedDeltas, err := client.collectChatCompletionAttempt(ctx, keyedRequest)
+		err := client.streamChatCompletionForKey(ctx, keyedRequest, handle)
 		if err == nil {
-			return replayBufferedStreamDeltas(handle, bufferedDeltas)
+			return nil
 		}
 
 		attemptErrors = append(attemptErrors, err)
@@ -61,6 +57,38 @@ func (client chatCompletionRouter) streamChatCompletion(
 	}
 
 	return fmt.Errorf("missing API key attempt: %w", os.ErrInvalid)
+}
+
+func (client chatCompletionRouter) streamChatCompletionForKey(
+	ctx context.Context,
+	request chatCompletionRequest,
+	handle func(streamDelta) error,
+) error {
+	waitForRetry := client.retryDelayWaiter()
+	retrySameKey := true
+
+	for {
+		bufferedDeltas, err := client.collectChatCompletionAttempt(ctx, request)
+		if err == nil {
+			return replayBufferedStreamDeltas(handle, bufferedDeltas)
+		}
+
+		if !retrySameKey || ctx.Err() != nil {
+			return err
+		}
+
+		retryDelay, ok := retryDelayForProvider(request.Provider.APIKind, err)
+		if !ok {
+			return err
+		}
+
+		retrySameKey = false
+
+		err = waitForRetry(ctx, retryDelay)
+		if err != nil {
+			return fmt.Errorf("wait for provider retry delay: %w", err)
+		}
+	}
 }
 
 func (client chatCompletionRouter) collectChatCompletionAttempt(
@@ -87,6 +115,14 @@ func replayBufferedStreamDeltas(handle func(streamDelta) error, bufferedDeltas [
 	}
 
 	return nil
+}
+
+func (client chatCompletionRouter) retryDelayWaiter() func(context.Context, time.Duration) error {
+	if client.waitForRetry != nil {
+		return client.waitForRetry
+	}
+
+	return waitForRetryDelay
 }
 
 func (client chatCompletionRouter) streamChatCompletionOnce(
