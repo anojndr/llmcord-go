@@ -14,7 +14,6 @@ import (
 
 	"golang.org/x/net/html"
 	"golang.org/x/net/html/atom"
-	"golang.org/x/net/publicsuffix"
 )
 
 const (
@@ -28,7 +27,7 @@ const (
 )
 
 var websiteURLRegexp = regexp.MustCompile(
-	`(?i)\b(?:https?://)?(?:[\w-]+\.)+[a-z]{2,}(?:/[^\s<>]*)?`,
+	`(?i)\bhttps?://(?:[\w-]+\.)+[a-z]{2,}(?:/[^\s<>]*)?`,
 )
 
 type websiteContentClient interface {
@@ -204,7 +203,7 @@ func extractWebsiteURLs(text string) []string {
 		rawURL := text[matchIndex[0]:matchIndex[1]]
 
 		normalizedURL, err := normalizeWebsiteURL(rawURL)
-		if err != nil || !shouldExtractWebsiteURL(text, matchIndex[0], rawURL, normalizedURL) {
+		if err != nil {
 			continue
 		}
 
@@ -218,47 +217,6 @@ func extractWebsiteURLs(text string) []string {
 
 	return normalizedURLs
 }
-
-func shouldExtractWebsiteURL(
-	text string,
-	matchStart int,
-	rawURL string,
-	normalizedURL string,
-) bool {
-	if hasExplicitWebsiteScheme(rawURL) {
-		return true
-	}
-
-	if matchStart > 0 && text[matchStart-1] == '@' {
-		return false
-	}
-
-	parsedURL, err := url.Parse(normalizedURL)
-	if err != nil {
-		return false
-	}
-
-	return hasRecognizedWebsiteSuffix(parsedURL.Hostname())
-}
-
-func hasExplicitWebsiteScheme(rawURL string) bool {
-	trimmedURL := strings.ToLower(strings.TrimSpace(rawURL))
-
-	return strings.HasPrefix(trimmedURL, "http://") ||
-		strings.HasPrefix(trimmedURL, "https://")
-}
-
-func hasRecognizedWebsiteSuffix(host string) bool {
-	normalizedHost := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
-	if normalizedHost == "" {
-		return false
-	}
-
-	suffix, icann := publicsuffix.PublicSuffix(normalizedHost)
-
-	return icann || strings.Contains(suffix, ".")
-}
-
 func normalizeWebsiteURL(rawURL string) (string, error) {
 	cleanedURL := cleanWebsiteURL(rawURL)
 

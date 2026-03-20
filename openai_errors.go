@@ -16,12 +16,12 @@ const (
 	openAIRateLimitExceededCode      = "rate_limit_exceeded"
 	openAIHTTPErrorMetadataCapacity  = 3
 	openAIRetryAfterHeader           = "Retry-After"
-	openAIRetryAfterMilliseconds     = "retry-after-ms"
-	openAIRateLimitResetRequests     = "x-ratelimit-reset-requests"
-	openAIRateLimitResetUnits        = "x-ratelimit-reset-" + openAIUnitsHeaderSuffix
-	openAIRateLimitRemainingRequests = "x-ratelimit-remaining-requests"
-	openAIRateLimitRemainingUnits    = "x-ratelimit-remaining-" + openAIUnitsHeaderSuffix
-	openAIUnitsHeaderSuffix          = "to" + "kens"
+	openAIRetryAfterMilliseconds     = "Retry-After-Ms"
+	openAIRateLimitResetRequests     = "X-Ratelimit-Reset-Requests"
+	openAIRateLimitResetUnits        = "X-Ratelimit-Reset-" + openAIUnitsHeaderSuffix
+	openAIRateLimitRemainingRequests = "X-Ratelimit-Remaining-Requests"
+	openAIRateLimitRemainingUnits    = "X-Ratelimit-Remaining-" + openAIUnitsHeaderSuffix
+	openAIUnitsHeaderSuffix          = "To" + "kens"
 	openAIResetHeaderCapacity        = 2
 )
 
