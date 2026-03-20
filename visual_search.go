@@ -303,27 +303,35 @@ func (client serpAPIGoogleLensClient) search(
 		}
 
 		attemptErrors = append(attemptErrors, err)
-		if ctx.Err() != nil || index == len(apiKeys)-1 {
-			if len(attemptErrors) == 1 {
-				return emptyVisualSearchResult(), err
-			}
+		if ctx.Err() != nil {
+			return emptyVisualSearchResult(), err
+		}
 
-			if ctx.Err() != nil {
-				return emptyVisualSearchResult(), err
-			}
+		if index == len(apiKeys)-1 {
+			break
+		}
 
-			return emptyVisualSearchResult(), fmt.Errorf(
-				"all configured SerpApi Google Lens API keys failed for %q: %w",
-				imageURL,
-				errors.Join(attemptErrors...),
-			)
+		if !shouldRetrySerpAPIAttemptWithNextKey(err) {
+			break
 		}
 	}
 
+	if len(attemptErrors) == 1 {
+		return emptyVisualSearchResult(), attemptErrors[0]
+	}
+
+	if len(attemptErrors) == len(apiKeys) {
+		return emptyVisualSearchResult(), fmt.Errorf(
+			"all configured SerpApi Google Lens API keys failed for %q: %w",
+			imageURL,
+			errors.Join(attemptErrors...),
+		)
+	}
+
 	return emptyVisualSearchResult(), fmt.Errorf(
-		"missing SerpApi Google Lens API key attempt for %q: %w",
+		"SerpApi Google Lens attempts failed for %q: %w",
 		imageURL,
-		os.ErrInvalid,
+		errors.Join(attemptErrors...),
 	)
 }
 
@@ -390,12 +398,11 @@ func (client serpAPIGoogleLensClient) searchOnce(
 	}
 
 	if httpResponse.StatusCode < http.StatusOK || httpResponse.StatusCode >= http.StatusMultipleChoices {
-		return emptyVisualSearchResult(), fmt.Errorf(
-			"SerpApi Google Lens request %q failed with status %d: %s: %w",
-			requestURL,
+		return emptyVisualSearchResult(), newSerpAPIProviderError(
+			fmt.Sprintf("SerpApi Google Lens request %q failed", requestURL),
 			httpResponse.StatusCode,
-			strings.TrimSpace(string(responseBody)),
-			os.ErrInvalid,
+			httpResponse.Status,
+			responseBody,
 		)
 	}
 
@@ -418,21 +425,37 @@ func (client serpAPIGoogleLensClient) parseResponse(
 		)
 	}
 
-	if responseError := strings.TrimSpace(response.Error); responseError != "" {
-		return emptyVisualSearchResult(), fmt.Errorf(
-			"SerpApi Google Lens returned an error for %q: %s: %w",
-			imageURL,
-			responseError,
-			os.ErrInvalid,
-		)
-	}
+	status := strings.TrimSpace(response.SearchMetadata.Status)
+	responseError := strings.TrimSpace(response.Error)
 
-	if status := strings.TrimSpace(response.SearchMetadata.Status); status != "" && !strings.EqualFold(status, "Success") {
-		return emptyVisualSearchResult(), fmt.Errorf(
-			"SerpApi Google Lens returned status %q for %q: %w",
-			status,
+	switch {
+	case status == "":
+		if responseError != "" {
+			return emptyVisualSearchResult(), providerStatusError{
+				StatusCode: http.StatusBadGateway,
+				Message: fmt.Sprintf(
+					"SerpApi Google Lens returned an error for %q: %s",
+					imageURL,
+					responseError,
+				),
+				Err: os.ErrInvalid,
+			}
+		}
+	case strings.EqualFold(status, serpAPISearchStatusSuccess):
+		return parseSerpAPIGoogleLensResponse(imageURL, response), nil
+	case strings.EqualFold(status, serpAPISearchStatusQueued),
+		strings.EqualFold(status, serpAPISearchStatusProcessing),
+		strings.EqualFold(status, serpAPISearchStatusError):
+		return emptyVisualSearchResult(), newSerpAPISearchStatusError(
 			imageURL,
-			os.ErrInvalid,
+			status,
+			responseError,
+		)
+	default:
+		return emptyVisualSearchResult(), newSerpAPISearchStatusError(
+			imageURL,
+			status,
+			responseError,
 		)
 	}
 
