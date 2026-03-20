@@ -99,6 +99,7 @@ func (client openAICodexClient) streamChatCompletion(
 			"codex request failed",
 			httpResponse.StatusCode,
 			httpResponse.Status,
+			httpResponse.Header,
 			responseBody,
 			true,
 		)

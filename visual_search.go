@@ -438,7 +438,8 @@ func (client serpAPIGoogleLensClient) parseResponse(
 					imageURL,
 					responseError,
 				),
-				Err: os.ErrInvalid,
+				RetryDelay: 0,
+				Err:        os.ErrInvalid,
 			}
 		}
 	case strings.EqualFold(status, serpAPISearchStatusSuccess):

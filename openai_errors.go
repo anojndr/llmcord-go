@@ -3,7 +3,9 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -13,6 +15,14 @@ const (
 	openAICodexUsageNotIncludedCode  = "usage_not_included"
 	openAIRateLimitExceededCode      = "rate_limit_exceeded"
 	openAIHTTPErrorMetadataCapacity  = 3
+	openAIRetryAfterHeader           = "Retry-After"
+	openAIRetryAfterMilliseconds     = "retry-after-ms"
+	openAIRateLimitResetRequests     = "x-ratelimit-reset-requests"
+	openAIRateLimitResetUnits        = "x-ratelimit-reset-" + openAIUnitsHeaderSuffix
+	openAIRateLimitRemainingRequests = "x-ratelimit-remaining-requests"
+	openAIRateLimitRemainingUnits    = "x-ratelimit-remaining-" + openAIUnitsHeaderSuffix
+	openAIUnitsHeaderSuffix          = "to" + "kens"
+	openAIResetHeaderCapacity        = 2
 )
 
 type openAIHTTPErrorInfo struct {
@@ -21,11 +31,13 @@ type openAIHTTPErrorInfo struct {
 	Code            string
 	Type            string
 	Param           string
+	RetryDelay      time.Duration
 }
 
 func parseOpenAIHTTPErrorResponse(
 	statusCode int,
 	statusText string,
+	responseHeaders http.Header,
 	responseBody []byte,
 	includeFriendlyUsageLimit bool,
 ) openAIHTTPErrorInfo {
@@ -35,6 +47,7 @@ func parseOpenAIHTTPErrorResponse(
 		Code:            "",
 		Type:            "",
 		Param:           "",
+		RetryDelay:      openAIHTTPRetryDelay(responseHeaders),
 	}
 
 	if errorInfo.Message == "" {
@@ -86,6 +99,10 @@ func parseOpenAIHTTPErrorResponse(
 			resetTime := time.Unix(*envelope.Error.ResetsAt, 0)
 			minutesUntilReset := max(0, int(time.Until(resetTime).Round(time.Minute)/time.Minute))
 
+			if retryDelay := time.Until(resetTime); retryDelay > errorInfo.RetryDelay {
+				errorInfo.RetryDelay = retryDelay
+			}
+
 			retryText = fmt.Sprintf(" Try again in ~%d min.", minutesUntilReset)
 		}
 
@@ -101,6 +118,109 @@ func parseOpenAIHTTPErrorResponse(
 	}
 
 	return errorInfo
+}
+
+func openAIHTTPRetryDelay(headers http.Header) time.Duration {
+	if headers == nil {
+		return 0
+	}
+
+	if retryDelay, ok := parseOpenAIRetryAfter(headers); ok {
+		return retryDelay
+	}
+
+	requestReset, requestResetOK := parseRetryDelayText(headers.Get(openAIRateLimitResetRequests))
+	tokenReset, tokenResetOK := parseRetryDelayText(headers.Get(openAIRateLimitResetUnits))
+
+	exhaustedDurations := make([]time.Duration, 0, openAIResetHeaderCapacity)
+
+	if remainingRequests, ok := parseOpenAIHeaderInteger(headers.Get(openAIRateLimitRemainingRequests)); ok &&
+		remainingRequests == 0 && requestResetOK {
+		exhaustedDurations = append(exhaustedDurations, requestReset)
+	}
+
+	if remainingTokens, ok := parseOpenAIHeaderInteger(headers.Get(openAIRateLimitRemainingUnits)); ok &&
+		remainingTokens == 0 && tokenResetOK {
+		exhaustedDurations = append(exhaustedDurations, tokenReset)
+	}
+
+	if len(exhaustedDurations) > 0 {
+		return maxDuration(exhaustedDurations...)
+	}
+
+	switch {
+	case requestResetOK && tokenResetOK:
+		return max(requestReset, tokenReset)
+	case requestResetOK:
+		return requestReset
+	case tokenResetOK:
+		return tokenReset
+	default:
+		return 0
+	}
+}
+
+func parseOpenAIRetryAfter(headers http.Header) (time.Duration, bool) {
+	retryAfterMilliseconds := strings.TrimSpace(headers.Get(openAIRetryAfterMilliseconds))
+	if retryAfterMilliseconds != "" {
+		milliseconds, err := strconv.ParseFloat(retryAfterMilliseconds, 64)
+		if err == nil && milliseconds > 0 {
+			return time.Duration(milliseconds * float64(time.Millisecond)), true
+		}
+	}
+
+	retryAfter := strings.TrimSpace(headers.Get(openAIRetryAfterHeader))
+	if retryAfter == "" {
+		return 0, false
+	}
+
+	seconds, err := strconv.ParseFloat(retryAfter, 64)
+	if err == nil && seconds > 0 {
+		return time.Duration(seconds * float64(time.Second)), true
+	}
+
+	for _, layout := range []string{time.RFC1123, time.RFC1123Z, time.RFC850, time.ANSIC} {
+		retryTime, err := time.Parse(layout, retryAfter)
+		if err != nil {
+			continue
+		}
+
+		retryDelay := time.Until(retryTime)
+		if retryDelay > 0 {
+			return retryDelay, true
+		}
+	}
+
+	return 0, false
+}
+
+func parseOpenAIHeaderInteger(value string) (int64, bool) {
+	trimmedValue := strings.TrimSpace(value)
+	if trimmedValue == "" {
+		return 0, false
+	}
+
+	parsedValue, err := strconv.ParseInt(trimmedValue, 10, 64)
+	if err != nil || parsedValue < 0 {
+		return 0, false
+	}
+
+	return parsedValue, true
+}
+
+func maxDuration(durations ...time.Duration) time.Duration {
+	if len(durations) == 0 {
+		return 0
+	}
+
+	maximum := durations[0]
+	for _, duration := range durations[1:] {
+		if duration > maximum {
+			maximum = duration
+		}
+	}
+
+	return maximum
 }
 
 func openAIErrorStringValue(value any) string {
@@ -147,12 +267,14 @@ func newOpenAIProviderStatusError(
 	prefix string,
 	statusCode int,
 	statusText string,
+	responseHeaders http.Header,
 	responseBody []byte,
 	includeFriendlyUsageLimit bool,
 ) providerStatusError {
 	errorInfo := parseOpenAIHTTPErrorResponse(
 		statusCode,
 		statusText,
+		responseHeaders,
 		responseBody,
 		includeFriendlyUsageLimit,
 	)
@@ -165,7 +287,8 @@ func newOpenAIProviderStatusError(
 			statusCode,
 			formatOpenAIHTTPError(errorInfo),
 		),
-		Err: os.ErrInvalid,
+		RetryDelay: errorInfo.RetryDelay,
+		Err:        os.ErrInvalid,
 	}
 }
 

@@ -1146,6 +1146,7 @@ func newRateLimitedRespondToMessageChatClient() *stubChatCompletionClient {
 		return providerStatusError{
 			StatusCode: http.StatusTooManyRequests,
 			Message:    "rate limited",
+			RetryDelay: 0,
 			Err:        os.ErrInvalid,
 		}
 	})

@@ -91,7 +91,7 @@ func (client openAIClient) streamChatCompletion(
 			}
 		}
 
-		statusCode, statusText, responseBody, err := client.streamChatCompletionAttempt(
+		statusCode, statusText, responseHeaders, responseBody, err := client.streamChatCompletionAttempt(
 			ctx,
 			request,
 			requestURL,
@@ -123,6 +123,7 @@ func (client openAIClient) streamChatCompletion(
 			"chat completion request failed",
 			statusCode,
 			statusText,
+			responseHeaders,
 			responseBody,
 			false,
 		)
@@ -135,10 +136,10 @@ func (client openAIClient) streamChatCompletionAttempt(
 	requestURL string,
 	requestBody map[string]any,
 	handle func(streamDelta) error,
-) (int, string, []byte, error) {
+) (int, string, http.Header, []byte, error) {
 	requestBytes, err := json.Marshal(requestBody)
 	if err != nil {
-		return 0, "", nil, fmt.Errorf("marshal chat completion request: %w", err)
+		return 0, "", nil, nil, fmt.Errorf("marshal chat completion request: %w", err)
 	}
 
 	httpRequest, err := http.NewRequestWithContext(
@@ -148,7 +149,7 @@ func (client openAIClient) streamChatCompletionAttempt(
 		bytes.NewReader(requestBytes),
 	)
 	if err != nil {
-		return 0, "", nil, fmt.Errorf("create chat completion request: %w", err)
+		return 0, "", nil, nil, fmt.Errorf("create chat completion request: %w", err)
 	}
 
 	httpRequest.Header.Set("Accept", "text/event-stream")
@@ -161,7 +162,7 @@ func (client openAIClient) streamChatCompletionAttempt(
 
 	httpResponse, err := client.httpClient.Do(httpRequest)
 	if err != nil {
-		return 0, "", nil, fmt.Errorf("send chat completion request: %w", err)
+		return 0, "", nil, nil, fmt.Errorf("send chat completion request: %w", err)
 	}
 
 	if httpResponse.StatusCode < http.StatusOK || httpResponse.StatusCode >= http.StatusMultipleChoices {
@@ -170,14 +171,14 @@ func (client openAIClient) streamChatCompletionAttempt(
 		_ = httpResponse.Body.Close()
 
 		if readErr != nil {
-			return 0, "", nil, fmt.Errorf(
+			return 0, "", nil, nil, fmt.Errorf(
 				"read chat completion error response after status %d: %w",
 				httpResponse.StatusCode,
 				readErr,
 			)
 		}
 
-		return httpResponse.StatusCode, httpResponse.Status, responseBody, nil
+		return httpResponse.StatusCode, httpResponse.Status, httpResponse.Header.Clone(), responseBody, nil
 	}
 
 	doneSeen, err := consumeServerSentEvents(httpResponse.Body, func(payload []byte) error {
@@ -187,14 +188,14 @@ func (client openAIClient) streamChatCompletionAttempt(
 	_ = httpResponse.Body.Close()
 
 	if err != nil {
-		return 0, "", nil, fmt.Errorf("consume chat completion stream: %w", err)
+		return 0, "", nil, nil, fmt.Errorf("consume chat completion stream: %w", err)
 	}
 
 	if !doneSeen {
-		return 0, "", nil, fmt.Errorf("chat completion stream ended before [DONE]: %w", io.ErrUnexpectedEOF)
+		return 0, "", nil, nil, fmt.Errorf("chat completion stream ended before [DONE]: %w", io.ErrUnexpectedEOF)
 	}
 
-	return 0, "", nil, nil
+	return 0, "", nil, nil, nil
 }
 
 func buildChatCompletionRequestBody(request chatCompletionRequest) map[string]any {

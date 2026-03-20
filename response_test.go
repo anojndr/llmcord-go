@@ -72,6 +72,7 @@ func TestUserFacingResponseErrorClassifiesProviderFailures(t *testing.T) {
 			err: providerStatusError{
 				StatusCode: http.StatusNotFound,
 				Message:    "model not found",
+				RetryDelay: 0,
 				Err:        os.ErrInvalid,
 			},
 			expected: "This model is unavailable right now. Try other models.",
