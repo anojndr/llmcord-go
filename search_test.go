@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -19,12 +20,27 @@ import (
 var errSearchBackendUnavailable = errors.New("search backend unavailable")
 
 const (
+	testExaPrimaryValue         = "exa-primary-value"
+	testExaBackupValue          = "exa-backup-value"
+	testExaPrimaryAuthHeader    = testExaPrimaryValue
+	testExaBackupAuthHeader     = testExaBackupValue
 	testTavilyPrimaryAPIKey     = "primary-key"
 	testTavilyBackupAPIKey      = "backup-key"
 	testTavilyPrimaryAuthHeader = "Bearer " + testTavilyPrimaryAPIKey
 	testTavilyBackupAuthHeader  = "Bearer " + testTavilyBackupAPIKey
 	testWebSearchMaxURLs        = 7
 )
+
+func testExaAPIWebSearchConfig() config {
+	loadedConfig := testSearchConfig()
+	loadedConfig.WebSearch.MaxURLs = testWebSearchMaxURLs
+	loadedConfig.WebSearch.Exa = exaSearchConfig{
+		APIKey:  testExaPrimaryValue,
+		APIKeys: []string{testExaPrimaryValue, testExaBackupValue},
+	}
+
+	return loadedConfig
+}
 
 func testTavilySearchConfig() config {
 	loadedConfig := testSearchConfig()
@@ -36,6 +52,16 @@ func testTavilySearchConfig() config {
 	}
 
 	return loadedConfig
+}
+
+func newExaAPISearchTestClient(handler http.HandlerFunc) (exaSearchClient, func()) {
+	httpServer := httptest.NewServer(handler)
+
+	return exaSearchClient{
+		apiEndpoint: httpServer.URL,
+		mcpEndpoint: defaultExaMCPEndpoint,
+		httpClient:  httpServer.Client(),
+	}, httpServer.Close
 }
 
 func newTavilySearchTestClient(handler http.HandlerFunc) (tavilySearchClient, func()) {
@@ -124,6 +150,133 @@ func assertExaSearchRequest(t *testing.T, args map[string]any) {
 		}
 	default:
 		t.Fatalf("unexpected Exa numResults type %T with value %#v", value, value)
+	}
+}
+
+func assertExaAPISearchRequest(t *testing.T, request exaSearchRequest) {
+	t.Helper()
+
+	if strings.TrimSpace(request.Query) == "" {
+		t.Fatal("expected Exa API query to be set")
+	}
+
+	if request.Type != "auto" {
+		t.Fatalf("unexpected Exa API type: %q", request.Type)
+	}
+
+	if request.NumResults != testWebSearchMaxURLs {
+		t.Fatalf("unexpected Exa API num results: %d", request.NumResults)
+	}
+
+	if request.Contents.Highlights.MaxCharacters != exaSearchHighlightsMaxCharacters {
+		t.Fatalf(
+			"unexpected Exa highlights max characters: %d",
+			request.Contents.Highlights.MaxCharacters,
+		)
+	}
+}
+
+func assertExaAPIAuthHeaders(t *testing.T, authHeaders []string) {
+	t.Helper()
+
+	if len(authHeaders) != 2 {
+		t.Fatalf("unexpected Exa API attempt count: %d", len(authHeaders))
+	}
+
+	if authHeaders[0] != testExaPrimaryAuthHeader || authHeaders[1] != testExaBackupAuthHeader {
+		t.Fatalf("unexpected Exa API auth headers: %#v", authHeaders)
+	}
+}
+
+func testExaAPISearchSuccessResponse() map[string]any {
+	publishedDate := "2026-03-20T00:00:00.000Z"
+	author := "Example Author"
+
+	return map[string]any{
+		"error": "",
+		"results": []map[string]any{
+			{
+				"title":         "Example Source",
+				"url":           "https://example.com/source",
+				"highlights":    []string{"A relevant excerpt", "Second detail"},
+				"publishedDate": publishedDate,
+				"author":        author,
+			},
+		},
+	}
+}
+
+func decodeExaSearchRequest(t *testing.T, requestBody io.Reader) exaSearchRequest {
+	t.Helper()
+
+	var rawRequest map[string]any
+
+	err := json.NewDecoder(requestBody).Decode(&rawRequest)
+	if err != nil {
+		t.Fatalf("decode Exa request body: %v", err)
+	}
+
+	request := exaSearchRequest{
+		Query:      mapStringValue(rawRequest, "query"),
+		Type:       mapStringValue(rawRequest, "type"),
+		NumResults: mapIntValue(rawRequest, "numResults"),
+		Contents: exaSearchRequestContents{
+			Highlights: exaSearchHighlightsRequest{MaxCharacters: 0},
+		},
+	}
+
+	rawContents, hasContents := rawRequest["contents"].(map[string]any)
+	if !hasContents {
+		return request
+	}
+
+	rawHighlights, hasHighlights := rawContents["highlights"].(map[string]any)
+	if !hasHighlights {
+		return request
+	}
+
+	request.Contents.Highlights.MaxCharacters = mapIntValue(rawHighlights, "maxCharacters")
+
+	return request
+}
+
+func mapIntValue(values map[string]any, key string) int {
+	switch value := values[key].(type) {
+	case float64:
+		return int(value)
+	case int:
+		return value
+	default:
+		return 0
+	}
+}
+
+func assertExaAPIResult(t *testing.T, result webSearchResult) {
+	t.Helper()
+
+	if !containsFold(result.Text, "Example Source") {
+		t.Fatalf("expected Exa result title in text: %q", result.Text)
+	}
+
+	if !containsFold(result.Text, "https://example.com/source") {
+		t.Fatalf("expected Exa result URL in text: %q", result.Text)
+	}
+
+	if !containsFold(result.Text, "Highlights") {
+		t.Fatalf("expected Exa highlights in text: %q", result.Text)
+	}
+
+	if !containsFold(result.Text, "| A relevant excerpt") {
+		t.Fatalf("expected Exa highlight body in text: %q", result.Text)
+	}
+
+	sources := extractSearchSources(result.Text)
+	if len(sources) != 1 {
+		t.Fatalf("unexpected source count parsed from Exa text: %d", len(sources))
+	}
+
+	if sources[0].URL != "https://example.com/source" {
+		t.Fatalf("unexpected source parsed from Exa text: %#v", sources[0])
 	}
 }
 
@@ -835,7 +988,7 @@ func TestMaybeAugmentConversationWithWebSearchFallsBackOnSearchError(t *testing.
 	}
 }
 
-func TestExaSearchClientSearchRunsQueriesConcurrentlyAndKeepsOrder(t *testing.T) {
+func TestExaSearchClientSearchRunsMCPQueriesConcurrentlyAndKeepsOrderWhenNoAPIKeysConfigured(t *testing.T) {
 	t.Parallel()
 
 	var (
@@ -892,8 +1045,9 @@ func TestExaSearchClientSearchRunsQueriesConcurrentlyAndKeepsOrder(t *testing.T)
 	defer httpServer.Close()
 
 	client := exaSearchClient{
-		endpoint:   httpServer.URL,
-		httpClient: httpServer.Client(),
+		apiEndpoint: defaultExaSearchEndpoint,
+		mcpEndpoint: httpServer.URL,
+		httpClient:  httpServer.Client(),
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -915,6 +1069,108 @@ func TestExaSearchClientSearchRunsQueriesConcurrentlyAndKeepsOrder(t *testing.T)
 	if results[1].Query != "beta" || results[1].Text != "result for beta" {
 		t.Fatalf("unexpected second result: %#v", results[1])
 	}
+}
+
+func TestExaSearchClientSearchUsesAPIWhenConfiguredAndRetriesConfiguredAPIKeys(t *testing.T) {
+	t.Parallel()
+
+	var (
+		requestsMu   sync.Mutex
+		authHeaders  []string
+		searchBodies []exaSearchRequest
+	)
+
+	client, closeServer := newExaAPISearchTestClient(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		request *http.Request,
+	) {
+		body := decodeExaSearchRequest(t, request.Body)
+
+		authHeader := request.Header.Get("X-Api-Key")
+
+		requestsMu.Lock()
+		defer requestsMu.Unlock()
+
+		authHeaders = append(authHeaders, authHeader)
+		searchBodies = append(searchBodies, body)
+
+		switch authHeader {
+		case testExaPrimaryAuthHeader:
+			http.Error(responseWriter, `{"error":"rate limited"}`, http.StatusTooManyRequests)
+		case testExaBackupAuthHeader:
+			responseWriter.Header().Set("Content-Type", "application/json")
+
+			err := json.NewEncoder(responseWriter).Encode(testExaAPISearchSuccessResponse())
+			if err != nil {
+				t.Errorf("encode Exa response: %v", err)
+			}
+		default:
+			http.Error(responseWriter, `{"error":"unexpected api key"}`, http.StatusUnauthorized)
+		}
+	}))
+	defer closeServer()
+
+	results, err := client.search(context.Background(), testExaAPIWebSearchConfig(), []string{"latest ai news"})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+
+	assertExaAPIAuthHeaders(t, authHeaders)
+
+	if len(searchBodies) != 2 {
+		t.Fatalf("unexpected Exa API request count: %d", len(searchBodies))
+	}
+
+	assertExaAPISearchRequest(t, searchBodies[0])
+	assertExaAPISearchRequest(t, searchBodies[1])
+
+	if len(results) != 1 {
+		t.Fatalf("unexpected result count: %d", len(results))
+	}
+
+	assertExaAPIResult(t, results[0])
+}
+
+func TestExaSearchClientSearchAttemptsAllConfiguredAPIKeysBeforeFailure(t *testing.T) {
+	t.Parallel()
+
+	var (
+		requestsMu  sync.Mutex
+		authHeaders []string
+	)
+
+	client, closeServer := newExaAPISearchTestClient(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		request *http.Request,
+	) {
+		authHeader := request.Header.Get("X-Api-Key")
+
+		requestsMu.Lock()
+		defer requestsMu.Unlock()
+
+		authHeaders = append(authHeaders, authHeader)
+
+		switch authHeader {
+		case testExaPrimaryAuthHeader:
+			http.Error(responseWriter, `{"error":"invalid key"}`, http.StatusUnauthorized)
+		case testExaBackupAuthHeader:
+			http.Error(responseWriter, `{"error":"rate limited"}`, http.StatusTooManyRequests)
+		default:
+			http.Error(responseWriter, `{"error":"unexpected api key"}`, http.StatusUnauthorized)
+		}
+	}))
+	defer closeServer()
+
+	_, err := client.search(context.Background(), testExaAPIWebSearchConfig(), []string{"latest ai news"})
+	if err == nil {
+		t.Fatal("expected Exa API search to fail after exhausting keys")
+	}
+
+	if !strings.Contains(err.Error(), "all configured Exa API keys failed") {
+		t.Fatalf("unexpected Exa API error: %v", err)
+	}
+
+	assertExaAPIAuthHeaders(t, authHeaders)
 }
 
 func TestRoutedWebSearchClientFallsBackToTavilyWhenMCPFails(t *testing.T) {
@@ -941,7 +1197,7 @@ func TestRoutedWebSearchClientFallsBackToTavilyWhenMCPFails(t *testing.T) {
 	})
 
 	client := routedWebSearchClient{
-		mcp:    exaClient,
+		exa:    exaClient,
 		tavily: tavilyClient,
 	}
 
@@ -985,7 +1241,7 @@ func TestRoutedWebSearchClientUsesTavilyAsPrimaryWhenConfigured(t *testing.T) {
 	loadedConfig.WebSearch.PrimaryProvider = webSearchProviderKindTavily
 
 	client := routedWebSearchClient{
-		mcp:    mcpClient,
+		exa:    mcpClient,
 		tavily: tavilyClient,
 	}
 
@@ -1029,7 +1285,7 @@ func TestRoutedWebSearchClientFallsBackToMCPWhenTavilyFails(t *testing.T) {
 	loadedConfig.WebSearch.PrimaryProvider = webSearchProviderKindTavily
 
 	client := routedWebSearchClient{
-		mcp:    mcpClient,
+		exa:    mcpClient,
 		tavily: tavilyClient,
 	}
 
@@ -1476,6 +1732,7 @@ func testSearchConfig() config {
 	}
 	loadedConfig.WebSearch.PrimaryProvider = webSearchProviderKindMCP
 	loadedConfig.WebSearch.MaxURLs = defaultWebSearchMaxURLs
+	loadedConfig.WebSearch.Exa = exaSearchConfig{APIKey: "", APIKeys: nil}
 	loadedConfig.ModelOrder = []string{"openai/main-model", "openai/decider-model"}
 	loadedConfig.SearchDeciderModel = "openai/decider-model"
 
@@ -1487,6 +1744,7 @@ func testGeminiSearchConfig() config {
 	loadedConfig.MaxImages = defaultMaxImages
 	loadedConfig.WebSearch.PrimaryProvider = webSearchProviderKindMCP
 	loadedConfig.WebSearch.MaxURLs = defaultWebSearchMaxURLs
+	loadedConfig.WebSearch.Exa = exaSearchConfig{APIKey: "", APIKeys: nil}
 
 	googleProvider := new(providerConfig)
 	googleProvider.Type = string(providerAPIKindGemini)

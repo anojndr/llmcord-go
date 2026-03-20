@@ -86,6 +86,10 @@ type rawTavilySearchConfig struct {
 	APIKey scalarStringList `yaml:"api_key"`
 }
 
+type rawExaSearchConfig struct {
+	APIKey scalarStringList `yaml:"api_key"`
+}
+
 type rawSerpAPIVisualSearchConfig struct {
 	APIKey scalarStringList `yaml:"api_key"`
 }
@@ -97,6 +101,7 @@ type rawVisualSearchConfig struct {
 type rawWebSearchConfig struct {
 	PrimaryProvider scalarString          `yaml:"primary_provider"`
 	MaxURLs         *int                  `yaml:"max_urls"`
+	Exa             rawExaSearchConfig    `yaml:"exa"`
 	Tavily          rawTavilySearchConfig `yaml:"tavily"`
 }
 
@@ -120,6 +125,11 @@ type tavilySearchConfig struct {
 	APIKeys []string
 }
 
+type exaSearchConfig struct {
+	APIKey  string
+	APIKeys []string
+}
+
 type serpAPIVisualSearchConfig struct {
 	APIKey  string
 	APIKeys []string
@@ -139,6 +149,7 @@ const (
 type webSearchConfig struct {
 	PrimaryProvider webSearchProviderKind
 	MaxURLs         int
+	Exa             exaSearchConfig
 	Tavily          tavilySearchConfig
 }
 
@@ -246,9 +257,7 @@ func buildLoadedConfig(
 		}
 	}
 
-	tavilyAPIKeys := normalizeAPIKeys([]string(rawLoadedConfig.WebSearch.Tavily.APIKey))
 	serpAPIVisualSearchKeys := normalizeAPIKeys([]string(rawLoadedConfig.VisualSearch.SerpAPI.APIKey))
-	primarySearchProvider := normalizeWebSearchProvider(rawLoadedConfig.WebSearch.PrimaryProvider)
 
 	allowDMs := true
 	if rawLoadedConfig.AllowDMs != nil {
@@ -274,14 +283,7 @@ func buildLoadedConfig(
 		AllowDMs:          allowDMs,
 		Permissions:       rawLoadedConfig.Permissions,
 		Providers:         loadedProviders,
-		WebSearch: webSearchConfig{
-			PrimaryProvider: primarySearchProvider,
-			MaxURLs:         intValueOrDefault(rawLoadedConfig.WebSearch.MaxURLs, defaultWebSearchMaxURLs),
-			Tavily: tavilySearchConfig{
-				APIKey:  firstAPIKey(tavilyAPIKeys),
-				APIKeys: tavilyAPIKeys,
-			},
-		},
+		WebSearch:         normalizeWebSearchConfig(rawLoadedConfig.WebSearch),
 		VisualSearch: visualSearchConfig{
 			SerpAPI: serpAPIVisualSearchConfig{
 				APIKey:  firstAPIKey(serpAPIVisualSearchKeys),
@@ -366,6 +368,24 @@ func normalizeDatabaseConfig(rawLoadedConfig rawDatabaseConfig) databaseConfig {
 	}
 }
 
+func normalizeWebSearchConfig(rawLoadedConfig rawWebSearchConfig) webSearchConfig {
+	exaAPIKeys := normalizeAPIKeys([]string(rawLoadedConfig.Exa.APIKey))
+	tavilyAPIKeys := normalizeAPIKeys([]string(rawLoadedConfig.Tavily.APIKey))
+
+	return webSearchConfig{
+		PrimaryProvider: normalizeWebSearchProvider(rawLoadedConfig.PrimaryProvider),
+		MaxURLs:         intValueOrDefault(rawLoadedConfig.MaxURLs, defaultWebSearchMaxURLs),
+		Exa: exaSearchConfig{
+			APIKey:  firstAPIKey(exaAPIKeys),
+			APIKeys: exaAPIKeys,
+		},
+		Tavily: tavilySearchConfig{
+			APIKey:  firstAPIKey(tavilyAPIKeys),
+			APIKeys: tavilyAPIKeys,
+		},
+	}
+}
+
 func normalizeWebSearchProvider(rawValue scalarString) webSearchProviderKind {
 	trimmedValue := strings.ToLower(strings.TrimSpace(string(rawValue)))
 	if trimmedValue == "" {
@@ -381,6 +401,10 @@ func (loadedConfig webSearchConfig) maxURLs() int {
 	}
 
 	return loadedConfig.MaxURLs
+}
+
+func (loadedConfig webSearchConfig) exaUsesAPI() bool {
+	return len(loadedConfig.Exa.apiKeysForAttempts()) > 0
 }
 
 func validateConfig(loadedConfig config) error {

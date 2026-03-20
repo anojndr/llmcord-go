@@ -498,6 +498,48 @@ web_search:
 	}
 }
 
+func TestLoadConfigAllowsExaWebSearchAPIKeyLists(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	configText := `
+bot_token: discord-token
+providers:
+  openai:
+    base_url: https://api.example.com/v1
+models:
+  openai/first-model:
+web_search:
+  exa:
+    api_key:
+      - exa-primary
+      - exa-backup
+      - exa-primary
+`
+
+	err := os.WriteFile(configPath, []byte(configText), 0o600)
+	if err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	loadedConfig, err := loadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	if loadedConfig.WebSearch.Exa.APIKey != "exa-primary" {
+		t.Fatalf("unexpected primary Exa API key: %q", loadedConfig.WebSearch.Exa.APIKey)
+	}
+
+	if !slices.Equal(
+		loadedConfig.WebSearch.Exa.APIKeys,
+		[]string{"exa-primary", "exa-backup"},
+	) {
+		t.Fatalf("unexpected Exa API keys: %#v", loadedConfig.WebSearch.Exa.APIKeys)
+	}
+}
+
 func TestLoadConfigAllowsSerpAPIVisualSearchAPIKeyLists(t *testing.T) {
 	t.Parallel()
 

@@ -97,8 +97,9 @@ type visualSearchSourceGroup struct {
 }
 
 type exaSearchClient struct {
-	endpoint   string
-	httpClient *http.Client
+	apiEndpoint string
+	mcpEndpoint string
+	httpClient  *http.Client
 }
 
 type tavilySearchClient struct {
@@ -107,8 +108,38 @@ type tavilySearchClient struct {
 }
 
 type routedWebSearchClient struct {
-	mcp    webSearchClient
+	exa    webSearchClient
 	tavily webSearchClient
+}
+
+type exaSearchRequest struct {
+	Query      string
+	Type       string
+	NumResults int
+	Contents   exaSearchRequestContents
+}
+
+type exaSearchRequestContents struct {
+	Highlights exaSearchHighlightsRequest
+}
+
+type exaSearchHighlightsRequest struct {
+	MaxCharacters int
+}
+
+type exaSearchResponse struct {
+	Results []exaSearchResponseResult
+	Error   string
+}
+
+type exaSearchResponseResult struct {
+	Title         string
+	URL           string
+	Highlights    []string
+	PublishedDate *string
+	Author        *string
+	Summary       *string
+	Text          *string
 }
 
 type tavilySearchRequest struct {
@@ -135,10 +166,17 @@ type tavilyStatusError struct {
 	Err        error
 }
 
+type exaStatusError struct {
+	StatusCode int
+	Message    string
+	Err        error
+}
+
 func newExaSearchClient(httpClient *http.Client) exaSearchClient {
 	return exaSearchClient{
-		endpoint:   defaultExaMCPEndpoint,
-		httpClient: httpClient,
+		apiEndpoint: defaultExaSearchEndpoint,
+		mcpEndpoint: defaultExaMCPEndpoint,
+		httpClient:  httpClient,
 	}
 }
 
@@ -151,7 +189,7 @@ func newTavilySearchClient(httpClient *http.Client) tavilySearchClient {
 
 func newWebSearchClient(httpClient *http.Client) routedWebSearchClient {
 	return routedWebSearchClient{
-		mcp:    newExaSearchClient(httpClient),
+		exa:    newExaSearchClient(httpClient),
 		tavily: newTavilySearchClient(httpClient),
 	}
 }
@@ -160,7 +198,19 @@ func (err tavilyStatusError) Error() string {
 	return err.Message
 }
 
+func (err exaStatusError) Error() string {
+	return err.Message
+}
+
 func (err tavilyStatusError) Unwrap() error {
+	if err.Err == nil {
+		return os.ErrInvalid
+	}
+
+	return err.Err
+}
+
+func (err exaStatusError) Unwrap() error {
 	if err.Err == nil {
 		return os.ErrInvalid
 	}
@@ -314,8 +364,8 @@ func (client routedWebSearchClient) search(
 
 	return nil, fmt.Errorf(
 		"search with %s failed, and %s fallback failed: %w",
-		primaryProvider.displayName(),
-		fallbackProvider.displayName(),
+		primaryProvider.displayName(loadedConfig),
+		fallbackProvider.displayName(loadedConfig),
 		errors.Join(err, fallbackErr),
 	)
 }
@@ -328,7 +378,7 @@ func (client routedWebSearchClient) searchWithProvider(
 ) ([]webSearchResult, error) {
 	switch provider {
 	case webSearchProviderKindMCP:
-		return client.mcp.search(ctx, loadedConfig, queries)
+		return client.exa.search(ctx, loadedConfig, queries)
 	case webSearchProviderKindTavily:
 		return client.tavily.search(ctx, loadedConfig, queries)
 	default:
@@ -1051,12 +1101,17 @@ func (client exaSearchClient) search(
 	defer cancel()
 
 	maxURLs := loadedConfig.WebSearch.maxURLs()
+	exaAPIKeys := loadedConfig.WebSearch.Exa.apiKeysForAttempts()
 
 	return searchQueriesConcurrently(searchContext, cancel, queries, func(
 		queryContext context.Context,
 		query string,
 	) (webSearchResult, error) {
-		return client.searchQuery(queryContext, query, maxURLs)
+		if loadedConfig.WebSearch.exaUsesAPI() {
+			return client.searchAPIQuery(queryContext, exaAPIKeys, query, maxURLs)
+		}
+
+		return client.searchMCPQuery(queryContext, query, maxURLs)
 	})
 }
 
@@ -1123,7 +1178,7 @@ func searchQueriesConcurrently(
 	return results, nil
 }
 
-func (client exaSearchClient) searchQuery(
+func (client exaSearchClient) searchMCPQuery(
 	ctx context.Context,
 	query string,
 	maxURLs int,
@@ -1135,7 +1190,7 @@ func (client exaSearchClient) searchQuery(
 	searchClient := mcp.NewClient(implementation, nil)
 
 	transport := new(mcp.StreamableClientTransport)
-	transport.Endpoint = client.endpoint
+	transport.Endpoint = client.mcpEndpoint
 	transport.HTTPClient = client.httpClient
 	transport.MaxRetries = -1
 	transport.DisableStandaloneSSE = true
@@ -1169,6 +1224,134 @@ func (client exaSearchClient) searchQuery(
 	return webSearchResult{
 		Query: query,
 		Text:  resultText,
+	}, nil
+}
+
+func (client exaSearchClient) searchAPIQuery(
+	ctx context.Context,
+	apiKeys []string,
+	query string,
+	maxURLs int,
+) (webSearchResult, error) {
+	attemptErrors := make([]error, 0, len(apiKeys))
+
+	for index, apiKey := range apiKeys {
+		result, err := client.searchAPIQueryOnce(ctx, query, apiKey, maxURLs)
+		if err == nil {
+			return result, nil
+		}
+
+		attemptErrors = append(attemptErrors, err)
+		if ctx.Err() != nil || index == len(apiKeys)-1 {
+			if len(attemptErrors) == 1 {
+				return webSearchResult{}, err
+			}
+
+			if ctx.Err() != nil {
+				return webSearchResult{}, err
+			}
+
+			return webSearchResult{}, fmt.Errorf(
+				"all configured Exa API keys failed for %q: %w",
+				query,
+				errors.Join(attemptErrors...),
+			)
+		}
+	}
+
+	return webSearchResult{}, fmt.Errorf("missing Exa API key attempt for %q: %w", query, os.ErrInvalid)
+}
+
+func (client exaSearchClient) searchAPIQueryOnce(
+	ctx context.Context,
+	query string,
+	apiKey string,
+	maxURLs int,
+) (webSearchResult, error) {
+	requestBody := exaSearchRequest{
+		Query: query,
+		Type:  "auto",
+		Contents: exaSearchRequestContents{
+			Highlights: exaSearchHighlightsRequest{MaxCharacters: exaSearchHighlightsMaxCharacters},
+		},
+		NumResults: maxURLs,
+	}
+
+	requestBytes, err := json.Marshal(map[string]any{
+		"query":      requestBody.Query,
+		"type":       requestBody.Type,
+		"numResults": requestBody.NumResults,
+		"contents": map[string]any{
+			"highlights": map[string]any{
+				"maxCharacters": requestBody.Contents.Highlights.MaxCharacters,
+			},
+		},
+	})
+	if err != nil {
+		return webSearchResult{}, fmt.Errorf("marshal Exa search request for %q: %w", query, err)
+	}
+
+	httpRequest, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodPost,
+		client.apiEndpoint,
+		bytes.NewReader(requestBytes),
+	)
+	if err != nil {
+		return webSearchResult{}, fmt.Errorf("create Exa search request for %q: %w", query, err)
+	}
+
+	httpRequest.Header.Set("Accept", "application/json")
+	httpRequest.Header.Set("Content-Type", "application/json")
+	httpRequest.Header.Set("X-Api-Key", strings.TrimSpace(apiKey))
+
+	httpResponse, err := client.httpClient.Do(httpRequest)
+	if err != nil {
+		return webSearchResult{}, fmt.Errorf("send Exa search request for %q: %w", query, err)
+	}
+
+	defer func() {
+		_ = httpResponse.Body.Close()
+	}()
+
+	if httpResponse.StatusCode < http.StatusOK || httpResponse.StatusCode >= http.StatusMultipleChoices {
+		responseBody, readErr := io.ReadAll(httpResponse.Body)
+		if readErr != nil {
+			return webSearchResult{}, fmt.Errorf(
+				"read Exa error response for %q after status %d: %w",
+				query,
+				httpResponse.StatusCode,
+				readErr,
+			)
+		}
+
+		return webSearchResult{}, exaStatusError{
+			StatusCode: httpResponse.StatusCode,
+			Message: fmt.Sprintf(
+				"Exa search request failed for %q with status %d: %s",
+				query,
+				httpResponse.StatusCode,
+				strings.TrimSpace(extractExaErrorMessage(responseBody)),
+			),
+			Err: os.ErrInvalid,
+		}
+	}
+
+	var rawResponse map[string]any
+
+	err = json.NewDecoder(httpResponse.Body).Decode(&rawResponse)
+	if err != nil {
+		return webSearchResult{}, fmt.Errorf("decode Exa search response for %q: %w", query, err)
+	}
+
+	response, err := parseExaSearchResponse(rawResponse)
+	if err != nil {
+		return webSearchResult{}, fmt.Errorf("parse Exa search response for %q: %w", query, err)
+	}
+
+	return webSearchResult{
+		Query: query,
+		Text:  formatExaSearchResultText(response.Results),
 	}, nil
 }
 
@@ -1300,12 +1483,12 @@ func formatTavilySearchResultText(results []tavilySearchResponseResult) string {
 			lines = append(lines, "URL: "+url)
 		}
 
-		snippet := formatTavilyMultilineField("Text", result.Content)
+		snippet := formatSearchMultilineField("Text", result.Content)
 		if snippet != "" {
 			lines = append(lines, snippet)
 		}
 
-		rawContent := formatTavilyMultilineField("Raw Content", result.RawContent)
+		rawContent := formatSearchMultilineField("Raw Content", result.RawContent)
 		if rawContent != "" {
 			lines = append(lines, rawContent)
 		}
@@ -1320,7 +1503,56 @@ func formatTavilySearchResultText(results []tavilySearchResponseResult) string {
 	return strings.Join(formattedResults, "\n\n")
 }
 
-func formatTavilyMultilineField(label string, value string) string {
+func formatExaSearchResultText(results []exaSearchResponseResult) string {
+	formattedResults := make([]string, 0, len(results))
+
+	for _, result := range results {
+		lines := make([]string, 0, defaultWebSearchMaxURLs)
+
+		title := strings.TrimSpace(result.Title)
+		if title != "" {
+			lines = append(lines, "Title: "+title)
+		}
+
+		url := strings.TrimSpace(result.URL)
+		if url != "" {
+			lines = append(lines, "URL: "+url)
+		}
+
+		if publishedDate := trimmedOptionalString(result.PublishedDate); publishedDate != "" {
+			lines = append(lines, "Published Date: "+publishedDate)
+		}
+
+		if author := trimmedOptionalString(result.Author); author != "" {
+			lines = append(lines, "Author: "+author)
+		}
+
+		highlights := formatSearchListField("Highlights", result.Highlights)
+		if highlights != "" {
+			lines = append(lines, highlights)
+		}
+
+		summary := formatSearchMultilineField("Summary", trimmedOptionalString(result.Summary))
+		if summary != "" {
+			lines = append(lines, summary)
+		}
+
+		text := formatSearchMultilineField("Text", trimmedOptionalString(result.Text))
+		if text != "" {
+			lines = append(lines, text)
+		}
+
+		if len(lines) == 0 {
+			continue
+		}
+
+		formattedResults = append(formattedResults, strings.Join(lines, "\n"))
+	}
+
+	return strings.Join(formattedResults, "\n\n")
+}
+
+func formatSearchMultilineField(label string, value string) string {
 	trimmedValue := strings.TrimSpace(value)
 	if trimmedValue == "" {
 		return ""
@@ -1334,6 +1566,140 @@ func formatTavilyMultilineField(label string, value string) string {
 	return label + ":\n" + strings.Join(lines, "\n")
 }
 
+func formatSearchListField(label string, values []string) string {
+	lines := make([]string, 0, len(values))
+
+	for _, value := range values {
+		trimmedValue := strings.TrimSpace(value)
+		if trimmedValue == "" {
+			continue
+		}
+
+		for line := range strings.SplitSeq(trimmedValue, "\n") {
+			lines = append(lines, "| "+strings.TrimSpace(line))
+		}
+	}
+
+	if len(lines) == 0 {
+		return ""
+	}
+
+	return label + ":\n" + strings.Join(lines, "\n")
+}
+
+func trimmedOptionalString(value *string) string {
+	if value == nil {
+		return ""
+	}
+
+	return strings.TrimSpace(*value)
+}
+
+func extractExaErrorMessage(responseBody []byte) string {
+	var rawResponse map[string]any
+
+	err := json.Unmarshal(responseBody, &rawResponse)
+	if err == nil {
+		response, parseErr := parseExaSearchResponse(rawResponse)
+		if parseErr == nil && strings.TrimSpace(response.Error) != "" {
+			return response.Error
+		}
+	}
+
+	return string(responseBody)
+}
+
+func parseExaSearchResponse(rawResponse map[string]any) (exaSearchResponse, error) {
+	response := exaSearchResponse{Results: nil, Error: mapStringValue(rawResponse, "error")}
+
+	rawResults, hasResults := rawResponse["results"]
+	if !hasResults || rawResults == nil {
+		return response, nil
+	}
+
+	results, isList := rawResults.([]any)
+	if !isList {
+		return exaSearchResponse{}, fmt.Errorf("decode Exa results: %w", os.ErrInvalid)
+	}
+
+	response.Results = make([]exaSearchResponseResult, 0, len(results))
+
+	for _, rawResult := range results {
+		resultMap, ok := rawResult.(map[string]any)
+		if !ok {
+			return exaSearchResponse{}, fmt.Errorf("decode Exa result: %w", os.ErrInvalid)
+		}
+
+		response.Results = append(response.Results, exaSearchResponseResult{
+			Title:         mapStringValue(resultMap, "title"),
+			URL:           mapStringValue(resultMap, "url"),
+			Highlights:    mapStringSliceValue(resultMap, "highlights"),
+			PublishedDate: mapOptionalStringValue(resultMap, "publishedDate"),
+			Author:        mapOptionalStringValue(resultMap, "author"),
+			Summary:       mapOptionalStringValue(resultMap, "summary"),
+			Text:          mapOptionalStringValue(resultMap, "text"),
+		})
+	}
+
+	return response, nil
+}
+
+func mapStringValue(values map[string]any, key string) string {
+	value, isString := values[key].(string)
+	if !isString {
+		return ""
+	}
+
+	return strings.TrimSpace(value)
+}
+
+func mapOptionalStringValue(values map[string]any, key string) *string {
+	value, hasValue := values[key]
+	if !hasValue || value == nil {
+		return nil
+	}
+
+	stringValue, ok := value.(string)
+	if !ok {
+		return nil
+	}
+
+	trimmedValue := strings.TrimSpace(stringValue)
+	if trimmedValue == "" {
+		return nil
+	}
+
+	return &trimmedValue
+}
+
+func mapStringSliceValue(values map[string]any, key string) []string {
+	rawValues, ok := values[key].([]any)
+	if !ok {
+		return nil
+	}
+
+	stringValues := make([]string, 0, len(rawValues))
+	for _, rawValue := range rawValues {
+		stringValue, ok := rawValue.(string)
+		if !ok {
+			continue
+		}
+
+		trimmedValue := strings.TrimSpace(stringValue)
+		if trimmedValue == "" {
+			continue
+		}
+
+		stringValues = append(stringValues, trimmedValue)
+	}
+
+	if len(stringValues) == 0 {
+		return nil
+	}
+
+	return stringValues
+}
+
 func (settings webSearchConfig) providersInOrder() (webSearchProviderKind, webSearchProviderKind) {
 	if settings.PrimaryProvider == webSearchProviderKindTavily {
 		return webSearchProviderKindTavily, webSearchProviderKindMCP
@@ -1342,11 +1708,15 @@ func (settings webSearchConfig) providersInOrder() (webSearchProviderKind, webSe
 	return webSearchProviderKindMCP, webSearchProviderKindTavily
 }
 
-func (provider webSearchProviderKind) displayName() string {
+func (provider webSearchProviderKind) displayName(loadedConfig config) string {
 	switch provider {
 	case webSearchProviderKindTavily:
 		return "Tavily"
 	case webSearchProviderKindMCP:
+		if loadedConfig.WebSearch.exaUsesAPI() {
+			return "Exa Search API"
+		}
+
 		return "Exa MCP"
 	default:
 		return string(provider)
