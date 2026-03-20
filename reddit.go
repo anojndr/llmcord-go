@@ -182,28 +182,47 @@ func (instance *bot) maybeAugmentConversationWithReddit(
 	conversation []chatMessage,
 	urlExtractionText string,
 ) ([]chatMessage, []string, error) {
+	preparedAugmentation, err := instance.prepareRedditAugmentation(
+		ctx,
+		urlExtractionText,
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	augmentedConversation, err := applyPreparedConversationAugmentation(
+		conversation,
+		preparedAugmentation,
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return augmentedConversation, preparedAugmentation.warnings, nil
+}
+
+func (instance *bot) prepareRedditAugmentation(
+	ctx context.Context,
+	urlExtractionText string,
+) (preparedConversationAugmentation, error) {
 	if instance.reddit == nil {
-		return conversation, nil, nil
+		return emptyPreparedConversationAugmentation(), nil
 	}
 
 	redditURLs := extractRedditURLs(urlExtractionText)
 	if len(redditURLs) == 0 {
-		return conversation, nil, nil
+		return emptyPreparedConversationAugmentation(), nil
 	}
 
-	augmentedConversation, _, warnings, err := augmentConversationWithConcurrentURLContent(
+	return prepareConcurrentURLContentAugmentation(
 		ctx,
-		conversation,
 		redditURLs,
 		instance.reddit.fetch,
 		"fetch reddit content",
 		redditWarningText,
 		formatRedditURLContent,
 		appendRedditContentToConversation,
-		"append reddit content to conversation",
 	)
-
-	return augmentedConversation, warnings, err
 }
 
 func (client redditClient) fetch(ctx context.Context, rawURL string) (redditThreadContent, error) {

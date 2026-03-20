@@ -66,18 +66,42 @@ func (instance *bot) maybeAugmentConversationWithWebsite(
 	conversation []chatMessage,
 	urlExtractionText string,
 ) ([]chatMessage, []string, error) {
+	preparedAugmentation, err := instance.prepareWebsiteAugmentation(
+		ctx,
+		loadedConfig,
+		urlExtractionText,
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	augmentedConversation, err := applyPreparedConversationAugmentation(
+		conversation,
+		preparedAugmentation,
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return augmentedConversation, preparedAugmentation.warnings, nil
+}
+
+func (instance *bot) prepareWebsiteAugmentation(
+	ctx context.Context,
+	loadedConfig config,
+	urlExtractionText string,
+) (preparedConversationAugmentation, error) {
 	if instance.website == nil {
-		return conversation, nil, nil
+		return emptyPreparedConversationAugmentation(), nil
 	}
 
 	websiteURLs := extractWebsiteURLs(urlExtractionText)
 	if len(websiteURLs) == 0 {
-		return conversation, nil, nil
+		return emptyPreparedConversationAugmentation(), nil
 	}
 
-	augmentedConversation, _, warnings, err := augmentConversationWithConcurrentURLContent(
+	return prepareConcurrentURLContentAugmentation(
 		ctx,
-		conversation,
 		websiteURLs,
 		func(fetchContext context.Context, rawURL string) (websitePageContent, error) {
 			return instance.website.fetch(fetchContext, loadedConfig, rawURL)
@@ -86,10 +110,7 @@ func (instance *bot) maybeAugmentConversationWithWebsite(
 		websiteWarningText,
 		formatWebsiteURLContent,
 		appendWebsiteContentToConversation,
-		"append website content to conversation",
 	)
-
-	return augmentedConversation, warnings, err
 }
 
 func latestUserPromptQuery(conversation []chatMessage) (string, error) {

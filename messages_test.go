@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 	"google.golang.org/genai"
@@ -308,6 +310,346 @@ func TestMessageContentOptionsForModelRestrictsGeminiDocumentsToPDF(t *testing.T
 
 	if _, ok := options.allowedDocumentMIMETypes[mimeTypePPTX]; ok {
 		t.Fatalf("expected PPTX MIME type to be disallowed: %#v", options.allowedDocumentMIMETypes)
+	}
+}
+
+type concurrentFetchGate struct {
+	expected     int32
+	startedCount int32
+	release      chan struct{}
+}
+
+func newConcurrentFetchGate(expected int32) *concurrentFetchGate {
+	return &concurrentFetchGate{
+		expected:     expected,
+		startedCount: 0,
+		release:      make(chan struct{}),
+	}
+}
+
+func (gate *concurrentFetchGate) wait(ctx context.Context) error {
+	if atomic.AddInt32(&gate.startedCount, 1) == gate.expected {
+		close(gate.release)
+	}
+
+	select {
+	case <-gate.release:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("wait for concurrent fetch gate: %w", ctx.Err())
+	}
+}
+
+func newBlockedTikTokClient(gate *concurrentFetchGate) *stubTikTokContentClient {
+	return newStubTikTokContentClient(func(
+		ctx context.Context,
+		rawURL string,
+	) (tiktokVideoContent, error) {
+		waitErr := gate.wait(ctx)
+		if waitErr != nil {
+			return tiktokVideoContent{}, waitErr
+		}
+
+		return tiktokVideoContent{
+			ResolvedURL: rawURL,
+			DownloadURL: "",
+			MediaPart: contentPart{
+				"type":               contentTypeVideoData,
+				contentFieldBytes:    []byte("tiktok-video"),
+				contentFieldMIMEType: testVideoMIMEType,
+				contentFieldFilename: "tiktok.mp4",
+			},
+		}, nil
+	})
+}
+
+func newBlockedFacebookClient(gate *concurrentFetchGate) *stubFacebookContentClient {
+	return newStubFacebookContentClient(func(
+		ctx context.Context,
+		rawURL string,
+	) (facebookVideoContent, error) {
+		waitErr := gate.wait(ctx)
+		if waitErr != nil {
+			return facebookVideoContent{}, waitErr
+		}
+
+		return facebookVideoContent{
+			ResolvedURL: rawURL,
+			DownloadURL: "",
+			MediaPart: contentPart{
+				"type":               contentTypeVideoData,
+				contentFieldBytes:    []byte("facebook-video"),
+				contentFieldMIMEType: testVideoMIMEType,
+				contentFieldFilename: "facebook.mp4",
+			},
+		}, nil
+	})
+}
+
+func assertAugmentedVideoOrder(
+	t *testing.T,
+	augmentedConversation []chatMessage,
+) {
+	t.Helper()
+
+	parts, ok := augmentedConversation[0].Content.([]contentPart)
+	if !ok {
+		t.Fatalf("unexpected content type: %T", augmentedConversation[0].Content)
+	}
+
+	if len(parts) != 3 {
+		t.Fatalf("unexpected part count: %d", len(parts))
+	}
+
+	firstFilename, _ := parts[1][contentFieldFilename].(string)
+	secondFilename, _ := parts[2][contentFieldFilename].(string)
+
+	if firstFilename != "tiktok.mp4" || secondFilename != "facebook.mp4" {
+		t.Fatalf("unexpected video order: %#v", parts)
+	}
+}
+
+func newBlockedVisualSearchClient(gate *concurrentFetchGate) *stubVisualSearchClient {
+	client := new(stubVisualSearchClient)
+	client.searchFn = func(ctx context.Context, imageURL string) (visualSearchResult, error) {
+		waitErr := gate.wait(ctx)
+		if waitErr != nil {
+			return visualSearchResult{}, waitErr
+		}
+
+		return newStructuredVisualSearchResult(imageURL), nil
+	}
+
+	return client
+}
+
+func newBlockedWebsiteClient(gate *concurrentFetchGate) *stubWebsiteContentClient {
+	return newStubWebsiteContentClient(func(
+		ctx context.Context,
+		_ config,
+		rawURL string,
+	) (websitePageContent, error) {
+		waitErr := gate.wait(ctx)
+		if waitErr != nil {
+			return websitePageContent{}, waitErr
+		}
+
+		return websitePageContent{
+			URL:         rawURL,
+			Title:       "Example website",
+			Description: "Example description",
+			Content:     "Website body",
+		}, nil
+	})
+}
+
+func newBlockedYouTubeClient(gate *concurrentFetchGate) *stubYouTubeContentClient {
+	return newStubYouTubeContentClient(func(
+		ctx context.Context,
+		rawURL string,
+	) (youtubeVideoContent, error) {
+		waitErr := gate.wait(ctx)
+		if waitErr != nil {
+			return youtubeVideoContent{}, waitErr
+		}
+
+		videoID, canonicalURL, err := parseYouTubeVideoURL(rawURL)
+		if err != nil {
+			return youtubeVideoContent{}, err
+		}
+
+		return youtubeVideoContent{
+			URL:         canonicalURL,
+			VideoID:     videoID,
+			Title:       "Example YouTube video",
+			ChannelName: "Example channel",
+			Transcript:  "Example transcript",
+			Comments:    nil,
+		}, nil
+	})
+}
+
+func newBlockedRedditClient(gate *concurrentFetchGate) *stubRedditContentClient {
+	return newStubRedditContentClient(func(
+		ctx context.Context,
+		rawURL string,
+	) (redditThreadContent, error) {
+		waitErr := gate.wait(ctx)
+		if waitErr != nil {
+			return redditThreadContent{}, waitErr
+		}
+
+		return redditThreadContent{
+			URL:         rawURL,
+			JSONURL:     rawURL + ".json",
+			Subreddit:   "r/testing",
+			Title:       "Example Reddit thread",
+			Author:      "tester",
+			Body:        "Reddit body",
+			LinkedURL:   "",
+			Comments:    nil,
+			Score:       10,
+			UpvoteRatio: 0.9,
+			NumComments: 1,
+			CreatedUTC:  1,
+		}, nil
+	})
+}
+
+func newNoSearchDecisionChatClient(
+	t *testing.T,
+	requiredFragments []string,
+) *stubChatCompletionClient {
+	t.Helper()
+
+	return newStubChatClient(func(
+		_ context.Context,
+		request chatCompletionRequest,
+		handle func(streamDelta) error,
+	) error {
+		t.Helper()
+
+		renderedMessages := make([]string, 0, len(request.Messages))
+		for _, message := range request.Messages {
+			renderedMessages = append(renderedMessages, messageContentText(message.Content))
+		}
+
+		renderedConversation := strings.Join(renderedMessages, "\n\n")
+
+		for _, fragment := range requiredFragments {
+			if !strings.Contains(renderedConversation, fragment) {
+				t.Fatalf("expected fragment %q in search decider request: %q", fragment, renderedConversation)
+			}
+		}
+
+		return handle(streamDelta{
+			Thinking:     "",
+			Content:      `{"needs_search":false,"queries":[]}`,
+			FinishReason: finishReasonStop,
+		})
+	})
+}
+
+func TestAugmentConversationWithVideoURLsFetchesProvidersConcurrentlyAndKeepsOrder(t *testing.T) {
+	t.Parallel()
+
+	gate := newConcurrentFetchGate(2)
+
+	instance := new(bot)
+	instance.tiktok = newBlockedTikTokClient(gate)
+	instance.facebook = newBlockedFacebookClient(gate)
+
+	loadedConfig := testMediaAnalysisConfig()
+	loadedConfig.SearchDeciderModel = testMediaAnalysisModel
+
+	conversation := []chatMessage{
+		{
+			Role: messageRoleUser,
+			Content: strings.Join([]string{
+				"<@123>: summarize these videos",
+				"https://www.tiktok.com/@mikemhan/video/7614735539660442893",
+				testFacebookURL,
+			}, " "),
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	augmentedConversation, warnings, err := instance.augmentConversationWithVideoURLs(
+		ctx,
+		loadedConfig,
+		testMediaAnalysisModel,
+		conversation,
+		messageContentText(conversation[0].Content),
+	)
+	if err != nil {
+		t.Fatalf("augment conversation with video URLs: %v", err)
+	}
+
+	if len(warnings) != 0 {
+		t.Fatalf("unexpected warnings: %#v", warnings)
+	}
+
+	assertAugmentedVideoOrder(t, augmentedConversation)
+}
+
+func TestAugmentConversationFetchesIndependentContextBeforeWebSearchDecision(t *testing.T) {
+	t.Parallel()
+
+	gate := newConcurrentFetchGate(4)
+
+	instance := new(bot)
+	instance.visualSearch = newBlockedVisualSearchClient(gate)
+	instance.website = newBlockedWebsiteClient(gate)
+	instance.youtube = newBlockedYouTubeClient(gate)
+	instance.reddit = newBlockedRedditClient(gate)
+	instance.chatCompletions = newNoSearchDecisionChatClient(
+		t,
+		[]string{
+			visualSearchSectionName + ":",
+			websiteSectionName + ":",
+			youtubeSectionName + ":",
+			redditSectionName + ":",
+		},
+	)
+	instance.nodes = newMessageNodeStore(10)
+
+	sourceMessage := newVisualSearchSourceMessage("source-message", "123")
+
+	conversation := []chatMessage{
+		{
+			Role: messageRoleUser,
+			Content: strings.Join([]string{
+				"<@123>: vsearch identify this",
+				"https://example.com/article",
+				"https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+				"https://www.reddit.com/r/testing/comments/abc123/thread-title/",
+			}, " "),
+		},
+	}
+
+	loadedConfig := testMediaAnalysisConfig()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	augmentedConversation, metadata, warnings, err := instance.augmentConversation(
+		ctx,
+		loadedConfig,
+		"openai/gpt-5",
+		sourceMessage,
+		conversation,
+		nil,
+		messageContentText(conversation[0].Content),
+	)
+	if err != nil {
+		t.Fatalf("augment conversation: %v", err)
+	}
+
+	if len(warnings) != 0 {
+		t.Fatalf("unexpected warnings: %#v", warnings)
+	}
+
+	if metadata == nil || len(metadata.VisualSearchSources) == 0 {
+		t.Fatalf("expected visual search metadata: %#v", metadata)
+	}
+
+	content, ok := augmentedConversation[0].Content.(string)
+	if !ok {
+		t.Fatalf("unexpected content type: %T", augmentedConversation[0].Content)
+	}
+
+	prompt := parseAugmentedUserPrompt(content)
+	for field, value := range map[string]string{
+		visualSearchSectionName: prompt.VisualSearch,
+		websiteSectionName:      prompt.WebsiteContent,
+		youtubeSectionName:      prompt.YouTubeContent,
+		redditSectionName:       prompt.RedditContent,
+	} {
+		if strings.TrimSpace(value) == "" {
+			t.Fatalf("expected non-empty %s content in prompt: %#v", field, prompt)
+		}
 	}
 }
 

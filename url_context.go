@@ -2,24 +2,19 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"sync"
 )
 
 type urlContentFetcher[T any] func(context.Context, string) (T, error)
 
-func augmentConversationWithConcurrentURLContent[T any](
+func fetchConcurrentURLContent[T any](
 	ctx context.Context,
-	conversation []chatMessage,
 	urls []string,
 	fetcher urlContentFetcher[T],
 	logMessage string,
 	warningText string,
-	formatContent func([]T) string,
-	appendContent func([]chatMessage, string) ([]chatMessage, error),
-	appendErrorMessage string,
-) ([]chatMessage, []T, []string, error) {
+) ([]T, []string) {
 	results := make([]T, len(urls))
 	successful := make([]bool, len(urls))
 
@@ -66,17 +61,37 @@ func augmentConversationWithConcurrentURLContent[T any](
 		warnings = append(warnings, warningText)
 	}
 
-	if len(formattedResults) == 0 {
-		return conversation, nil, warnings, nil
-	}
+	return formattedResults, warnings
+}
 
-	augmentedConversation, err := appendContent(
-		conversation,
-		formatContent(formattedResults),
+func prepareConcurrentURLContentAugmentation[T any](
+	ctx context.Context,
+	urls []string,
+	fetcher urlContentFetcher[T],
+	logMessage string,
+	warningText string,
+	formatContent func([]T) string,
+	appendContent func([]chatMessage, string) ([]chatMessage, error),
+) (preparedConversationAugmentation, error) {
+	results, warnings := fetchConcurrentURLContent(
+		ctx,
+		urls,
+		fetcher,
+		logMessage,
+		warningText,
 	)
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("%s: %w", appendErrorMessage, err)
+
+	if len(results) == 0 {
+		return warningPreparedConversationAugmentation(warnings), nil
 	}
 
-	return augmentedConversation, formattedResults, warnings, nil
+	formattedContent := formatContent(results)
+
+	return newPreparedConversationAugmentation(
+		warnings,
+		nil,
+		func(conversation []chatMessage) ([]chatMessage, error) {
+			return appendContent(conversation, formattedContent)
+		},
+	), nil
 }

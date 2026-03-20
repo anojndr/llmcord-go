@@ -598,15 +598,25 @@ func (instance *bot) searchDeciderImagePartsForMessage(
 		return nil, fmt.Errorf("load document parts for search decider: %w", err)
 	}
 
-	for index, documentPart := range documentParts {
-		extraction, extractionErr := extractPDFContent(documentPart)
-		if extractionErr != nil {
+	documentResults := runTasksConcurrently(
+		ctx,
+		documentExtractionConcurrency,
+		len(documentParts),
+		func(_ context.Context, index int) (extractedPDFContent, error) {
+			return extractPDFContent(documentParts[index])
+		},
+	)
+
+	for index, result := range documentResults {
+		if result.err != nil {
 			return nil, fmt.Errorf(
 				"extract document images for search decider file %d: %w",
 				index+1,
-				extractionErr,
+				result.err,
 			)
 		}
+
+		extraction := result.value
 
 		for _, imagePart := range extraction.imageParts {
 			appendErr := appendImagePart(imagePart)

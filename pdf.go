@@ -20,10 +20,11 @@ import (
 )
 
 const (
-	pdfContentCloseTag   = "</pdf_content>"
-	pdfContentOpenTag    = "<pdf_content>"
-	ooxmlContentOpenTag  = "<ooxml_content>"
-	ooxmlContentCloseTag = "</ooxml_content>"
+	pdfContentCloseTag            = "</pdf_content>"
+	pdfContentOpenTag             = "<pdf_content>"
+	ooxmlContentOpenTag           = "<ooxml_content>"
+	ooxmlContentCloseTag          = "</ooxml_content>"
+	documentExtractionConcurrency = 4
 )
 
 type extractedPDFContent struct {
@@ -95,6 +96,7 @@ func (instance *bot) maybeAugmentConversationWithPDFContents(
 	}
 
 	extractions, imageParts, err := extractedDocumentConversationData(
+		ctx,
 		extractableParts,
 		remainingImageSlots,
 	)
@@ -122,17 +124,28 @@ func (instance *bot) maybeAugmentConversationWithPDFContents(
 }
 
 func extractedDocumentConversationData(
+	ctx context.Context,
 	extractableParts []contentPart,
 	remainingImageSlots int,
 ) ([]extractedPDFContent, []contentPart, error) {
-	extractions := make([]extractedPDFContent, 0, len(extractableParts))
+	results := runTasksConcurrently(
+		ctx,
+		documentExtractionConcurrency,
+		len(extractableParts),
+		func(_ context.Context, index int) (extractedPDFContent, error) {
+			return extractPDFContent(extractableParts[index])
+		},
+	)
+
+	extractions := make([]extractedPDFContent, 0, len(results))
 	imageParts := make([]contentPart, 0)
 
-	for index, documentPart := range extractableParts {
-		extraction, extractionErr := extractPDFContent(documentPart)
-		if extractionErr != nil {
-			return nil, nil, fmt.Errorf("extract document file %d: %w", index+1, extractionErr)
+	for index, result := range results {
+		if result.err != nil {
+			return nil, nil, fmt.Errorf("extract document file %d: %w", index+1, result.err)
 		}
+
+		extraction := result.value
 
 		attachCount := minInt(len(extraction.imageParts), remainingImageSlots)
 		if attachCount > 0 {

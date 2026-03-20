@@ -660,49 +660,111 @@ func (instance *bot) maybeAugmentConversationWithVisualSearch(
 	sourceMessage *discordgo.Message,
 	conversation []chatMessage,
 ) ([]chatMessage, *searchMetadata, []string, error) {
+	preparedAugmentation, err := instance.prepareVisualSearchAugmentation(
+		ctx,
+		loadedConfig,
+		sourceMessage,
+		conversation,
+	)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	augmentedConversation, err := applyPreparedConversationAugmentation(
+		conversation,
+		preparedAugmentation,
+	)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	return augmentedConversation, preparedAugmentation.metadata, preparedAugmentation.warnings, nil
+}
+
+func (instance *bot) prepareVisualSearchAugmentation(
+	ctx context.Context,
+	loadedConfig config,
+	sourceMessage *discordgo.Message,
+	conversation []chatMessage,
+) (preparedConversationAugmentation, error) {
 	if instance.visualSearch == nil && instance.serpAPIVisualSearch == nil {
-		return conversation, nil, nil, nil
+		return emptyPreparedConversationAugmentation(), nil
 	}
 
 	latestUserQuery, err := latestUserPromptQuery(conversation)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("extract latest user query: %w", err)
+		return emptyPreparedConversationAugmentation(), fmt.Errorf(
+			"extract latest user query: %w",
+			err,
+		)
 	}
 
 	rewrittenQuery, requested := rewriteVisualSearchUserQuery(latestUserQuery)
 	if !requested {
-		return conversation, nil, nil, nil
-	}
-
-	rewrittenConversation, err := rewriteUserQueryInConversation(conversation, rewrittenQuery)
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("rewrite latest user query: %w", err)
+		return emptyPreparedConversationAugmentation(), nil
 	}
 
 	imageURLs := instance.visualSearchImageURLs(ctx, sourceMessage)
 	if len(imageURLs) == 0 {
-		return rewrittenConversation, nil, []string{visualSearchImageWarningText}, nil
+		return newPreparedConversationAugmentation(
+			[]string{visualSearchImageWarningText},
+			nil,
+			func(currentConversation []chatMessage) ([]chatMessage, error) {
+				return rewriteUserQueryInConversation(currentConversation, rewrittenQuery)
+			},
+		), nil
 	}
 
 	providers := instance.visualSearchProvidersForConfig(loadedConfig)
 	if len(providers) == 0 {
-		return rewrittenConversation, nil, nil, nil
+		return newPreparedConversationAugmentation(
+			nil,
+			nil,
+			func(currentConversation []chatMessage) ([]chatMessage, error) {
+				return rewriteUserQueryInConversation(currentConversation, rewrittenQuery)
+			},
+		), nil
 	}
 
 	results, warnings := instance.runVisualSearchProviders(ctx, imageURLs, providers)
 	if len(results) == 0 {
-		return rewrittenConversation, nil, warnings, nil
+		return newPreparedConversationAugmentation(
+			warnings,
+			nil,
+			func(currentConversation []chatMessage) ([]chatMessage, error) {
+				return rewriteUserQueryInConversation(currentConversation, rewrittenQuery)
+			},
+		), nil
 	}
 
-	augmentedConversation, err := appendVisualSearchResultsToConversation(
-		rewrittenConversation,
-		formatVisualSearchResults(results),
-	)
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("append visual search results to conversation: %w", err)
-	}
+	formattedResults := formatVisualSearchResults(results)
 
-	return augmentedConversation, newVisualSearchMetadata(results), warnings, nil
+	return newPreparedConversationAugmentation(
+		warnings,
+		newVisualSearchMetadata(results),
+		func(currentConversation []chatMessage) ([]chatMessage, error) {
+			rewrittenConversation, rewriteErr := rewriteUserQueryInConversation(
+				currentConversation,
+				rewrittenQuery,
+			)
+			if rewriteErr != nil {
+				return nil, fmt.Errorf("rewrite latest user query: %w", rewriteErr)
+			}
+
+			augmentedConversation, appendErr := appendVisualSearchResultsToConversation(
+				rewrittenConversation,
+				formattedResults,
+			)
+			if appendErr != nil {
+				return nil, fmt.Errorf(
+					"append visual search results to conversation: %w",
+					appendErr,
+				)
+			}
+
+			return augmentedConversation, nil
+		},
+	), nil
 }
 
 func (instance *bot) visualSearchProvidersForConfig(loadedConfig config) []visualSearchProvider {

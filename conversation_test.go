@@ -5,7 +5,9 @@ import (
 	"encoding/base64"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 )
@@ -91,6 +93,79 @@ func TestFetchSupportedAttachmentsRetriesTransientDownloadError(t *testing.T) {
 
 	if got := string(payloads[0].body); got != "retried attachment body" {
 		t.Fatalf("unexpected payload body: %q", got)
+	}
+}
+
+func TestFetchSupportedAttachmentsDownloadsConcurrentlyAndPreservesOrder(t *testing.T) {
+	t.Parallel()
+
+	const (
+		firstURL  = "https://cdn.discordapp.com/attachments/test/first.txt"
+		secondURL = "https://cdn.discordapp.com/attachments/test/second.txt"
+	)
+
+	var startedCount int32
+
+	release := make(chan struct{})
+
+	instance := new(bot)
+	instance.httpClient = new(http.Client)
+	instance.httpClient.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		t.Helper()
+
+		if atomic.AddInt32(&startedCount, 1) == 2 {
+			close(release)
+		}
+
+		select {
+		case <-release:
+		case <-request.Context().Done():
+			return nil, request.Context().Err()
+		}
+
+		switch request.URL.String() {
+		case firstURL:
+			return newTextResponse(request, "first attachment"), nil
+		case secondURL:
+			return newTextResponse(request, "second attachment"), nil
+		default:
+			t.Fatalf("unexpected request URL: %s", request.URL.String())
+
+			return nil, errUnexpectedTestRequest
+		}
+	})
+
+	attachments := []*discordgo.MessageAttachment{
+		{
+			ContentType: "text/plain",
+			Filename:    "first.txt",
+			URL:         firstURL,
+		},
+		{
+			ContentType: "text/plain",
+			Filename:    "second.txt",
+			URL:         secondURL,
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	payloads, failed := instance.fetchSupportedAttachments(ctx, attachments)
+	if failed {
+		t.Fatal("expected concurrent attachment downloads to succeed")
+	}
+
+	if len(payloads) != 2 {
+		t.Fatalf("unexpected payload count: %d", len(payloads))
+	}
+
+	if got := string(payloads[0].body); got != "first attachment" {
+		t.Fatalf("unexpected first payload body: %q", got)
+	}
+
+	if got := string(payloads[1].body); got != "second attachment" {
+		t.Fatalf("unexpected second payload body: %q", got)
 	}
 }
 

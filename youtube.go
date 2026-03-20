@@ -16,6 +16,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -35,12 +36,14 @@ const (
 	noteGPTUUIDVariantMask         = 0x3f
 	noteGPTUUIDVariantValue        = 0x80
 	youtubeWebClientName           = "WEB"
+	youtubeWatchPath               = "/watch"
 	youtubeWebClientVersionHeader  = "1"
 	youtubeAcceptLanguage          = "en-US,en;q=0.9"
 	youtubeUserAgent               = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 " +
 		"(KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36"
 	youtubeCommentsPanelIdentifier = "engagement-panel-comments-section"
 	youtubeMediaStatusPollInterval = 500 * time.Millisecond
+	youtubeFetchTaskCount          = 2
 )
 
 var (
@@ -146,28 +149,47 @@ func (instance *bot) maybeAugmentConversationWithYouTube(
 	conversation []chatMessage,
 	urlExtractionText string,
 ) ([]chatMessage, []string, error) {
+	preparedAugmentation, err := instance.prepareYouTubeAugmentation(
+		ctx,
+		urlExtractionText,
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	augmentedConversation, err := applyPreparedConversationAugmentation(
+		conversation,
+		preparedAugmentation,
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return augmentedConversation, preparedAugmentation.warnings, nil
+}
+
+func (instance *bot) prepareYouTubeAugmentation(
+	ctx context.Context,
+	urlExtractionText string,
+) (preparedConversationAugmentation, error) {
 	if instance.youtube == nil {
-		return conversation, nil, nil
+		return emptyPreparedConversationAugmentation(), nil
 	}
 
 	youtubeURLs := extractYouTubeURLs(urlExtractionText)
 	if len(youtubeURLs) == 0 {
-		return conversation, nil, nil
+		return emptyPreparedConversationAugmentation(), nil
 	}
 
-	augmentedConversation, _, warnings, err := augmentConversationWithConcurrentURLContent(
+	return prepareConcurrentURLContentAugmentation(
 		ctx,
-		conversation,
 		youtubeURLs,
 		instance.youtube.fetch,
 		"fetch youtube content",
 		youtubeWarningText,
 		formatYouTubeURLContent,
 		appendYouTubeContentToConversation,
-		"append youtube content to conversation",
 	)
-
-	return augmentedConversation, warnings, err
 }
 
 func (client youtubeClient) fetch(ctx context.Context, rawURL string) (youtubeVideoContent, error) {
@@ -179,31 +201,68 @@ func (client youtubeClient) fetch(ctx context.Context, rawURL string) (youtubeVi
 	requestContext, cancel := context.WithTimeout(ctx, youtubeRequestTimeout)
 	defer cancel()
 
-	content, err := client.fetchNoteGPTContent(requestContext, videoID)
-	if err != nil {
-		return youtubeVideoContent{}, fmt.Errorf("fetch transcript for %q via notegpt: %w", rawURL, err)
+	var (
+		content        youtubeVideoContent
+		comments       []youtubeComment
+		transcriptErr  error
+		fetchWaitGroup sync.WaitGroup
+	)
+
+	fetchWaitGroup.Add(youtubeFetchTaskCount)
+
+	go func() {
+		defer fetchWaitGroup.Done()
+
+		content, transcriptErr = client.fetchNoteGPTContent(requestContext, videoID)
+	}()
+
+	go func() {
+		defer fetchWaitGroup.Done()
+
+		comments = client.fetchWatchPageComments(requestContext, rawURL, videoID)
+	}()
+
+	fetchWaitGroup.Wait()
+
+	if transcriptErr != nil {
+		return youtubeVideoContent{}, fmt.Errorf(
+			"fetch transcript for %q via notegpt: %w",
+			rawURL,
+			transcriptErr,
+		)
 	}
 
 	content.URL = canonicalURL
-
-	watchPage, err := client.fetchWatchPage(requestContext, videoID)
-	if err != nil {
-		slog.Warn("fetch youtube watch page", "url", rawURL, "error", err)
-	} else {
-		comments, commentsErr := client.fetchComments(
-			requestContext,
-			watchPage.APIKey,
-			watchPage.ClientVersion,
-			watchPage.CommentsToken,
-		)
-		if commentsErr != nil {
-			slog.Warn("fetch youtube comments", "url", rawURL, "error", commentsErr)
-		} else {
-			content.Comments = comments
-		}
-	}
+	content.Comments = comments
 
 	return content, nil
+}
+
+func (client youtubeClient) fetchWatchPageComments(
+	ctx context.Context,
+	rawURL string,
+	videoID string,
+) []youtubeComment {
+	watchPage, err := client.fetchWatchPage(ctx, videoID)
+	if err != nil {
+		slog.Warn("fetch youtube watch page", "url", rawURL, "error", err)
+
+		return nil
+	}
+
+	comments, err := client.fetchComments(
+		ctx,
+		watchPage.APIKey,
+		watchPage.ClientVersion,
+		watchPage.CommentsToken,
+	)
+	if err != nil {
+		slog.Warn("fetch youtube comments", "url", rawURL, "error", err)
+
+		return nil
+	}
+
+	return comments
 }
 
 func (client youtubeClient) fetchNoteGPTContent(
@@ -839,7 +898,7 @@ func parseYouTubeVideoURL(rawURL string) (string, string, error) {
 		videoID = firstPathSegment(parsedURL.Path)
 	case strings.HasSuffix(host, "youtube.com") || strings.HasSuffix(host, "youtube-nocookie.com"):
 		switch {
-		case parsedURL.Path == "/watch":
+		case parsedURL.Path == youtubeWatchPath:
 			videoID = parsedURL.Query().Get("v")
 		case strings.HasPrefix(parsedURL.Path, "/shorts/"):
 			videoID = firstPathSegment(strings.TrimPrefix(parsedURL.Path, "/shorts/"))

@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 )
@@ -134,6 +137,71 @@ func TestMaybeAugmentConversationWithGeminiMediaAppendsAnalysesForNonGeminiModel
 
 	if parts[1]["type"] != contentTypeImageURL {
 		t.Fatalf("expected image to be preserved: %#v", parts[1])
+	}
+}
+
+func TestMaybeAugmentConversationWithGeminiMediaRunsAnalysesConcurrentlyAndKeepsOrder(t *testing.T) {
+	t.Parallel()
+
+	const (
+		audioAnalysis = "Audio transcription per timestamp:\n\n0s to 10s: hello from audio"
+		videoAnalysis = "Video description per timestamp:\n\n0s to 10s: hello from video"
+	)
+
+	chatClient, callCount := newConcurrentGeminiMediaAnalysisChatClient(
+		t,
+		audioAnalysis,
+		videoAnalysis,
+	)
+
+	instance, sourceMessage := newMediaAnalysisTestBot(
+		chatClient,
+		"message-concurrent-media",
+		[]contentPart{
+			{
+				"type":               contentTypeAudioData,
+				contentFieldBytes:    []byte("audio-bytes"),
+				contentFieldMIMEType: "audio/mpeg",
+				contentFieldFilename: "clip.mp3",
+			},
+			{
+				"type":               contentTypeVideoData,
+				contentFieldBytes:    []byte("video-bytes"),
+				contentFieldMIMEType: testVideoMIMEType,
+				contentFieldFilename: "clip.mp4",
+			},
+		},
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	augmentedConversation, err := instance.maybeAugmentConversationWithGeminiMedia(
+		ctx,
+		testMediaAnalysisConfig(),
+		"openai/gpt-5",
+		sourceMessage,
+		[]chatMessage{{Role: messageRoleUser, Content: "<@123>: summarize these files"}},
+	)
+	if err != nil {
+		t.Fatalf("augment conversation with gemini media: %v", err)
+	}
+
+	if *callCount != 2 {
+		t.Fatalf("unexpected gemini analysis call count: %d", *callCount)
+	}
+
+	content, ok := augmentedConversation[0].Content.(string)
+	if !ok {
+		t.Fatalf("unexpected augmented content type: %T", augmentedConversation[0].Content)
+	}
+
+	expectedText := expectedMediaAnalysisUserText(
+		"<@123>: summarize these files",
+		[]string{audioAnalysis, videoAnalysis},
+	)
+	if content != expectedText {
+		t.Fatalf("unexpected augmented text: %q", content)
 	}
 }
 
@@ -506,21 +574,36 @@ func expectedMediaAnalysisUserText(userQuery string, analyses []string) string {
 	return userQuery + "\n\n" + renderMediaAnalyses(analyses)
 }
 
-func expectedGeminiMediaAnalysisRequest(callIndex int) (string, string) {
-	if callIndex == 1 {
-		return geminiVideoAnalysisPrompt, contentTypeVideoData
-	}
-
-	return geminiAudioAnalysisPrompt, contentTypeAudioData
-}
-
 func newGeminiMediaAnalysisChatClient(
 	t *testing.T,
 	expectedAnalyses []string,
 ) (*stubChatCompletionClient, *int) {
 	t.Helper()
 
+	analysisByPartType := make(map[string][]string, 2)
+
+	for _, analysis := range expectedAnalyses {
+		switch {
+		case strings.HasPrefix(analysis, "Audio "):
+			analysisByPartType[contentTypeAudioData] = append(
+				analysisByPartType[contentTypeAudioData],
+				analysis,
+			)
+		case strings.HasPrefix(analysis, "Video "):
+			analysisByPartType[contentTypeVideoData] = append(
+				analysisByPartType[contentTypeVideoData],
+				analysis,
+			)
+		default:
+			t.Fatalf("unsupported media analysis fixture: %q", analysis)
+		}
+	}
+
 	callIndex := 0
+	partCallIndex := make(map[string]int, 2)
+
+	var callMu sync.Mutex
+
 	chatClient := newStubChatClient(func(
 		_ context.Context,
 		request chatCompletionRequest,
@@ -528,30 +611,140 @@ func newGeminiMediaAnalysisChatClient(
 	) error {
 		t.Helper()
 
-		expectedPrompt, expectedPartType := expectedGeminiMediaAnalysisRequest(callIndex)
+		partType := geminiMediaRequestPartType(t, request)
 
 		assertGeminiMediaAnalysisRequest(
 			t,
 			request,
-			expectedPrompt,
-			expectedPartType,
+			geminiMediaAnalysisPromptForPartType(t, partType),
+			partType,
 		)
+
+		callMu.Lock()
+		analysisIndex := partCallIndex[partType]
+		partCallIndex[partType] = analysisIndex + 1
+		callIndex++
+		callMu.Unlock()
+
+		partAnalyses := analysisByPartType[partType]
+		if analysisIndex >= len(partAnalyses) {
+			t.Fatalf("unexpected extra %s analysis request", partType)
+		}
 
 		err := handle(streamDelta{
 			Thinking:     "",
-			Content:      expectedAnalyses[callIndex],
+			Content:      partAnalyses[analysisIndex],
 			FinishReason: finishReasonStop,
 		})
 		if err != nil {
 			return err
 		}
 
-		callIndex++
-
 		return nil
 	})
 
 	return chatClient, &callIndex
+}
+
+func newConcurrentGeminiMediaAnalysisChatClient(
+	t *testing.T,
+	audioAnalysis string,
+	videoAnalysis string,
+) (*stubChatCompletionClient, *int) {
+	t.Helper()
+
+	var (
+		startedCount int
+		startedMu    sync.Mutex
+		release      = make(chan struct{})
+		callCount    int
+		callMu       sync.Mutex
+	)
+
+	chatClient := newStubChatClient(func(
+		ctx context.Context,
+		request chatCompletionRequest,
+		handle func(streamDelta) error,
+	) error {
+		t.Helper()
+
+		partType := geminiMediaRequestPartType(t, request)
+		assertGeminiMediaAnalysisRequest(
+			t,
+			request,
+			geminiMediaAnalysisPromptForPartType(t, partType),
+			partType,
+		)
+
+		startedMu.Lock()
+		startedCount++
+
+		if startedCount == 2 {
+			close(release)
+		}
+		startedMu.Unlock()
+
+		select {
+		case <-release:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+
+		callMu.Lock()
+		callCount++
+		callMu.Unlock()
+
+		analysis := audioAnalysis
+		if partType == contentTypeVideoData {
+			analysis = videoAnalysis
+		}
+
+		return handle(streamDelta{
+			Thinking:     "",
+			Content:      analysis,
+			FinishReason: finishReasonStop,
+		})
+	})
+
+	return chatClient, &callCount
+}
+
+func geminiMediaAnalysisPromptForPartType(t *testing.T, partType string) string {
+	t.Helper()
+
+	switch partType {
+	case contentTypeAudioData:
+		return geminiAudioAnalysisPrompt
+	case contentTypeVideoData:
+		return geminiVideoAnalysisPrompt
+	default:
+		t.Fatalf("unexpected media part type: %q", partType)
+
+		return ""
+	}
+}
+
+func geminiMediaRequestPartType(
+	t *testing.T,
+	request chatCompletionRequest,
+) string {
+	t.Helper()
+
+	contentParts, ok := request.Messages[0].Content.([]contentPart)
+	if !ok {
+		t.Fatalf("unexpected request content type: %T", request.Messages[0].Content)
+	}
+
+	if len(contentParts) != 2 {
+		t.Fatalf("unexpected request part count: %d", len(contentParts))
+	}
+
+	partType, _ := contentParts[1]["type"].(string)
+	if partType == "" {
+		t.Fatalf("missing media part type in request: %#v", contentParts[1])
+	}
+
+	return partType
 }
 
 func assertGeminiMediaAnalysisRequest(
