@@ -91,6 +91,55 @@ func TestBuildChatCompletionRequestPreservesProviderAPIKeys(t *testing.T) {
 	}
 }
 
+func TestBuildChatCompletionRequestUsesContextWindowWithoutSendingItToProvider(t *testing.T) {
+	t.Parallel()
+
+	provider := new(providerConfig)
+	provider.BaseURL = testOpenAIBaseURL
+
+	modelParameters := map[string]any{
+		"context_window": 400_000,
+		"temperature":    0.2,
+	}
+
+	var loadedConfig config
+
+	loadedConfig.Providers = map[string]providerConfig{
+		"openai": *provider,
+	}
+	loadedConfig.Models = map[string]map[string]any{
+		"openai/gpt-5.1": modelParameters,
+	}
+	loadedConfig.ModelContextWindows = map[string]int{
+		"openai/gpt-5.1": 400_000,
+	}
+
+	request, err := buildChatCompletionRequest(
+		loadedConfig,
+		"openai/gpt-5.1",
+		[]chatMessage{{Role: messageRoleUser, Content: "hello"}},
+	)
+	if err != nil {
+		t.Fatalf("build chat completion request: %v", err)
+	}
+
+	if request.ContextWindow != 400_000 {
+		t.Fatalf("unexpected context window: %d", request.ContextWindow)
+	}
+
+	if _, ok := request.Provider.ExtraBody[modelConfigContextWindowKey]; ok {
+		t.Fatalf("unexpected local-only model config in provider extra body: %#v", request.Provider.ExtraBody)
+	}
+
+	if got, ok := request.Provider.ExtraBody["temperature"].(float64); !ok || got != 0.2 {
+		t.Fatalf("unexpected provider extra body: %#v", request.Provider.ExtraBody)
+	}
+
+	if modelParameters[modelConfigContextWindowKey] != 400_000 {
+		t.Fatalf("unexpected mutation of model parameters: %#v", modelParameters)
+	}
+}
+
 func TestBuildChatCompletionRequestDefaultsOpenRouterTransforms(t *testing.T) {
 	t.Parallel()
 
@@ -526,6 +575,7 @@ func newNoSearchDecisionChatClient(
 			Thinking:     "",
 			Content:      `{"needs_search":false,"queries":[]}`,
 			FinishReason: finishReasonStop,
+			Usage:        nil,
 		})
 	})
 }

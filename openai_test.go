@@ -59,6 +59,12 @@ func newStreamingTestServer(t *testing.T) *httptest.Server {
 		flusher.Flush()
 		writeStreamChunk(t, responseWriter, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
 		flusher.Flush()
+		writeStreamChunk(
+			t,
+			responseWriter,
+			"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":12,\"completion_tokens\":34}}\n\n",
+		)
+		flusher.Flush()
 		writeStreamChunk(t, responseWriter, "data: [DONE]\n\n")
 		flusher.Flush()
 	}))
@@ -96,6 +102,15 @@ func assertStreamingRequest(t *testing.T, request *http.Request) {
 
 	if payload["stream"] != true {
 		t.Fatalf("unexpected stream flag: %#v", payload["stream"])
+	}
+
+	streamOptions, streamOptionsOK := payload["stream_options"].(map[string]any)
+	if !streamOptionsOK {
+		t.Fatalf("unexpected stream_options payload: %#v", payload["stream_options"])
+	}
+
+	if got, ok := streamOptions["include_usage"].(bool); !ok || !got {
+		t.Fatalf("unexpected include_usage payload: %#v", streamOptions["include_usage"])
 	}
 
 	if payload["temperature"] != float64(0.2) {
@@ -141,6 +156,7 @@ func TestOpenAIClientStreamChatCompletion(t *testing.T) {
 		},
 		Model:           "gpt-test",
 		ConfiguredModel: "",
+		ContextWindow:   0,
 		SessionID:       "",
 		Messages: []chatMessage{
 			{Role: "user", Content: "hello"},
@@ -150,10 +166,15 @@ func TestOpenAIClientStreamChatCompletion(t *testing.T) {
 	var (
 		joinedContent strings.Builder
 		finishReason  string
+		usage         *tokenUsage
 	)
 
 	err := client.streamChatCompletion(context.Background(), request, func(delta streamDelta) error {
 		joinedContent.WriteString(delta.Content)
+
+		if delta.Usage != nil {
+			usage = cloneTokenUsage(delta.Usage)
+		}
 
 		if delta.FinishReason != "" {
 			finishReason = delta.FinishReason
@@ -172,6 +193,144 @@ func TestOpenAIClientStreamChatCompletion(t *testing.T) {
 	if finishReason != "stop" {
 		t.Fatalf("unexpected finish reason: %q", finishReason)
 	}
+
+	if usage == nil || usage.Input != 12 || usage.Output != 34 {
+		t.Fatalf("unexpected usage: %#v", usage)
+	}
+}
+
+func TestOpenAIClientRetriesWithoutStreamingUsageWhenProviderRejectsIt(t *testing.T) {
+	t.Parallel()
+
+	var capture openAIRequestBodyCapture
+
+	server := newOpenAIStreamingUsageFallbackServer(t, &capture)
+	defer server.Close()
+
+	client := newOpenAIClient(server.Client())
+	request := chatCompletionRequest{
+		Provider: providerRequestConfig{
+			APIKind:      providerAPIKindOpenAI,
+			BaseURL:      server.URL,
+			APIKey:       "test-key",
+			APIKeys:      nil,
+			ExtraHeaders: nil,
+			ExtraQuery:   nil,
+			ExtraBody:    nil,
+		},
+		Model:           "gpt-test",
+		ConfiguredModel: "",
+		ContextWindow:   0,
+		SessionID:       "",
+		Messages:        []chatMessage{{Role: "user", Content: "hello"}},
+	}
+
+	var joinedContent strings.Builder
+
+	err := client.streamChatCompletion(context.Background(), request, func(delta streamDelta) error {
+		joinedContent.WriteString(delta.Content)
+
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("stream chat completion: %v", err)
+	}
+
+	if joinedContent.String() != testStreamedHelloText {
+		t.Fatalf("unexpected streamed content: %q", joinedContent.String())
+	}
+
+	if len(capture.snapshot()) != 2 {
+		t.Fatalf("unexpected request count: %d", len(capture.snapshot()))
+	}
+}
+
+func newOpenAIStreamingUsageFallbackServer(
+	t *testing.T,
+	capture *openAIRequestBodyCapture,
+) *httptest.Server {
+	t.Helper()
+
+	return httptest.NewServer(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		request *http.Request,
+	) {
+		t.Helper()
+
+		var payload map[string]any
+
+		err := json.NewDecoder(request.Body).Decode(&payload)
+		if err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+
+		requestNumber := capture.append(payload)
+
+		switch requestNumber {
+		case 1:
+			assertOpenAIStreamingUsageRetryFirstRequest(t, responseWriter, payload)
+		case 2:
+			assertOpenAIStreamingUsageRetrySecondRequest(t, responseWriter, payload)
+		default:
+			t.Fatalf("unexpected request count: %d", requestNumber)
+		}
+	}))
+}
+
+func assertOpenAIStreamingUsageRetryFirstRequest(
+	t *testing.T,
+	responseWriter http.ResponseWriter,
+	payload map[string]any,
+) {
+	t.Helper()
+
+	streamOptions, ok := payload["stream_options"].(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected first stream_options payload: %#v", payload["stream_options"])
+	}
+
+	if got, ok := streamOptions["include_usage"].(bool); !ok || !got {
+		t.Fatalf("unexpected first include_usage payload: %#v", streamOptions["include_usage"])
+	}
+
+	responseWriter.Header().Set("Content-Type", "application/json")
+	responseWriter.WriteHeader(http.StatusBadRequest)
+	writeStreamChunk(
+		t,
+		responseWriter,
+		`{"error":{"message":"Unsupported parameter: stream_options.include_usage","type":"invalid_request_error",`+
+			`"param":"stream_options.include_usage","code":"unsupported_parameter"}}`,
+	)
+}
+
+func assertOpenAIStreamingUsageRetrySecondRequest(
+	t *testing.T,
+	responseWriter http.ResponseWriter,
+	payload map[string]any,
+) {
+	t.Helper()
+
+	if _, ok := payload["stream_options"]; ok {
+		t.Fatalf("unexpected retried stream_options payload: %#v", payload["stream_options"])
+	}
+
+	responseWriter.Header().Set("Content-Type", "text/event-stream")
+
+	flusher, ok := responseWriter.(http.Flusher)
+	if !ok {
+		t.Fatal("expected response writer to support flushing")
+	}
+
+	writeStreamChunk(
+		t,
+		responseWriter,
+		"data: {\"choices\":[{\"delta\":{\"content\":\""+testStreamedHelloText+"\"}}]}\n\n",
+	)
+	flusher.Flush()
+	writeStreamChunk(t, responseWriter, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
+	flusher.Flush()
+	writeStreamChunk(t, responseWriter, "data: [DONE]\n\n")
+	flusher.Flush()
 }
 
 func TestOpenAIClientStreamChatCompletionReturnsStatusErrors(t *testing.T) {
@@ -198,6 +357,7 @@ func TestOpenAIClientStreamChatCompletionReturnsStatusErrors(t *testing.T) {
 		},
 		Model:           "gpt-test",
 		ConfiguredModel: "",
+		ContextWindow:   0,
 		SessionID:       "",
 		Messages:        []chatMessage{{Role: "user", Content: "hello"}},
 	}
@@ -245,6 +405,7 @@ func TestOpenAIClientStreamChatCompletionParsesJSONStatusErrors(t *testing.T) {
 		},
 		Model:           "gpt-test",
 		ConfiguredModel: "",
+		ContextWindow:   0,
 		SessionID:       "",
 		Messages:        []chatMessage{{Role: "user", Content: "hello"}},
 	}
@@ -298,6 +459,7 @@ func TestOpenAIClientStreamChatCompletionReturnsStreamEventErrors(t *testing.T) 
 		},
 		Model:           "gpt-test",
 		ConfiguredModel: "",
+		ContextWindow:   0,
 		SessionID:       "",
 		Messages:        []chatMessage{{Role: "user", Content: "hello"}},
 	}
@@ -345,6 +507,7 @@ func TestOpenAIClientStreamChatCompletionReturnsBlockedFinishReasonErrors(t *tes
 		},
 		Model:           "gpt-test",
 		ConfiguredModel: "",
+		ContextWindow:   0,
 		SessionID:       "",
 		Messages:        []chatMessage{{Role: "user", Content: "hello"}},
 	}
@@ -386,6 +549,7 @@ func TestOpenAIClientStreamChatCompletionReturnsErrorWithoutDoneMarker(t *testin
 		},
 		Model:           "gpt-test",
 		ConfiguredModel: "",
+		ContextWindow:   0,
 		SessionID:       "",
 		Messages:        []chatMessage{{Role: "user", Content: "hello"}},
 	}
@@ -499,6 +663,7 @@ func newOpenAIDegradedFunctionRetryRequest(baseURL string) chatCompletionRequest
 		},
 		Model:           "gpt-test",
 		ConfiguredModel: "openai/gpt-test",
+		ContextWindow:   0,
 		SessionID:       "",
 		Messages:        []chatMessage{{Role: messageRoleUser, Content: "hello"}},
 	}

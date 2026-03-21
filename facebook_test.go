@@ -425,6 +425,7 @@ func TestMaybeAugmentConversationWithFacebookPreprocessesForNonGeminiModels(t *t
 			Thinking:     "",
 			Content:      expectedAnalysis[0],
 			FinishReason: finishReasonStop,
+			Usage:        nil,
 		})
 	})
 

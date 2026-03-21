@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,9 +20,10 @@ type segmentAccumulator struct {
 }
 
 type renderSpec struct {
-	content string
-	color   int
-	actions responseActions
+	content    string
+	color      int
+	actions    responseActions
+	footerText string
 }
 
 type responseActions struct {
@@ -38,6 +41,8 @@ type responseTracker struct {
 	sourceMessage    *discordgo.Message
 	searchMetadata   *searchMetadata
 	modelName        string
+	contextWindow    int
+	usage            *tokenUsage
 	responseMessages []*discordgo.Message
 	pendingResponses []pendingResponse
 	renderedSpecs    []renderSpec
@@ -97,6 +102,15 @@ func visibleResponseText(thinkingText string, answerText string) string {
 
 const thinkingResponsePrefix = "**Thinking**\n"
 const answerResponseSeparator = "\n\n**Answer**\n"
+
+const (
+	contextWindowPercentScale     = 100
+	compactTokenCountBase         = 1_000
+	compactTokenCountMillion      = 1_000_000
+	compactTokenCountBillion      = 1_000_000_000
+	compactTokenCountSmallCutoff  = 10
+	compactTokenCountMediumCutoff = 100
+)
 
 func extractThinkingText(fullText string) string {
 	trimmedText := strings.TrimSpace(fullText)
@@ -185,6 +199,7 @@ func (instance *bot) generateAndSendResponse(
 	accumulator := newSegmentAccumulator(maxLength)
 	thinkingAccumulator := newSegmentAccumulator(maxLength)
 	tracker.modelName = strings.TrimSpace(request.ConfiguredModel)
+	tracker.contextWindow = request.ContextWindow
 
 	var finishReason string
 
@@ -263,6 +278,10 @@ func (instance *bot) handleGeneratedStreamDelta(
 
 	if delta.FinishReason != "" {
 		*finishReason = delta.FinishReason
+	}
+
+	if delta.Usage != nil {
+		tracker.usage = cloneTokenUsage(delta.Usage)
 	}
 
 	if usePlainResponses {
@@ -629,6 +648,7 @@ func buildRenderSpecs(
 				showThinking: final && hasThinking && index == len(segments)-1,
 				showRentry:   final && index == len(segments)-1,
 			},
+			footerText: "",
 		}
 
 		switch {
@@ -667,6 +687,13 @@ func (instance *bot) renderEmbedResponse(
 		tracker.searchMetadata != nil,
 		hasThinking,
 	)
+	if final && len(desiredSpecs) > 0 {
+		desiredSpecs[len(desiredSpecs)-1].footerText = contextWindowFooter(
+			tracker.usage,
+			tracker.contextWindow,
+		)
+	}
+
 	for index, spec := range desiredSpecs {
 		if index < len(tracker.renderedSpecs) && tracker.renderedSpecs[index] == spec {
 			continue
@@ -677,6 +704,7 @@ func (instance *bot) renderEmbedResponse(
 			tracker.modelName,
 			spec.color,
 			warnings,
+			spec.footerText,
 		)
 
 		err := instance.renderEmbedSpec(ctx, tracker, index, embed, spec.actions)
@@ -955,6 +983,7 @@ func buildResponseEmbed(
 	modelName string,
 	color int,
 	warnings []string,
+	footerText string,
 ) *discordgo.MessageEmbed {
 	embed := new(discordgo.MessageEmbed)
 	embed.Description = content
@@ -974,7 +1003,94 @@ func buildResponseEmbed(
 		embed.Fields = append(embed.Fields, field)
 	}
 
+	if strings.TrimSpace(footerText) != "" {
+		embed.Footer = &discordgo.MessageEmbedFooter{
+			Text:         footerText,
+			IconURL:      "",
+			ProxyIconURL: "",
+		}
+	}
+
 	return embed
+}
+
+func contextWindowFooter(usage *tokenUsage, contextWindow int) string {
+	if usage == nil || contextWindow <= 0 {
+		return ""
+	}
+
+	usedTokens := usage.Input + usage.Output
+	if usedTokens < 0 {
+		return ""
+	}
+
+	return fmt.Sprintf(
+		"context window: %s/%s (%s used)",
+		formatCompactTokenCount(usedTokens),
+		formatCompactTokenCount(contextWindow),
+		formatContextWindowUsagePercent(usedTokens, contextWindow),
+	)
+}
+
+func formatContextWindowUsagePercent(usedTokens int, contextWindow int) string {
+	if usedTokens <= 0 || contextWindow <= 0 {
+		return "0%"
+	}
+
+	percentage := float64(usedTokens) * contextWindowPercentScale / float64(contextWindow)
+
+	precision := 0
+	if percentage < compactTokenCountSmallCutoff &&
+		math.Abs(percentage-math.Round(percentage)) >= 0.05 {
+		precision = 1
+	}
+
+	return formatRoundedFloat(percentage, precision) + "%"
+}
+
+func formatCompactTokenCount(count int) string {
+	if count < compactTokenCountBase {
+		return strconv.Itoa(count)
+	}
+
+	value := float64(count)
+	for _, unit := range []struct {
+		threshold float64
+		suffix    string
+	}{
+		{threshold: compactTokenCountBillion, suffix: "B"},
+		{threshold: compactTokenCountMillion, suffix: "M"},
+		{threshold: compactTokenCountBase, suffix: "k"},
+	} {
+		if value < unit.threshold {
+			continue
+		}
+
+		normalized := value / unit.threshold
+		precision := 0
+
+		switch {
+		case normalized < compactTokenCountSmallCutoff:
+			precision = 2
+		case normalized < compactTokenCountMediumCutoff:
+			precision = 1
+		}
+
+		return formatRoundedFloat(normalized, precision) + unit.suffix
+	}
+
+	return strconv.Itoa(count)
+}
+
+func formatRoundedFloat(value float64, precision int) string {
+	if precision <= 0 {
+		return fmt.Sprintf("%.0f", value)
+	}
+
+	return strings.TrimRight(
+		strings.TrimRight(fmt.Sprintf("%.*f", precision, value), "0"),
+		".",
+	)
 }
 
 func buildEmbedComponents(actions responseActions) []discordgo.MessageComponent {

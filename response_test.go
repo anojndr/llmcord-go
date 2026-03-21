@@ -325,13 +325,41 @@ func TestBuildPlainComponentsAddsActionButtons(t *testing.T) {
 func TestBuildResponseEmbedSetsConfiguredModelAsAuthor(t *testing.T) {
 	t.Parallel()
 
-	embed := buildResponseEmbed("hello", "openai/gpt-5.1", embedColorComplete, nil)
+	embed := buildResponseEmbed("hello", "openai/gpt-5.1", embedColorComplete, nil, "")
 	if embed.Author == nil {
 		t.Fatal("expected embed author to be set")
 	}
 
 	if embed.Author.Name != "openai/gpt-5.1" {
 		t.Fatalf("unexpected embed author: %#v", embed.Author)
+	}
+}
+
+func TestBuildResponseEmbedSetsContextWindowFooter(t *testing.T) {
+	t.Parallel()
+
+	const footerText = "context window: 20k/400k (5% used)"
+
+	embed := buildResponseEmbed("hello", "openai/gpt-5.1", embedColorComplete, nil, footerText)
+	if embed.Footer == nil {
+		t.Fatal("expected embed footer to be set")
+	}
+
+	if embed.Footer.Text != footerText {
+		t.Fatalf("unexpected embed footer: %#v", embed.Footer)
+	}
+}
+
+func TestContextWindowFooterFormatsCompactUsage(t *testing.T) {
+	t.Parallel()
+
+	footerText := contextWindowFooter(
+		&tokenUsage{Input: 15_000, Output: 5_000},
+		400_000,
+	)
+
+	if footerText != "context window: 20k/400k (5% used)" {
+		t.Fatalf("unexpected context window footer: %q", footerText)
 	}
 }
 
@@ -364,7 +392,7 @@ func TestRenderEmbedResponseIncludesConfiguredModelAsAuthor(t *testing.T) {
 			t.Fatalf("unexpected request: %s %s", request.Method, request.URL.Path)
 		}
 
-		assertRequestEmbedAuthor(t, request, modelName, responseBody)
+		assertRequestEmbed(t, request, modelName, responseBody, "")
 
 		sentMessage := new(discordgo.Message)
 		sentMessage.ID = responseID
@@ -379,6 +407,68 @@ func TestRenderEmbedResponseIncludesConfiguredModelAsAuthor(t *testing.T) {
 	instance.nodes = newMessageNodeStore(10)
 
 	tracker := newResponseTracker(sourceMessage, modelName)
+
+	err = instance.renderEmbedResponse(
+		context.Background(),
+		tracker,
+		nil,
+		[]string{responseBody},
+		finishReasonStop,
+		true,
+		false,
+	)
+	if err != nil {
+		t.Fatalf("render embed response: %v", err)
+	}
+}
+
+func TestRenderEmbedResponseIncludesContextWindowFooter(t *testing.T) {
+	t.Parallel()
+
+	const (
+		channelID    = "channel-1"
+		sourceID     = "source-message"
+		modelName    = "openai/gpt-5.1"
+		responseID   = "assistant-message"
+		responseBody = "hello"
+		footerText   = "context window: 20k/400k (5% used)"
+	)
+
+	sourceMessage := new(discordgo.Message)
+	sourceMessage.ID = sourceID
+	sourceMessage.ChannelID = channelID
+
+	session, err := discordgo.New("Bot discord-token")
+	if err != nil {
+		t.Fatalf("create discord session: %v", err)
+	}
+
+	client := new(http.Client)
+	client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		t.Helper()
+
+		if request.Method != http.MethodPost ||
+			request.URL.Path != "/api/v9/channels/"+channelID+"/messages" {
+			t.Fatalf("unexpected request: %s %s", request.Method, request.URL.Path)
+		}
+
+		assertRequestEmbed(t, request, modelName, responseBody, footerText)
+
+		sentMessage := new(discordgo.Message)
+		sentMessage.ID = responseID
+		sentMessage.ChannelID = channelID
+
+		return newJSONResponse(t, request, sentMessage), nil
+	})
+	session.Client = client
+
+	instance := new(bot)
+	instance.session = session
+	instance.nodes = newMessageNodeStore(10)
+
+	tracker := newResponseTracker(sourceMessage, modelName)
+	tracker.contextWindow = 400_000
+	tracker.usage = &tokenUsage{Input: 15_000, Output: 5_000}
 
 	err = instance.renderEmbedResponse(
 		context.Background(),
@@ -737,6 +827,7 @@ func emptyChatCompletionRequest() chatCompletionRequest {
 		},
 		Model:           "",
 		ConfiguredModel: "",
+		ContextWindow:   0,
 		SessionID:       "",
 		Messages:        nil,
 	}
@@ -847,9 +938,9 @@ func TestGenerateAndSendResponseShowsThinkingDuringStreamButNotFinalResponse(t *
 	instance.nodes = newMessageNodeStore(10)
 	instance.chatCompletions = fakeChatCompletionClient{
 		deltas: []streamDelta{
-			{Thinking: thoughtText, Content: "", FinishReason: ""},
-			{Thinking: "", Content: answerText, FinishReason: ""},
-			{Thinking: "", Content: "", FinishReason: finishReasonStop},
+			{Thinking: thoughtText, Content: "", FinishReason: "", Usage: nil},
+			{Thinking: "", Content: answerText, FinishReason: "", Usage: nil},
+			{Thinking: "", Content: "", FinishReason: finishReasonStop, Usage: nil},
 		},
 	}
 
@@ -927,9 +1018,9 @@ func TestGenerateAndSendResponsePersistsThinkingInConversationHistory(t *testing
 	instance.nodes = newMessageNodeStore(10)
 	instance.chatCompletions = fakeChatCompletionClient{
 		deltas: []streamDelta{
-			{Thinking: thoughtText, Content: "", FinishReason: ""},
-			{Thinking: "", Content: answerText, FinishReason: ""},
-			{Thinking: "", Content: "", FinishReason: finishReasonStop},
+			{Thinking: thoughtText, Content: "", FinishReason: "", Usage: nil},
+			{Thinking: "", Content: answerText, FinishReason: "", Usage: nil},
+			{Thinking: "", Content: "", FinishReason: finishReasonStop, Usage: nil},
 		},
 	}
 
@@ -1036,11 +1127,12 @@ func newJSONResponse(t *testing.T, request *http.Request, payload any) *http.Res
 	return response
 }
 
-func assertRequestEmbedAuthor(
+func assertRequestEmbed(
 	t *testing.T,
 	request *http.Request,
 	expectedModelName string,
 	expectedDescription string,
+	expectedFooter string,
 ) {
 	t.Helper()
 
@@ -1072,6 +1164,24 @@ func assertRequestEmbedAuthor(
 
 	if embed["description"] != expectedDescription {
 		t.Fatalf("unexpected embed description: %#v", embed["description"])
+	}
+
+	footerValue, footerSet := embed["footer"]
+	if expectedFooter == "" {
+		if footerSet {
+			t.Fatalf("unexpected embed footer payload: %#v", footerValue)
+		}
+
+		return
+	}
+
+	footer, footerOK := footerValue.(map[string]any)
+	if !footerOK {
+		t.Fatalf("unexpected embed footer payload: %#v", footerValue)
+	}
+
+	if footer["text"] != expectedFooter {
+		t.Fatalf("unexpected embed footer text: %#v", footer["text"])
 	}
 }
 

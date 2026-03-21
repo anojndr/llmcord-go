@@ -816,6 +816,21 @@ func mergeExtraBody(providerExtraBody map[string]any, modelParameters map[string
 	return mergedBody
 }
 
+func requestModelParameters(modelParameters map[string]any) map[string]any {
+	if len(modelParameters) == 0 {
+		return modelParameters
+	}
+
+	if _, ok := modelParameters[modelConfigContextWindowKey]; !ok {
+		return modelParameters
+	}
+
+	filteredParameters := maps.Clone(modelParameters)
+	delete(filteredParameters, modelConfigContextWindowKey)
+
+	return filteredParameters
+}
+
 func defaultOpenRouterTransforms(provider providerConfig, extraBody map[string]any) map[string]any {
 	if !provider.usesOpenRouter() {
 		return extraBody
@@ -857,7 +872,7 @@ func buildChatCompletionRequest(
 		)
 	}
 
-	modelParameters := loadedConfig.Models[providerSlashModel]
+	modelParameters := requestModelParameters(loadedConfig.Models[providerSlashModel])
 	providerAPIKind := provider.apiKind()
 	extraBody := mergeExtraBody(provider.ExtraBody, modelParameters)
 
@@ -896,6 +911,7 @@ func buildChatCompletionRequest(
 		},
 		Model:           modelName,
 		ConfiguredModel: providerSlashModel,
+		ContextWindow:   loadedConfig.modelContextWindow(providerSlashModel),
 		SessionID:       "",
 		Messages:        messages,
 	}, nil

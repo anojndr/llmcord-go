@@ -72,6 +72,7 @@ The goal is to make Discord feel like a practical, stateful frontend for LLM wor
 - True incremental streaming embed responses with automatic message splitting
 - Plain-response mode using Discord text display components
 - Model labels shown in embed author text
+- Final embeds can show context-window usage from provider token counts when `context_window` is configured for the selected model
 - User-facing error text when upstream streaming fails instead of silently stopping
 - `Show Thinking` button for replies that streamed reasoning
 - `Show Sources` button for web-search and visual-search replies
@@ -197,7 +198,7 @@ The config schema stays close to the original Python project.
 | Setting | Description |
 | --- | --- |
 | `providers` | Provider definitions keyed by provider name. OpenAI-compatible providers use `base_url`. Gemini providers use `type: gemini` and the native `google.golang.org/genai` client. OpenAI Codex providers use `type: openai-codex` and default to `https://chatgpt.com/backend-api`. `api_key` can be a single string or a YAML list of strings. Optional `extra_headers`, `extra_query`, and `extra_body` are supported. |
-| `models` | Ordered list of `<provider>/<model>` entries. The first entry is the startup default. Append `:vision` for image support heuristics. Gemini suffix aliases like `-minimal`, `-low`, `-medium`, and `-high` control thinking level. Codex suffix aliases like `-none`, `-minimal`, `-low`, `-medium`, `-high`, and `-xhigh` control reasoning effort. |
+| `models` | Ordered list of `<provider>/<model>` entries. The first entry is the startup default. Append `:vision` for image support heuristics. Model entries can also include local-only settings such as `context_window` for the reply footer; this field is not sent upstream. Gemini suffix aliases like `-minimal`, `-low`, `-medium`, and `-high` control thinking level. Codex suffix aliases like `-none`, `-minimal`, `-low`, `-medium`, `-high`, and `-xhigh` control reasoning effort. Alias variants share the same effective `context_window` as their base model. |
 | `channel_model_locks` | Optional map of Discord channel IDs to configured reply models. `/model` is disabled in locked channels. |
 | `search_decider_model` | Optional `<provider>/<model>` used to decide whether web search is required. Defaults to the first configured model. |
 | `media_analysis_model` | Optional `<provider>/<model>` used for Gemini preprocessing of audio/video attachments before non-Gemini replies. |

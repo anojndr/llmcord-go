@@ -125,6 +125,7 @@ func newConcurrentDownloadedVideoAnalysisChatClient(
 			Thinking:     "",
 			Content:      "analysis for " + filename,
 			FinishReason: finishReasonStop,
+			Usage:        nil,
 		})
 	})
 }

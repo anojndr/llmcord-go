@@ -381,6 +381,7 @@ func newGeminiVideoAnalysisChatClient(
 			Thinking:     "",
 			Content:      expectedAnalysis,
 			FinishReason: finishReasonStop,
+			Usage:        nil,
 		})
 	})
 
@@ -600,6 +601,7 @@ func TestMaybeAugmentConversationWithTikTokPreprocessesForNonGeminiModels(t *tes
 			Thinking:     "",
 			Content:      expectedAnalysis[0],
 			FinishReason: finishReasonStop,
+			Usage:        nil,
 		})
 	})
 

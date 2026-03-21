@@ -636,7 +636,11 @@ func handleOpenAICodexStreamPayload(payload []byte, handle func(streamDelta) err
 		Code     string `json:"code"`
 		Response struct {
 			Status string `json:"status"`
-			Error  struct {
+			Usage  *struct {
+				InputTokens  int `json:"input_tokens"`
+				OutputTokens int `json:"output_tokens"`
+			} `json:"usage"`
+			Error struct {
 				Code    string `json:"code"`
 				Message string `json:"message"`
 			} `json:"error"`
@@ -659,6 +663,7 @@ func handleOpenAICodexStreamPayload(payload []byte, handle func(streamDelta) err
 			Thinking:     "\n\n",
 			Content:      "",
 			FinishReason: "",
+			Usage:        nil,
 		})
 	case "response.output_text.delta", "response.refusal.delta":
 		return false, openAICodexHandleContentDelta(envelope.Delta, handle)
@@ -669,6 +674,7 @@ func handleOpenAICodexStreamPayload(payload []byte, handle func(streamDelta) err
 			envelope.Response.Error.Code,
 			envelope.Response.Error.Message,
 			envelope.Response.IncompleteDetails.Reason,
+			openAICodexStreamUsage(envelope.Response.Usage),
 			handle,
 		)
 	case "response.failed":
@@ -693,6 +699,7 @@ func openAICodexHandleThinkingDelta(delta string, handle func(streamDelta) error
 		Thinking:     delta,
 		Content:      "",
 		FinishReason: "",
+		Usage:        nil,
 	})
 }
 
@@ -705,6 +712,7 @@ func openAICodexHandleContentDelta(delta string, handle func(streamDelta) error)
 		Thinking:     "",
 		Content:      delta,
 		FinishReason: "",
+		Usage:        nil,
 	})
 }
 
@@ -714,6 +722,7 @@ func openAICodexHandleTerminalResponse(
 	errorCode string,
 	errorMessage string,
 	incompleteReason string,
+	usage *tokenUsage,
 	handle func(streamDelta) error,
 ) error {
 	normalizedStatus := strings.ToLower(strings.TrimSpace(status))
@@ -732,6 +741,7 @@ func openAICodexHandleTerminalResponse(
 			Thinking:     "",
 			Content:      "",
 			FinishReason: finishReasonStop,
+			Usage:        cloneTokenUsage(usage),
 		})
 	case "incomplete":
 		if strings.EqualFold(strings.TrimSpace(incompleteReason), openAIContentFilterFinishReason) {
@@ -742,11 +752,26 @@ func openAICodexHandleTerminalResponse(
 			Thinking:     "",
 			Content:      "",
 			FinishReason: finishReasonLength,
+			Usage:        cloneTokenUsage(usage),
 		})
 	case "failed", "cancelled":
 		return openAICodexFailedResponseError(errorCode, errorMessage, incompleteReason)
 	default:
 		return fmt.Errorf("unexpected codex response status %q: %w", status, os.ErrInvalid)
+	}
+}
+
+func openAICodexStreamUsage(usage *struct {
+	InputTokens  int `json:"input_tokens"`
+	OutputTokens int `json:"output_tokens"`
+}) *tokenUsage {
+	if usage == nil {
+		return nil
+	}
+
+	return &tokenUsage{
+		Input:  usage.InputTokens,
+		Output: usage.OutputTokens,
 	}
 }
 

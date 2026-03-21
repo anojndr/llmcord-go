@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -161,9 +162,10 @@ type databaseConfig struct {
 type providerAPIKind string
 
 const (
-	providerAPIKindOpenAI      providerAPIKind = "openai"
-	providerAPIKindOpenAICodex providerAPIKind = "openai-codex"
-	providerAPIKindGemini      providerAPIKind = "gemini"
+	providerAPIKindOpenAI       providerAPIKind = "openai"
+	providerAPIKindOpenAICodex  providerAPIKind = "openai-codex"
+	providerAPIKindGemini       providerAPIKind = "gemini"
+	modelConfigContextWindowKey                 = "context_window"
 )
 
 type rawConfig struct {
@@ -188,25 +190,26 @@ type rawConfig struct {
 }
 
 type config struct {
-	BotToken           string
-	ClientID           string
-	StatusMessage      string
-	MaxText            int
-	MaxImages          int
-	MaxMessages        int
-	UsePlainResponses  bool
-	AllowDMs           bool
-	Permissions        permissionsConfig
-	Providers          map[string]providerConfig
-	WebSearch          webSearchConfig
-	VisualSearch       visualSearchConfig
-	Database           databaseConfig
-	Models             map[string]map[string]any
-	ModelOrder         []string
-	ChannelModelLocks  map[string]string
-	SearchDeciderModel string
-	MediaAnalysisModel string
-	SystemPrompt       string
+	BotToken            string
+	ClientID            string
+	StatusMessage       string
+	MaxText             int
+	MaxImages           int
+	MaxMessages         int
+	UsePlainResponses   bool
+	AllowDMs            bool
+	Permissions         permissionsConfig
+	Providers           map[string]providerConfig
+	WebSearch           webSearchConfig
+	VisualSearch        visualSearchConfig
+	Database            databaseConfig
+	Models              map[string]map[string]any
+	ModelContextWindows map[string]int
+	ModelOrder          []string
+	ChannelModelLocks   map[string]string
+	SearchDeciderModel  string
+	MediaAnalysisModel  string
+	SystemPrompt        string
 }
 
 func loadConfig(filename string) (config, error) {
@@ -272,6 +275,11 @@ func buildLoadedConfig(
 	mediaAnalysisModel := strings.TrimSpace(string(rawLoadedConfig.MediaAnalysisModel))
 	channelModelLocks := normalizeStringScalarMap(rawLoadedConfig.ChannelModelLocks)
 
+	modelContextWindows, err := effectiveModelContextWindows(loadedProviders, rawLoadedConfig.Models)
+	if err != nil {
+		return config{}, fmt.Errorf("resolve model context windows from %q: %w", filename, err)
+	}
+
 	loadedConfig := config{
 		BotToken:          string(rawLoadedConfig.BotToken),
 		ClientID:          string(rawLoadedConfig.ClientID),
@@ -290,13 +298,14 @@ func buildLoadedConfig(
 				APIKeys: serpAPIVisualSearchKeys,
 			},
 		},
-		Database:           normalizeDatabaseConfig(rawLoadedConfig.Database),
-		Models:             rawLoadedConfig.Models,
-		ModelOrder:         modelOrder,
-		ChannelModelLocks:  channelModelLocks,
-		SearchDeciderModel: searchDeciderModel,
-		MediaAnalysisModel: mediaAnalysisModel,
-		SystemPrompt:       rawLoadedConfig.SystemPrompt,
+		Database:            normalizeDatabaseConfig(rawLoadedConfig.Database),
+		Models:              rawLoadedConfig.Models,
+		ModelContextWindows: modelContextWindows,
+		ModelOrder:          modelOrder,
+		ChannelModelLocks:   channelModelLocks,
+		SearchDeciderModel:  searchDeciderModel,
+		MediaAnalysisModel:  mediaAnalysisModel,
+		SystemPrompt:        rawLoadedConfig.SystemPrompt,
 	}
 
 	err = validateConfig(loadedConfig)
@@ -359,6 +368,170 @@ func normalizeStringScalarMap(rawValues map[string]scalarString) map[string]stri
 	}
 
 	return values
+}
+
+type modelContextWindowSetting struct {
+	GroupKey string
+	Value    int
+	Explicit bool
+}
+
+func effectiveModelContextWindows(
+	providers map[string]providerConfig,
+	models map[string]map[string]any,
+) (map[string]int, error) {
+	if len(models) == 0 {
+		return map[string]int{}, nil
+	}
+
+	settings := make(map[string]modelContextWindowSetting, len(models))
+	groupValues := make(map[string]int)
+	groupSources := make(map[string]string)
+
+	for configuredModel, modelParameters := range models {
+		providerName, modelName, err := splitConfiguredModel(configuredModel)
+		if err != nil {
+			return nil, fmt.Errorf("parse model %q: %w", configuredModel, err)
+		}
+
+		baseModelName := modelName
+		if provider, ok := providers[providerName]; ok {
+			baseModelName, err = modelContextWindowBaseModel(provider, modelName)
+			if err != nil {
+				return nil, fmt.Errorf("normalize base model for %q: %w", configuredModel, err)
+			}
+		}
+
+		value, explicit, err := modelContextWindowValue(modelParameters)
+		if err != nil {
+			return nil, fmt.Errorf("read %s for model %q: %w", modelConfigContextWindowKey, configuredModel, err)
+		}
+
+		groupKey := providerName + "/" + baseModelName
+		settings[configuredModel] = modelContextWindowSetting{
+			GroupKey: groupKey,
+			Value:    value,
+			Explicit: explicit,
+		}
+
+		if !explicit {
+			continue
+		}
+
+		if previousValue, ok := groupValues[groupKey]; ok && previousValue != value {
+			return nil, fmt.Errorf(
+				"models %q and %q must share the same %s because they resolve to base model %q: %w",
+				groupSources[groupKey],
+				configuredModel,
+				modelConfigContextWindowKey,
+				groupKey,
+				os.ErrInvalid,
+			)
+		}
+
+		groupValues[groupKey] = value
+		groupSources[groupKey] = configuredModel
+	}
+
+	if len(groupValues) == 0 {
+		return map[string]int{}, nil
+	}
+
+	effectiveValues := make(map[string]int, len(settings))
+	for configuredModel, setting := range settings {
+		if setting.Explicit {
+			effectiveValues[configuredModel] = setting.Value
+
+			continue
+		}
+
+		value, ok := groupValues[setting.GroupKey]
+		if ok {
+			effectiveValues[configuredModel] = value
+		}
+	}
+
+	if len(effectiveValues) == 0 {
+		return map[string]int{}, nil
+	}
+
+	return effectiveValues, nil
+}
+
+func modelContextWindowBaseModel(provider providerConfig, modelName string) (string, error) {
+	switch provider.apiKind() {
+	case providerAPIKindOpenAI:
+		return modelName, nil
+	case providerAPIKindGemini:
+		baseModelName, _, err := normalizeGeminiModelAlias(modelName, nil)
+		if err != nil {
+			return "", err
+		}
+
+		return baseModelName, nil
+	case providerAPIKindOpenAICodex:
+		baseModelName, _ := normalizeOpenAICodexModelAlias(modelName, nil)
+
+		return baseModelName, nil
+	default:
+		return modelName, nil
+	}
+}
+
+func modelContextWindowValue(modelParameters map[string]any) (int, bool, error) {
+	if len(modelParameters) == 0 {
+		return 0, false, nil
+	}
+
+	rawValue, ok := modelParameters[modelConfigContextWindowKey]
+	if !ok {
+		return 0, false, nil
+	}
+
+	value, err := anyPositiveIntValue(rawValue)
+	if err != nil {
+		return 0, false, err
+	}
+
+	return value, true, nil
+}
+
+func anyPositiveIntValue(value any) (int, error) {
+	maxIntValue := int(^uint(0) >> 1)
+
+	switch typedValue := value.(type) {
+	case int:
+		if typedValue <= 0 {
+			return 0, fmt.Errorf("must be greater than zero: %w", os.ErrInvalid)
+		}
+
+		return typedValue, nil
+	case int64:
+		if typedValue <= 0 || typedValue > int64(maxIntValue) {
+			return 0, fmt.Errorf("must be greater than zero: %w", os.ErrInvalid)
+		}
+
+		return int(typedValue), nil
+	case uint64:
+		if typedValue == 0 || typedValue > uint64(maxIntValue) {
+			return 0, fmt.Errorf("must be greater than zero: %w", os.ErrInvalid)
+		}
+
+		parsedValue, err := strconv.Atoi(strconv.FormatUint(typedValue, 10))
+		if err != nil {
+			return 0, fmt.Errorf("parse positive integer %d: %w", typedValue, err)
+		}
+
+		return parsedValue, nil
+	case float64:
+		if typedValue <= 0 || typedValue != float64(int(typedValue)) {
+			return 0, fmt.Errorf("must be a positive integer: %w", os.ErrInvalid)
+		}
+
+		return int(typedValue), nil
+	default:
+		return 0, fmt.Errorf("must be a positive integer, got %T: %w", value, os.ErrInvalid)
+	}
 }
 
 func normalizeDatabaseConfig(rawLoadedConfig rawDatabaseConfig) databaseConfig {
@@ -584,6 +757,14 @@ func (loadedConfig config) hasModel(modelName string) bool {
 	_, ok := loadedConfig.Models[modelName]
 
 	return ok
+}
+
+func (loadedConfig config) modelContextWindow(modelName string) int {
+	if len(loadedConfig.ModelContextWindows) == 0 {
+		return 0
+	}
+
+	return loadedConfig.ModelContextWindows[modelName]
 }
 
 func (loadedConfig config) lockedModelForChannelIDs(channelIDs []string) (string, bool) {
