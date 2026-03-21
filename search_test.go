@@ -1636,6 +1636,58 @@ func TestFormatSearchSourcesMessageLimitsSourcesPerQuery(t *testing.T) {
 	}
 }
 
+func TestFormatSearchSourcesMessageNumbersSourcesAcrossQueries(t *testing.T) {
+	t.Parallel()
+
+	results := make([]webSearchResult, 0, 2)
+	queries := []string{"latest ai news", "monitor brand reliability"}
+
+	for _, query := range queries {
+		var resultText strings.Builder
+
+		for sourceIndex := range 5 {
+			sourceNumber := sourceIndex + 1
+			_, _ = fmt.Fprintf(
+				&resultText,
+				"Title: %s source %d\nURL: https://example.com/%s/%d\nText: body\n\n",
+				query,
+				sourceNumber,
+				strings.ReplaceAll(query, " ", "-"),
+				sourceNumber,
+			)
+		}
+
+		results = append(results, webSearchResult{
+			Query: query,
+			Text:  resultText.String(),
+		})
+	}
+
+	metadata := &searchMetadata{
+		Queries:             queries,
+		Results:             results,
+		MaxURLs:             5,
+		VisualSearchSources: nil,
+	}
+
+	message := formatSearchSourcesMessage(metadata)
+
+	for number := range 10 {
+		expectedPrefix := fmt.Sprintf("\n%d. ", number+1)
+		if !strings.Contains("\n"+message, expectedPrefix) {
+			t.Fatalf("expected message to contain source number %d: %q", number+1, message)
+		}
+	}
+
+	if strings.Contains(message, "Sources for \"monitor brand reliability\":\n1. ") {
+		t.Fatalf("expected second query block to continue numbering: %q", message)
+	}
+
+	if !strings.Contains(message, "Sources for \"monitor brand reliability\":\n6. ") {
+		t.Fatalf("expected second query block to start at 6: %q", message)
+	}
+}
+
 func TestFormatSearchSourcesPagesSplitsLongMessagesWithoutTruncation(t *testing.T) {
 	t.Parallel()
 
