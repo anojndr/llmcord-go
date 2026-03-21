@@ -225,7 +225,7 @@ func (instance *bot) maybeAugmentConversationWithWebSearch(
 	sourceMessage *discordgo.Message,
 	conversation []chatMessage,
 ) ([]chatMessage, *searchMetadata, []string, error) {
-	decision, err := instance.decideWebSearch(
+	decision, decisionWarnings, err := instance.decideWebSearch(
 		ctx,
 		loadedConfig,
 		providerSlashModel,
@@ -235,18 +235,18 @@ func (instance *bot) maybeAugmentConversationWithWebSearch(
 	if err != nil {
 		slog.Warn("decide web search", "error", err)
 
-		return conversation, nil, []string{searchWarningText}, nil
+		return conversation, nil, append(decisionWarnings, searchWarningText), nil
 	}
 
 	if !decision.NeedsSearch {
-		return conversation, nil, nil, nil
+		return conversation, nil, decisionWarnings, nil
 	}
 
 	results, err := instance.webSearch.search(ctx, loadedConfig, decision.Queries)
 	if err != nil {
 		slog.Warn("run web search", "queries", decision.Queries, "error", err)
 
-		return conversation, nil, []string{searchWarningText}, nil
+		return conversation, nil, append(decisionWarnings, searchWarningText), nil
 	}
 
 	augmentedConversation, err := appendWebSearchResultsToConversation(
@@ -257,7 +257,10 @@ func (instance *bot) maybeAugmentConversationWithWebSearch(
 		return nil, nil, nil, fmt.Errorf("append web search results to conversation: %w", err)
 	}
 
-	return augmentedConversation, newSearchMetadata(decision.Queries, results, loadedConfig.WebSearch.maxURLs()), nil, nil
+	return augmentedConversation,
+		newSearchMetadata(decision.Queries, results, loadedConfig.WebSearch.maxURLs()),
+		decisionWarnings,
+		nil
 }
 
 func newSearchMetadata(queries []string, results []webSearchResult, maxURLs int) *searchMetadata {
@@ -392,7 +395,7 @@ func (instance *bot) decideWebSearch(
 	providerSlashModel string,
 	sourceMessage *discordgo.Message,
 	conversation []chatMessage,
-) (searchDecision, error) {
+) (searchDecision, []string, error) {
 	searchDeciderModel := instance.currentSearchDeciderModelForConfig(loadedConfig)
 
 	searchDeciderMessages, err := instance.buildSearchDeciderConversation(
@@ -404,7 +407,7 @@ func (instance *bot) decideWebSearch(
 		conversation,
 	)
 	if err != nil {
-		return searchDecision{}, fmt.Errorf("prepare search decider conversation: %w", err)
+		return searchDecision{}, nil, fmt.Errorf("prepare search decider conversation: %w", err)
 	}
 
 	searchDeciderMessages = append(
@@ -422,7 +425,7 @@ func (instance *bot) decideWebSearch(
 		searchDeciderMessages,
 	)
 	if err != nil {
-		return searchDecision{}, fmt.Errorf("build search decider request: %w", err)
+		return searchDecision{}, nil, fmt.Errorf("build search decider request: %w", err)
 	}
 
 	assignOpenAICodexSessionID(&request, sourceMessage, instance.nodes, loadedConfig.MaxMessages)
@@ -430,17 +433,24 @@ func (instance *bot) decideWebSearch(
 	searchContext, cancel := context.WithTimeout(ctx, searchDeciderTimeout)
 	defer cancel()
 
+	request, autoCompactResult := instance.autoCompactRequest(searchContext, request)
+
+	var warnings []string
+	if autoCompactResult.Applied {
+		warnings = append(warnings, autoCompactResult.warningForPath("search decider"))
+	}
+
 	responseText, err := collectChatCompletionText(searchContext, instance.chatCompletions, request)
 	if err != nil {
-		return searchDecision{}, fmt.Errorf("collect search decider response: %w", err)
+		return searchDecision{}, warnings, fmt.Errorf("collect search decider response: %w", err)
 	}
 
 	decision, err := parseSearchDecision(responseText)
 	if err != nil {
-		return searchDecision{}, fmt.Errorf("parse search decider response %q: %w", responseText, err)
+		return searchDecision{}, warnings, fmt.Errorf("parse search decider response %q: %w", responseText, err)
 	}
 
-	return decision, nil
+	return decision, warnings, nil
 }
 
 func (instance *bot) buildSearchDeciderConversation(

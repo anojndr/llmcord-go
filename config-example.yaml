@@ -102,7 +102,7 @@ providers:
     base_url: http://localhost:8000/v1
 
 models:
-  # Optional local-only field for reply embeds:
+  # Optional local-only field for reply embeds and auto compaction:
   # context_window: 400000
   # This value is not sent to the provider.
   # Alias models inherit the base model's context window, so
