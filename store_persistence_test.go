@@ -204,6 +204,139 @@ func TestDefaultMessageNodeStoreKeyIsStableForEquivalentPaths(t *testing.T) {
 	}
 }
 
+func TestEncodeMessageNodeSnapshotJSONSanitizesPostgresUnsupportedUnicodeEscapes(t *testing.T) {
+	t.Parallel()
+
+	snapshotBytes, err := encodeMessageNodeSnapshotJSON(testMessageNodeSnapshotsWithNULs())
+	if err != nil {
+		t.Fatalf("encode snapshot JSON: %v", err)
+	}
+
+	if bytes.Contains(snapshotBytes, []byte("\\u0000")) {
+		t.Fatalf("expected encoded snapshot JSON to omit NUL escapes: %s", snapshotBytes)
+	}
+
+	var decodedNodes map[string]messageNodeSnapshot
+
+	err = decodeMessageNodeSnapshotJSON(snapshotBytes, &decodedNodes)
+	if err != nil {
+		t.Fatalf("decode sanitized snapshot JSON: %v", err)
+	}
+
+	decodedSnapshot, ok := decodedNodes["message-"+postgresJSONTextReplacement+"id"]
+	if !ok {
+		t.Fatalf("expected sanitized message id key, got %#v", decodedNodes)
+	}
+
+	if decodedSnapshot.Text != "reply"+postgresJSONTextReplacement+"text" {
+		t.Fatalf("unexpected sanitized message text: %q", decodedSnapshot.Text)
+	}
+
+	if decodedSnapshot.SearchMetadata == nil {
+		t.Fatal("expected sanitized search metadata")
+	}
+
+	if decodedSnapshot.SearchMetadata.Queries[0] != "query"+postgresJSONTextReplacement+"value" {
+		t.Fatalf("unexpected sanitized query: %#v", decodedSnapshot.SearchMetadata.Queries)
+	}
+
+	if decodedSnapshot.ParentMessage == nil {
+		t.Fatal("expected sanitized parent message")
+	}
+
+	if decodedSnapshot.ParentMessage.Content != "parent"+postgresJSONTextReplacement+"content" {
+		t.Fatalf("unexpected sanitized parent message content: %q", decodedSnapshot.ParentMessage.Content)
+	}
+}
+
+func testMessageNodeSnapshotsWithNULs() map[string]messageNodeSnapshot {
+	return map[string]messageNodeSnapshot{
+		"message-\x00id": {
+			Role:                     "assist\x00ant",
+			Text:                     "reply\x00text",
+			ThinkingText:             "thinking\x00text",
+			URLScanText:              "scan\x00text",
+			RentryURL:                "https://example.com/\x00notes",
+			Media:                    testContentPartSnapshotsWithNULs(),
+			SearchMetadata:           testSearchMetadataWithNULs(),
+			HasBadAttachments:        false,
+			AttachmentDownloadFailed: false,
+			FetchParentFailed:        false,
+			ParentMessage:            testDiscordMessageSnapshotWithNULs(),
+			Initialized:              true,
+		},
+	}
+}
+
+func testContentPartSnapshotsWithNULs() []contentPartSnapshot {
+	return []contentPartSnapshot{
+		{
+			Type:     contentTypeText,
+			Text:     "part\x00text",
+			ImageURL: "",
+			Data:     nil,
+			MIMEType: "",
+			Filename: "",
+		},
+		{
+			Type:     contentTypeDocument,
+			Text:     "",
+			ImageURL: "",
+			Data:     []byte("doc-bytes"),
+			MIMEType: "application/\x00pdf",
+			Filename: "report\x00.pdf",
+		},
+	}
+}
+
+func testSearchMetadataWithNULs() *searchMetadata {
+	return &searchMetadata{
+		Queries: []string{"query\x00value"},
+		Results: []webSearchResult{{
+			Query: "search\x00query",
+			Text:  "result\x00text",
+		}},
+		MaxURLs: 2,
+		VisualSearchSources: []visualSearchSourceGroup{{
+			Label: "group\x00label",
+			Sources: []searchSource{{
+				Title: "source\x00title",
+				URL:   "https://example.com/\x00source",
+			}},
+		}},
+	}
+}
+
+func testDiscordMessageSnapshotWithNULs() *discordMessageSnapshot {
+	return &discordMessageSnapshot{
+		ID:        "parent\x00id",
+		ChannelID: "channel\x00id",
+		GuildID:   "guild\x00id",
+		Type:      0,
+		Content:   "parent\x00content",
+		Author: &discordUserSnapshot{
+			ID:  "user\x00id",
+			Bot: true,
+		},
+		MentionUserIDs: []string{"mention\x00id"},
+		Attachments: []discordAttachmentSnapshot{{
+			Filename:    "attachment\x00.txt",
+			ContentType: "text/\x00plain",
+			URL:         "https://example.com/\x00attachment",
+		}},
+		Embeds: []discordEmbedSnapshot{{
+			Title:       "embed\x00title",
+			Description: "embed\x00description",
+			FooterText:  "embed\x00footer",
+		}},
+		MessageReference: &discordMessageReferenceSnapshot{
+			MessageID: "ref\x00message",
+			ChannelID: "ref\x00channel",
+			GuildID:   "ref\x00guild",
+		},
+	}
+}
+
 func TestMessageNodeStorePersistBestEffortIsAsyncAndDebounced(t *testing.T) {
 	t.Parallel()
 
