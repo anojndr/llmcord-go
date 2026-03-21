@@ -22,6 +22,7 @@ const (
 	messageNodeStoreSnapshotVersion     = 1
 	messageNodeStoreTableName           = "message_history_snapshots"
 	defaultMessageNodeStorePersistDelay = 250 * time.Millisecond
+	postgresJSONTextReplacement         = "\uFFFD"
 )
 
 var errMessageNodeStorePersistenceDisabled = errors.New("message history persistence disabled")
@@ -297,12 +298,233 @@ func decodeMessageNodeSnapshotJSON(
 func encodeMessageNodeSnapshotJSON(
 	nodes map[string]messageNodeSnapshot,
 ) ([]byte, error) {
-	payloadBytes, err := json.Marshal(messageNodeSnapshotPayload{Nodes: nodes})
+	sanitizedPayload := sanitizeMessageNodeSnapshotPayload(messageNodeSnapshotPayload{
+		Nodes: nodes,
+	})
+
+	payloadBytes, err := json.Marshal(sanitizedPayload)
 	if err != nil {
 		return nil, fmt.Errorf("marshal message history snapshot payload: %w", err)
 	}
 
 	return payloadBytes, nil
+}
+
+func sanitizeMessageNodeSnapshotPayload(
+	payload messageNodeSnapshotPayload,
+) messageNodeSnapshotPayload {
+	if payload.Nodes == nil {
+		return messageNodeSnapshotPayload{Nodes: nil}
+	}
+
+	sanitizedNodes := make(map[string]messageNodeSnapshot, len(payload.Nodes))
+	for messageID, snapshot := range payload.Nodes {
+		sanitizedNodes[sanitizePostgresJSONString(messageID)] = sanitizeMessageNodeSnapshot(snapshot)
+	}
+
+	return messageNodeSnapshotPayload{Nodes: sanitizedNodes}
+}
+
+func sanitizeMessageNodeSnapshot(snapshot messageNodeSnapshot) messageNodeSnapshot {
+	snapshot.Role = sanitizePostgresJSONString(snapshot.Role)
+	snapshot.Text = sanitizePostgresJSONString(snapshot.Text)
+	snapshot.ThinkingText = sanitizePostgresJSONString(snapshot.ThinkingText)
+	snapshot.URLScanText = sanitizePostgresJSONString(snapshot.URLScanText)
+	snapshot.RentryURL = sanitizePostgresJSONString(snapshot.RentryURL)
+	snapshot.Media = sanitizeContentPartSnapshots(snapshot.Media)
+	snapshot.SearchMetadata = sanitizeSearchMetadata(snapshot.SearchMetadata)
+	snapshot.ParentMessage = sanitizeDiscordMessageSnapshot(snapshot.ParentMessage)
+
+	return snapshot
+}
+
+func sanitizeContentPartSnapshots(snapshots []contentPartSnapshot) []contentPartSnapshot {
+	if snapshots == nil {
+		return nil
+	}
+
+	sanitizedSnapshots := make([]contentPartSnapshot, 0, len(snapshots))
+	for _, snapshot := range snapshots {
+		sanitizedSnapshots = append(sanitizedSnapshots, sanitizeContentPartSnapshot(snapshot))
+	}
+
+	return sanitizedSnapshots
+}
+
+func sanitizeContentPartSnapshot(snapshot contentPartSnapshot) contentPartSnapshot {
+	snapshot.Type = sanitizePostgresJSONString(snapshot.Type)
+	snapshot.Text = sanitizePostgresJSONString(snapshot.Text)
+	snapshot.ImageURL = sanitizePostgresJSONString(snapshot.ImageURL)
+	snapshot.MIMEType = sanitizePostgresJSONString(snapshot.MIMEType)
+	snapshot.Filename = sanitizePostgresJSONString(snapshot.Filename)
+
+	return snapshot
+}
+
+func sanitizeSearchMetadata(metadata *searchMetadata) *searchMetadata {
+	if metadata == nil {
+		return nil
+	}
+
+	return &searchMetadata{
+		Queries:             sanitizePostgresJSONStrings(metadata.Queries),
+		Results:             sanitizeWebSearchResults(metadata.Results),
+		MaxURLs:             metadata.MaxURLs,
+		VisualSearchSources: sanitizeVisualSearchSourceGroups(metadata.VisualSearchSources),
+	}
+}
+
+func sanitizeWebSearchResults(results []webSearchResult) []webSearchResult {
+	if results == nil {
+		return nil
+	}
+
+	sanitizedResults := make([]webSearchResult, 0, len(results))
+	for _, result := range results {
+		sanitizedResults = append(sanitizedResults, webSearchResult{
+			Query: sanitizePostgresJSONString(result.Query),
+			Text:  sanitizePostgresJSONString(result.Text),
+		})
+	}
+
+	return sanitizedResults
+}
+
+func sanitizeVisualSearchSourceGroups(
+	sourceGroups []visualSearchSourceGroup,
+) []visualSearchSourceGroup {
+	if sourceGroups == nil {
+		return nil
+	}
+
+	sanitizedGroups := make([]visualSearchSourceGroup, 0, len(sourceGroups))
+	for _, sourceGroup := range sourceGroups {
+		sanitizedGroups = append(sanitizedGroups, visualSearchSourceGroup{
+			Label:   sanitizePostgresJSONString(sourceGroup.Label),
+			Sources: sanitizeSearchSources(sourceGroup.Sources),
+		})
+	}
+
+	return sanitizedGroups
+}
+
+func sanitizeSearchSources(sources []searchSource) []searchSource {
+	if sources == nil {
+		return nil
+	}
+
+	sanitizedSources := make([]searchSource, 0, len(sources))
+	for _, source := range sources {
+		sanitizedSources = append(sanitizedSources, searchSource{
+			Title: sanitizePostgresJSONString(source.Title),
+			URL:   sanitizePostgresJSONString(source.URL),
+		})
+	}
+
+	return sanitizedSources
+}
+
+func sanitizeDiscordMessageSnapshot(message *discordMessageSnapshot) *discordMessageSnapshot {
+	if message == nil {
+		return nil
+	}
+
+	return &discordMessageSnapshot{
+		ID:               sanitizePostgresJSONString(message.ID),
+		ChannelID:        sanitizePostgresJSONString(message.ChannelID),
+		GuildID:          sanitizePostgresJSONString(message.GuildID),
+		Type:             message.Type,
+		Content:          sanitizePostgresJSONString(message.Content),
+		Author:           sanitizeDiscordUserSnapshot(message.Author),
+		MentionUserIDs:   sanitizePostgresJSONStrings(message.MentionUserIDs),
+		Attachments:      sanitizeDiscordAttachmentSnapshots(message.Attachments),
+		Embeds:           sanitizeDiscordEmbedSnapshots(message.Embeds),
+		MessageReference: sanitizeDiscordMessageReferenceSnapshot(message.MessageReference),
+	}
+}
+
+func sanitizeDiscordUserSnapshot(user *discordUserSnapshot) *discordUserSnapshot {
+	if user == nil {
+		return nil
+	}
+
+	return &discordUserSnapshot{
+		ID:  sanitizePostgresJSONString(user.ID),
+		Bot: user.Bot,
+	}
+}
+
+func sanitizeDiscordAttachmentSnapshots(
+	attachments []discordAttachmentSnapshot,
+) []discordAttachmentSnapshot {
+	if attachments == nil {
+		return nil
+	}
+
+	sanitizedAttachments := make([]discordAttachmentSnapshot, 0, len(attachments))
+	for _, attachment := range attachments {
+		sanitizedAttachments = append(sanitizedAttachments, discordAttachmentSnapshot{
+			Filename:    sanitizePostgresJSONString(attachment.Filename),
+			ContentType: sanitizePostgresJSONString(attachment.ContentType),
+			URL:         sanitizePostgresJSONString(attachment.URL),
+		})
+	}
+
+	return sanitizedAttachments
+}
+
+func sanitizeDiscordEmbedSnapshots(embeds []discordEmbedSnapshot) []discordEmbedSnapshot {
+	if embeds == nil {
+		return nil
+	}
+
+	sanitizedEmbeds := make([]discordEmbedSnapshot, 0, len(embeds))
+	for _, embed := range embeds {
+		sanitizedEmbeds = append(sanitizedEmbeds, discordEmbedSnapshot{
+			Title:       sanitizePostgresJSONString(embed.Title),
+			Description: sanitizePostgresJSONString(embed.Description),
+			FooterText:  sanitizePostgresJSONString(embed.FooterText),
+		})
+	}
+
+	return sanitizedEmbeds
+}
+
+func sanitizeDiscordMessageReferenceSnapshot(
+	reference *discordMessageReferenceSnapshot,
+) *discordMessageReferenceSnapshot {
+	if reference == nil {
+		return nil
+	}
+
+	return &discordMessageReferenceSnapshot{
+		MessageID: sanitizePostgresJSONString(reference.MessageID),
+		ChannelID: sanitizePostgresJSONString(reference.ChannelID),
+		GuildID:   sanitizePostgresJSONString(reference.GuildID),
+	}
+}
+
+func sanitizePostgresJSONStrings(values []string) []string {
+	if values == nil {
+		return nil
+	}
+
+	sanitizedValues := make([]string, 0, len(values))
+	for _, value := range values {
+		sanitizedValues = append(sanitizedValues, sanitizePostgresJSONString(value))
+	}
+
+	return sanitizedValues
+}
+
+func sanitizePostgresJSONString(value string) string {
+	sanitizedValue := strings.ToValidUTF8(value, postgresJSONTextReplacement)
+
+	return strings.ReplaceAll(
+		sanitizedValue,
+		"\x00",
+		postgresJSONTextReplacement,
+	)
 }
 
 func (backend *postgresMessageNodeStoreBackend) close() error {
