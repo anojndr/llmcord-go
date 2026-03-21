@@ -901,6 +901,8 @@ func formatWebSearchSourcesMessage(metadata *searchMetadata) string {
 
 	var builder strings.Builder
 
+	sourceNumber := 1
+
 	if len(metadata.Queries) > 0 {
 		builder.WriteString("Search queries:\n")
 
@@ -920,8 +922,9 @@ func formatWebSearchSourcesMessage(metadata *searchMetadata) string {
 			continue
 		}
 
-		for index, source := range sources[:minInt(len(sources), metadata.maxURLs())] {
-			_, _ = fmt.Fprintf(&builder, "%d. %s\n", index+1, formatSearchSourceLine(source))
+		for _, source := range sources[:minInt(len(sources), metadata.maxURLs())] {
+			_, _ = fmt.Fprintf(&builder, "%d. %s\n", sourceNumber, formatSearchSourceLine(source))
+			sourceNumber++
 		}
 	}
 
