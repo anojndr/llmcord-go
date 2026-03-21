@@ -262,6 +262,8 @@ func TestGeminiClientStreamChatCompletionEmitsTextAndFinishReason(t *testing.T) 
 		},
 	}
 
+	var usage *tokenUsage
+
 	joinedText := ""
 	finishReason := ""
 
@@ -270,6 +272,11 @@ func TestGeminiClientStreamChatCompletionEmitsTextAndFinishReason(t *testing.T) 
 		newSimpleGeminiStreamRequest(),
 		func(delta streamDelta) error {
 			joinedText += delta.Content
+
+			if delta.Usage != nil {
+				usage = cloneTokenUsage(delta.Usage)
+			}
+
 			if delta.FinishReason != "" {
 				finishReason = delta.FinishReason
 			}
@@ -287,6 +294,10 @@ func TestGeminiClientStreamChatCompletionEmitsTextAndFinishReason(t *testing.T) 
 
 	if finishReason != finishReasonStop {
 		t.Fatalf("unexpected finish reason: %q", finishReason)
+	}
+
+	if usage == nil || usage.Input != 15 || usage.Output != 23 {
+		t.Fatalf("unexpected usage: %#v", usage)
 	}
 
 	assertGeminiClientConfig(t, capturedConfig)
@@ -772,6 +783,7 @@ func newGeminiMediaUploadRequest() chatCompletionRequest {
 		Provider:        provider,
 		Model:           "gemini-3-flash-preview",
 		ConfiguredModel: "",
+		ContextWindow:   0,
 		SessionID:       "",
 		Messages: []chatMessage{
 			{
@@ -877,6 +889,7 @@ func newGeminiBuildTestRequest() chatCompletionRequest {
 		},
 		Model:           "gemini-3-flash-preview",
 		ConfiguredModel: "",
+		ContextWindow:   0,
 		SessionID:       "",
 		Messages: []chatMessage{
 			{Role: "system", Content: "Be concise."},
@@ -908,6 +921,7 @@ func newSimpleGeminiStreamRequest() chatCompletionRequest {
 		},
 		Model:           "gemini-3-flash-preview",
 		ConfiguredModel: "",
+		ContextWindow:   0,
 		SessionID:       "",
 		Messages:        []chatMessage{{Role: messageRoleUser, Content: "hello"}},
 	}
@@ -1025,10 +1039,10 @@ func streamGeminiTestChunks(
 				return
 			}
 
-			_ = yield(
-				newGeminiGenerateContentResponse("lo", genai.FinishReasonStop),
-				nil,
-			)
+			finalResponse := newGeminiGenerateContentResponse("lo", genai.FinishReasonStop)
+			finalResponse.UsageMetadata = newGeminiUsageMetadata(11, 4, 19, 4)
+
+			_ = yield(finalResponse, nil)
 		}
 	}
 }
@@ -1063,6 +1077,27 @@ func newGeminiGenerateContentResponseWithParts(
 		PromptFeedback:  nil,
 		ResponseID:      "",
 		UsageMetadata:   nil,
+	}
+}
+
+func newGeminiUsageMetadata(
+	promptTokens int32,
+	toolUsePromptTokens int32,
+	candidateTokens int32,
+	thoughtTokens int32,
+) *genai.GenerateContentResponseUsageMetadata {
+	return &genai.GenerateContentResponseUsageMetadata{
+		CacheTokensDetails:         nil,
+		CachedContentTokenCount:    0,
+		CandidatesTokenCount:       candidateTokens,
+		CandidatesTokensDetails:    nil,
+		PromptTokenCount:           promptTokens,
+		PromptTokensDetails:        nil,
+		ThoughtsTokenCount:         thoughtTokens,
+		ToolUsePromptTokenCount:    toolUsePromptTokens,
+		ToolUsePromptTokensDetails: nil,
+		TotalTokenCount:            promptTokens + toolUsePromptTokens + candidateTokens + thoughtTokens,
+		TrafficType:                "",
 	}
 }
 

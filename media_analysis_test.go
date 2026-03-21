@@ -635,6 +635,7 @@ func newGeminiMediaAnalysisChatClient(
 			Thinking:     "",
 			Content:      partAnalyses[analysisIndex],
 			FinishReason: finishReasonStop,
+			Usage:        nil,
 		})
 		if err != nil {
 			return err
@@ -703,6 +704,7 @@ func newConcurrentGeminiMediaAnalysisChatClient(
 			Thinking:     "",
 			Content:      analysis,
 			FinishReason: finishReasonStop,
+			Usage:        nil,
 		})
 	})
 

@@ -1049,6 +1049,7 @@ func newOpenAIRetryRequest(baseURL string) chatCompletionRequest {
 		},
 		Model:           "gpt-test",
 		ConfiguredModel: "",
+		ContextWindow:   0,
 		SessionID:       "",
 		Messages:        []chatMessage{{Role: messageRoleUser, Content: "hello"}},
 	}
@@ -1120,6 +1121,7 @@ func newOpenAICodexRetryRequest(baseURL string, validAPIKey string) chatCompleti
 		},
 		Model:           testOpenAICodexModel,
 		ConfiguredModel: "",
+		ContextWindow:   0,
 		SessionID:       "",
 		Messages: []chatMessage{
 			{Role: openAICodexRoleSystem, Content: "Be brief."},
@@ -1248,6 +1250,7 @@ func newGeminiRetryRequest() chatCompletionRequest {
 		},
 		Model:           "gemini-3-flash-preview",
 		ConfiguredModel: "",
+		ContextWindow:   0,
 		SessionID:       "",
 		Messages:        []chatMessage{{Role: messageRoleUser, Content: "hello"}},
 	}

@@ -35,6 +35,7 @@ type chatCompletionRequest struct {
 	Provider        providerRequestConfig
 	Model           string
 	ConfiguredModel string
+	ContextWindow   int
 	SessionID       string
 	Messages        []chatMessage
 }
@@ -53,6 +54,12 @@ type streamDelta struct {
 	Thinking     string
 	Content      string
 	FinishReason string
+	Usage        *tokenUsage
+}
+
+type tokenUsage struct {
+	Input  int
+	Output int
 }
 
 type openAIClient struct {
@@ -78,9 +85,10 @@ func (client openAIClient) streamChatCompletion(
 	}
 
 	excludedFunctionIDs := make(map[string]struct{})
+	includeStreamingUsage := true
 
 	for {
-		requestBody := buildChatCompletionRequestBody(request)
+		requestBody := buildChatCompletionRequestBodyWithUsageOption(request, includeStreamingUsage)
 		if len(excludedFunctionIDs) > 0 {
 			sanitizedRequestBody, changed := excludeDegradedFunctionsFromChatCompletionRequestBody(
 				requestBody,
@@ -107,6 +115,18 @@ func (client openAIClient) streamChatCompletion(
 		}
 
 		if statusCode == http.StatusBadRequest {
+			if includeStreamingUsage &&
+				openAIShouldRetryWithoutStreamingUsage(
+					statusCode,
+					statusText,
+					responseHeaders,
+					responseBody,
+				) {
+				includeStreamingUsage = false
+
+				continue
+			}
+
 			degradedFunctionIDs := openAIDegradedFunctionIDs(responseBody)
 			if addOpenAIExcludedFunctionIDs(excludedFunctionIDs, degradedFunctionIDs) {
 				_, changed := excludeDegradedFunctionsFromChatCompletionRequestBody(
@@ -199,6 +219,13 @@ func (client openAIClient) streamChatCompletionAttempt(
 }
 
 func buildChatCompletionRequestBody(request chatCompletionRequest) map[string]any {
+	return buildChatCompletionRequestBodyWithUsageOption(request, true)
+}
+
+func buildChatCompletionRequestBodyWithUsageOption(
+	request chatCompletionRequest,
+	includeStreamingUsage bool,
+) map[string]any {
 	requestBody := make(map[string]any, len(request.Provider.ExtraBody)+requestBodyBaseFields)
 	requestBody["messages"] = request.Messages
 	requestBody["model"] = request.Model
@@ -206,7 +233,61 @@ func buildChatCompletionRequestBody(request chatCompletionRequest) map[string]an
 
 	maps.Copy(requestBody, request.Provider.ExtraBody)
 
+	if includeStreamingUsage {
+		ensureOpenAIStreamingUsageOption(requestBody)
+	}
+
 	return requestBody
+}
+
+func ensureOpenAIStreamingUsageOption(requestBody map[string]any) {
+	rawStreamOptions, hasStreamOptions := requestBody["stream_options"]
+	if !hasStreamOptions || rawStreamOptions == nil {
+		requestBody["stream_options"] = map[string]any{"include_usage": true}
+
+		return
+	}
+
+	streamOptions, streamOptionsOK := rawStreamOptions.(map[string]any)
+	if !streamOptionsOK {
+		return
+	}
+
+	clonedStreamOptions := maps.Clone(streamOptions)
+	clonedStreamOptions["include_usage"] = true
+	requestBody["stream_options"] = clonedStreamOptions
+}
+
+func openAIShouldRetryWithoutStreamingUsage(
+	statusCode int,
+	statusText string,
+	responseHeaders http.Header,
+	responseBody []byte,
+) bool {
+	errorInfo := parseOpenAIHTTPErrorResponse(
+		statusCode,
+		statusText,
+		responseHeaders,
+		responseBody,
+		false,
+	)
+
+	normalizedParam := strings.ToLower(strings.TrimSpace(errorInfo.Param))
+	switch normalizedParam {
+	case "stream_options", "stream_options.include_usage":
+		return true
+	}
+
+	normalizedMessage := strings.ToLower(strings.TrimSpace(errorInfo.Message))
+	if !strings.Contains(normalizedMessage, "stream_options") &&
+		!strings.Contains(normalizedMessage, "include_usage") {
+		return false
+	}
+
+	return strings.EqualFold(errorInfo.Code, "unsupported_parameter") ||
+		strings.Contains(normalizedMessage, "unknown") ||
+		strings.Contains(normalizedMessage, "unsupported") ||
+		strings.Contains(normalizedMessage, "invalid")
 }
 
 func excludeDegradedFunctionsFromChatCompletionRequestBody(
@@ -550,7 +631,24 @@ func handleStreamPayload(payload []byte, handle func(streamDelta) error) error {
 	}
 
 	if delta.Content != "" {
-		err = handle(streamDelta{Thinking: "", Content: delta.Content, FinishReason: ""})
+		err = handle(streamDelta{
+			Thinking:     "",
+			Content:      delta.Content,
+			FinishReason: "",
+			Usage:        nil,
+		})
+		if err != nil {
+			return fmt.Errorf("handle stream delta: %w", err)
+		}
+	}
+
+	if delta.Usage != nil {
+		err = handle(streamDelta{
+			Thinking:     "",
+			Content:      "",
+			FinishReason: "",
+			Usage:        cloneTokenUsage(delta.Usage),
+		})
 		if err != nil {
 			return fmt.Errorf("handle stream delta: %w", err)
 		}
@@ -562,7 +660,12 @@ func handleStreamPayload(payload []byte, handle func(streamDelta) error) error {
 			return err
 		}
 
-		err = handle(streamDelta{Thinking: "", Content: "", FinishReason: delta.FinishReason})
+		err = handle(streamDelta{
+			Thinking:     "",
+			Content:      "",
+			FinishReason: delta.FinishReason,
+			Usage:        nil,
+		})
 		if err != nil {
 			return fmt.Errorf("handle stream delta: %w", err)
 		}
@@ -590,37 +693,78 @@ func openAIStreamPayloadDelta(payload []byte) (streamDelta, error) {
 	type streamEnvelope struct {
 		Choices []streamChoice `json:"choices"`
 		Error   *streamError   `json:"error"`
+		Usage   *struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+		} `json:"usage"`
 	}
 
 	var envelope streamEnvelope
 
 	err := json.Unmarshal(payload, &envelope)
 	if err != nil {
-		return streamDelta{Thinking: "", Content: "", FinishReason: ""}, fmt.Errorf("decode stream payload: %w", err)
+		return streamDelta{
+			Thinking:     "",
+			Content:      "",
+			FinishReason: "",
+			Usage:        nil,
+		}, fmt.Errorf("decode stream payload: %w", err)
 	}
 
 	if envelope.Error != nil {
-		return streamDelta{Thinking: "", Content: "", FinishReason: ""}, openAIStreamEventError(
-			envelope.Error.Message,
-			envelope.Error.Type,
-			envelope.Error.Code,
-		)
-	}
-
-	if len(envelope.Choices) == 0 {
-		return streamDelta{Thinking: "", Content: "", FinishReason: ""}, nil
+		return streamDelta{
+				Thinking:     "",
+				Content:      "",
+				FinishReason: "",
+				Usage:        nil,
+			}, openAIStreamEventError(
+				envelope.Error.Message,
+				envelope.Error.Type,
+				envelope.Error.Code,
+			)
 	}
 
 	delta := streamDelta{
 		Thinking:     "",
-		Content:      envelope.Choices[0].Delta.Content,
+		Content:      "",
 		FinishReason: "",
+		Usage:        openAIStreamUsage(envelope.Usage),
 	}
+
+	if len(envelope.Choices) == 0 {
+		return delta, nil
+	}
+
+	delta.Content = envelope.Choices[0].Delta.Content
 	if envelope.Choices[0].FinishReason != nil {
 		delta.FinishReason = strings.TrimSpace(*envelope.Choices[0].FinishReason)
 	}
 
 	return delta, nil
+}
+
+func openAIStreamUsage(usage *struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+}) *tokenUsage {
+	if usage == nil {
+		return nil
+	}
+
+	return &tokenUsage{
+		Input:  usage.PromptTokens,
+		Output: usage.CompletionTokens,
+	}
+}
+
+func cloneTokenUsage(usage *tokenUsage) *tokenUsage {
+	if usage == nil {
+		return nil
+	}
+
+	clonedUsage := *usage
+
+	return &clonedUsage
 }
 
 func openAIStreamEventError(message string, eventType string, code any) error {

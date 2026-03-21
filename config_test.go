@@ -647,6 +647,136 @@ web_search:
 	}
 }
 
+func TestLoadConfigInheritsContextWindowAcrossAliasModels(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	configText := `
+bot_token: discord-token
+providers:
+  codex:
+    type: openai-codex
+    api_key: test-token
+models:
+  codex/gpt-5.4:
+    context_window: 400000
+  codex/gpt-5.4-none:
+  codex/gpt-5.4-high:
+    context_window: 400000
+`
+
+	err := os.WriteFile(configPath, []byte(configText), 0o600)
+	if err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	loadedConfig, err := loadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	for _, modelName := range []string{
+		"codex/gpt-5.4",
+		"codex/gpt-5.4-none",
+		"codex/gpt-5.4-high",
+	} {
+		if loadedConfig.modelContextWindow(modelName) != 400_000 {
+			t.Fatalf("unexpected context window for %s: %d", modelName, loadedConfig.modelContextWindow(modelName))
+		}
+	}
+}
+
+func TestLoadConfigInheritsContextWindowAcrossGeminiAliases(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	configText := `
+bot_token: discord-token
+providers:
+  google:
+    type: gemini
+    api_key: test-token
+models:
+  google/gemini-3.1-flash-lite-preview:
+    context_window: 1000000
+  google/gemini-3.1-flash-lite-preview-minimal:
+`
+
+	err := os.WriteFile(configPath, []byte(configText), 0o600)
+	if err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	loadedConfig, err := loadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	if loadedConfig.modelContextWindow("google/gemini-3.1-flash-lite-preview-minimal") != 1_000_000 {
+		t.Fatalf(
+			"unexpected gemini alias context window: %d",
+			loadedConfig.modelContextWindow("google/gemini-3.1-flash-lite-preview-minimal"),
+		)
+	}
+}
+
+func TestLoadConfigRejectsMismatchedContextWindowAcrossAliasModels(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	configText := `
+bot_token: discord-token
+providers:
+  codex:
+    type: openai-codex
+    api_key: test-token
+models:
+  codex/gpt-5.4:
+    context_window: 400000
+  codex/gpt-5.4-none:
+    context_window: 200000
+`
+
+	err := os.WriteFile(configPath, []byte(configText), 0o600)
+	if err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	_, err = loadConfig(configPath)
+	if err == nil {
+		t.Fatal("expected mismatched alias context window to fail validation")
+	}
+}
+
+func TestLoadConfigRejectsNonPositiveContextWindow(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	configText := `
+bot_token: discord-token
+providers:
+  openai:
+    base_url: https://api.example.com/v1
+models:
+  openai/gpt-5.1:
+    context_window: 0
+`
+
+	err := os.WriteFile(configPath, []byte(configText), 0o600)
+	if err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	_, err = loadConfig(configPath)
+	if err == nil {
+		t.Fatal("expected non-positive context window to fail validation")
+	}
+}
+
 func TestLoadConfigAllowsOpenAICodexProviderWithoutBaseURL(t *testing.T) {
 	t.Parallel()
 

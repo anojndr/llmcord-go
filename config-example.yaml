@@ -102,13 +102,21 @@ providers:
     base_url: http://localhost:8000/v1
 
 models:
+  # Optional local-only field for reply embeds:
+  # context_window: 400000
+  # This value is not sent to the provider.
+  # Alias models inherit the base model's context window, so
+  # `gpt-5.4-none` should use the same value as `gpt-5.4`.
   google/gemini-3.1-flash-lite-preview:
+    context_window: 1000000
 
   openai/gpt-5:
+    context_window: 400000
     reasoning_effort: high
     verbosity: medium
 
   openai-codex/gpt-5.4:
+    context_window: 400000
     reasoning_effort: high
     verbosity: medium
 

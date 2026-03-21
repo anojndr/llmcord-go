@@ -200,7 +200,7 @@ func buildRequestProgressEmbed(
 		formatRequestProgressLine(requestProgressStageGeneratingResponse, stage, "Generating response"),
 	}, "\n")
 
-	return buildResponseEmbed(description, modelName, embedColorIncomplete, nil)
+	return buildResponseEmbed(description, modelName, embedColorIncomplete, nil, "")
 }
 
 func buildRequestProgressFailureEmbed(
@@ -212,6 +212,7 @@ func buildRequestProgressFailureEmbed(
 		modelName,
 		embedColorFailure,
 		nil,
+		"",
 	)
 }
 

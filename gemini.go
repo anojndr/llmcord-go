@@ -149,29 +149,17 @@ func (client geminiClient) streamChatCompletion(
 
 		delta, processErr := geminiStreamDelta(response)
 		if processErr != nil {
-			if delta.Thinking != "" || delta.Content != "" {
-				err = handle(streamDelta{
-					Thinking:     delta.Thinking,
-					Content:      delta.Content,
-					FinishReason: "",
-				})
-				if err != nil {
-					return fmt.Errorf("handle stream delta: %w", err)
-				}
+			err = geminiHandleStreamUpdate(handle, delta)
+			if err != nil {
+				return err
 			}
 
 			return fmt.Errorf("process gemini stream response: %w", processErr)
 		}
 
-		if delta.Thinking != "" || delta.Content != "" {
-			err = handle(streamDelta{
-				Thinking:     delta.Thinking,
-				Content:      delta.Content,
-				FinishReason: "",
-			})
-			if err != nil {
-				return fmt.Errorf("handle stream delta: %w", err)
-			}
+		err = geminiHandleStreamUpdate(handle, delta)
+		if err != nil {
+			return err
 		}
 
 		if delta.FinishReason == "" {
@@ -180,14 +168,56 @@ func (client geminiClient) streamChatCompletion(
 
 		finishSeen = true
 
-		err = handle(streamDelta{Thinking: "", Content: "", FinishReason: delta.FinishReason})
+		err = geminiHandleFinishReason(handle, delta.FinishReason)
 		if err != nil {
-			return fmt.Errorf("handle stream delta: %w", err)
+			return err
 		}
 	}
 
 	if !finishSeen {
 		return fmt.Errorf("gemini stream ended without finish reason: %w", io.ErrUnexpectedEOF)
+	}
+
+	return nil
+}
+
+func geminiHandleStreamUpdate(handle func(streamDelta) error, delta streamDelta) error {
+	if delta.Thinking != "" || delta.Content != "" {
+		err := handle(streamDelta{
+			Thinking:     delta.Thinking,
+			Content:      delta.Content,
+			FinishReason: "",
+			Usage:        nil,
+		})
+		if err != nil {
+			return fmt.Errorf("handle stream delta: %w", err)
+		}
+	}
+
+	if delta.Usage != nil {
+		err := handle(streamDelta{
+			Thinking:     "",
+			Content:      "",
+			FinishReason: "",
+			Usage:        cloneTokenUsage(delta.Usage),
+		})
+		if err != nil {
+			return fmt.Errorf("handle stream delta: %w", err)
+		}
+	}
+
+	return nil
+}
+
+func geminiHandleFinishReason(handle func(streamDelta) error, finishReason string) error {
+	err := handle(streamDelta{
+		Thinking:     "",
+		Content:      "",
+		FinishReason: finishReason,
+		Usage:        nil,
+	})
+	if err != nil {
+		return fmt.Errorf("handle stream delta: %w", err)
 	}
 
 	return nil
@@ -1040,11 +1070,25 @@ func geminiStreamDelta(response *genai.GenerateContentResponse) (streamDelta, er
 				Thinking:     delta.Thinking,
 				Content:      delta.Content,
 				FinishReason: "",
+				Usage:        nil,
 			}, err
 		}
 	}
 
+	delta.Usage = geminiStreamUsage(response.UsageMetadata)
+
 	return delta, nil
+}
+
+func geminiStreamUsage(metadata *genai.GenerateContentResponseUsageMetadata) *tokenUsage {
+	if metadata == nil {
+		return nil
+	}
+
+	return &tokenUsage{
+		Input:  int(metadata.PromptTokenCount + metadata.ToolUsePromptTokenCount),
+		Output: int(metadata.CandidatesTokenCount + metadata.ThoughtsTokenCount),
+	}
 }
 
 func geminiThoughtText(candidate *genai.Candidate) string {

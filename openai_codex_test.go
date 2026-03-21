@@ -39,6 +39,7 @@ func TestOpenAICodexClientStreamChatCompletion(t *testing.T) {
 		),
 		Model:           testOpenAICodexModel,
 		ConfiguredModel: "",
+		ContextWindow:   0,
 		SessionID:       "",
 		Messages: []chatMessage{
 			{Role: openAICodexRoleSystem, Content: "Be brief."},
@@ -56,10 +57,15 @@ func TestOpenAICodexClientStreamChatCompletion(t *testing.T) {
 	var (
 		joinedContent strings.Builder
 		finishReason  string
+		usage         *tokenUsage
 	)
 
 	err := client.streamChatCompletion(context.Background(), request, func(delta streamDelta) error {
 		joinedContent.WriteString(delta.Content)
+
+		if delta.Usage != nil {
+			usage = cloneTokenUsage(delta.Usage)
+		}
 
 		if delta.FinishReason != "" {
 			finishReason = delta.FinishReason
@@ -78,6 +84,10 @@ func TestOpenAICodexClientStreamChatCompletion(t *testing.T) {
 	if finishReason != finishReasonStop {
 		t.Fatalf("unexpected finish reason: %q", finishReason)
 	}
+
+	if usage == nil || usage.Input != 12 || usage.Output != 34 {
+		t.Fatalf("unexpected usage: %#v", usage)
+	}
 }
 
 func TestOpenAICodexClientRejectsInvalidTokenWithoutAccountHeader(t *testing.T) {
@@ -88,6 +98,7 @@ func TestOpenAICodexClientRejectsInvalidTokenWithoutAccountHeader(t *testing.T) 
 		Provider:        newOpenAICodexProviderRequestConfig("not-a-jwt", "", nil, nil, nil),
 		Model:           testOpenAICodexModel,
 		ConfiguredModel: "",
+		ContextWindow:   0,
 		SessionID:       "",
 		Messages: []chatMessage{
 			{Role: openAICodexRoleSystem, Content: "Be brief."},
@@ -140,6 +151,7 @@ func TestOpenAICodexClientStreamChatCompletionIncludesCacheMetadata(t *testing.T
 		),
 		Model:           testOpenAICodexModel,
 		ConfiguredModel: "codex/gpt-5.2-codex",
+		ContextWindow:   0,
 		SessionID:       sessionID,
 		Messages: []chatMessage{
 			{Role: openAICodexRoleSystem, Content: "Be brief."},
@@ -180,6 +192,7 @@ func TestBuildOpenAICodexRequestBodyPreservesNestedReasoningConfig(t *testing.T)
 		),
 		Model:           "gpt-5.4",
 		ConfiguredModel: "",
+		ContextWindow:   0,
 		SessionID:       "",
 		Messages: []chatMessage{
 			{Role: messageRoleUser, Content: testOpenAICodexHelloText},
@@ -222,6 +235,7 @@ func TestBuildOpenAICodexRequestBodyDefaultsReasoningSummaryWithoutEffort(t *tes
 		),
 		Model:           "gpt-5.4",
 		ConfiguredModel: "",
+		ContextWindow:   0,
 		SessionID:       "",
 		Messages: []chatMessage{
 			{Role: messageRoleUser, Content: testOpenAICodexHelloText},
@@ -266,6 +280,7 @@ func TestBuildOpenAICodexRequestBodyClampsNestedReasoningConfigWithoutMutatingOr
 		),
 		Model:           "gpt-5.4",
 		ConfiguredModel: "",
+		ContextWindow:   0,
 		SessionID:       "",
 		Messages: []chatMessage{
 			{Role: messageRoleUser, Content: testOpenAICodexHelloText},
@@ -506,6 +521,7 @@ func TestOpenAICodexClientStreamChatCompletionParsesJSONStatusErrors(t *testing.
 		Provider:        newOpenAICodexProviderRequestConfig(apiKey, server.URL, nil, nil, nil),
 		Model:           testOpenAICodexModel,
 		ConfiguredModel: "",
+		ContextWindow:   0,
 		SessionID:       "",
 		Messages:        []chatMessage{{Role: messageRoleUser, Content: testOpenAICodexHelloText}},
 	}
@@ -684,7 +700,8 @@ func newOpenAICodexStreamingTestServer(t *testing.T, apiKey string) *httptest.Se
 		writeStreamChunk(
 			t,
 			responseWriter,
-			"data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n",
+			"data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\","+
+				"\"usage\":{\"input_tokens\":12,\"output_tokens\":34}}}\n\n",
 		)
 		flusher.Flush()
 		writeStreamChunk(t, responseWriter, "data: [DONE]\n\n")
