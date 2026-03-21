@@ -258,6 +258,11 @@ func (instance *bot) prepareMessageResponse(
 
 	assignOpenAICodexSessionID(&request, message, instance.nodes, loadedConfig.MaxMessages)
 
+	request, autoCompactResult := instance.autoCompactRequest(ctx, request)
+	if autoCompactResult.Applied {
+		warnings = append(warnings, autoCompactResult.warningForPath("main model"))
+	}
+
 	progress.advance(requestProgressStageGeneratingResponse)
 	tracker := progress.handoff(request.ConfiguredModel, searchMetadata)
 
