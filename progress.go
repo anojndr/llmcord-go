@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log/slog"
 	"strings"
 
@@ -36,6 +37,7 @@ type requestProgressFailure struct {
 }
 
 func (instance *bot) startRequestProgress(
+	ctx context.Context,
 	sourceMessage *discordgo.Message,
 	modelName string,
 ) *requestProgress {
@@ -73,7 +75,7 @@ func (instance *bot) startRequestProgress(
 		progress.tracker.progressActive = true
 	}
 
-	go progress.run()
+	go progress.run(withoutCancelContext(ctx))
 
 	return progress
 }
@@ -127,7 +129,7 @@ func (progress *requestProgress) fail(err error) {
 	<-done
 }
 
-func (progress *requestProgress) run() {
+func (progress *requestProgress) run(ctx context.Context) {
 	currentStage := requestProgressStageReadingConversation
 	tracker := progress.tracker
 
@@ -142,6 +144,20 @@ func (progress *requestProgress) run() {
 
 			if progress.message == nil {
 				continue
+			}
+
+			waitErr := progress.instance.waitForEditSlotForMessage(
+				ctx,
+				progress.message.ID,
+			)
+			if waitErr != nil {
+				slog.Warn(
+					"wait before request progress embed edit",
+					"message_id",
+					progress.message.ID,
+					"error",
+					waitErr,
+				)
 			}
 
 			editErr := progress.instance.editEmbedMessage(
@@ -168,7 +184,12 @@ func (progress *requestProgress) run() {
 		case failure := <-progress.failures:
 			errorText := userFacingResponseError(failure.err)
 
-			err := progress.instance.renderFailureResponse(tracker, errorText, false)
+			err := progress.instance.renderFailureResponse(
+				ctx,
+				tracker,
+				errorText,
+				false,
+			)
 			if err != nil {
 				slog.Warn(
 					"render request progress failure response",

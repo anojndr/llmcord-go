@@ -10,6 +10,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -21,6 +22,7 @@ import (
 const testSearchDeciderModel = "openai/decider-model"
 
 var errSendProgressMessageFailed = errors.New("send progress message failed")
+var errProgressMessageEditedTooQuickly = errors.New("progress message edited too quickly")
 
 func TestBuildChatCompletionRequestPreservesConfiguredModelForDisplay(t *testing.T) {
 	t.Parallel()
@@ -897,6 +899,167 @@ func TestRespondToMessageEditsProgressMessageWithRateLimitError(t *testing.T) {
 	}
 }
 
+func TestRespondToMessageEditsProgressMessageWhenGeminiMediaAnalysisFailsDuringPreparation(t *testing.T) {
+	t.Parallel()
+
+	const (
+		botUserID       = "bot-user"
+		channelID       = "channel-1"
+		userID          = "user-1"
+		sourceMessageID = "user-message-1"
+		progressID      = "progress-message"
+		expectedError   = "The model provider is temporarily unavailable. Try again."
+	)
+
+	fixture := newGeminiMediaPreparationFailureFixture(
+		t,
+		botUserID,
+		channelID,
+		userID,
+		sourceMessageID,
+		progressID,
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	err := fixture.instance.respondToMessage(
+		ctx,
+		fixture.loadedConfig,
+		fixture.sourceMessage,
+		"openai/gpt-5",
+	)
+	if err == nil {
+		t.Fatal("expected respond to message error")
+	}
+
+	patchDescriptions := *fixture.patchDescriptions
+	if len(patchDescriptions) < 2 {
+		t.Fatalf("expected progress and failure edits: %#v", patchDescriptions)
+	}
+
+	if !containsFold(patchDescriptions[0], "Gathering context") {
+		t.Fatalf("expected first progress edit to gather context: %#v", patchDescriptions)
+	}
+
+	if patchDescriptions[len(patchDescriptions)-1] != expectedError {
+		t.Fatalf("unexpected final progress error: %#v", patchDescriptions)
+	}
+}
+
+type geminiMediaPreparationFailureFixture struct {
+	instance          *bot
+	loadedConfig      config
+	sourceMessage     *discordgo.Message
+	patchDescriptions *[]string
+}
+
+func newGeminiMediaPreparationFailureFixture(
+	t *testing.T,
+	botUserID string,
+	channelID string,
+	userID string,
+	sourceMessageID string,
+	progressID string,
+) geminiMediaPreparationFailureFixture {
+	t.Helper()
+
+	progressMessage := new(discordgo.Message)
+	progressMessage.ID = progressID
+	progressMessage.ChannelID = channelID
+	progressMessage.Author = newDiscordUser(botUserID, true)
+
+	stageEdited := make(chan struct{})
+
+	var stageEditedOnce sync.Once
+
+	patchDescriptions := make([]string, 0, 3)
+	patchTimes := make([]time.Time, 0, 2)
+	messageSendCount := 0
+
+	session := newDirectMessageTestSession(t, channelID, botUserID, roundTripFunc(func(
+		request *http.Request,
+	) (*http.Response, error) {
+		t.Helper()
+
+		switch {
+		case request.Method == http.MethodPost &&
+			request.URL.Path == "/api/v9/channels/"+channelID+"/typing":
+			return newNoContentResponse(request), nil
+		case request.Method == http.MethodPost &&
+			request.URL.Path == "/api/v9/channels/"+channelID+"/messages":
+			messageSendCount++
+			if messageSendCount > 1 {
+				t.Fatalf("unexpected additional message send: %s %s", request.Method, request.URL.Path)
+			}
+
+			return newJSONResponse(t, request, progressMessage), nil
+		case request.Method == http.MethodPatch &&
+			request.URL.Path == "/api/v9/channels/"+channelID+"/messages/"+progressID:
+			patchDescriptions = append(patchDescriptions, requestEmbedDescription(t, request))
+			patchTimes = append(patchTimes, time.Now())
+
+			if len(patchDescriptions) == 1 {
+				stageEditedOnce.Do(func() {
+					close(stageEdited)
+				})
+
+				return newJSONResponse(t, request, progressMessage), nil
+			}
+
+			if time.Since(patchTimes[0]) < editDelay/2 {
+				return nil, errProgressMessageEditedTooQuickly
+			}
+
+			return newJSONResponse(t, request, progressMessage), nil
+		default:
+			t.Fatalf("unexpected request: %s %s", request.Method, request.URL.Path)
+
+			return nil, errUnexpectedTestRequest
+		}
+	}))
+
+	instance := new(bot)
+	instance.session = session
+	instance.nodes = newMessageNodeStore(10)
+	instance.chatCompletions = newUnavailableGeminiMediaPreparationChatClient(t, stageEdited)
+
+	loadedConfig := testMediaAnalysisConfig()
+	loadedConfig.MaxText = defaultMaxText
+	loadedConfig.MaxImages = defaultMaxImages
+	loadedConfig.MaxMessages = defaultMaxMessages
+
+	sourceMessage := newPromptMessage(sourceMessageID, channelID, userID, botUserID)
+	seedGeminiMediaPreparationFailureSource(instance, sourceMessage, userID)
+
+	return geminiMediaPreparationFailureFixture{
+		instance:          instance,
+		loadedConfig:      loadedConfig,
+		sourceMessage:     sourceMessage,
+		patchDescriptions: &patchDescriptions,
+	}
+}
+
+func seedGeminiMediaPreparationFailureSource(
+	instance *bot,
+	sourceMessage *discordgo.Message,
+	userID string,
+) {
+	sourceNode := instance.nodes.getOrCreate(sourceMessage.ID)
+	sourceNode.initialized = true
+	sourceNode.role = messageRoleUser
+	sourceNode.text = "<@" + userID + ">: summarize this clip"
+	sourceNode.urlScanText = sourceNode.text
+	sourceNode.media = []contentPart{
+		{
+			"type":               contentTypeAudioData,
+			contentFieldBytes:    []byte("audio-bytes"),
+			contentFieldMIMEType: "audio/mpeg",
+			contentFieldFilename: "clip.mp3",
+		},
+	}
+}
+
 func TestRespondToMessageSendsRateLimitErrorWhenProgressMessageSendFails(t *testing.T) {
 	t.Parallel()
 
@@ -1518,6 +1681,53 @@ func newRateLimitedRespondToMessageSourceMessage(
 	sourceMessage.Content = "at ai hello"
 
 	return sourceMessage
+}
+
+func newUnavailableGeminiMediaPreparationChatClient(
+	t *testing.T,
+	stageEdited <-chan struct{},
+) *stubChatCompletionClient {
+	t.Helper()
+
+	return newStubChatClient(func(
+		ctx context.Context,
+		request chatCompletionRequest,
+		_ func(streamDelta) error,
+	) error {
+		t.Helper()
+
+		if request.ConfiguredModel != testMediaAnalysisModel {
+			t.Fatalf("unexpected configured model: %q", request.ConfiguredModel)
+		}
+
+		select {
+		case <-stageEdited:
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for gathering context progress edit")
+		}
+
+		return fmt.Errorf(
+			"all configured API keys failed: %w",
+			errors.Join(
+				fmt.Errorf(
+					"stream gemini content: %w",
+					newTestGeminiAPIErrorPointer(
+						http.StatusServiceUnavailable,
+						"This model is currently experiencing high demand.",
+					),
+				),
+				fmt.Errorf(
+					"stream gemini content: %w",
+					newTestGeminiAPIErrorPointer(
+						http.StatusServiceUnavailable,
+						"This model is currently experiencing high demand.",
+					),
+				),
+			),
+		)
+	})
 }
 
 func newRateLimitedRespondToMessageChatClient() *stubChatCompletionClient {

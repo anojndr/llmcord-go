@@ -172,7 +172,7 @@ func (instance *bot) respondToMessage(
 	message *discordgo.Message,
 	providerSlashModel string,
 ) error {
-	progress := instance.startRequestProgress(message, providerSlashModel)
+	progress := instance.startRequestProgress(ctx, message, providerSlashModel)
 
 	stopTyping := instance.startTyping(ctx, message.ChannelID)
 	defer stopTyping()

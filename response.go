@@ -166,6 +166,14 @@ func newResponseTracker(
 	return tracker
 }
 
+func withoutCancelContext(ctx context.Context) context.Context {
+	if ctx == nil {
+		return context.Background()
+	}
+
+	return context.WithoutCancel(ctx)
+}
+
 func (tracker *responseTracker) release(store *messageNodeStore, fullText string, thinkingText string) {
 	for _, pending := range tracker.pendingResponses {
 		pending.node.role = messageRoleAssistant
@@ -241,7 +249,7 @@ func (instance *bot) generateAndSendResponse(
 	if responseErr != nil {
 		errorText := userFacingResponseError(responseErr)
 
-		renderErr := instance.renderFailureResponse(tracker, errorText, usePlainResponses)
+		renderErr := instance.renderFailureResponse(ctx, tracker, errorText, usePlainResponses)
 		if renderErr != nil {
 			responseErr = errors.Join(responseErr, fmt.Errorf("render failure response: %w", renderErr))
 		} else {
@@ -389,12 +397,12 @@ func userFacingResponseError(err error) string {
 		return timeoutResponseErrorText
 	case isRateLimitResponseError(err):
 		return rateLimitResponseErrorText
+	case isUnavailableResponseError(err):
+		return unavailableResponseErrorText
 	case isAccessResponseError(err):
 		return accessResponseErrorText
 	case isMissingResponseError(err):
 		return missingResponseErrorText
-	case isUnavailableResponseError(err):
-		return unavailableResponseErrorText
 	default:
 		return genericResponseErrorText
 	}
@@ -530,6 +538,7 @@ func responseErrorContains(err error, fragments ...string) bool {
 }
 
 func (instance *bot) renderFailureResponse(
+	ctx context.Context,
 	tracker *responseTracker,
 	errorText string,
 	usePlainResponses bool,
@@ -550,18 +559,26 @@ func (instance *bot) renderFailureResponse(
 	if tracker.progressActive && len(tracker.responseMessages) > 0 {
 		tracker.progressActive = false
 
-		err := instance.editEmbedMessage(
-			tracker.responseMessages[0],
-			failureEmbed,
-			nil,
+		err := instance.waitForEditSlotForMessage(
+			withoutCancelContext(ctx),
+			tracker.responseMessages[0].ID,
 		)
-		if err == nil {
-			tracker.responseVisible = true
+		if err != nil {
+			renderErr = fmt.Errorf("wait before progress failure edit: %w", err)
+		} else {
+			err = instance.editEmbedMessage(
+				tracker.responseMessages[0],
+				failureEmbed,
+				nil,
+			)
+			if err == nil {
+				tracker.responseVisible = true
 
-			return nil
+				return nil
+			}
+
+			renderErr = fmt.Errorf("edit progress message: %w", err)
 		}
-
-		renderErr = fmt.Errorf("edit progress message: %w", err)
 	}
 
 	fallbackTracker := newResponseTracker(tracker.sourceMessage, tracker.modelName)
@@ -823,7 +840,7 @@ func discardPendingResponse(store *messageNodeStore, pending pendingResponse) {
 }
 
 func (instance *bot) sendPlainResponse(
-	_ context.Context,
+	ctx context.Context,
 	tracker *responseTracker,
 	segments []string,
 	hasThinking bool,
@@ -836,7 +853,15 @@ func (instance *bot) sendPlainResponse(
 		}
 
 		if index < len(tracker.responseMessages) {
-			err := instance.editPlainMessage(
+			err := instance.waitForEditSlotForMessage(
+				ctx,
+				tracker.responseMessages[index].ID,
+			)
+			if err != nil {
+				return fmt.Errorf("wait before plain message update: %w", err)
+			}
+
+			err = instance.editPlainMessage(
 				tracker.responseMessages[index],
 				segment,
 				actions,

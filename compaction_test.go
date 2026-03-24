@@ -183,7 +183,11 @@ func TestPrepareMessageResponseAutoCompactsMainRequest(t *testing.T) {
 
 	fixture := newPrepareMessageResponseAutoCompactFixture(t)
 
-	progress := fixture.instance.startRequestProgress(fixture.sourceMessage, testAutoCompactMainModel)
+	progress := fixture.instance.startRequestProgress(
+		context.Background(),
+		fixture.sourceMessage,
+		testAutoCompactMainModel,
+	)
 
 	request, tracker, warnings, err := fixture.instance.prepareMessageResponse(
 		context.Background(),
