@@ -69,6 +69,12 @@ providers:
     base_url: https://api.openai.com/v1
     api_key: 
 
+  exa:
+    type: exa
+    api_key:
+    # Optional:
+    # base_url: https://api.exa.ai
+
   openai-codex:
     type: openai-codex
     # Optional:
@@ -115,6 +121,8 @@ models:
     reasoning_effort: high
     verbosity: medium
 
+  exa/exa-research-pro:
+
   openai-codex/gpt-5.4:
     context_window: 400000
     reasoning_effort: high
@@ -141,6 +149,8 @@ web_search:
   exa:
     # Optional. When set, the web search flow uses Exa's Search API instead of
     # Exa MCP, and generic website extraction prefers Exa's Contents API first.
+    # Use `/searchtype` to switch between `auto`, `fast`, `instant`, `deep`,
+    # and `deep-reasoning` at runtime.
     # `api_key` also accepts a YAML list. Keys are tried in order.
     # api_key:
     #   - exa-primary-key

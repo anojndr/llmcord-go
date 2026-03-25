@@ -71,8 +71,9 @@ func testPermissionsConfig() config {
 		PrimaryProvider: webSearchProviderKindMCP,
 		MaxURLs:         defaultWebSearchMaxURLs,
 		Exa: exaSearchConfig{
-			APIKey:  "",
-			APIKeys: nil,
+			APIKey:     "",
+			APIKeys:    nil,
+			SearchType: defaultExaSearchType,
 		},
 		Tavily: tavilySearchConfig{
 			APIKey:  "",

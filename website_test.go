@@ -57,8 +57,9 @@ func newWebsiteTestClient(httpClient *http.Client, exaURL string, tavilyURL stri
 func testWebsiteExaAndTavilyConfig() config {
 	loadedConfig := testExaAPIWebSearchConfig()
 	loadedConfig.WebSearch.Exa = exaSearchConfig{
-		APIKey:  testExaPrimaryValue,
-		APIKeys: []string{testExaPrimaryValue},
+		APIKey:     testExaPrimaryValue,
+		APIKeys:    []string{testExaPrimaryValue},
+		SearchType: defaultExaSearchType,
 	}
 	loadedConfig.WebSearch.Tavily = tavilySearchConfig{
 		APIKey:  testTavilyPrimaryAPIKey,

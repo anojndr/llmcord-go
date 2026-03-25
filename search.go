@@ -142,6 +142,32 @@ type exaSearchResponseResult struct {
 	Text          *string
 }
 
+func normalizeExaSearchType(searchType string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(searchType)) {
+	case exaSearchTypeAuto:
+		return exaSearchTypeAuto, true
+	case exaSearchTypeFast:
+		return exaSearchTypeFast, true
+	case exaSearchTypeInstant:
+		return exaSearchTypeInstant, true
+	case exaSearchTypeDeep:
+		return exaSearchTypeDeep, true
+	case exaSearchTypeDeepReasoning:
+		return exaSearchTypeDeepReasoning, true
+	default:
+		return "", false
+	}
+}
+
+func (settings exaSearchConfig) searchType() string {
+	searchType, ok := normalizeExaSearchType(settings.SearchType)
+	if !ok {
+		return defaultExaSearchType
+	}
+
+	return searchType
+}
+
 type tavilySearchRequest struct {
 	Query             string `json:"query"`
 	SearchDepth       string `json:"search_depth"`
@@ -242,7 +268,10 @@ func (instance *bot) maybeAugmentConversationWithWebSearch(
 		return conversation, nil, decisionWarnings, nil
 	}
 
-	results, err := instance.webSearch.search(ctx, loadedConfig, decision.Queries)
+	searchConfig := loadedConfig
+	searchConfig.WebSearch.Exa.SearchType = instance.currentExaSearchType()
+
+	results, err := instance.webSearch.search(ctx, searchConfig, decision.Queries)
 	if err != nil {
 		slog.Warn("run web search", "queries", decision.Queries, "error", err)
 
@@ -396,6 +425,13 @@ func (instance *bot) decideWebSearch(
 	sourceMessage *discordgo.Message,
 	conversation []chatMessage,
 ) (searchDecision, []string, error) {
+	if searchDeciderDisabledForModel(providerSlashModel) {
+		return searchDecision{
+			NeedsSearch: false,
+			Queries:     nil,
+		}, nil, nil
+	}
+
 	searchDeciderModel := instance.currentSearchDeciderModelForConfig(loadedConfig)
 
 	searchDeciderMessages, err := instance.buildSearchDeciderConversation(
@@ -451,6 +487,15 @@ func (instance *bot) decideWebSearch(
 	}
 
 	return decision, warnings, nil
+}
+
+func searchDeciderDisabledForModel(configuredModel string) bool {
+	providerName, modelName, err := splitConfiguredModel(strings.TrimSpace(configuredModel))
+	if err != nil {
+		return false
+	}
+
+	return strings.EqualFold(providerName, "exa") && strings.EqualFold(modelName, "exa-research-pro")
 }
 
 func (instance *bot) buildSearchDeciderConversation(
@@ -1125,13 +1170,14 @@ func (client exaSearchClient) search(
 
 	maxURLs := loadedConfig.WebSearch.maxURLs()
 	exaAPIKeys := loadedConfig.WebSearch.Exa.apiKeysForAttempts()
+	searchType := loadedConfig.WebSearch.Exa.searchType()
 
 	return searchQueriesConcurrently(searchContext, cancel, queries, func(
 		queryContext context.Context,
 		query string,
 	) (webSearchResult, error) {
 		if loadedConfig.WebSearch.exaUsesAPI() {
-			return client.searchAPIQuery(queryContext, exaAPIKeys, query, maxURLs)
+			return client.searchAPIQuery(queryContext, exaAPIKeys, query, maxURLs, searchType)
 		}
 
 		return client.searchMCPQuery(queryContext, query, maxURLs)
@@ -1255,11 +1301,12 @@ func (client exaSearchClient) searchAPIQuery(
 	apiKeys []string,
 	query string,
 	maxURLs int,
+	searchType string,
 ) (webSearchResult, error) {
 	attemptErrors := make([]error, 0, len(apiKeys))
 
 	for index, apiKey := range apiKeys {
-		result, err := client.searchAPIQueryOnce(ctx, query, apiKey, maxURLs)
+		result, err := client.searchAPIQueryOnce(ctx, query, apiKey, maxURLs, searchType)
 		if err == nil {
 			return result, nil
 		}
@@ -1285,21 +1332,7 @@ func (client exaSearchClient) searchAPIQuery(
 	return webSearchResult{}, fmt.Errorf("missing Exa API key attempt for %q: %w", query, os.ErrInvalid)
 }
 
-func (client exaSearchClient) searchAPIQueryOnce(
-	ctx context.Context,
-	query string,
-	apiKey string,
-	maxURLs int,
-) (webSearchResult, error) {
-	requestBody := exaSearchRequest{
-		Query: query,
-		Type:  "auto",
-		Contents: exaSearchRequestContents{
-			Highlights: exaSearchHighlightsRequest{MaxCharacters: exaSearchHighlightsMaxCharacters},
-		},
-		NumResults: maxURLs,
-	}
-
+func marshalExaSearchRequest(requestBody exaSearchRequest) ([]byte, error) {
 	requestBytes, err := json.Marshal(map[string]any{
 		"query":      requestBody.Query,
 		"type":       requestBody.Type,
@@ -1310,6 +1343,30 @@ func (client exaSearchClient) searchAPIQueryOnce(
 			},
 		},
 	})
+	if err != nil {
+		return nil, fmt.Errorf("marshal Exa search request payload: %w", err)
+	}
+
+	return requestBytes, nil
+}
+
+func (client exaSearchClient) searchAPIQueryOnce(
+	ctx context.Context,
+	query string,
+	apiKey string,
+	maxURLs int,
+	searchType string,
+) (webSearchResult, error) {
+	requestBody := exaSearchRequest{
+		Query: query,
+		Type:  searchType,
+		Contents: exaSearchRequestContents{
+			Highlights: exaSearchHighlightsRequest{MaxCharacters: exaSearchHighlightsMaxCharacters},
+		},
+		NumResults: maxURLs,
+	}
+
+	requestBytes, err := marshalExaSearchRequest(requestBody)
 	if err != nil {
 		return webSearchResult{}, fmt.Errorf("marshal Exa search request for %q: %w", query, err)
 	}

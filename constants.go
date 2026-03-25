@@ -5,6 +5,7 @@ import "time"
 const (
 	defaultConfigPath                    = "config.yaml"
 	readyMessage                         = "bot is online"
+	defaultExaResearchBaseURL            = "https://api.exa.ai"
 	defaultExaSearchEndpoint             = "https://api.exa.ai/search"
 	defaultExaContentsEndpoint           = "https://api.exa.ai/contents"
 	defaultExaMCPEndpoint                = "https://mcp.exa.ai/mcp?tools=web_search_exa"
@@ -17,7 +18,7 @@ const (
 	defaultMaxImages                     = 5
 	defaultMaxMessages                   = 25
 	maxMessageNodes                      = 500
-	registeredCommandCount               = 2
+	registeredCommandCount               = 3
 	maxAutocompleteChoices               = 25
 	statusMessageMaxLength               = 128
 	plainResponseMaxLength               = 4000
@@ -31,6 +32,10 @@ const (
 	modelCommandDescription              = "View or switch the current model"
 	modelOptionName                      = "model"
 	modelOptionDescription               = "Model to view or use"
+	searchTypeCommandName                = "searchtype"
+	searchTypeCommandDescription         = "View or switch the current Exa search type"
+	searchTypeOptionName                 = "type"
+	searchTypeOptionDescription          = "Exa search type to view or use"
 	searchDeciderModelCommandName        = "searchdecidermodel"
 	searchDeciderModelCommandDescription = "View or switch the current search decider model"
 	searchDeciderModelOptionName         = "model"
@@ -50,6 +55,12 @@ const (
 	finishReasonLength                   = "length"
 	maxSearchQueries                     = 500
 	defaultWebSearchMaxURLs              = 5
+	exaSearchTypeAuto                    = "auto"
+	exaSearchTypeFast                    = "fast"
+	exaSearchTypeInstant                 = "instant"
+	exaSearchTypeDeep                    = "deep"
+	exaSearchTypeDeepReasoning           = "deep-reasoning"
+	defaultExaSearchType                 = exaSearchTypeAuto
 	exaSearchHighlightsMaxCharacters     = 4000
 	exaContentsLivecrawlTimeoutMS        = 12000
 	maxYouTubeComments                   = 50
@@ -87,3 +98,13 @@ const (
 	requestBodyBaseFields                = 3
 	configuredModelParts                 = 2
 )
+
+func exaSearchTypes() []string {
+	return []string{
+		exaSearchTypeAuto,
+		exaSearchTypeFast,
+		exaSearchTypeInstant,
+		exaSearchTypeDeep,
+		exaSearchTypeDeepReasoning,
+	}
+}

@@ -30,6 +30,7 @@ type bot struct {
 	website                   websiteContentClient
 	nodes                     *messageNodeStore
 	currentModel              string
+	currentExaSearchTypeValue string
 	currentSearchDeciderModel string
 	modelMu                   sync.RWMutex
 	editMu                    sync.Mutex
@@ -84,6 +85,7 @@ func newBot(ctx context.Context, configPath string, loadedConfig config) (*bot, 
 	}
 
 	instance.currentModel = loadedConfig.firstModel()
+	instance.currentExaSearchTypeValue = defaultExaSearchType
 	instance.currentSearchDeciderModel = loadedConfig.SearchDeciderModel
 	instance.onlineOutput = os.Stdout
 
@@ -231,6 +233,7 @@ func (instance *bot) syncCommands() error {
 
 	commands := make([]*discordgo.ApplicationCommand, 0, registeredCommandCount)
 	commands = append(commands, newModelCommand())
+	commands = append(commands, newSearchTypeCommand())
 	commands = append(commands, newSearchDeciderModelCommand())
 
 	_, err := instance.session.ApplicationCommandBulkOverwrite(
@@ -260,6 +263,15 @@ func newSearchDeciderModelCommand() *discordgo.ApplicationCommand {
 		searchDeciderModelCommandDescription,
 		searchDeciderModelOptionName,
 		searchDeciderModelOptionDescription,
+	)
+}
+
+func newSearchTypeCommand() *discordgo.ApplicationCommand {
+	return newConfiguredModelCommand(
+		searchTypeCommandName,
+		searchTypeCommandDescription,
+		searchTypeOptionName,
+		searchTypeOptionDescription,
 	)
 }
 
@@ -394,6 +406,34 @@ func (instance *bot) setCurrentModel(modelName string) {
 	defer instance.modelMu.Unlock()
 
 	instance.currentModel = modelName
+}
+
+func (instance *bot) currentExaSearchType() string {
+	instance.modelMu.Lock()
+	defer instance.modelMu.Unlock()
+
+	searchType, ok := normalizeExaSearchType(instance.currentExaSearchTypeValue)
+	if !ok {
+		instance.currentExaSearchTypeValue = defaultExaSearchType
+
+		return defaultExaSearchType
+	}
+
+	instance.currentExaSearchTypeValue = searchType
+
+	return instance.currentExaSearchTypeValue
+}
+
+func (instance *bot) setCurrentExaSearchType(searchType string) {
+	instance.modelMu.Lock()
+	defer instance.modelMu.Unlock()
+
+	normalizedSearchType, ok := normalizeExaSearchType(searchType)
+	if !ok {
+		normalizedSearchType = defaultExaSearchType
+	}
+
+	instance.currentExaSearchTypeValue = normalizedSearchType
 }
 
 func (instance *bot) currentSearchDeciderModelForConfig(loadedConfig config) string {
