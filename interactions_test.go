@@ -108,6 +108,124 @@ func TestHandleSearchDeciderModelCommandAllowsSwitch(t *testing.T) {
 	}
 }
 
+func TestHandleSearchTypeCommandAllowsSwitchWhenExaAPIConfigured(t *testing.T) {
+	t.Parallel()
+
+	configPath := writeModelConfigWithExtra(
+		t,
+		`
+web_search:
+  exa:
+    api_key: exa-key
+`,
+	)
+
+	var response discordgo.InteractionResponse
+
+	session := newInteractionTestSession(t, &response)
+	instance := newModelTestBot(configPath)
+	interaction := newSearchTypeCommandInteraction("member-user", exaSearchTypeDeepReasoning)
+
+	err := instance.handleSearchTypeCommand(session, interaction)
+	if err != nil {
+		t.Fatalf("handle search type command: %v", err)
+	}
+
+	if instance.currentExaSearchTypeValue != exaSearchTypeDeepReasoning {
+		t.Fatalf("unexpected current Exa search type: %q", instance.currentExaSearchTypeValue)
+	}
+
+	if response.Data == nil {
+		t.Fatal("expected interaction response data")
+	}
+
+	expectedContent := fmt.Sprintf("Exa search type switched to: `%s`", exaSearchTypeDeepReasoning)
+	if response.Data.Content != expectedContent {
+		t.Fatalf("unexpected response content: got %q want %q", response.Data.Content, expectedContent)
+	}
+}
+
+func TestHandleSearchTypeCommandRejectsWhenExaAPIIsNotConfigured(t *testing.T) {
+	t.Parallel()
+
+	configPath := writeModelConfig(t)
+
+	var response discordgo.InteractionResponse
+
+	session := newInteractionTestSession(t, &response)
+	instance := newModelTestBot(configPath)
+	interaction := newSearchTypeCommandInteraction("member-user", exaSearchTypeFast)
+
+	err := instance.handleSearchTypeCommand(session, interaction)
+	if err != nil {
+		t.Fatalf("handle search type command: %v", err)
+	}
+
+	if instance.currentExaSearchTypeValue != defaultExaSearchType {
+		t.Fatalf("unexpected current Exa search type: %q", instance.currentExaSearchTypeValue)
+	}
+
+	if response.Data == nil {
+		t.Fatal("expected interaction response data")
+	}
+
+	expectedContent := "Exa Search API is not configured. Set `web_search.exa.api_key` to use `/searchtype`."
+	if response.Data.Content != expectedContent {
+		t.Fatalf("unexpected response content: got %q want %q", response.Data.Content, expectedContent)
+	}
+}
+
+func TestHandleSearchTypeAutocompleteListsAllOptions(t *testing.T) {
+	t.Parallel()
+
+	var response discordgo.InteractionResponse
+
+	session := newInteractionTestSession(t, &response)
+	instance := new(bot)
+	instance.currentExaSearchTypeValue = defaultExaSearchType
+
+	err := instance.handleSearchTypeAutocomplete(
+		session,
+		newSearchTypeAutocompleteInteraction("member-user", ""),
+	)
+	if err != nil {
+		t.Fatalf("handle search type autocomplete: %v", err)
+	}
+
+	if response.Type != discordgo.InteractionApplicationCommandAutocompleteResult {
+		t.Fatalf("unexpected autocomplete response type: %v", response.Type)
+	}
+
+	if response.Data == nil {
+		t.Fatal("expected interaction response data")
+	}
+
+	searchTypes := exaSearchTypes()
+
+	if len(response.Data.Choices) != len(searchTypes) {
+		t.Fatalf("unexpected choice count: %d", len(response.Data.Choices))
+	}
+
+	expectedNames := []string{
+		"* auto (current)",
+		"o fast",
+		"o instant",
+		"o deep",
+		"o deep-reasoning",
+	}
+
+	for index, choice := range response.Data.Choices {
+		if choice.Name != expectedNames[index] {
+			t.Fatalf("unexpected choice name at %d: got %q want %q", index, choice.Name, expectedNames[index])
+		}
+
+		expectedValue := searchTypes[index]
+		if choice.Value != expectedValue {
+			t.Fatalf("unexpected choice value at %d: got %#v want %q", index, choice.Value, expectedValue)
+		}
+	}
+}
+
 func TestHandleModelCommandRejectsLockedChannelSwitch(t *testing.T) {
 	t.Parallel()
 
@@ -1151,6 +1269,7 @@ func newModelTestBot(configPath string) *bot {
 	instance := new(bot)
 	instance.configPath = configPath
 	instance.currentModel = firstTestModel
+	instance.currentExaSearchTypeValue = defaultExaSearchType
 
 	return instance
 }
@@ -1194,12 +1313,52 @@ func newSearchDeciderModelCommandInteractionInChannel(
 	)
 }
 
+func newSearchTypeCommandInteraction(userID string, searchType string) *discordgo.InteractionCreate {
+	return newConfiguredStringCommandInteraction(
+		userID,
+		searchType,
+		searchTypeCommandName,
+		searchTypeOptionName,
+		"",
+		discordgo.InteractionApplicationCommand,
+	)
+}
+
+func newSearchTypeAutocompleteInteraction(userID string, currentText string) *discordgo.InteractionCreate {
+	return newConfiguredStringCommandInteraction(
+		userID,
+		currentText,
+		searchTypeCommandName,
+		searchTypeOptionName,
+		"",
+		discordgo.InteractionApplicationCommandAutocomplete,
+	)
+}
+
 func newConfiguredModelCommandInteraction(
 	userID string,
 	modelName string,
 	commandName string,
 	optionName string,
 	channelID string,
+) *discordgo.InteractionCreate {
+	return newConfiguredStringCommandInteraction(
+		userID,
+		modelName,
+		commandName,
+		optionName,
+		channelID,
+		discordgo.InteractionApplicationCommand,
+	)
+}
+
+func newConfiguredStringCommandInteraction(
+	userID string,
+	optionValue string,
+	commandName string,
+	optionName string,
+	channelID string,
+	interactionType discordgo.InteractionType,
 ) *discordgo.InteractionCreate {
 	user := new(discordgo.User)
 	user.ID = userID
@@ -1210,7 +1369,8 @@ func newConfiguredModelCommandInteraction(
 	option := new(discordgo.ApplicationCommandInteractionDataOption)
 	option.Name = optionName
 	option.Type = discordgo.ApplicationCommandOptionString
-	option.Value = modelName
+	option.Value = optionValue
+	option.Focused = interactionType == discordgo.InteractionApplicationCommandAutocomplete
 
 	var commandData discordgo.ApplicationCommandInteractionData
 
@@ -1221,7 +1381,7 @@ func newConfiguredModelCommandInteraction(
 	interaction.ID = "interaction-id"
 	interaction.AppID = "application-id"
 	interaction.Token = "interaction-token"
-	interaction.Type = discordgo.InteractionApplicationCommand
+	interaction.Type = interactionType
 	interaction.ChannelID = channelID
 	interaction.Member = member
 	interaction.Data = commandData

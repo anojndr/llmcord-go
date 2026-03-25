@@ -4,6 +4,7 @@
 
 It turns Discord into a reply-chain frontend for:
 - OpenAI-compatible LLM APIs
+- Exa Research Pro via Exa's OpenAI-compatible API
 - OpenAI Codex Responses providers
 - native Gemini models via `google.golang.org/genai`
 
@@ -59,6 +60,7 @@ The goal is to make Discord feel like a practical, stateful frontend for LLM wor
 ### Models and provider support
 
 - OpenAI-compatible chat completion APIs
+- Exa Research Pro with `type: exa` or `base_url: https://api.exa.ai`
 - OpenAI Codex Responses streaming
 - Native Gemini streaming via `google.golang.org/genai`
 - Hosted and local backends including Ollama, LM Studio, and vLLM
@@ -101,6 +103,7 @@ The goal is to make Discord feel like a practical, stateful frontend for LLM wor
 ### Search and visual search
 
 - Search-decider flow to choose whether current web search is needed
+- `exa/exa-research-pro` skips the separate search-decider and web-search augmentation path
 - Exa Search API or Exa MCP, plus Tavily, with configurable primary/fallback order
 - Host date/time injected into the search-decider prompt for relative queries like `today`
 - `vsearch` reverse-image lookup using Yandex Images
@@ -146,6 +149,7 @@ Edit `config.yaml` and set:
 
 Notes:
 - Use `type: gemini` for Gemini providers
+- Use `type: exa` for Exa Research Pro providers. It defaults `base_url` to `https://api.exa.ai`.
 - Use `type: openai-codex` for ChatGPT Codex providers
 
 ### 4) Run the bot
@@ -198,7 +202,7 @@ The config schema stays close to the original Python project.
 
 | Setting | Description |
 | --- | --- |
-| `providers` | Provider definitions keyed by provider name. OpenAI-compatible providers use `base_url`. Gemini providers use `type: gemini` and the native `google.golang.org/genai` client. OpenAI Codex providers use `type: openai-codex` and default to `https://chatgpt.com/backend-api`. `api_key` can be a single string or a YAML list of strings. Optional `extra_headers`, `extra_query`, and `extra_body` are supported. |
+| `providers` | Provider definitions keyed by provider name. OpenAI-compatible providers use `base_url`. Exa Research Pro providers can use `type: exa`, which defaults `base_url` to `https://api.exa.ai` and still uses OpenAI-compatible chat completions. Gemini providers use `type: gemini` and the native `google.golang.org/genai` client. OpenAI Codex providers use `type: openai-codex` and default to `https://chatgpt.com/backend-api`. `api_key` can be a single string or a YAML list of strings. Optional `extra_headers`, `extra_query`, and `extra_body` are supported. |
 | `models` | Ordered list of `<provider>/<model>` entries. The first entry is the startup default. Append `:vision` for image support heuristics. Model entries can also include local-only settings such as `context_window` for the reply footer and automatic context compaction; this field is not sent upstream. Gemini suffix aliases like `-minimal`, `-low`, `-medium`, and `-high` control thinking level. Codex suffix aliases like `-none`, `-minimal`, `-low`, `-medium`, `-high`, and `-xhigh` control reasoning effort. Alias variants share the same effective `context_window` as their base model. |
 | `channel_model_locks` | Optional map of Discord channel IDs to configured reply models. `/model` is disabled in locked channels. |
 | `search_decider_model` | Optional `<provider>/<model>` used to decide whether web search is required. Defaults to the first configured model. |
@@ -213,7 +217,7 @@ The config schema stays close to the original Python project.
 | --- | --- |
 | `web_search.primary_provider` | Which search backend to try first. Supported values: `mcp` and `tavily`. Default: `mcp`. `mcp` selects Exa and uses the Exa Search API when `web_search.exa.api_key` is configured, otherwise Exa MCP. |
 | `web_search.max_urls` | Maximum number of URLs to request from Exa or Tavily for each search query and to display in `Show Sources`. Default: `5`. |
-| `web_search.exa.api_key` | Optional Exa API key config. Can be a single string or a YAML list. When set, web search uses `POST https://api.exa.ai/search`, and generic website extraction prefers `POST https://api.exa.ai/contents` before any fallback path. Without it, web search continues using Exa MCP. |
+| `web_search.exa.api_key` | Optional Exa API key config. Can be a single string or a YAML list. When set, web search uses `POST https://api.exa.ai/search`, generic website extraction prefers `POST https://api.exa.ai/contents` before any fallback path, and `/searchtype` can switch the Exa Search API type between `auto`, `fast`, `instant`, `deep`, and `deep-reasoning`. Without it, web search continues using Exa MCP. |
 | `web_search.tavily.api_key` | Tavily API key config. Can be a single string or a YAML list. Generic website extraction uses Tavily Extract when no Exa API key is configured, and also as the fallback when Exa Contents fails. |
 | `visual_search.serpapi.api_key` | Optional SerpApi Google Lens API key config for `vsearch`. Can be a single string or a YAML list. |
 
@@ -224,6 +228,7 @@ Once the bot is running:
 - mention it in a guild, or use `at ai`
 - reply to messages to continue a conversation
 - use `/model` to switch the main reply model
+- use `/searchtype` to switch the Exa Search API type when `web_search.exa.api_key` is configured
 - use `/searchdecidermodel` to switch the search-decider model
 - attach files or images for multimodal context
 - start a prompt with `vsearch` to run reverse-image lookup

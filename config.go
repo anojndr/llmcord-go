@@ -127,8 +127,9 @@ type tavilySearchConfig struct {
 }
 
 type exaSearchConfig struct {
-	APIKey  string
-	APIKeys []string
+	APIKey     string
+	APIKeys    []string
+	SearchType string
 }
 
 type serpAPIVisualSearchConfig struct {
@@ -165,6 +166,7 @@ const (
 	providerAPIKindOpenAI       providerAPIKind = "openai"
 	providerAPIKindOpenAICodex  providerAPIKind = "openai-codex"
 	providerAPIKindGemini       providerAPIKind = "gemini"
+	providerTypeExa                             = "exa"
 	modelConfigContextWindowKey                 = "context_window"
 )
 
@@ -247,17 +249,7 @@ func buildLoadedConfig(
 
 	loadedProviders := make(map[string]providerConfig, len(rawLoadedConfig.Providers))
 	for providerName, rawProvider := range rawLoadedConfig.Providers {
-		apiKeys := normalizeAPIKeys([]string(rawProvider.APIKey))
-
-		loadedProviders[providerName] = providerConfig{
-			Type:         string(rawProvider.Type),
-			BaseURL:      string(rawProvider.BaseURL),
-			APIKey:       firstAPIKey(apiKeys),
-			APIKeys:      apiKeys,
-			ExtraHeaders: rawProvider.ExtraHeaders,
-			ExtraQuery:   rawProvider.ExtraQuery,
-			ExtraBody:    rawProvider.ExtraBody,
-		}
+		loadedProviders[providerName] = normalizeProviderConfig(rawProvider)
 	}
 
 	serpAPIVisualSearchKeys := normalizeAPIKeys([]string(rawLoadedConfig.VisualSearch.SerpAPI.APIKey))
@@ -355,6 +347,26 @@ func intValueOrDefault(value *int, fallback int) int {
 	}
 
 	return *value
+}
+
+func normalizeProviderConfig(rawProvider rawProviderConfig) providerConfig {
+	apiKeys := normalizeAPIKeys([]string(rawProvider.APIKey))
+	providerType := strings.TrimSpace(string(rawProvider.Type))
+	baseURL := strings.TrimSpace(string(rawProvider.BaseURL))
+
+	if strings.EqualFold(providerType, providerTypeExa) && baseURL == "" {
+		baseURL = defaultExaResearchBaseURL
+	}
+
+	return providerConfig{
+		Type:         providerType,
+		BaseURL:      baseURL,
+		APIKey:       firstAPIKey(apiKeys),
+		APIKeys:      apiKeys,
+		ExtraHeaders: rawProvider.ExtraHeaders,
+		ExtraQuery:   rawProvider.ExtraQuery,
+		ExtraBody:    rawProvider.ExtraBody,
+	}
 }
 
 func normalizeStringScalarMap(rawValues map[string]scalarString) map[string]string {
@@ -549,8 +561,9 @@ func normalizeWebSearchConfig(rawLoadedConfig rawWebSearchConfig) webSearchConfi
 		PrimaryProvider: normalizeWebSearchProvider(rawLoadedConfig.PrimaryProvider),
 		MaxURLs:         intValueOrDefault(rawLoadedConfig.MaxURLs, defaultWebSearchMaxURLs),
 		Exa: exaSearchConfig{
-			APIKey:  firstAPIKey(exaAPIKeys),
-			APIKeys: exaAPIKeys,
+			APIKey:     firstAPIKey(exaAPIKeys),
+			APIKeys:    exaAPIKeys,
+			SearchType: defaultExaSearchType,
 		},
 		Tavily: tavilySearchConfig{
 			APIKey:  firstAPIKey(tavilyAPIKeys),
@@ -785,6 +798,8 @@ func (provider providerConfig) apiKind() providerAPIKind {
 			return providerAPIKindGemini
 		}
 
+		return providerAPIKindOpenAI
+	case providerTypeExa:
 		return providerAPIKindOpenAI
 	case string(providerAPIKindOpenAICodex):
 		return providerAPIKindOpenAICodex

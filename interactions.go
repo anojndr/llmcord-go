@@ -61,6 +61,16 @@ func (instance *bot) handleApplicationCommandInteraction(
 		}
 
 		return nil
+	case searchTypeCommandName:
+		if interaction.Type == discordgo.InteractionApplicationCommand {
+			return instance.handleSearchTypeCommand(session, interaction)
+		}
+
+		if interaction.Type == discordgo.InteractionApplicationCommandAutocomplete {
+			return instance.handleSearchTypeAutocomplete(session, interaction)
+		}
+
+		return nil
 	case searchDeciderModelCommandName:
 		if interaction.Type == discordgo.InteractionApplicationCommand {
 			return instance.handleSearchDeciderModelCommand(session, interaction)
@@ -581,6 +591,51 @@ func handleConfiguredModelCommand(
 	return nil
 }
 
+func (instance *bot) handleSearchTypeCommand(
+	session *discordgo.Session,
+	interaction *discordgo.InteractionCreate,
+) error {
+	loadedConfig, err := loadConfig(instance.configPath)
+	if err != nil {
+		return fmt.Errorf("load config for search type command: %w", err)
+	}
+
+	if !loadedConfig.WebSearch.exaUsesAPI() {
+		return respondInteractionText(
+			session,
+			interaction.Interaction,
+			"Exa Search API is not configured. Set `web_search.exa.api_key` to use `/searchtype`.",
+		)
+	}
+
+	requestedSearchType, ok := normalizeExaSearchType(
+		interactionOptionString(interaction.ApplicationCommandData().Options),
+	)
+	if !ok {
+		return respondInteractionText(
+			session,
+			interaction.Interaction,
+			"Unknown Exa search type. Available options: "+formattedExaSearchTypeOptions()+".",
+		)
+	}
+
+	currentSearchType := instance.currentExaSearchType()
+
+	responseText := fmt.Sprintf("Current Exa search type: `%s`", currentSearchType)
+	if requestedSearchType != currentSearchType {
+		instance.setCurrentExaSearchType(requestedSearchType)
+		responseText = fmt.Sprintf("Exa search type switched to: `%s`", requestedSearchType)
+		slog.Info("search type switched", "type", requestedSearchType)
+	}
+
+	err = respondInteractionText(session, interaction.Interaction, responseText)
+	if err != nil {
+		return fmt.Errorf("respond to search type command: %w", err)
+	}
+
+	return nil
+}
+
 func (instance *bot) handleModelAutocomplete(
 	session *discordgo.Session,
 	interaction *discordgo.InteractionCreate,
@@ -629,6 +684,20 @@ func (instance *bot) handleSearchDeciderModelAutocomplete(
 		interaction,
 		instance.currentSearchDeciderModelForConfig(loadedConfig),
 		loadedConfig,
+	)
+}
+
+func (instance *bot) handleSearchTypeAutocomplete(
+	session *discordgo.Session,
+	interaction *discordgo.InteractionCreate,
+) error {
+	return respondInteractionChoices(
+		session,
+		interaction.Interaction,
+		exaSearchTypeAutocompleteChoices(
+			instance.currentExaSearchType(),
+			interactionOptionString(interaction.ApplicationCommandData().Options),
+		),
 	)
 }
 
@@ -684,6 +753,45 @@ func lockedModelAutocompleteChoices(
 	choice.Value = lockedModel
 
 	return []*discordgo.ApplicationCommandOptionChoice{choice}
+}
+
+func exaSearchTypeAutocompleteChoices(
+	currentSearchType string,
+	currentText string,
+) []*discordgo.ApplicationCommandOptionChoice {
+	searchTypes := exaSearchTypes()
+	choices := make([]*discordgo.ApplicationCommandOptionChoice, 0, len(searchTypes))
+
+	if containsFold(currentSearchType, currentText) {
+		choice := new(discordgo.ApplicationCommandOptionChoice)
+		choice.Name = "* " + currentSearchType + " (current)"
+		choice.Value = currentSearchType
+		choices = append(choices, choice)
+	}
+
+	for _, searchType := range searchTypes {
+		if searchType == currentSearchType || !containsFold(searchType, currentText) {
+			continue
+		}
+
+		choice := new(discordgo.ApplicationCommandOptionChoice)
+		choice.Name = "o " + searchType
+		choice.Value = searchType
+		choices = append(choices, choice)
+	}
+
+	return choices
+}
+
+func formattedExaSearchTypeOptions() string {
+	searchTypes := exaSearchTypes()
+	formattedValues := make([]string, 0, len(searchTypes))
+
+	for _, searchType := range searchTypes {
+		formattedValues = append(formattedValues, fmt.Sprintf("`%s`", searchType))
+	}
+
+	return strings.Join(formattedValues, ", ")
 }
 
 func (instance *bot) interactionChannelIDs(

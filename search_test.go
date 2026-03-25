@@ -35,8 +35,9 @@ func testExaAPIWebSearchConfig() config {
 	loadedConfig := testSearchConfig()
 	loadedConfig.WebSearch.MaxURLs = testWebSearchMaxURLs
 	loadedConfig.WebSearch.Exa = exaSearchConfig{
-		APIKey:  testExaPrimaryValue,
-		APIKeys: []string{testExaPrimaryValue, testExaBackupValue},
+		APIKey:     testExaPrimaryValue,
+		APIKeys:    []string{testExaPrimaryValue, testExaBackupValue},
+		SearchType: defaultExaSearchType,
 	}
 
 	return loadedConfig
@@ -153,14 +154,14 @@ func assertExaSearchRequest(t *testing.T, args map[string]any) {
 	}
 }
 
-func assertExaAPISearchRequest(t *testing.T, request exaSearchRequest) {
+func assertExaAPISearchRequest(t *testing.T, request exaSearchRequest, expectedType string) {
 	t.Helper()
 
 	if strings.TrimSpace(request.Query) == "" {
 		t.Fatal("expected Exa API query to be set")
 	}
 
-	if request.Type != "auto" {
+	if request.Type != expectedType {
 		t.Fatalf("unexpected Exa API type: %q", request.Type)
 	}
 
@@ -836,6 +837,63 @@ func TestMaybeAugmentConversationWithWebSearchAddsResultsWhenNeeded(t *testing.T
 	}
 }
 
+func TestMaybeAugmentConversationWithWebSearchPassesCurrentExaSearchType(t *testing.T) {
+	t.Parallel()
+
+	openAI := newStubChatClient(func(
+		_ context.Context,
+		_ chatCompletionRequest,
+		handle func(streamDelta) error,
+	) error {
+		delta := new(streamDelta)
+		delta.Content = `{"needs_search":true,"queries":["latest ai news"]}`
+
+		return handle(*delta)
+	})
+
+	var capturedSearchType string
+
+	webSearch := newStubWebSearchClient(func(
+		_ context.Context,
+		loadedConfig config,
+		queries []string,
+	) ([]webSearchResult, error) {
+		capturedSearchType = loadedConfig.WebSearch.Exa.SearchType
+
+		return []webSearchResult{{Query: queries[0], Text: "AI news context"}}, nil
+	})
+
+	instance := newSearchTestBot(openAI, webSearch)
+	instance.setCurrentExaSearchType(exaSearchTypeDeep)
+
+	augmentedConversation, searchMetadata, warnings, err := instance.maybeAugmentConversationWithWebSearch(
+		context.Background(),
+		testExaAPIWebSearchConfig(),
+		"openai/main-model",
+		nil,
+		[]chatMessage{{Role: messageRoleUser, Content: "<@123>: what changed?"}},
+	)
+	if err != nil {
+		t.Fatalf("maybe augment conversation with web search: %v", err)
+	}
+
+	if len(augmentedConversation) != 1 {
+		t.Fatalf("unexpected augmented conversation length: %d", len(augmentedConversation))
+	}
+
+	if searchMetadata == nil {
+		t.Fatal("expected search metadata")
+	}
+
+	if len(warnings) != 0 {
+		t.Fatalf("unexpected warnings: %#v", warnings)
+	}
+
+	if capturedSearchType != exaSearchTypeDeep {
+		t.Fatalf("unexpected Exa search type: %q", capturedSearchType)
+	}
+}
+
 func assertSearchDeciderRequestIncludesInstruction(
 	t *testing.T,
 	requests []chatCompletionRequest,
@@ -935,6 +993,78 @@ func TestMaybeAugmentConversationWithWebSearchSkipsWhenNotNeeded(t *testing.T) {
 
 	if augmentedConversation[0].Content != conversation[0].Content {
 		t.Fatal("expected conversation to remain unchanged")
+	}
+}
+
+func TestMaybeAugmentConversationWithWebSearchSkipsDeciderForExaResearchPro(t *testing.T) {
+	t.Parallel()
+
+	openAI := newStubChatClient(func(
+		_ context.Context,
+		_ chatCompletionRequest,
+		_ func(streamDelta) error,
+	) error {
+		t.Fatal("expected search decider to be skipped for exa/exa-research-pro")
+
+		return nil
+	})
+
+	webSearch := newStubWebSearchClient(func(
+		_ context.Context,
+		_ config,
+		_ []string,
+	) ([]webSearchResult, error) {
+		t.Fatal("expected web search to be skipped for exa/exa-research-pro")
+
+		return nil, nil
+	})
+
+	instance := newSearchTestBot(openAI, webSearch)
+
+	loadedConfig := testSearchConfig()
+	loadedConfig.Providers["exa"] = providerConfig{
+		Type:         providerTypeExa,
+		BaseURL:      "",
+		APIKey:       "",
+		APIKeys:      nil,
+		ExtraHeaders: nil,
+		ExtraQuery:   nil,
+		ExtraBody:    nil,
+	}
+	loadedConfig.Models["exa/exa-research-pro"] = nil
+	loadedConfig.ModelOrder = append([]string{"exa/exa-research-pro"}, loadedConfig.ModelOrder...)
+
+	conversation := []chatMessage{{Role: messageRoleUser, Content: "<@123>: latest ai news"}}
+
+	augmentedConversation, searchMetadata, warnings, err := instance.maybeAugmentConversationWithWebSearch(
+		context.Background(),
+		loadedConfig,
+		"exa/exa-research-pro",
+		nil,
+		conversation,
+	)
+	if err != nil {
+		t.Fatalf("maybe augment conversation with web search: %v", err)
+	}
+
+	if len(warnings) != 0 {
+		t.Fatalf("unexpected warnings: %#v", warnings)
+	}
+
+	if searchMetadata != nil {
+		t.Fatalf("expected search metadata to be nil: %#v", searchMetadata)
+	}
+
+	if augmentedConversation[0].Content != conversation[0].Content {
+		t.Fatal("expected conversation to remain unchanged")
+	}
+
+	if len(openAI.requests) != 0 {
+		t.Fatalf("expected no search decider requests, got %d", len(openAI.requests))
+	}
+
+	if len(webSearch.calls) != 0 {
+		t.Fatalf("expected no web search calls, got %d", len(webSearch.calls))
 	}
 }
 
@@ -1121,8 +1251,8 @@ func TestExaSearchClientSearchUsesAPIWhenConfiguredAndRetriesConfiguredAPIKeys(t
 		t.Fatalf("unexpected Exa API request count: %d", len(searchBodies))
 	}
 
-	assertExaAPISearchRequest(t, searchBodies[0])
-	assertExaAPISearchRequest(t, searchBodies[1])
+	assertExaAPISearchRequest(t, searchBodies[0], defaultExaSearchType)
+	assertExaAPISearchRequest(t, searchBodies[1], defaultExaSearchType)
 
 	if len(results) != 1 {
 		t.Fatalf("unexpected result count: %d", len(results))
@@ -1171,6 +1301,41 @@ func TestExaSearchClientSearchAttemptsAllConfiguredAPIKeysBeforeFailure(t *testi
 	}
 
 	assertExaAPIAuthHeaders(t, authHeaders)
+}
+
+func TestExaSearchClientSearchUsesConfiguredSearchType(t *testing.T) {
+	t.Parallel()
+
+	var searchBodies []exaSearchRequest
+
+	client, closeServer := newExaAPISearchTestClient(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		request *http.Request,
+	) {
+		searchBodies = append(searchBodies, decodeExaSearchRequest(t, request.Body))
+
+		responseWriter.Header().Set("Content-Type", "application/json")
+
+		err := json.NewEncoder(responseWriter).Encode(testExaAPISearchSuccessResponse())
+		if err != nil {
+			t.Errorf("encode Exa response: %v", err)
+		}
+	}))
+	defer closeServer()
+
+	loadedConfig := testExaAPIWebSearchConfig()
+	loadedConfig.WebSearch.Exa.SearchType = exaSearchTypeDeepReasoning
+
+	_, err := client.search(context.Background(), loadedConfig, []string{"latest ai news"})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+
+	if len(searchBodies) != 1 {
+		t.Fatalf("unexpected Exa API request count: %d", len(searchBodies))
+	}
+
+	assertExaAPISearchRequest(t, searchBodies[0], exaSearchTypeDeepReasoning)
 }
 
 func TestRoutedWebSearchClientFallsBackToTavilyWhenMCPFails(t *testing.T) {
@@ -1784,7 +1949,11 @@ func testSearchConfig() config {
 	}
 	loadedConfig.WebSearch.PrimaryProvider = webSearchProviderKindMCP
 	loadedConfig.WebSearch.MaxURLs = defaultWebSearchMaxURLs
-	loadedConfig.WebSearch.Exa = exaSearchConfig{APIKey: "", APIKeys: nil}
+	loadedConfig.WebSearch.Exa = exaSearchConfig{
+		APIKey:     "",
+		APIKeys:    nil,
+		SearchType: defaultExaSearchType,
+	}
 	loadedConfig.ModelOrder = []string{"openai/main-model", "openai/decider-model"}
 	loadedConfig.SearchDeciderModel = "openai/decider-model"
 
@@ -1796,7 +1965,11 @@ func testGeminiSearchConfig() config {
 	loadedConfig.MaxImages = defaultMaxImages
 	loadedConfig.WebSearch.PrimaryProvider = webSearchProviderKindMCP
 	loadedConfig.WebSearch.MaxURLs = defaultWebSearchMaxURLs
-	loadedConfig.WebSearch.Exa = exaSearchConfig{APIKey: "", APIKeys: nil}
+	loadedConfig.WebSearch.Exa = exaSearchConfig{
+		APIKey:     "",
+		APIKeys:    nil,
+		SearchType: defaultExaSearchType,
+	}
 
 	googleProvider := new(providerConfig)
 	googleProvider.Type = string(providerAPIKindGemini)
