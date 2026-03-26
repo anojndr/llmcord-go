@@ -92,6 +92,11 @@ func TestUserFacingResponseErrorClassifiesProviderFailures(t *testing.T) {
 			err:      newTestGeminiAPIErrorPointer(http.StatusServiceUnavailable, "service unavailable"),
 			expected: "The model provider is temporarily unavailable. Try again.",
 		},
+		{
+			name:     "unknown error returns raw message",
+			err:      errPartialStreamFailure,
+			expected: "partial stream failure",
+		},
 	}
 
 	for _, testCase := range tests {
@@ -702,7 +707,7 @@ func testGenerateAndSendResponseAppendsErrorWhenStreamFailsAfterPartialOutput(t 
 		sourceMessageID    = "user-message-1"
 		assistantMessageID = "assistant-message-1"
 		partialText        = "partial reply"
-		expectedError      = "Couldn't generate a response right now. Try again."
+		expectedError      = "stream response: partial stream failure"
 	)
 
 	sourceMessage := newPromptMessage(sourceMessageID, channelID, userID, botUserID)
