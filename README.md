@@ -95,6 +95,7 @@ The goal is to make Discord feel like a practical, stateful frontend for LLM wor
 
 - Automatic TikTok URL handling
 - Automatic Facebook URL handling
+- Automatic YouTube Shorts MP4 handling for Gemini and Gemini media preprocessing
 - Automatic YouTube transcript, title, channel, and comment extraction
 - Automatic Reddit thread and comment extraction
 - Automatic generic website content extraction for other links, preferring Exa Contents when `web_search.exa.api_key` is set, then Tavily Extract, then the local HTML/text extractor
@@ -296,6 +297,7 @@ golangci-lint run --default=all
 - Supported user-supplied URLs can trigger automatic content enrichment:
   - TikTok
   - Facebook
+  - YouTube Shorts MP4 downloads for Gemini or Gemini-powered media preprocessing
   - YouTube
   - Reddit
   - generic websites, using Exa Contents first when configured, then Tavily Extract, then the built-in HTML/text parser

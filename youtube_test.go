@@ -52,14 +52,12 @@ func TestExtractYouTubeURLsNormalizesAndDeduplicates(t *testing.T) {
 	text := strings.Join([]string{
 		"check https://youtu.be/dQw4w9WgXcQ?t=43",
 		"and https://www.youtube.com/watch?v=dQw4w9WgXcQ,",
-		"plus https://youtube.com/shorts/abc123def45!",
 	}, " ")
 
 	urls := extractYouTubeURLs(text)
 
 	expected := []string{
 		"https://www.youtube.com/watch?v=dQw4w9WgXcQ",
-		"https://www.youtube.com/watch?v=abc123def45",
 	}
 
 	if len(urls) != len(expected) {

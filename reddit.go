@@ -5,7 +5,6 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -256,40 +255,14 @@ func (client redditClient) fetch(ctx context.Context, rawURL string) (redditThre
 }
 
 func (client redditClient) doRequest(ctx context.Context, requestURL string) ([]byte, error) {
-	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
-	if err != nil {
-		return nil, fmt.Errorf("create reddit request %q: %w", requestURL, err)
-	}
-
-	httpRequest.Header.Set("Accept", "application/json")
-	httpRequest.Header.Set("Accept-Language", youtubeAcceptLanguage)
-	httpRequest.Header.Set("User-Agent", client.userAgent)
-
-	httpResponse, err := client.httpClient.Do(httpRequest)
-	if err != nil {
-		return nil, fmt.Errorf("send reddit request %q: %w", requestURL, err)
-	}
-
-	defer func() {
-		_ = httpResponse.Body.Close()
-	}()
-
-	responseBody, err := io.ReadAll(httpResponse.Body)
-	if err != nil {
-		return nil, fmt.Errorf("read reddit response %q: %w", requestURL, err)
-	}
-
-	if httpResponse.StatusCode < http.StatusOK || httpResponse.StatusCode >= http.StatusMultipleChoices {
-		return nil, fmt.Errorf(
-			"reddit request %q failed with status %d: %s: %w",
-			requestURL,
-			httpResponse.StatusCode,
-			strings.TrimSpace(string(responseBody)),
-			os.ErrInvalid,
-		)
-	}
-
-	return responseBody, nil
+	return doConfiguredGetRequest(
+		ctx,
+		client.httpClient,
+		requestURL,
+		client.userAgent,
+		"application/json",
+		"reddit request",
+	)
 }
 
 func extractRedditURLs(text string) []string {
