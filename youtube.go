@@ -853,6 +853,10 @@ func extractYouTubeURLs(text string) []string {
 	seenVideoIDs := make(map[string]struct{}, len(matches))
 
 	for _, match := range matches {
+		if isYouTubeShortsURL(match) {
+			continue
+		}
+
 		videoID, canonicalURL, err := parseYouTubeVideoURL(match)
 		if err != nil {
 			continue
@@ -871,21 +875,9 @@ func extractYouTubeURLs(text string) []string {
 }
 
 func parseYouTubeVideoURL(rawURL string) (string, string, error) {
-	cleanedURL := strings.TrimSpace(rawURL)
-	cleanedURL = strings.Trim(cleanedURL, `"'<>[]()`)
-
-	cleanedURL = strings.TrimRight(cleanedURL, ".,!?;:")
-	if cleanedURL == "" {
-		return "", "", fmt.Errorf("empty youtube url: %w", os.ErrInvalid)
-	}
-
-	if !strings.Contains(cleanedURL, "://") {
-		cleanedURL = "https://" + cleanedURL
-	}
-
-	parsedURL, err := url.Parse(cleanedURL)
+	parsedURL, err := parseRawYouTubeURL(rawURL)
 	if err != nil {
-		return "", "", fmt.Errorf("parse youtube url %q: %w", rawURL, err)
+		return "", "", err
 	}
 
 	host := strings.ToLower(parsedURL.Hostname())
@@ -916,6 +908,27 @@ func parseYouTubeVideoURL(rawURL string) (string, string, error) {
 	return videoID, canonicalYouTubeURL(videoID), nil
 }
 
+func parseRawYouTubeURL(rawURL string) (*url.URL, error) {
+	cleanedURL := strings.TrimSpace(rawURL)
+	cleanedURL = strings.Trim(cleanedURL, `"'<>[]()`)
+
+	cleanedURL = strings.TrimRight(cleanedURL, ".,!?;:")
+	if cleanedURL == "" {
+		return nil, fmt.Errorf("empty youtube url: %w", os.ErrInvalid)
+	}
+
+	if !strings.Contains(cleanedURL, "://") {
+		cleanedURL = "https://" + cleanedURL
+	}
+
+	parsedURL, err := url.Parse(cleanedURL)
+	if err != nil {
+		return nil, fmt.Errorf("parse youtube url %q: %w", rawURL, err)
+	}
+
+	return parsedURL, nil
+}
+
 func firstPathSegment(path string) string {
 	trimmedPath := strings.Trim(path, "/")
 	if trimmedPath == "" {
@@ -929,6 +942,10 @@ func firstPathSegment(path string) string {
 
 func canonicalYouTubeURL(videoID string) string {
 	return defaultYouTubeWatchURL + "?v=" + url.QueryEscape(videoID)
+}
+
+func canonicalYouTubeShortsURL(videoID string) string {
+	return "https://www.youtube.com/shorts/" + url.PathEscape(videoID)
 }
 
 func extractYouTubeConsentValue(htmlText string) (string, error) {

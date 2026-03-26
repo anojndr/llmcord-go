@@ -25,6 +25,7 @@ type bot struct {
 	rentry                    rentryClient
 	tiktok                    tiktokContentClient
 	facebook                  facebookContentClient
+	youtubeShorts             youtubeShortsContentClient
 	youtube                   youtubeContentClient
 	reddit                    redditContentClient
 	website                   websiteContentClient
@@ -66,6 +67,7 @@ func newBot(ctx context.Context, configPath string, loadedConfig config) (*bot, 
 		return nil, fmt.Errorf("create facebook client: %w", err)
 	}
 
+	instance.youtubeShorts = newYouTubeShortsClient(httpClient)
 	instance.youtube = newYouTubeClient(httpClient)
 	instance.reddit = newRedditClient(httpClient)
 	instance.website = newWebsiteClient(httpClient)

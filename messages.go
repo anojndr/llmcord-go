@@ -529,6 +529,17 @@ func (instance *bot) augmentConversationWithVideoURLs(
 				)
 			},
 		},
+		{
+			name: "youtube shorts",
+			prepare: func(taskContext context.Context) (preparedConversationAugmentation, error) {
+				return instance.prepareYouTubeShortsAugmentation(
+					taskContext,
+					loadedConfig,
+					providerSlashModel,
+					urlExtractionText,
+				)
+			},
+		},
 	}
 
 	stageResults := prepareAugmentationStages(ctx, stages)

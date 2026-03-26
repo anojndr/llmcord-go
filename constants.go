@@ -88,6 +88,8 @@ const (
 	websiteRequestTimeout                = 30 * time.Second
 	tavilyExtractTimeoutSeconds          = 10
 	youtubeRequestTimeout                = 30 * time.Second
+	youtubeShortsLoaderPollInterval      = 500 * time.Millisecond
+	youtubeShortsRequestTimeout          = 2 * time.Minute
 	typingRefreshInterval                = 8 * time.Second
 	editDelay                            = time.Second
 	sseScannerInitialBuffer              = 64 * 1024
