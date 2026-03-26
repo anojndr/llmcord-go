@@ -41,15 +41,15 @@ func newTestGeminiAPIError(code int, message string) error {
 	return *apiErr
 }
 
-func newTestGeminiAPIErrorPointer(code int, message string) error {
+func newTestUnavailableGeminiAPIErrorPointer(message string) error {
 	apiErr := new(genai.APIError)
-	apiErr.Code = code
+	apiErr.Code = http.StatusServiceUnavailable
 	apiErr.Message = message
 
 	return apiErr
 }
 
-func TestUserFacingResponseErrorClassifiesProviderFailures(t *testing.T) {
+func TestUserFacingResponseErrorReturnsRawErrorText(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -58,39 +58,44 @@ func TestUserFacingResponseErrorClassifiesProviderFailures(t *testing.T) {
 		expected string
 	}{
 		{
+			name:     "nil error falls back to generic message",
+			err:      nil,
+			expected: "Couldn't generate a response right now. Try again.",
+		},
+		{
 			name:     "gemini rate limit",
 			err:      newTestGeminiAPIError(http.StatusTooManyRequests, "rate limited"),
-			expected: "Usage limit reached for this model. Try other models.",
+			expected: newTestGeminiAPIError(http.StatusTooManyRequests, "rate limited").Error(),
 		},
 		{
 			name:     "gemini access denied",
 			err:      newTestGeminiAPIError(http.StatusForbidden, "permission denied"),
-			expected: "This model is unavailable right now. Try other models.",
+			expected: newTestGeminiAPIError(http.StatusForbidden, "permission denied").Error(),
 		},
 		{
-			name: "model not found remains access error",
+			name: "provider status error returns raw message",
 			err: providerStatusError{
 				StatusCode: http.StatusNotFound,
 				Message:    "model not found",
 				RetryDelay: 0,
 				Err:        os.ErrInvalid,
 			},
-			expected: "This model is unavailable right now. Try other models.",
+			expected: "model not found",
 		},
 		{
 			name:     "gemini missing file",
 			err:      newTestGeminiAPIError(http.StatusNotFound, "file not found"),
-			expected: "A required resource was not found. Try again.",
+			expected: newTestGeminiAPIError(http.StatusNotFound, "file not found").Error(),
 		},
 		{
 			name:     "gemini gateway timeout",
 			err:      newTestGeminiAPIError(http.StatusGatewayTimeout, "deadline exceeded"),
-			expected: "Request timed out. Try again.",
+			expected: newTestGeminiAPIError(http.StatusGatewayTimeout, "deadline exceeded").Error(),
 		},
 		{
 			name:     "gemini service unavailable pointer error",
-			err:      newTestGeminiAPIErrorPointer(http.StatusServiceUnavailable, "service unavailable"),
-			expected: "The model provider is temporarily unavailable. Try again.",
+			err:      newTestUnavailableGeminiAPIErrorPointer("service unavailable"),
+			expected: newTestUnavailableGeminiAPIErrorPointer("service unavailable").Error(),
 		},
 		{
 			name:     "unknown error returns raw message",

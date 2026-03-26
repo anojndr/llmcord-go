@@ -838,7 +838,7 @@ func TestRespondToMessageEditsProgressMessageWithRateLimitError(t *testing.T) {
 		userID          = "user-1"
 		sourceMessageID = "user-message-1"
 		progressID      = "progress-message"
-		expectedError   = "Usage limit reached for this model. Try other models."
+		expectedError   = "stream response: rate limited"
 	)
 
 	progressMessage := new(discordgo.Message)
@@ -908,8 +908,9 @@ func TestRespondToMessageEditsProgressMessageWhenGeminiMediaAnalysisFailsDuringP
 		userID          = "user-1"
 		sourceMessageID = "user-message-1"
 		progressID      = "progress-message"
-		expectedError   = "The model provider is temporarily unavailable. Try again."
 	)
+
+	expectedError := newUnavailableGeminiMediaPreparationProgressError().Error()
 
 	fixture := newGeminiMediaPreparationFailureFixture(
 		t,
@@ -1069,7 +1070,7 @@ func TestRespondToMessageSendsRateLimitErrorWhenProgressMessageSendFails(t *test
 		userID          = "user-1"
 		sourceMessageID = "user-message-1"
 		failureID       = "failure-message"
-		expectedError   = "Usage limit reached for this model. Try other models."
+		expectedError   = "stream response: rate limited"
 	)
 
 	failureMessage := new(discordgo.Message)
@@ -1708,26 +1709,44 @@ func newUnavailableGeminiMediaPreparationChatClient(
 			t.Fatal("timed out waiting for gathering context progress edit")
 		}
 
-		return fmt.Errorf(
-			"all configured API keys failed: %w",
-			errors.Join(
-				fmt.Errorf(
-					"stream gemini content: %w",
-					newTestGeminiAPIErrorPointer(
-						http.StatusServiceUnavailable,
-						"This model is currently experiencing high demand.",
-					),
-				),
-				fmt.Errorf(
-					"stream gemini content: %w",
-					newTestGeminiAPIErrorPointer(
-						http.StatusServiceUnavailable,
-						"This model is currently experiencing high demand.",
-					),
+		return newUnavailableGeminiMediaPreparationChatError()
+	})
+}
+
+func newUnavailableGeminiMediaPreparationChatError() error {
+	return fmt.Errorf(
+		"all configured API keys failed: %w",
+		errors.Join(
+			fmt.Errorf(
+				"stream gemini content: %w",
+				newTestUnavailableGeminiAPIErrorPointer(
+					"This model is currently experiencing high demand.",
 				),
 			),
-		)
-	})
+			fmt.Errorf(
+				"stream gemini content: %w",
+				newTestUnavailableGeminiAPIErrorPointer(
+					"This model is currently experiencing high demand.",
+				),
+			),
+		),
+	)
+}
+
+func newUnavailableGeminiMediaPreparationProgressError() error {
+	return fmt.Errorf(
+		"augment prepared message response: %w",
+		fmt.Errorf(
+			"augment conversation with gemini media: %w",
+			fmt.Errorf(
+				"analyze media file 1 with gemini: %w",
+				fmt.Errorf(
+					"collect gemini media analysis: %w",
+					newUnavailableGeminiMediaPreparationChatError(),
+				),
+			),
+		),
+	)
 }
 
 func newRateLimitedRespondToMessageChatClient() *stubChatCompletionClient {
