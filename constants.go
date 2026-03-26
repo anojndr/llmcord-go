@@ -4,7 +4,12 @@ import "time"
 
 const (
 	defaultConfigPath                    = "config.yaml"
+	configPathEnvironmentVariable        = "LLMCORD_CONFIG_PATH"
+	legacyConfigPathEnvironmentVariable  = "CONFIG_PATH"
+	httpAddressEnvironmentVariable       = "LLMCORD_HTTP_ADDR"
+	portEnvironmentVariable              = "PORT"
 	readyMessage                         = "bot is online"
+	healthCheckPath                      = "/healthz"
 	defaultExaResearchBaseURL            = "https://api.exa.ai"
 	defaultExaSearchEndpoint             = "https://api.exa.ai/search"
 	defaultExaContentsEndpoint           = "https://api.exa.ai/contents"
@@ -92,6 +97,9 @@ const (
 	youtubeShortsRequestTimeout          = 2 * time.Minute
 	typingRefreshInterval                = 8 * time.Second
 	editDelay                            = time.Second
+	publicHTTPReadHeaderTimeout          = 5 * time.Second
+	publicHTTPIdleTimeout                = 30 * time.Second
+	publicHTTPShutdownTimeout            = 5 * time.Second
 	sseScannerInitialBuffer              = 64 * 1024
 	sseScannerMaxBuffer                  = 1024 * 1024
 	mappingNodePairSize                  = 2

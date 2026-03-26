@@ -159,6 +159,12 @@ Notes:
 go run .
 ```
 
+Or point startup at a different config file:
+
+```bash
+LLMCORD_CONFIG_PATH=/path/to/config.yaml go run .
+```
+
 After Discord finishes connecting and the bot is ready, startup prints:
 
 ```text
@@ -172,6 +178,18 @@ docker compose up --build
 ```
 
 The provided `docker-compose.yaml` mounts the project root read-write for local development.
+
+### Deploy on Render
+
+The bot automatically starts a tiny public HTTP server whenever `PORT` is set. That gives Render a bound web port and exposes `GET /healthz` for both Render health checks and UptimeRobot.
+
+1. Create a Render web service from this repo. The included `render.yaml` uses the Docker runtime and sets `healthCheckPath: /healthz`.
+2. Upload your `config.yaml` to Render as a secret file named `config.yaml`.
+3. Set `LLMCORD_CONFIG_PATH=/etc/secrets/config.yaml` if you create the service manually. The provided `render.yaml` already does this.
+4. Deploy the service. After startup, `https://<your-service>.onrender.com/healthz` returns JSON status for the bot process.
+5. If you use Render's free web service sleep behavior, create an UptimeRobot HTTP(s) monitor that pings `https://<your-service>.onrender.com/healthz` every 5 minutes. This is an unofficial keep-awake workaround, and Render can still restart the service or enforce account limits.
+
+If you want reply-chain history to survive Render restarts, also set `database.connection_string` to a persistent PostgreSQL database.
 
 ### Optional: get a ChatGPT Codex API key
 
@@ -279,7 +297,8 @@ golangci-lint run --default=all
 
 ## Notes
 
-- The bot reads `config.yaml` on each message and `/model` autocomplete request, so config changes apply without restarting.
+- The bot reads `config.yaml` on each message and `/model` autocomplete request, so config changes apply without restarting. Startup also honors `LLMCORD_CONFIG_PATH` first, then `CONFIG_PATH`, before falling back to `config.yaml`.
+- When `PORT` is set, the bot also serves JSON health responses on `/` and `/healthz`.
 - Reply-chain history is stored in PostgreSQL table `message_history_snapshots` when `database.connection_string` is configured.
 - `channel_model_locks` checks the current channel first, then parent thread/forum context when applicable.
 - Gemini providers use the official `google.golang.org/genai` SDK.
