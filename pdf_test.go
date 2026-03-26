@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/bwmarrin/discordgo"
+	pdfcpuapi "github.com/pdfcpu/pdfcpu/pkg/api"
 )
 
 const testPDFFilename = "report.pdf"
@@ -68,6 +69,67 @@ func TestExtractPDFContentReturnsTextWithoutImages(t *testing.T) {
 
 	if !strings.Contains(extraction.text, "Quarterly revenue grew by 12 percent.") {
 		t.Fatalf("unexpected extracted text: %q", extraction.text)
+	}
+
+	if len(extraction.imageParts) != 0 {
+		t.Fatalf("unexpected extracted image count: %d", len(extraction.imageParts))
+	}
+}
+
+func TestExtractPDFContentDecryptsEncryptedPDFWithoutUserPassword(t *testing.T) {
+	t.Parallel()
+
+	documentPart := testEncryptedPDFDocumentPart(
+		t,
+		"Quarterly revenue grew by 12 percent in the encrypted report.",
+		true,
+		"",
+		"owner-secret",
+	)
+
+	extraction, err := extractPDFContent(documentPart)
+	if err != nil {
+		t.Fatalf("extract encrypted pdf content: %v", err)
+	}
+
+	if !strings.Contains(
+		extraction.text,
+		"Quarterly revenue grew by 12 percent in the encrypted report.",
+	) {
+		t.Fatalf("unexpected extracted text: %q", extraction.text)
+	}
+
+	if extraction.notice != "" {
+		t.Fatalf("unexpected extraction notice: %q", extraction.notice)
+	}
+
+	if len(extraction.imageParts) != 1 {
+		t.Fatalf("unexpected extracted image count: %d", len(extraction.imageParts))
+	}
+}
+
+func TestExtractPDFContentReturnsNoticeForPasswordProtectedPDF(t *testing.T) {
+	t.Parallel()
+
+	documentPart := testEncryptedPDFDocumentPart(
+		t,
+		"Quarterly revenue grew by 12 percent in the protected report.",
+		true,
+		"open-secret",
+		"owner-secret",
+	)
+
+	extraction, err := extractPDFContent(documentPart)
+	if err != nil {
+		t.Fatalf("extract password-protected pdf content: %v", err)
+	}
+
+	if extraction.text != "" {
+		t.Fatalf("unexpected extracted text: %q", extraction.text)
+	}
+
+	if extraction.notice != encryptedPDFExtractionNotice {
+		t.Fatalf("unexpected extraction notice: %q", extraction.notice)
 	}
 
 	if len(extraction.imageParts) != 0 {
@@ -206,6 +268,7 @@ func TestRenderPDFContentUsesOOXMLTagForDOCXAndPPTX(t *testing.T) {
 				},
 			},
 			mimeType: mimeTypeDOCX,
+			notice:   "",
 			text:     "DOCX content",
 		},
 		{
@@ -217,6 +280,7 @@ func TestRenderPDFContentUsesOOXMLTagForDOCXAndPPTX(t *testing.T) {
 				},
 			},
 			mimeType: mimeTypePPTX,
+			notice:   "",
 			text:     "PPTX content",
 		},
 	} {
@@ -292,6 +356,51 @@ func TestMaybeAugmentConversationWithPDFContentsAppendsTextAndImagesForNonGemini
 
 	if parts[1]["type"] != contentTypeImageURL {
 		t.Fatalf("expected extracted image part: %#v", parts[1])
+	}
+}
+
+func TestMaybeAugmentConversationWithPDFContentsAppendsNoticeForPasswordProtectedPDF(t *testing.T) {
+	t.Parallel()
+
+	instance, sourceMessage := newPDFExtractionTestBot(
+		"message-password-protected-pdf",
+		"<@123>: summarize the protected report",
+		[]contentPart{
+			testEncryptedPDFDocumentPart(
+				t,
+				"Quarterly revenue grew by 12 percent in the protected report.",
+				true,
+				"open-secret",
+				"owner-secret",
+			),
+		},
+	)
+
+	loadedConfig := testMediaAnalysisConfig()
+	loadedConfig.MaxImages = 2
+
+	augmentedConversation, err := instance.maybeAugmentConversationWithPDFContents(
+		context.Background(),
+		loadedConfig,
+		"openai/gpt-5",
+		sourceMessage,
+		[]chatMessage{{Role: messageRoleUser, Content: "<@123>: summarize the protected report"}},
+	)
+	if err != nil {
+		t.Fatalf("augment conversation with password-protected pdf content: %v", err)
+	}
+
+	textValue, ok := augmentedConversation[0].Content.(string)
+	if !ok {
+		t.Fatalf("unexpected content type: %T", augmentedConversation[0].Content)
+	}
+
+	if !strings.Contains(textValue, documentContentSectionName+":") {
+		t.Fatalf("expected extracted document section in prompt: %q", textValue)
+	}
+
+	if !strings.Contains(textValue, "Notice: "+encryptedPDFExtractionNotice) {
+		t.Fatalf("expected encrypted pdf notice in prompt: %q", textValue)
 	}
 }
 
@@ -862,6 +971,31 @@ func testPDFDocumentPart(
 	}
 }
 
+func testEncryptedPDFDocumentPart(
+	t *testing.T,
+	text string,
+	includeImage bool,
+	userPassword string,
+	ownerPassword string,
+) contentPart {
+	t.Helper()
+
+	pdfBytes := buildEncryptedTestPDF(
+		t,
+		text,
+		includeImage,
+		userPassword,
+		ownerPassword,
+	)
+
+	return contentPart{
+		"type":               contentTypeDocument,
+		contentFieldBytes:    pdfBytes,
+		contentFieldMIMEType: mimeTypePDF,
+		contentFieldFilename: testPDFFilename,
+	}
+}
+
 func buildTestPDF(t *testing.T, text string, includeImage bool) []byte {
 	t.Helper()
 
@@ -903,6 +1037,33 @@ func buildTestPDF(t *testing.T, text string, includeImage bool) []byte {
 	))
 
 	return buildTestPDFBytes(objects)
+}
+
+func buildEncryptedTestPDF(
+	t *testing.T,
+	text string,
+	includeImage bool,
+	userPassword string,
+	ownerPassword string,
+) []byte {
+	t.Helper()
+
+	var encrypted bytes.Buffer
+
+	configuration := newPDFCPUConfiguration()
+	configuration.UserPW = userPassword
+	configuration.OwnerPW = ownerPassword
+
+	err := pdfcpuapi.Encrypt(
+		bytes.NewReader(buildTestPDF(t, text, includeImage)),
+		&encrypted,
+		configuration,
+	)
+	if err != nil {
+		t.Fatalf("encrypt test pdf: %v", err)
+	}
+
+	return encrypted.Bytes()
 }
 
 func testPDFPageObject(includeImage bool) string {

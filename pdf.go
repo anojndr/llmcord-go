@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -25,12 +26,15 @@ const (
 	ooxmlContentOpenTag           = "<ooxml_content>"
 	ooxmlContentCloseTag          = "</ooxml_content>"
 	documentExtractionConcurrency = 4
+	encryptedPDFExtractionNotice  = "This PDF is encrypted or password-protected, " +
+		"so its contents could not be extracted locally."
 )
 
 type extractedPDFContent struct {
 	filename   string
 	imageParts []contentPart
 	mimeType   string
+	notice     string
 	text       string
 }
 
@@ -239,16 +243,14 @@ func extractPDFContent(documentPart contentPart) (extractedPDFContent, error) {
 	var (
 		text       string
 		imageParts []contentPart
+		notice     string
 	)
 
-	switch normalizedMIMEType(mimeType) {
-	case mimeTypePDF:
-		text, err = extractPDFText(documentBytes)
-		if err != nil {
-			return extractedPDFContent{}, err
-		}
+	normalizedType := normalizedMIMEType(mimeType)
 
-		imageParts, err = extractPDFImages(documentBytes)
+	switch normalizedType {
+	case mimeTypePDF:
+		text, imageParts, notice, err = extractPDFDocumentContent(documentBytes)
 		if err != nil {
 			return extractedPDFContent{}, err
 		}
@@ -273,9 +275,47 @@ func extractPDFContent(documentPart contentPart) (extractedPDFContent, error) {
 	return extractedPDFContent{
 		filename:   filename,
 		imageParts: imageParts,
-		mimeType:   normalizedMIMEType(mimeType),
+		mimeType:   normalizedType,
+		notice:     notice,
 		text:       text,
 	}, nil
+}
+
+func extractPDFDocumentContent(documentBytes []byte) (string, []contentPart, string, error) {
+	text, err := extractPDFText(documentBytes)
+	if err == nil {
+		imageParts, imageErr := extractPDFImages(documentBytes)
+		if imageErr == nil {
+			return text, imageParts, "", nil
+		}
+
+		if !isPDFEncryptionError(imageErr) {
+			return "", nil, "", imageErr
+		}
+	} else if !isPDFEncryptionError(err) {
+		return "", nil, "", err
+	}
+
+	decryptedBytes, err := decryptPDFBytes(documentBytes)
+	if err != nil {
+		if isPDFPasswordError(err) {
+			return "", nil, encryptedPDFExtractionNotice, nil
+		}
+
+		return "", nil, "", fmt.Errorf("decrypt encrypted pdf for extraction: %w", err)
+	}
+
+	text, err = extractPDFText(decryptedBytes)
+	if err != nil {
+		return "", nil, "", err
+	}
+
+	imageParts, err := extractPDFImages(decryptedBytes)
+	if err != nil {
+		return "", nil, "", err
+	}
+
+	return text, imageParts, "", nil
 }
 
 func attachmentBinaryData(part contentPart) ([]byte, string, string, error) {
@@ -318,6 +358,21 @@ func extractPDFText(documentBytes []byte) (string, error) {
 	return strings.TrimSpace(string(textBytes)), nil
 }
 
+func decryptPDFBytes(documentBytes []byte) ([]byte, error) {
+	var decrypted bytes.Buffer
+
+	err := pdfcpuapi.Decrypt(
+		bytes.NewReader(documentBytes),
+		&decrypted,
+		newPDFCPUConfiguration(),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("decrypt pdf bytes: %w", err)
+	}
+
+	return decrypted.Bytes(), nil
+}
+
 func extractPDFImages(documentBytes []byte) ([]contentPart, error) {
 	extractedImages, err := pdfcpuapi.ExtractImagesRaw(
 		bytes.NewReader(documentBytes),
@@ -357,6 +412,38 @@ func extractPDFImages(documentBytes []byte) ([]contentPart, error) {
 	}
 
 	return imageParts, nil
+}
+
+func isPDFEncryptionError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	if errors.Is(err, pdfreader.ErrInvalidPassword) {
+		return true
+	}
+
+	return containsFold(err.Error(), "encrypted pdf") ||
+		containsFold(err.Error(), "encryption key") ||
+		containsFold(err.Error(), "encryption revision") ||
+		containsFold(err.Error(), "unsupported PDF: encryption") ||
+		containsFold(err.Error(), "pdfcpu: this file is encrypted") ||
+		isPDFPasswordError(err)
+}
+
+func isPDFPasswordError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	if errors.Is(err, pdfreader.ErrInvalidPassword) {
+		return true
+	}
+
+	return containsFold(err.Error(), "invalid password") ||
+		containsFold(err.Error(), "correct password") ||
+		containsFold(err.Error(), "owner password") ||
+		containsFold(err.Error(), "user password")
 }
 
 func newPDFCPUConfiguration() *model.Configuration {
@@ -499,6 +586,11 @@ func renderPDFContent(extraction extractedPDFContent) string {
 		lines = append(lines, "Filename: "+filename)
 	}
 
+	trimmedNotice := strings.TrimSpace(extraction.notice)
+	if trimmedNotice != "" {
+		lines = append(lines, "Notice: "+trimmedNotice)
+	}
+
 	trimmedText := strings.TrimSpace(extraction.text)
 	if trimmedText != "" {
 		lines = append(lines, "Extracted text:")
@@ -512,7 +604,7 @@ func renderPDFContent(extraction extractedPDFContent) string {
 		))
 	}
 
-	if trimmedText == "" && len(extraction.imageParts) == 0 {
+	if trimmedNotice == "" && trimmedText == "" && len(extraction.imageParts) == 0 {
 		lines = append(lines, "No extractable text or images found.")
 	}
 
