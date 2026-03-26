@@ -141,7 +141,7 @@ func run(ctx context.Context, configPath string) error {
 		)
 	}
 
-	err = instance.open(loadedConfig)
+	err = instance.open(ctx, loadedConfig)
 	if err != nil {
 		_ = instance.close()
 
@@ -164,8 +164,13 @@ func run(ctx context.Context, configPath string) error {
 	return nil
 }
 
-func (instance *bot) open(loadedConfig config) error {
-	err := instance.session.Open()
+func (instance *bot) open(ctx context.Context, loadedConfig config) error {
+	err := instance.validateDiscordGateway(ctx)
+	if err != nil {
+		return fmt.Errorf("validate discord gateway: %w", err)
+	}
+
+	err = instance.session.Open()
 	if err != nil {
 		return fmt.Errorf("open discord session: %w", err)
 	}
