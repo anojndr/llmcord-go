@@ -100,6 +100,8 @@ const (
 	publicHTTPReadHeaderTimeout          = 5 * time.Second
 	publicHTTPIdleTimeout                = 30 * time.Second
 	publicHTTPShutdownTimeout            = 5 * time.Second
+	discordStartupProbeReadLimit         = 4096
+	errorBodySnippetMaxLength            = 200
 	sseScannerInitialBuffer              = 64 * 1024
 	sseScannerMaxBuffer                  = 1024 * 1024
 	mappingNodePairSize                  = 2
