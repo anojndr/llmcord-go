@@ -5,13 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
-	"google.golang.org/genai"
 )
 
 type segmentAccumulator struct {
@@ -378,168 +376,18 @@ func (instance *bot) renderFinalResponse(
 }
 
 func userFacingResponseError(err error) string {
-	const (
-		genericResponseErrorText     = "Couldn't generate a response right now. Try again."
-		rateLimitResponseErrorText   = "Usage limit reached for this model. Try other models."
-		accessResponseErrorText      = "This model is unavailable right now. Try other models."
-		missingResponseErrorText     = "A required resource was not found. Try again."
-		unavailableResponseErrorText = "The model provider is temporarily unavailable. Try again."
-		timeoutResponseErrorText     = "Request timed out. Try again."
-		canceledResponseErrorText    = "Request cancelled."
-	)
+	const genericResponseErrorText = "Couldn't generate a response right now. Try again."
 
-	switch {
-	case err == nil:
-		return genericResponseErrorText
-	case errors.Is(err, context.Canceled):
-		return canceledResponseErrorText
-	case isTimeoutResponseError(err):
-		return timeoutResponseErrorText
-	case isRateLimitResponseError(err):
-		return rateLimitResponseErrorText
-	case isUnavailableResponseError(err):
-		return unavailableResponseErrorText
-	case isAccessResponseError(err):
-		return accessResponseErrorText
-	case isMissingResponseError(err):
-		return missingResponseErrorText
-	default:
-		errorText := strings.TrimSpace(err.Error())
-		if errorText == "" {
-			return genericResponseErrorText
-		}
-
-		return errorText
-	}
-}
-
-func isTimeoutResponseError(err error) bool {
-	if errors.Is(err, context.DeadlineExceeded) {
-		return true
-	}
-
-	statusCode, ok := responseErrorStatusCode(err)
-	if ok && statusCode == http.StatusGatewayTimeout {
-		return true
-	}
-
-	return responseErrorContains(
-		err,
-		"deadline exceeded",
-		"timed out",
-		"timeout",
-	)
-}
-
-func isRateLimitResponseError(err error) bool {
-	statusCode, ok := responseErrorStatusCode(err)
-	if ok && statusCode == http.StatusTooManyRequests {
-		return true
-	}
-
-	return responseErrorContains(
-		err,
-		"quota exceeded",
-		"quota reached",
-		"rate limit",
-		"rate limited",
-		"resource exhausted",
-		"too many requests",
-		"usage limit",
-	)
-}
-
-func isAccessResponseError(err error) bool {
-	statusCode, ok := responseErrorStatusCode(err)
-	if ok {
-		switch statusCode {
-		case http.StatusUnauthorized, http.StatusForbidden:
-			return true
-		}
-	}
-
-	var apiKeyErr providerAPIKeyError
-	if errors.As(err, &apiKeyErr) {
-		return true
-	}
-
-	return responseErrorContains(
-		err,
-		"access denied",
-		"api key",
-		"api_key",
-		"forbidden",
-		"model not found",
-		"permission denied",
-		"unauthorized",
-	)
-}
-
-func isMissingResponseError(err error) bool {
-	statusCode, ok := responseErrorStatusCode(err)
-	if ok && statusCode == http.StatusNotFound {
-		return true
-	}
-
-	return responseErrorContains(
-		err,
-		"attachment not found",
-		"file not found",
-		"not found",
-		"resource not found",
-	)
-}
-
-func isUnavailableResponseError(err error) bool {
-	statusCode, ok := responseErrorStatusCode(err)
-	if ok {
-		switch statusCode {
-		case http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable:
-			return true
-		}
-	}
-
-	return responseErrorContains(
-		err,
-		"bad gateway",
-		"internal server error",
-		"service unavailable",
-		"temporarily unavailable",
-	)
-}
-
-func responseErrorStatusCode(err error) (int, bool) {
-	var statusErr providerStatusError
-	if errors.As(err, &statusErr) {
-		return statusErr.StatusCode, true
-	}
-
-	var geminiErrPtr *genai.APIError
-	if errors.As(err, &geminiErrPtr) && geminiErrPtr != nil {
-		return geminiErrPtr.Code, true
-	}
-
-	var geminiErr genai.APIError
-	if errors.As(err, &geminiErr) {
-		return geminiErr.Code, true
-	}
-
-	return 0, false
-}
-
-func responseErrorContains(err error, fragments ...string) bool {
 	if err == nil {
-		return false
+		return genericResponseErrorText
 	}
 
-	errorText := strings.ToLower(strings.Join(strings.Fields(err.Error()), " "))
-	for _, fragment := range fragments {
-		if strings.Contains(errorText, fragment) {
-			return true
-		}
+	errorText := strings.TrimSpace(err.Error())
+	if errorText == "" {
+		return genericResponseErrorText
 	}
 
-	return false
+	return errorText
 }
 
 func (instance *bot) renderFailureResponse(
