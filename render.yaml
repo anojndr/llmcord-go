@@ -1,0 +1,11 @@
+services:
+  - type: web
+    runtime: docker
+    name: llmcord-go
+    plan: free
+    healthCheckPath: /healthz
+    envVars:
+      - key: LLMCORD_CONFIG_PATH
+        value: /etc/secrets/config.yaml
+      - key: TZ
+        value: UTC

@@ -113,6 +113,34 @@ func run(ctx context.Context, configPath string) error {
 		return fmt.Errorf("create bot: %w", err)
 	}
 
+	publicHTTPAddr := publicHTTPAddress(os.Getenv)
+
+	publicHTTPServer, publicHTTPServerErrCh, err := startPublicHTTPServer(
+		ctx,
+		publicHTTPAddr,
+		instance.serviceHealth,
+	)
+	if err != nil {
+		return fmt.Errorf("start public http server: %w", err)
+	}
+
+	if publicHTTPServer != nil {
+		defer func() {
+			shutdownErr := shutdownPublicHTTPServer(ctx, publicHTTPServer)
+			if shutdownErr != nil {
+				slog.Warn("shutdown public http server", "error", shutdownErr)
+			}
+		}()
+
+		slog.Info(
+			"public http server listening",
+			"address",
+			publicHTTPAddr,
+			"health_check_path",
+			healthCheckPath,
+		)
+	}
+
 	err = instance.open(loadedConfig)
 	if err != nil {
 		_ = instance.close()
@@ -120,7 +148,13 @@ func run(ctx context.Context, configPath string) error {
 		return fmt.Errorf("open bot: %w", err)
 	}
 
-	<-ctx.Done()
+	select {
+	case <-ctx.Done():
+	case err = <-publicHTTPServerErrCh:
+		_ = instance.close()
+
+		return fmt.Errorf("serve public http: %w", err)
+	}
 
 	err = instance.close()
 	if err != nil {

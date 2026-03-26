@@ -21,7 +21,7 @@ func runMain() int {
 	)
 	defer stop()
 
-	err := run(ctx, defaultConfigPath)
+	err := run(ctx, runtimeConfigPath(os.Getenv))
 	if err != nil {
 		slog.Error("llmcord exited", "error", err)
 
