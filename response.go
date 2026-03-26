@@ -404,7 +404,12 @@ func userFacingResponseError(err error) string {
 	case isMissingResponseError(err):
 		return missingResponseErrorText
 	default:
-		return genericResponseErrorText
+		errorText := strings.TrimSpace(err.Error())
+		if errorText == "" {
+			return genericResponseErrorText
+		}
+
+		return errorText
 	}
 }
 
