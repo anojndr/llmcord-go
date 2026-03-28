@@ -66,7 +66,7 @@ const (
 	exaSearchTypeDeep                    = "deep"
 	exaSearchTypeDeepReasoning           = "deep-reasoning"
 	defaultExaSearchType                 = exaSearchTypeAuto
-	exaSearchHighlightsMaxCharacters     = 4000
+	exaSearchTextMaxCharacters           = 15000
 	exaContentsLivecrawlTimeoutMS        = 12000
 	maxYouTubeComments                   = 50
 	showSourcesMessageMaxLength          = 1900

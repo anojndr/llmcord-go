@@ -104,7 +104,7 @@ func TestFetchSupportedAttachmentsDownloadsConcurrentlyAndPreservesOrder(t *test
 		secondURL = "https://cdn.discordapp.com/attachments/test/second.txt"
 	)
 
-	var startedCount int32
+	var startedCount atomic.Int32
 
 	release := make(chan struct{})
 
@@ -113,7 +113,7 @@ func TestFetchSupportedAttachmentsDownloadsConcurrentlyAndPreservesOrder(t *test
 	instance.httpClient.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		t.Helper()
 
-		if atomic.AddInt32(&startedCount, 1) == 2 {
+		if startedCount.Add(1) == 2 {
 			close(release)
 		}
 
