@@ -94,7 +94,7 @@ The goal is to make Discord feel like a practical, stateful frontend for LLM wor
 ### URL and content enrichment
 
 - Automatic TikTok URL handling
-- Automatic Facebook URL handling
+- Automatic Facebook URL handling with FDownloader primary extraction and GetMyFB fallback
 - Automatic YouTube Shorts MP4 handling for Gemini and Gemini media preprocessing
 - Automatic YouTube transcript, title, channel, and comment extraction
 - Automatic Reddit thread and comment extraction

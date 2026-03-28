@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -23,12 +24,14 @@ import (
 const (
 	defaultFacebookPageURL            = "https://fdownloader.net/en"
 	defaultFacebookSearchURL          = "https://v3.fdownloader.net/api/ajaxSearch"
+	defaultFacebookGetMyFBProcessURL  = "https://getmyfb.com/process"
 	defaultFacebookConversionName     = "FDownloader.Net"
 	facebookDefaultFilename           = "facebook.mp4"
 	facebookDefaultMIMEType           = "video/mp4"
 	facebookFilenamePrefix            = "facebook_"
 	facebookSearchLanguage            = "en"
 	facebookSearchVersion             = "v2"
+	facebookGetMyFBLocale             = "en"
 	facebookDefaultHDQualityScore     = 720
 	facebookDefaultSDQualityScore     = 360
 	facebookDownloadCandidateCapacity = 4
@@ -56,10 +59,11 @@ type facebookScraper interface {
 }
 
 type facebookClient struct {
-	httpClient *http.Client
-	scraper    facebookScraper
-	pageURL    string
-	searchURL  string
+	httpClient        *http.Client
+	scraper           facebookScraper
+	pageURL           string
+	searchURL         string
+	getMyFBProcessURL string
 }
 
 type facebookVideoContent struct {
@@ -106,10 +110,11 @@ func newFacebookClient(httpClient *http.Client) (facebookClient, error) {
 	}
 
 	return facebookClient{
-		httpClient: httpClient,
-		scraper:    scraper,
-		pageURL:    defaultFacebookPageURL,
-		searchURL:  defaultFacebookSearchURL,
+		httpClient:        httpClient,
+		scraper:           scraper,
+		pageURL:           defaultFacebookPageURL,
+		searchURL:         defaultFacebookSearchURL,
+		getMyFBProcessURL: defaultFacebookGetMyFBProcessURL,
 	}, nil
 }
 
@@ -245,13 +250,33 @@ func (client facebookClient) fetch(
 		return facebookVideoContent{}, err
 	}
 
-	searchTokens, err := client.fetchSearchTokens(requestContext)
+	videoContent, err := client.fetchWithFDownloader(requestContext, normalizedURL)
+	if err == nil {
+		return videoContent, nil
+	}
+
+	fallbackContent, fallbackErr := client.fetchWithGetMyFB(requestContext, normalizedURL)
+	if fallbackErr == nil {
+		return fallbackContent, nil
+	}
+
+	return facebookVideoContent{}, fmt.Errorf(
+		"fetch facebook content with fdownloader and getmyfb: %w",
+		errors.Join(err, fallbackErr),
+	)
+}
+
+func (client facebookClient) fetchWithFDownloader(
+	ctx context.Context,
+	normalizedURL string,
+) (facebookVideoContent, error) {
+	searchTokens, err := client.fetchSearchTokens(ctx)
 	if err != nil {
 		return facebookVideoContent{}, fmt.Errorf("fetch facebook search page: %w", err)
 	}
 
 	downloadCandidates, err := client.fetchDownloadCandidates(
-		requestContext,
+		ctx,
 		normalizedURL,
 		searchTokens,
 	)
@@ -259,13 +284,33 @@ func (client facebookClient) fetch(
 		return facebookVideoContent{}, fmt.Errorf("parse facebook search results: %w", err)
 	}
 
+	return client.downloadFacebookVideo(ctx, normalizedURL, downloadCandidates)
+}
+
+func (client facebookClient) fetchWithGetMyFB(
+	ctx context.Context,
+	normalizedURL string,
+) (facebookVideoContent, error) {
+	downloadCandidates, err := client.fetchGetMyFBDownloadCandidates(ctx, normalizedURL)
+	if err != nil {
+		return facebookVideoContent{}, fmt.Errorf("parse getmyfb search results: %w", err)
+	}
+
+	return client.downloadFacebookVideo(ctx, normalizedURL, downloadCandidates)
+}
+
+func (client facebookClient) downloadFacebookVideo(
+	ctx context.Context,
+	normalizedURL string,
+	downloadCandidates []facebookDownloadCandidate,
+) (facebookVideoContent, error) {
 	var lastErr error
 
 	for _, candidate := range downloadCandidates {
 		downloadURL := strings.TrimSpace(candidate.DirectURL)
 
 		videoBytes, mimeType, filename, err := client.downloadVideo(
-			requestContext,
+			ctx,
 			downloadURL,
 			normalizedURL,
 		)
@@ -292,6 +337,59 @@ func (client facebookClient) fetch(
 	}
 
 	return facebookVideoContent{}, lastErr
+}
+
+func (client facebookClient) fetchGetMyFBDownloadCandidates(
+	ctx context.Context,
+	facebookURL string,
+) ([]facebookDownloadCandidate, error) {
+	err := ctx.Err()
+	if err != nil {
+		return nil, fmt.Errorf("facebook request context: %w", err)
+	}
+
+	formValues := url.Values{
+		"id":     {facebookURL},
+		"locale": {facebookGetMyFBLocale},
+	}
+
+	httpResponse, err := client.scraper.Post(
+		client.getMyFBProcessURL,
+		"application/x-www-form-urlencoded; charset=UTF-8",
+		strings.NewReader(formValues.Encode()),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("send getmyfb request: %w", err)
+	}
+
+	defer func() {
+		_ = httpResponse.Body.Close()
+	}()
+
+	responseBody, err := io.ReadAll(httpResponse.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read getmyfb response: %w", err)
+	}
+
+	if httpResponse.StatusCode < http.StatusOK || httpResponse.StatusCode >= http.StatusMultipleChoices {
+		return nil, fmt.Errorf(
+			"getmyfb request failed with status %d: %s: %w",
+			httpResponse.StatusCode,
+			strings.TrimSpace(string(responseBody)),
+			os.ErrInvalid,
+		)
+	}
+
+	err = ctx.Err()
+	if err != nil {
+		return nil, fmt.Errorf("facebook request context: %w", err)
+	}
+
+	return parseGetMyFBDownloadCandidates(
+		client.getMyFBProcessURL,
+		httpResponse.Header.Get("Hx-Trigger"),
+		responseBody,
+	)
 }
 
 func (client facebookClient) fetchSearchTokens(
@@ -478,6 +576,94 @@ func parseFacebookDownloadCandidates(
 	return downloadCandidates, nil
 }
 
+func parseGetMyFBDownloadCandidates(
+	baseURL string,
+	responseTrigger string,
+	responseBody []byte,
+) ([]facebookDownloadCandidate, error) {
+	trimmedResponseBody := strings.TrimSpace(string(responseBody))
+	if trimmedResponseBody == "" {
+		return nil, fmt.Errorf("empty getmyfb response: %w", os.ErrInvalid)
+	}
+
+	if strings.HasPrefix(trimmedResponseBody, "{") {
+		var response struct {
+			Error   string `json:"error"`
+			Message string `json:"message"`
+		}
+
+		err := json.Unmarshal(responseBody, &response)
+		if err != nil {
+			return nil, fmt.Errorf("decode getmyfb response: %w", err)
+		}
+
+		message := strings.TrimSpace(response.Message)
+		if message == "" {
+			message = strings.TrimSpace(response.Error)
+		}
+
+		if message == "" {
+			message = trimmedResponseBody
+		}
+
+		return nil, fmt.Errorf("getmyfb response failed: %s: %w", message, os.ErrInvalid)
+	}
+
+	document, err := html.Parse(strings.NewReader("<html><body>" + trimmedResponseBody + "</body></html>"))
+	if err != nil {
+		return nil, fmt.Errorf("parse getmyfb result html: %w", err)
+	}
+
+	downloadCandidates := make([]facebookDownloadCandidate, 0, facebookDownloadCandidateCapacity)
+
+	var walk func(*html.Node)
+
+	walk = func(node *html.Node) {
+		if node == nil {
+			return
+		}
+
+		if node.Type == html.ElementNode && node.DataAtom == atom.Li && hasHTMLClass(node, "results-list-item") {
+			candidate, ok := extractGetMyFBDownloadCandidate(baseURL, node)
+			if ok {
+				downloadCandidates = append(downloadCandidates, candidate)
+			}
+		}
+
+		for child := node.FirstChild; child != nil; child = child.NextSibling {
+			walk(child)
+		}
+	}
+
+	walk(document)
+
+	if len(downloadCandidates) == 0 {
+		message := strings.TrimSpace(findGetMyFBErrorMessage(document))
+		if message == "" {
+			message = strings.TrimSpace(responseTrigger)
+		}
+
+		if message == "" {
+			message = trimmedResponseBody
+		}
+
+		return nil, fmt.Errorf("getmyfb response did not include video downloads: %s: %w", message, os.ErrInvalid)
+	}
+
+	sort.SliceStable(downloadCandidates, func(leftIndex int, rightIndex int) bool {
+		leftCandidate := downloadCandidates[leftIndex]
+		rightCandidate := downloadCandidates[rightIndex]
+
+		if leftCandidate.Score != rightCandidate.Score {
+			return leftCandidate.Score > rightCandidate.Score
+		}
+
+		return strings.Compare(leftCandidate.QualityLabel, rightCandidate.QualityLabel) < 0
+	})
+
+	return downloadCandidates, nil
+}
+
 func extractFacebookDownloadCandidate(
 	baseURL string,
 	row *html.Node,
@@ -525,6 +711,100 @@ func extractFacebookDownloadCandidate(
 		Score:        facebookDownloadQualityScore(qualityLabel),
 		DirectURL:    strings.TrimSpace(directURL),
 	}, true
+}
+
+func extractGetMyFBDownloadCandidate(
+	baseURL string,
+	row *html.Node,
+) (facebookDownloadCandidate, bool) {
+	qualityLabel := facebookGetMyFBQualityLabel(row)
+	directURL := ""
+	skipCandidate := false
+
+	var walk func(*html.Node)
+
+	walk = func(node *html.Node) {
+		if node == nil {
+			return
+		}
+
+		if node.Type == html.ElementNode && node.DataAtom == atom.A {
+			if hasHTMLClass(node, "mp3") || strings.EqualFold(qualityLabel, "mp3") {
+				skipCandidate = true
+
+				return
+			}
+
+			href := strings.TrimSpace(htmlAttribute(node, "href"))
+			if href != "" && strings.EqualFold(strings.TrimSpace(nodeTextContent(node)), "Download") && directURL == "" {
+				directURL = resolveFacebookDownloadURL(baseURL, html.UnescapeString(href))
+			}
+		}
+
+		for child := node.FirstChild; child != nil; child = child.NextSibling {
+			walk(child)
+		}
+	}
+
+	walk(row)
+
+	if skipCandidate || strings.TrimSpace(directURL) == "" {
+		return facebookDownloadCandidate{
+			QualityLabel: "",
+			Score:        0,
+			DirectURL:    "",
+		}, false
+	}
+
+	return facebookDownloadCandidate{
+		QualityLabel: qualityLabel,
+		Score:        facebookDownloadQualityScore(qualityLabel),
+		DirectURL:    strings.TrimSpace(directURL),
+	}, true
+}
+
+func facebookGetMyFBQualityLabel(row *html.Node) string {
+	qualityLabel := strings.TrimSpace(nodeTextContent(row))
+	if qualityLabel == "" {
+		return ""
+	}
+
+	qualityLabel = strings.TrimSpace(strings.TrimSuffix(qualityLabel, "Download"))
+
+	return strings.TrimSpace(qualityLabel)
+}
+
+func findGetMyFBErrorMessage(document *html.Node) string {
+	if document == nil {
+		return ""
+	}
+
+	var walk func(*html.Node) string
+
+	walk = func(node *html.Node) string {
+		if node == nil {
+			return ""
+		}
+
+		if node.Type == html.ElementNode && hasHTMLClass(node, "result-error") {
+			return strings.TrimSpace(nodeTextContent(node))
+		}
+
+		if node.Type == html.ElementNode && hasHTMLClass(node, "result-login") {
+			return strings.TrimSpace(nodeTextContent(node))
+		}
+
+		for child := node.FirstChild; child != nil; child = child.NextSibling {
+			text := walk(child)
+			if text != "" {
+				return text
+			}
+		}
+
+		return ""
+	}
+
+	return walk(document)
 }
 
 func facebookDownloadQualityScore(qualityLabel string) int {

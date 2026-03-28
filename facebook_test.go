@@ -81,9 +81,13 @@ type facebookTestDownloadResponse struct {
 }
 
 type facebookTestServerConfig struct {
-	searchFragment string
-	downloads      map[string]facebookTestDownloadResponse
-	assertSearch   func(url.Values)
+	searchFragment        string
+	searchResponse        facebookSearchResponse
+	getMyFBProcessBody    string
+	getMyFBResponseHeader http.Header
+	downloads             map[string]facebookTestDownloadResponse
+	assertSearch          func(url.Values)
+	assertGetMyFB         func(url.Values)
 }
 
 func newFacebookTestServer(
@@ -100,71 +104,155 @@ func newFacebookTestServer(
 	) {
 		switch request.URL.Path {
 		case "/en":
-			if request.Method != http.MethodGet {
-				t.Fatalf("unexpected request method: %s", request.Method)
-			}
-
-			_, _ = writer.Write([]byte(strings.Join([]string{
-				`<html><body>`,
-				`<script>`,
-				`var k_exp="` + testFacebookSearchExp + `";`,
-				`var k_token="` + testFacebookSearchToken + `";`,
-				`</script>`,
-				`</body></html>`,
-			}, "")))
+			serveFacebookSearchPage(t, writer, request)
 		case "/api/ajaxSearch":
-			if request.Method != http.MethodPost {
-				t.Fatalf("unexpected request method: %s", request.Method)
-			}
-
-			request.Body = http.MaxBytesReader(writer, request.Body, 4096)
-
-			err := request.ParseForm()
-			if err != nil {
-				t.Fatalf("parse form: %v", err)
-			}
-
-			if config.assertSearch != nil {
-				config.assertSearch(request.PostForm)
-			}
-
-			if !strings.HasPrefix(
-				request.Header.Get("Content-Type"),
-				"application/x-www-form-urlencoded",
-			) {
-				t.Fatalf("unexpected content type: %q", request.Header.Get("Content-Type"))
-			}
-
-			writer.Header().Set("Content-Type", "application/json; charset=utf-8")
-
-			err = json.NewEncoder(writer).Encode(facebookSearchResponse{
-				Status:       "ok",
-				Data:         strings.ReplaceAll(config.searchFragment, "SERVER_URL", server.URL),
-				ErrorMessage: "",
-			})
-			if err != nil {
-				t.Fatalf("encode search response: %v", err)
-			}
+			serveFacebookSearch(t, writer, request, server.URL, config)
+		case "/process":
+			serveFacebookGetMyFBProcess(t, writer, request, server.URL, config)
 		default:
-			downloadResponse, ok := config.downloads[request.URL.Path]
-			if !ok {
-				t.Fatalf("unexpected path: %s", request.URL.Path)
-			}
-
-			writer.Header().Set("Content-Type", downloadResponse.contentType)
-
-			if downloadResponse.contentDisposition != "" {
-				writer.Header().Set(
-					"Content-Disposition",
-					downloadResponse.contentDisposition,
-				)
-			}
-
-			_, _ = writer.Write([]byte(downloadResponse.body))
+			serveFacebookDownload(t, writer, request, config.downloads)
 		}
 	}))
 
 	return server
+}
+
+func serveFacebookSearchPage(
+	t *testing.T,
+	writer http.ResponseWriter,
+	request *http.Request,
+) {
+	t.Helper()
+
+	if request.Method != http.MethodGet {
+		t.Fatalf("unexpected request method: %s", request.Method)
+	}
+
+	_, _ = writer.Write([]byte(strings.Join([]string{
+		`<html><body>`,
+		`<script>`,
+		`var k_exp="` + testFacebookSearchExp + `";`,
+		`var k_token="` + testFacebookSearchToken + `";`,
+		`</script>`,
+		`</body></html>`,
+	}, "")))
+}
+
+func serveFacebookSearch(
+	t *testing.T,
+	writer http.ResponseWriter,
+	request *http.Request,
+	serverURL string,
+	config facebookTestServerConfig,
+) {
+	t.Helper()
+
+	if request.Method != http.MethodPost {
+		t.Fatalf("unexpected request method: %s", request.Method)
+	}
+
+	request.Body = http.MaxBytesReader(writer, request.Body, 4096)
+
+	err := request.ParseForm()
+	if err != nil {
+		t.Fatalf("parse form: %v", err)
+	}
+
+	if config.assertSearch != nil {
+		config.assertSearch(request.PostForm)
+	}
+
+	if !strings.HasPrefix(
+		request.Header.Get("Content-Type"),
+		"application/x-www-form-urlencoded",
+	) {
+		t.Fatalf("unexpected content type: %q", request.Header.Get("Content-Type"))
+	}
+
+	writer.Header().Set("Content-Type", "application/json; charset=utf-8")
+
+	searchResponse := config.searchResponse
+	if strings.TrimSpace(searchResponse.Status) == "" &&
+		strings.TrimSpace(searchResponse.Data) == "" &&
+		strings.TrimSpace(searchResponse.ErrorMessage) == "" {
+		searchResponse = facebookSearchResponse{
+			Status:       "ok",
+			Data:         strings.ReplaceAll(config.searchFragment, "SERVER_URL", serverURL),
+			ErrorMessage: "",
+		}
+	} else {
+		searchResponse.Data = strings.ReplaceAll(searchResponse.Data, "SERVER_URL", serverURL)
+	}
+
+	err = json.NewEncoder(writer).Encode(searchResponse)
+	if err != nil {
+		t.Fatalf("encode search response: %v", err)
+	}
+}
+
+func serveFacebookGetMyFBProcess(
+	t *testing.T,
+	writer http.ResponseWriter,
+	request *http.Request,
+	serverURL string,
+	config facebookTestServerConfig,
+) {
+	t.Helper()
+
+	if request.Method != http.MethodPost {
+		t.Fatalf("unexpected request method: %s", request.Method)
+	}
+
+	request.Body = http.MaxBytesReader(writer, request.Body, 4096)
+
+	err := request.ParseForm()
+	if err != nil {
+		t.Fatalf("parse getmyfb form: %v", err)
+	}
+
+	if config.assertGetMyFB != nil {
+		config.assertGetMyFB(request.PostForm)
+	}
+
+	if !strings.HasPrefix(
+		request.Header.Get("Content-Type"),
+		"application/x-www-form-urlencoded",
+	) {
+		t.Fatalf("unexpected getmyfb content type: %q", request.Header.Get("Content-Type"))
+	}
+
+	for key, values := range config.getMyFBResponseHeader {
+		for _, value := range values {
+			writer.Header().Add(key, value)
+		}
+	}
+
+	_, _ = writer.Write([]byte(strings.ReplaceAll(config.getMyFBProcessBody, "SERVER_URL", serverURL)))
+}
+
+func serveFacebookDownload(
+	t *testing.T,
+	writer http.ResponseWriter,
+	request *http.Request,
+	downloads map[string]facebookTestDownloadResponse,
+) {
+	t.Helper()
+
+	downloadResponse, ok := downloads[request.URL.Path]
+	if !ok {
+		t.Fatalf("unexpected path: %s", request.URL.Path)
+	}
+
+	writer.Header().Set("Content-Type", downloadResponse.contentType)
+
+	if downloadResponse.contentDisposition != "" {
+		writer.Header().Set(
+			"Content-Disposition",
+			downloadResponse.contentDisposition,
+		)
+	}
+
+	_, _ = writer.Write([]byte(downloadResponse.body))
 }
 
 func newTestFacebookClient(server *httptest.Server) facebookClient {
@@ -204,8 +292,9 @@ func newTestFacebookClient(server *httptest.Server) facebookClient {
 				return server.Client().Do(httpRequest)
 			},
 		},
-		pageURL:   server.URL + "/en",
-		searchURL: server.URL + "/api/ajaxSearch",
+		pageURL:           server.URL + "/en",
+		searchURL:         server.URL + "/api/ajaxSearch",
+		getMyFBProcessURL: server.URL + "/process",
 	}
 }
 
@@ -234,6 +323,23 @@ func facebookRenderedSearchFragment(serverURL string) string {
 		`data-fquality="1080p">Render</button>`,
 		`</td></tr>`,
 		`</tbody></table></div>`,
+	}, "")
+}
+
+func facebookGetMyFBSearchFragment(serverURL string) string {
+	return strings.Join([]string{
+		`<section class="results"><div class="container">`,
+		`<figure class="results-item"><div class="results-item-image-wrapper">`,
+		`<img class="results-item-image" src="` + serverURL + `/thumbnail.jpg" alt="Video thumbnail">`,
+		`</div><figcaption class="results-item-text">Preview</figcaption></figure>`,
+		`<div class="results-download"><ul class="results-list">`,
+		`<li class="results-list-item">720p(HD)`,
+		`<a href="/downloads/video-hd.mp4" class="bxmfunk-button ripple-btn hd-button">Download</a></li>`,
+		`<li class="results-list-item">360p(SD)`,
+		`<a href="/downloads/video-sd.mp4" class="bxmfunk-button ripple-btn sd-button">Download</a></li>`,
+		`<li class="results-list-item">Mp3`,
+		`<a href="/downloads/video-hd.mp4" data-id="123" class="mp3 bxmfunk-button ripple-btn sd-button">Download</a></li>`,
+		`</ul></div></div></section>`,
 	}, "")
 }
 
@@ -316,6 +422,13 @@ func TestFacebookClientFetchDownloadsBestDirectVideo(t *testing.T) {
 
 	server := newFacebookTestServer(t, facebookTestServerConfig{
 		searchFragment: facebookDirectSearchFragment("SERVER_URL"),
+		searchResponse: facebookSearchResponse{
+			Status:       "",
+			Data:         "",
+			ErrorMessage: "",
+		},
+		getMyFBProcessBody:    "",
+		getMyFBResponseHeader: nil,
 		downloads: map[string]facebookTestDownloadResponse{
 			"/downloads/video-hd.mp4": {
 				body:               testVideoBody,
@@ -347,6 +460,7 @@ func TestFacebookClientFetchDownloadsBestDirectVideo(t *testing.T) {
 				t.Fatalf("unexpected web host: %q", formValues.Get("web"))
 			}
 		},
+		assertGetMyFB: nil,
 	})
 	defer server.Close()
 
@@ -391,6 +505,13 @@ func TestFacebookClientFetchUsesDirectVideoWhenHigherQualityRequiresProcessing(t
 
 	server := newFacebookTestServer(t, facebookTestServerConfig{
 		searchFragment: facebookRenderedSearchFragment("SERVER_URL"),
+		searchResponse: facebookSearchResponse{
+			Status:       "",
+			Data:         "",
+			ErrorMessage: "",
+		},
+		getMyFBProcessBody:    "",
+		getMyFBResponseHeader: nil,
 		downloads: map[string]facebookTestDownloadResponse{
 			"/downloads/video-hd.mp4": {
 				body:               testVideoBody,
@@ -398,7 +519,8 @@ func TestFacebookClientFetchUsesDirectVideoWhenHigherQualityRequiresProcessing(t
 				contentDisposition: `attachment; filename="direct.mp4"`,
 			},
 		},
-		assertSearch: nil,
+		assertSearch:  nil,
+		assertGetMyFB: nil,
 	})
 	defer server.Close()
 
@@ -427,6 +549,13 @@ func TestFacebookClientFetchUsesSourceURLWhenContentDispositionIsMissing(t *test
 
 	server := newFacebookTestServer(t, facebookTestServerConfig{
 		searchFragment: facebookDirectSearchFragment("SERVER_URL"),
+		searchResponse: facebookSearchResponse{
+			Status:       "",
+			Data:         "",
+			ErrorMessage: "",
+		},
+		getMyFBProcessBody:    "",
+		getMyFBResponseHeader: nil,
 		downloads: map[string]facebookTestDownloadResponse{
 			"/downloads/video-hd.mp4": {
 				body:               testVideoBody,
@@ -439,7 +568,8 @@ func TestFacebookClientFetchUsesSourceURLWhenContentDispositionIsMissing(t *test
 				contentDisposition: "",
 			},
 		},
-		assertSearch: nil,
+		assertSearch:  nil,
+		assertGetMyFB: nil,
 	})
 	defer server.Close()
 
@@ -456,6 +586,70 @@ func TestFacebookClientFetchUsesSourceURLWhenContentDispositionIsMissing(t *test
 
 	if result.MediaPart[contentFieldFilename] != "facebook_vhalCYi2ib.mp4" {
 		t.Fatalf("unexpected filename: %#v", result.MediaPart)
+	}
+}
+
+func TestFacebookClientFetchFallsBackToGetMyFBWhenFDownloaderFails(t *testing.T) {
+	t.Parallel()
+
+	server := newFacebookTestServer(t, facebookTestServerConfig{
+		searchFragment: "",
+		searchResponse: facebookSearchResponse{
+			Status:       "error",
+			Data:         "",
+			ErrorMessage: "primary failed",
+		},
+		getMyFBProcessBody: facebookGetMyFBSearchFragment("SERVER_URL"),
+		getMyFBResponseHeader: http.Header{
+			"Hx-Trigger": []string{"resultsuccess"},
+		},
+		downloads: map[string]facebookTestDownloadResponse{
+			"/downloads/video-hd.mp4": {
+				body:               testVideoBody,
+				contentType:        "video/mp4",
+				contentDisposition: `attachment; filename="fallback.mp4"`,
+			},
+			"/downloads/video-sd.mp4": {
+				body:               "sd-video",
+				contentType:        "video/mp4",
+				contentDisposition: `attachment; filename="fallback-sd.mp4"`,
+			},
+			"/thumbnail.jpg": {
+				body:               "ignored",
+				contentType:        "image/jpeg",
+				contentDisposition: "",
+			},
+		},
+		assertSearch: nil,
+		assertGetMyFB: func(formValues url.Values) {
+			if formValues.Get("id") != testFacebookURL {
+				t.Fatalf("unexpected getmyfb id: %q", formValues.Get("id"))
+			}
+
+			if formValues.Get("locale") != facebookGetMyFBLocale {
+				t.Fatalf("unexpected getmyfb locale: %q", formValues.Get("locale"))
+			}
+		},
+	})
+	defer server.Close()
+
+	client := newTestFacebookClient(server)
+
+	result, err := client.fetch(context.Background(), testFacebookURL)
+	if err != nil {
+		t.Fatalf("fetch facebook content with fallback: %v", err)
+	}
+
+	if result.DownloadURL != server.URL+"/downloads/video-hd.mp4" {
+		t.Fatalf("unexpected fallback download url: %q", result.DownloadURL)
+	}
+
+	if string(mediaPartBytes(t, result.MediaPart)) != testVideoBody {
+		t.Fatalf("unexpected fallback video bytes: %#v", result.MediaPart[contentFieldBytes])
+	}
+
+	if result.MediaPart[contentFieldFilename] != "fallback.mp4" {
+		t.Fatalf("unexpected fallback filename: %#v", result.MediaPart)
 	}
 }
 
