@@ -152,6 +152,9 @@ web_search:
     # Use `/searchtype` to switch between `auto`, `fast`, `instant`, `deep`,
     # and `deep-reasoning` at runtime.
     # `api_key` also accepts a YAML list. Keys are tried in order.
+    # Optional max characters to request for Exa's full page text per result.
+    # Default: 15000
+    text_max_characters: 15000
     # api_key:
     #   - exa-primary-key
     #   - exa-backup-key

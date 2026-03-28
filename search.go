@@ -1178,7 +1178,14 @@ func (client exaSearchClient) search(
 		query string,
 	) (webSearchResult, error) {
 		if loadedConfig.WebSearch.exaUsesAPI() {
-			return client.searchAPIQuery(queryContext, exaAPIKeys, query, maxURLs, searchType)
+			return client.searchAPIQuery(
+				queryContext,
+				exaAPIKeys,
+				query,
+				maxURLs,
+				searchType,
+				loadedConfig.WebSearch.Exa.textMaxCharacters(),
+			)
 		}
 
 		return client.searchMCPQuery(queryContext, query, maxURLs)
@@ -1303,11 +1310,19 @@ func (client exaSearchClient) searchAPIQuery(
 	query string,
 	maxURLs int,
 	searchType string,
+	textMaxCharacters int,
 ) (webSearchResult, error) {
 	attemptErrors := make([]error, 0, len(apiKeys))
 
 	for index, apiKey := range apiKeys {
-		result, err := client.searchAPIQueryOnce(ctx, query, apiKey, maxURLs, searchType)
+		result, err := client.searchAPIQueryOnce(
+			ctx,
+			query,
+			apiKey,
+			maxURLs,
+			searchType,
+			textMaxCharacters,
+		)
 		if err == nil {
 			return result, nil
 		}
@@ -1358,13 +1373,14 @@ func (client exaSearchClient) searchAPIQueryOnce(
 	apiKey string,
 	maxURLs int,
 	searchType string,
+	textMaxCharacters int,
 ) (webSearchResult, error) {
 	requestBody := exaSearchRequest{
 		Query: query,
 		Type:  searchType,
 		Contents: exaSearchRequestContents{
 			Text: exaSearchTextRequest{
-				MaxCharacters: exaSearchTextMaxCharacters,
+				MaxCharacters: textMaxCharacters,
 				Verbosity:     "full",
 			},
 		},

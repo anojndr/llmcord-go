@@ -87,6 +87,13 @@ models:
 		t.Fatalf("unexpected default web search max URLs: %d", loadedConfig.WebSearch.MaxURLs)
 	}
 
+	if loadedConfig.WebSearch.Exa.TextMaxCharacters != defaultExaSearchTextMaxCharacters {
+		t.Fatalf(
+			"unexpected default Exa text max characters: %d",
+			loadedConfig.WebSearch.Exa.TextMaxCharacters,
+		)
+	}
+
 	if loadedConfig.Database.ConnectionString != "" {
 		t.Fatalf(
 			"unexpected default database connection string: %q",
@@ -712,6 +719,38 @@ web_search:
 	}
 }
 
+func TestLoadConfigUsesConfiguredExaWebSearchTextMaxCharacters(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	configText := `
+bot_token: discord-token
+providers:
+  openai:
+    base_url: https://api.example.com/v1
+models:
+  openai/first-model:
+web_search:
+  exa:
+    text_max_characters: 9000
+`
+
+	err := os.WriteFile(configPath, []byte(configText), 0o600)
+	if err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	loadedConfig, err := loadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	if loadedConfig.WebSearch.Exa.TextMaxCharacters != 9000 {
+		t.Fatalf("unexpected Exa text max characters: %d", loadedConfig.WebSearch.Exa.TextMaxCharacters)
+	}
+}
+
 func TestLoadConfigInheritsContextWindowAcrossAliasModels(t *testing.T) {
 	t.Parallel()
 
@@ -949,6 +988,34 @@ web_search:
 	_, err = loadConfig(configPath)
 	if err == nil {
 		t.Fatal("expected non-positive web search max URLs to fail validation")
+	}
+}
+
+func TestLoadConfigRejectsNonPositiveExaWebSearchTextMaxCharacters(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	configText := `
+bot_token: discord-token
+providers:
+  openai:
+    base_url: https://api.example.com/v1
+models:
+  openai/first-model:
+web_search:
+  exa:
+    text_max_characters: 0
+`
+
+	err := os.WriteFile(configPath, []byte(configText), 0o600)
+	if err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	_, err = loadConfig(configPath)
+	if err == nil {
+		t.Fatal("expected non-positive Exa text max characters to fail validation")
 	}
 }
 
