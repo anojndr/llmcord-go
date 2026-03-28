@@ -50,7 +50,11 @@ var (
 )
 
 type facebookContentClient interface {
-	fetch(ctx context.Context, rawURL string) (facebookVideoContent, error)
+	fetch(
+		ctx context.Context,
+		rawURL string,
+		extractorConfig facebookExtractorConfig,
+	) (facebookVideoContent, error)
 }
 
 type facebookScraper interface {
@@ -164,7 +168,9 @@ func (instance *bot) prepareFacebookAugmentation(
 	videoContents, warnings := fetchDownloadedVideos(
 		ctx,
 		facebookURLs,
-		instance.facebook.fetch,
+		func(fetchCtx context.Context, rawURL string) (facebookVideoContent, error) {
+			return instance.facebook.fetch(fetchCtx, rawURL, loadedConfig.Facebook)
+		},
 		"fetch facebook content",
 		facebookWarningText,
 	)
@@ -241,6 +247,7 @@ func normalizeFacebookURL(rawURL string) (string, error) {
 func (client facebookClient) fetch(
 	ctx context.Context,
 	rawURL string,
+	extractorConfig facebookExtractorConfig,
 ) (facebookVideoContent, error) {
 	requestContext, cancel := context.WithTimeout(ctx, facebookRequestTimeout)
 	defer cancel()
@@ -250,20 +257,50 @@ func (client facebookClient) fetch(
 		return facebookVideoContent{}, err
 	}
 
-	videoContent, err := client.fetchWithFDownloader(requestContext, normalizedURL)
-	if err == nil {
-		return videoContent, nil
-	}
+	extractorConfig = normalizeFacebookConfig(rawFacebookConfig{
+		PrimaryProvider:  scalarString(extractorConfig.PrimaryProvider),
+		FallbackProvider: scalarString(extractorConfig.FallbackProvider),
+	})
 
-	fallbackContent, fallbackErr := client.fetchWithGetMyFB(requestContext, normalizedURL)
-	if fallbackErr == nil {
-		return fallbackContent, nil
+	providers := extractorConfig.providersInOrder()
+	errs := make([]error, 0, len(providers))
+
+	for _, provider := range providers {
+		videoContent, fetchErr := client.fetchWithProvider(
+			requestContext,
+			normalizedURL,
+			provider,
+		)
+		if fetchErr == nil {
+			return videoContent, nil
+		}
+
+		errs = append(errs, fmt.Errorf("%s: %w", provider, fetchErr))
 	}
 
 	return facebookVideoContent{}, fmt.Errorf(
-		"fetch facebook content with fdownloader and getmyfb: %w",
-		errors.Join(err, fallbackErr),
+		"fetch facebook content: %w",
+		errors.Join(errs...),
 	)
+}
+
+func (client facebookClient) fetchWithProvider(
+	ctx context.Context,
+	normalizedURL string,
+	provider facebookExtractorProviderKind,
+) (facebookVideoContent, error) {
+	switch provider {
+	case facebookExtractorProviderKindFDownloader:
+		return client.fetchWithFDownloader(ctx, normalizedURL)
+	case facebookExtractorProviderKindGetMyFB:
+		return client.fetchWithGetMyFB(ctx, normalizedURL)
+	default:
+		return facebookVideoContent{}, fmt.Errorf(
+			"unsupported facebook extractor provider %q: %w",
+			provider,
+			os.ErrInvalid,
+		)
+	}
 }
 
 func (client facebookClient) fetchWithFDownloader(

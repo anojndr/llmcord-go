@@ -107,6 +107,10 @@ func testPermissionsConfig() config {
 			},
 		},
 		Providers: nil,
+		Facebook: facebookExtractorConfig{
+			PrimaryProvider:  facebookExtractorProviderKindFDownloader,
+			FallbackProvider: facebookExtractorProviderKindGetMyFB,
+		},
 		WebSearch: searchConfig,
 		Database: databaseConfig{
 			ConnectionString: "",

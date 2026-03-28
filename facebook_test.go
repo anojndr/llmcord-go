@@ -23,22 +23,23 @@ const (
 type stubFacebookContentClient struct {
 	mu      sync.Mutex
 	calls   []string
-	fetchFn func(context.Context, string) (facebookVideoContent, error)
+	fetchFn func(context.Context, string, facebookExtractorConfig) (facebookVideoContent, error)
 }
 
 func (client *stubFacebookContentClient) fetch(
 	ctx context.Context,
 	rawURL string,
+	extractorConfig facebookExtractorConfig,
 ) (facebookVideoContent, error) {
 	client.mu.Lock()
 	client.calls = append(client.calls, rawURL)
 	client.mu.Unlock()
 
-	return client.fetchFn(ctx, rawURL)
+	return client.fetchFn(ctx, rawURL, extractorConfig)
 }
 
 func newStubFacebookContentClient(
-	fetchFn func(context.Context, string) (facebookVideoContent, error),
+	fetchFn func(context.Context, string, facebookExtractorConfig) (facebookVideoContent, error),
 ) *stubFacebookContentClient {
 	client := new(stubFacebookContentClient)
 	client.fetchFn = fetchFn
@@ -368,6 +369,13 @@ func testFacebookConversationWithImage() []chatMessage {
 	}
 }
 
+func testFacebookExtractorConfig() facebookExtractorConfig {
+	return facebookExtractorConfig{
+		PrimaryProvider:  facebookExtractorProviderKindFDownloader,
+		FallbackProvider: facebookExtractorProviderKindGetMyFB,
+	}
+}
+
 func TestExtractFacebookURLsNormalizesAndDeduplicates(t *testing.T) {
 	t.Parallel()
 
@@ -466,7 +474,7 @@ func TestFacebookClientFetchDownloadsBestDirectVideo(t *testing.T) {
 
 	client := newTestFacebookClient(server)
 
-	result, err := client.fetch(context.Background(), testFacebookURL)
+	result, err := client.fetch(context.Background(), testFacebookURL, testFacebookExtractorConfig())
 	if err != nil {
 		t.Fatalf("fetch facebook content: %v", err)
 	}
@@ -526,7 +534,7 @@ func TestFacebookClientFetchUsesDirectVideoWhenHigherQualityRequiresProcessing(t
 
 	client := newTestFacebookClient(server)
 
-	result, err := client.fetch(context.Background(), testFacebookURL)
+	result, err := client.fetch(context.Background(), testFacebookURL, testFacebookExtractorConfig())
 	if err != nil {
 		t.Fatalf("fetch facebook content: %v", err)
 	}
@@ -575,7 +583,11 @@ func TestFacebookClientFetchUsesSourceURLWhenContentDispositionIsMissing(t *test
 
 	client := newTestFacebookClient(server)
 
-	result, err := client.fetch(context.Background(), "https://fb.watch/vhalCYi2ib/")
+	result, err := client.fetch(
+		context.Background(),
+		"https://fb.watch/vhalCYi2ib/",
+		testFacebookExtractorConfig(),
+	)
 	if err != nil {
 		t.Fatalf("fetch facebook content: %v", err)
 	}
@@ -635,7 +647,7 @@ func TestFacebookClientFetchFallsBackToGetMyFBWhenFDownloaderFails(t *testing.T)
 
 	client := newTestFacebookClient(server)
 
-	result, err := client.fetch(context.Background(), testFacebookURL)
+	result, err := client.fetch(context.Background(), testFacebookURL, testFacebookExtractorConfig())
 	if err != nil {
 		t.Fatalf("fetch facebook content with fallback: %v", err)
 	}
@@ -653,6 +665,67 @@ func TestFacebookClientFetchFallsBackToGetMyFBWhenFDownloaderFails(t *testing.T)
 	}
 }
 
+func TestFacebookClientFetchUsesConfiguredGetMyFBPrimaryProvider(t *testing.T) {
+	t.Parallel()
+
+	server := newFacebookTestServer(t, facebookTestServerConfig{
+		searchFragment: "",
+		searchResponse: facebookSearchResponse{
+			Status:       "ok",
+			Data:         "",
+			ErrorMessage: "",
+		},
+		getMyFBProcessBody: facebookGetMyFBSearchFragment("SERVER_URL"),
+		getMyFBResponseHeader: http.Header{
+			"Hx-Trigger": []string{"resultsuccess"},
+		},
+		downloads: map[string]facebookTestDownloadResponse{
+			"/downloads/video-hd.mp4": {
+				body:               "getmyfb-video",
+				contentType:        "video/mp4",
+				contentDisposition: `attachment; filename="getmyfb.mp4"`,
+			},
+			"/downloads/video-sd.mp4": {
+				body:               "getmyfb-sd-video",
+				contentType:        "video/mp4",
+				contentDisposition: `attachment; filename="getmyfb-sd.mp4"`,
+			},
+			"/thumbnail.jpg": {
+				body:               "ignored",
+				contentType:        "image/jpeg",
+				contentDisposition: "",
+			},
+		},
+		assertSearch: func(url.Values) {
+			t.Fatal("unexpected fdownloader request")
+		},
+		assertGetMyFB: func(formValues url.Values) {
+			if formValues.Get("id") != testFacebookURL {
+				t.Fatalf("unexpected getmyfb id: %q", formValues.Get("id"))
+			}
+		},
+	})
+	defer server.Close()
+
+	client := newTestFacebookClient(server)
+
+	result, err := client.fetch(context.Background(), testFacebookURL, facebookExtractorConfig{
+		PrimaryProvider:  facebookExtractorProviderKindGetMyFB,
+		FallbackProvider: facebookExtractorProviderKindFDownloader,
+	})
+	if err != nil {
+		t.Fatalf("fetch facebook content with getmyfb primary: %v", err)
+	}
+
+	if result.DownloadURL != server.URL+"/downloads/video-hd.mp4" {
+		t.Fatalf("unexpected getmyfb primary download url: %q", result.DownloadURL)
+	}
+
+	if string(mediaPartBytes(t, result.MediaPart)) != "getmyfb-video" {
+		t.Fatalf("unexpected getmyfb primary video bytes: %#v", result.MediaPart[contentFieldBytes])
+	}
+}
+
 func TestMaybeAugmentConversationWithFacebookAppendsVideoPartsAndAnalysesForNonGeminiSearchDecider(t *testing.T) {
 	t.Parallel()
 
@@ -665,9 +738,14 @@ func TestMaybeAugmentConversationWithFacebookAppendsVideoPartsAndAnalysesForNonG
 		newStubFacebookContentClient(func(
 			_ context.Context,
 			rawURL string,
+			extractorConfig facebookExtractorConfig,
 		) (facebookVideoContent, error) {
 			if rawURL != testFacebookURL {
 				t.Fatalf("unexpected raw url: %q", rawURL)
+			}
+
+			if extractorConfig != testFacebookExtractorConfig() {
+				t.Fatalf("unexpected facebook extractor config: %#v", extractorConfig)
 			}
 
 			return testFacebookVideoContent(), nil
@@ -729,7 +807,12 @@ func TestMaybeAugmentConversationWithFacebookSkipsAnalysesForGeminiSearchDecider
 		newStubFacebookContentClient(func(
 			_ context.Context,
 			_ string,
+			extractorConfig facebookExtractorConfig,
 		) (facebookVideoContent, error) {
+			if extractorConfig != testFacebookExtractorConfig() {
+				t.Fatalf("unexpected facebook extractor config: %#v", extractorConfig)
+			}
+
 			return testFacebookVideoContent(), nil
 		}),
 		chatClient,
@@ -792,7 +875,12 @@ func TestMaybeAugmentConversationWithFacebookPreprocessesForNonGeminiModels(t *t
 		newStubFacebookContentClient(func(
 			_ context.Context,
 			_ string,
+			extractorConfig facebookExtractorConfig,
 		) (facebookVideoContent, error) {
+			if extractorConfig != testFacebookExtractorConfig() {
+				t.Fatalf("unexpected facebook extractor config: %#v", extractorConfig)
+			}
+
 			return testFacebookVideoContent(), nil
 		}),
 		chatClient,
@@ -845,7 +933,12 @@ func TestMaybeAugmentConversationWithFacebookWarnsWithoutGeminiPreprocessor(t *t
 		newStubFacebookContentClient(func(
 			_ context.Context,
 			_ string,
+			extractorConfig facebookExtractorConfig,
 		) (facebookVideoContent, error) {
+			if extractorConfig != testFacebookExtractorConfig() {
+				t.Fatalf("unexpected facebook extractor config: %#v", extractorConfig)
+			}
+
 			return testFacebookVideoContent(), nil
 		}),
 		nil,
@@ -890,6 +983,7 @@ func TestMaybeAugmentConversationWithFacebookIgnoresURLsOnlyPresentInDocumentCon
 		newStubFacebookContentClient(func(
 			_ context.Context,
 			rawURL string,
+			_ facebookExtractorConfig,
 		) (facebookVideoContent, error) {
 			t.Fatalf("unexpected facebook fetch for %q", rawURL)
 

@@ -418,6 +418,7 @@ func newBlockedFacebookClient(gate *concurrentFetchGate) *stubFacebookContentCli
 	return newStubFacebookContentClient(func(
 		ctx context.Context,
 		rawURL string,
+		_ facebookExtractorConfig,
 	) (facebookVideoContent, error) {
 		waitErr := gate.wait(ctx)
 		if waitErr != nil {

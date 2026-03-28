@@ -557,6 +557,7 @@ func testMediaAnalysisConfig() config {
 		testMediaAnalysisModel,
 		testSearchDeciderModel2,
 	}
+	loadedConfig.Facebook = testFacebookExtractorConfig()
 	loadedConfig.SearchDeciderModel = testSearchDeciderModel2
 	loadedConfig.MediaAnalysisModel = testMediaAnalysisModel
 
