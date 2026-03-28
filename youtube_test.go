@@ -520,9 +520,9 @@ type mockNoteGPTConfig struct {
 }
 
 type mockNoteGPTCalls struct {
-	videoTranscriptCalls    int32
-	transcriptGenerateCalls int32
-	mediaStatusCalls        int32
+	videoTranscriptCalls    atomic.Int32
+	transcriptGenerateCalls atomic.Int32
+	mediaStatusCalls        atomic.Int32
 }
 
 func newTestYouTubeClient(
@@ -632,15 +632,15 @@ func assertNoteGPTCallCounts(
 ) {
 	t.Helper()
 
-	if got := atomic.LoadInt32(&calls.videoTranscriptCalls); got != videoTranscriptCalls {
+	if got := calls.videoTranscriptCalls.Load(); got != videoTranscriptCalls {
 		t.Fatalf("unexpected notegpt video transcript call count: %d", got)
 	}
 
-	if got := atomic.LoadInt32(&calls.transcriptGenerateCalls); got != transcriptGenerateCalls {
+	if got := calls.transcriptGenerateCalls.Load(); got != transcriptGenerateCalls {
 		t.Fatalf("unexpected notegpt transcript generate call count: %d", got)
 	}
 
-	if got := atomic.LoadInt32(&calls.mediaStatusCalls); got != mediaStatusCalls {
+	if got := calls.mediaStatusCalls.Load(); got != mediaStatusCalls {
 		t.Fatalf("unexpected notegpt media status call count: %d", got)
 	}
 }
@@ -673,13 +673,13 @@ func newMockNoteGPTServer(
 
 		switch request.URL.Path {
 		case "/api/v2/video-transcript":
-			responseIndex := int(atomic.AddInt32(&calls.videoTranscriptCalls, 1)) - 1
+			responseIndex := int(calls.videoTranscriptCalls.Add(1)) - 1
 			writeJSON(writer, noteGPTVideoTranscriptResponseAt(config.videoTranscriptResponses, responseIndex))
 		case "/api/v2/transcript-generate":
-			atomic.AddInt32(&calls.transcriptGenerateCalls, 1)
+			calls.transcriptGenerateCalls.Add(1)
 			writeJSON(writer, defaultNoteGPTStatusResponse(config.transcriptGenerateResponse, noteGPTMediaStatusProcessing))
 		case "/api/v2/media-status":
-			responseIndex := int(atomic.AddInt32(&calls.mediaStatusCalls, 1)) - 1
+			responseIndex := int(calls.mediaStatusCalls.Add(1)) - 1
 			writeJSON(writer, noteGPTStatusResponseAt(config.mediaStatusResponses, responseIndex))
 		default:
 			http.NotFound(writer, request)

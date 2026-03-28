@@ -236,7 +236,7 @@ The config schema stays close to the original Python project.
 | --- | --- |
 | `web_search.primary_provider` | Which search backend to try first. Supported values: `mcp` and `tavily`. Default: `mcp`. `mcp` selects Exa and uses the Exa Search API when `web_search.exa.api_key` is configured, otherwise Exa MCP. |
 | `web_search.max_urls` | Maximum number of URLs to request from Exa or Tavily for each search query and to display in `Show Sources`. Default: `5`. |
-| `web_search.exa.api_key` | Optional Exa API key config. Can be a single string or a YAML list. When set, web search uses `POST https://api.exa.ai/search`, generic website extraction prefers `POST https://api.exa.ai/contents` before any fallback path, and `/searchtype` can switch the Exa Search API type between `auto`, `fast`, `instant`, `deep`, and `deep-reasoning`. Without it, web search continues using Exa MCP. |
+| `web_search.exa.api_key` | Optional Exa API key config. Can be a single string or a YAML list. When set, web search uses `POST https://api.exa.ai/search`, includes full page text for each Exa result, generic website extraction prefers `POST https://api.exa.ai/contents` before any fallback path, and `/searchtype` can switch the Exa Search API type between `auto`, `fast`, `instant`, `deep`, and `deep-reasoning`. Without it, web search continues using Exa MCP. |
 | `web_search.tavily.api_key` | Tavily API key config. Can be a single string or a YAML list. Generic website extraction uses Tavily Extract when no Exa API key is configured, and also as the fallback when Exa Contents fails. |
 | `visual_search.serpapi.api_key` | Optional SerpApi Google Lens API key config for `vsearch`. Can be a single string or a YAML list. |
 

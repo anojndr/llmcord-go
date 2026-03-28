@@ -169,11 +169,15 @@ func assertExaAPISearchRequest(t *testing.T, request exaSearchRequest, expectedT
 		t.Fatalf("unexpected Exa API num results: %d", request.NumResults)
 	}
 
-	if request.Contents.Highlights.MaxCharacters != exaSearchHighlightsMaxCharacters {
+	if request.Contents.Text.MaxCharacters != exaSearchTextMaxCharacters {
 		t.Fatalf(
-			"unexpected Exa highlights max characters: %d",
-			request.Contents.Highlights.MaxCharacters,
+			"unexpected Exa text max characters: %d",
+			request.Contents.Text.MaxCharacters,
 		)
+	}
+
+	if request.Contents.Text.Verbosity != "full" {
+		t.Fatalf("unexpected Exa text verbosity: %q", request.Contents.Text.Verbosity)
 	}
 }
 
@@ -199,9 +203,9 @@ func testExaAPISearchSuccessResponse() map[string]any {
 			{
 				"title":         "Example Source",
 				"url":           "https://example.com/source",
-				"highlights":    []string{"A relevant excerpt", "Second detail"},
 				"publishedDate": publishedDate,
 				"author":        author,
+				"text":          "# Example Source\n\nFull article text\nURL: https://example.com/not-a-source",
 			},
 		},
 	}
@@ -222,7 +226,7 @@ func decodeExaSearchRequest(t *testing.T, requestBody io.Reader) exaSearchReques
 		Type:       mapStringValue(rawRequest, "type"),
 		NumResults: mapIntValue(rawRequest, "numResults"),
 		Contents: exaSearchRequestContents{
-			Highlights: exaSearchHighlightsRequest{MaxCharacters: 0},
+			Text: exaSearchTextRequest{MaxCharacters: 0, Verbosity: ""},
 		},
 	}
 
@@ -231,12 +235,13 @@ func decodeExaSearchRequest(t *testing.T, requestBody io.Reader) exaSearchReques
 		return request
 	}
 
-	rawHighlights, hasHighlights := rawContents["highlights"].(map[string]any)
-	if !hasHighlights {
+	rawText, hasText := rawContents["text"].(map[string]any)
+	if !hasText {
 		return request
 	}
 
-	request.Contents.Highlights.MaxCharacters = mapIntValue(rawHighlights, "maxCharacters")
+	request.Contents.Text.MaxCharacters = mapIntValue(rawText, "maxCharacters")
+	request.Contents.Text.Verbosity = mapStringValue(rawText, "verbosity")
 
 	return request
 }
@@ -252,66 +257,54 @@ func mapIntValue(values map[string]any, key string) int {
 	}
 }
 
-func assertExaAPIResult(t *testing.T, result webSearchResult) {
+func assertSearchResultHasSingleSource(
+	t *testing.T,
+	result webSearchResult,
+	contentLabel string,
+	contentLine string,
+) {
 	t.Helper()
 
 	if !containsFold(result.Text, "Example Source") {
-		t.Fatalf("expected Exa result title in text: %q", result.Text)
+		t.Fatalf("expected search result title in text: %q", result.Text)
 	}
 
 	if !containsFold(result.Text, "https://example.com/source") {
-		t.Fatalf("expected Exa result URL in text: %q", result.Text)
+		t.Fatalf("expected search result URL in text: %q", result.Text)
 	}
 
-	if !containsFold(result.Text, "Highlights") {
-		t.Fatalf("expected Exa highlights in text: %q", result.Text)
+	if !containsFold(result.Text, contentLabel) {
+		t.Fatalf("expected %s section in text: %q", contentLabel, result.Text)
 	}
 
-	if !containsFold(result.Text, "| A relevant excerpt") {
-		t.Fatalf("expected Exa highlight body in text: %q", result.Text)
+	if !containsFold(result.Text, contentLine) {
+		t.Fatalf("expected %s body in text: %q", contentLabel, result.Text)
+	}
+
+	if !containsFold(result.Text, "| URL: https://example.com/not-a-source") {
+		t.Fatalf("expected embedded URL line to be escaped: %q", result.Text)
 	}
 
 	sources := extractSearchSources(result.Text)
 	if len(sources) != 1 {
-		t.Fatalf("unexpected source count parsed from Exa text: %d", len(sources))
+		t.Fatalf("unexpected source count parsed from text: %d", len(sources))
 	}
 
 	if sources[0].URL != "https://example.com/source" {
-		t.Fatalf("unexpected source parsed from Exa text: %#v", sources[0])
+		t.Fatalf("unexpected source parsed from text: %#v", sources[0])
 	}
+}
+
+func assertExaAPIResult(t *testing.T, result webSearchResult) {
+	t.Helper()
+
+	assertSearchResultHasSingleSource(t, result, "Text", "| Full article text")
 }
 
 func assertTavilyRawContentResult(t *testing.T, result webSearchResult) {
 	t.Helper()
 
-	if !containsFold(result.Text, "Example Source") {
-		t.Fatalf("expected Tavily result title in text: %q", result.Text)
-	}
-
-	if !containsFold(result.Text, "https://example.com/source") {
-		t.Fatalf("expected Tavily result URL in text: %q", result.Text)
-	}
-
-	if !containsFold(result.Text, "Raw Content") {
-		t.Fatalf("expected Tavily raw content in text: %q", result.Text)
-	}
-
-	if !containsFold(result.Text, "| Full article text") {
-		t.Fatalf("expected Tavily raw content block in text: %q", result.Text)
-	}
-
-	if !containsFold(result.Text, "| URL: https://example.com/not-a-source") {
-		t.Fatalf("expected Tavily raw content line to be escaped: %q", result.Text)
-	}
-
-	sources := extractSearchSources(result.Text)
-	if len(sources) != 1 {
-		t.Fatalf("unexpected source count parsed from Tavily text: %d", len(sources))
-	}
-
-	if sources[0].URL != "https://example.com/source" {
-		t.Fatalf("unexpected source parsed from Tavily text: %#v", sources[0])
-	}
+	assertSearchResultHasSingleSource(t, result, "Raw Content", "| Full article text")
 }
 
 type stubChatCompletionClient struct {

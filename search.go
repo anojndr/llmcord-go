@@ -120,11 +120,12 @@ type exaSearchRequest struct {
 }
 
 type exaSearchRequestContents struct {
-	Highlights exaSearchHighlightsRequest
+	Text exaSearchTextRequest
 }
 
-type exaSearchHighlightsRequest struct {
+type exaSearchTextRequest struct {
 	MaxCharacters int
+	Verbosity     string
 }
 
 type exaSearchResponse struct {
@@ -1338,8 +1339,9 @@ func marshalExaSearchRequest(requestBody exaSearchRequest) ([]byte, error) {
 		"type":       requestBody.Type,
 		"numResults": requestBody.NumResults,
 		"contents": map[string]any{
-			"highlights": map[string]any{
-				"maxCharacters": requestBody.Contents.Highlights.MaxCharacters,
+			"text": map[string]any{
+				"maxCharacters": requestBody.Contents.Text.MaxCharacters,
+				"verbosity":     requestBody.Contents.Text.Verbosity,
 			},
 		},
 	})
@@ -1361,7 +1363,10 @@ func (client exaSearchClient) searchAPIQueryOnce(
 		Query: query,
 		Type:  searchType,
 		Contents: exaSearchRequestContents{
-			Highlights: exaSearchHighlightsRequest{MaxCharacters: exaSearchHighlightsMaxCharacters},
+			Text: exaSearchTextRequest{
+				MaxCharacters: exaSearchTextMaxCharacters,
+				Verbosity:     "full",
+			},
 		},
 		NumResults: maxURLs,
 	}
