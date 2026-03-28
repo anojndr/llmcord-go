@@ -2009,6 +2009,7 @@ func testSearchConfig() config {
 		SearchType:        defaultExaSearchType,
 		TextMaxCharacters: defaultExaSearchTextMaxCharacters,
 	}
+	loadedConfig.Facebook = testFacebookExtractorConfig()
 	loadedConfig.ModelOrder = []string{"openai/main-model", "openai/decider-model"}
 	loadedConfig.SearchDeciderModel = "openai/decider-model"
 
@@ -2026,6 +2027,7 @@ func testGeminiSearchConfig() config {
 		SearchType:        defaultExaSearchType,
 		TextMaxCharacters: defaultExaSearchTextMaxCharacters,
 	}
+	loadedConfig.Facebook = testFacebookExtractorConfig()
 
 	googleProvider := new(providerConfig)
 	googleProvider.Type = string(providerAPIKindGemini)

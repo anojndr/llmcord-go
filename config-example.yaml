@@ -138,6 +138,12 @@ channel_model_locks:
 search_decider_model: google/gemini-3.1-flash-lite-preview
 media_analysis_model: google/gemini-3.1-flash-lite-preview
 
+facebook:
+  # Supported values: `fdownloader` and `getmyfb`.
+  # Defaults keep FDownloader as primary and GetMyFB as fallback.
+  primary_provider: fdownloader
+  fallback_provider: getmyfb
+
 web_search:
   # `mcp` keeps Exa as primary and uses Tavily as fallback.
   # When `web_search.exa.api_key` is set, Exa uses the Search API.
