@@ -35,9 +35,10 @@ func testExaAPIWebSearchConfig() config {
 	loadedConfig := testSearchConfig()
 	loadedConfig.WebSearch.MaxURLs = testWebSearchMaxURLs
 	loadedConfig.WebSearch.Exa = exaSearchConfig{
-		APIKey:     testExaPrimaryValue,
-		APIKeys:    []string{testExaPrimaryValue, testExaBackupValue},
-		SearchType: defaultExaSearchType,
+		APIKey:            testExaPrimaryValue,
+		APIKeys:           []string{testExaPrimaryValue, testExaBackupValue},
+		SearchType:        defaultExaSearchType,
+		TextMaxCharacters: defaultExaSearchTextMaxCharacters,
 	}
 
 	return loadedConfig
@@ -154,7 +155,12 @@ func assertExaSearchRequest(t *testing.T, args map[string]any) {
 	}
 }
 
-func assertExaAPISearchRequest(t *testing.T, request exaSearchRequest, expectedType string) {
+func assertExaAPISearchRequest(
+	t *testing.T,
+	request exaSearchRequest,
+	expectedType string,
+	expectedMaxCharacters int,
+) {
 	t.Helper()
 
 	if strings.TrimSpace(request.Query) == "" {
@@ -169,7 +175,7 @@ func assertExaAPISearchRequest(t *testing.T, request exaSearchRequest, expectedT
 		t.Fatalf("unexpected Exa API num results: %d", request.NumResults)
 	}
 
-	if request.Contents.Text.MaxCharacters != exaSearchTextMaxCharacters {
+	if request.Contents.Text.MaxCharacters != expectedMaxCharacters {
 		t.Fatalf(
 			"unexpected Exa text max characters: %d",
 			request.Contents.Text.MaxCharacters,
@@ -1244,8 +1250,18 @@ func TestExaSearchClientSearchUsesAPIWhenConfiguredAndRetriesConfiguredAPIKeys(t
 		t.Fatalf("unexpected Exa API request count: %d", len(searchBodies))
 	}
 
-	assertExaAPISearchRequest(t, searchBodies[0], defaultExaSearchType)
-	assertExaAPISearchRequest(t, searchBodies[1], defaultExaSearchType)
+	assertExaAPISearchRequest(
+		t,
+		searchBodies[0],
+		defaultExaSearchType,
+		testExaAPIWebSearchConfig().WebSearch.Exa.TextMaxCharacters,
+	)
+	assertExaAPISearchRequest(
+		t,
+		searchBodies[1],
+		defaultExaSearchType,
+		testExaAPIWebSearchConfig().WebSearch.Exa.TextMaxCharacters,
+	)
 
 	if len(results) != 1 {
 		t.Fatalf("unexpected result count: %d", len(results))
@@ -1328,7 +1344,52 @@ func TestExaSearchClientSearchUsesConfiguredSearchType(t *testing.T) {
 		t.Fatalf("unexpected Exa API request count: %d", len(searchBodies))
 	}
 
-	assertExaAPISearchRequest(t, searchBodies[0], exaSearchTypeDeepReasoning)
+	assertExaAPISearchRequest(
+		t,
+		searchBodies[0],
+		exaSearchTypeDeepReasoning,
+		loadedConfig.WebSearch.Exa.TextMaxCharacters,
+	)
+}
+
+func TestExaSearchClientSearchUsesConfiguredTextMaxCharacters(t *testing.T) {
+	t.Parallel()
+
+	var searchBodies []exaSearchRequest
+
+	client, closeServer := newExaAPISearchTestClient(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		request *http.Request,
+	) {
+		searchBodies = append(searchBodies, decodeExaSearchRequest(t, request.Body))
+
+		responseWriter.Header().Set("Content-Type", "application/json")
+
+		err := json.NewEncoder(responseWriter).Encode(testExaAPISearchSuccessResponse())
+		if err != nil {
+			t.Errorf("encode Exa response: %v", err)
+		}
+	}))
+	defer closeServer()
+
+	loadedConfig := testExaAPIWebSearchConfig()
+	loadedConfig.WebSearch.Exa.TextMaxCharacters = 9000
+
+	_, err := client.search(context.Background(), loadedConfig, []string{"latest ai news"})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+
+	if len(searchBodies) != 1 {
+		t.Fatalf("unexpected Exa API request count: %d", len(searchBodies))
+	}
+
+	assertExaAPISearchRequest(
+		t,
+		searchBodies[0],
+		defaultExaSearchType,
+		loadedConfig.WebSearch.Exa.TextMaxCharacters,
+	)
 }
 
 func TestRoutedWebSearchClientFallsBackToTavilyWhenMCPFails(t *testing.T) {
@@ -1943,9 +2004,10 @@ func testSearchConfig() config {
 	loadedConfig.WebSearch.PrimaryProvider = webSearchProviderKindMCP
 	loadedConfig.WebSearch.MaxURLs = defaultWebSearchMaxURLs
 	loadedConfig.WebSearch.Exa = exaSearchConfig{
-		APIKey:     "",
-		APIKeys:    nil,
-		SearchType: defaultExaSearchType,
+		APIKey:            "",
+		APIKeys:           nil,
+		SearchType:        defaultExaSearchType,
+		TextMaxCharacters: defaultExaSearchTextMaxCharacters,
 	}
 	loadedConfig.ModelOrder = []string{"openai/main-model", "openai/decider-model"}
 	loadedConfig.SearchDeciderModel = "openai/decider-model"
@@ -1959,9 +2021,10 @@ func testGeminiSearchConfig() config {
 	loadedConfig.WebSearch.PrimaryProvider = webSearchProviderKindMCP
 	loadedConfig.WebSearch.MaxURLs = defaultWebSearchMaxURLs
 	loadedConfig.WebSearch.Exa = exaSearchConfig{
-		APIKey:     "",
-		APIKeys:    nil,
-		SearchType: defaultExaSearchType,
+		APIKey:            "",
+		APIKeys:           nil,
+		SearchType:        defaultExaSearchType,
+		TextMaxCharacters: defaultExaSearchTextMaxCharacters,
 	}
 
 	googleProvider := new(providerConfig)

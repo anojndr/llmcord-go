@@ -88,7 +88,8 @@ type rawTavilySearchConfig struct {
 }
 
 type rawExaSearchConfig struct {
-	APIKey scalarStringList `yaml:"api_key"`
+	APIKey            scalarStringList `yaml:"api_key"`
+	TextMaxCharacters *int             `yaml:"text_max_characters"`
 }
 
 type rawSerpAPIVisualSearchConfig struct {
@@ -127,9 +128,10 @@ type tavilySearchConfig struct {
 }
 
 type exaSearchConfig struct {
-	APIKey     string
-	APIKeys    []string
-	SearchType string
+	APIKey            string
+	APIKeys           []string
+	SearchType        string
+	TextMaxCharacters int
 }
 
 type serpAPIVisualSearchConfig struct {
@@ -561,9 +563,10 @@ func normalizeWebSearchConfig(rawLoadedConfig rawWebSearchConfig) webSearchConfi
 		PrimaryProvider: normalizeWebSearchProvider(rawLoadedConfig.PrimaryProvider),
 		MaxURLs:         intValueOrDefault(rawLoadedConfig.MaxURLs, defaultWebSearchMaxURLs),
 		Exa: exaSearchConfig{
-			APIKey:     firstAPIKey(exaAPIKeys),
-			APIKeys:    exaAPIKeys,
-			SearchType: defaultExaSearchType,
+			APIKey:            firstAPIKey(exaAPIKeys),
+			APIKeys:           exaAPIKeys,
+			SearchType:        defaultExaSearchType,
+			TextMaxCharacters: intValueOrDefault(rawLoadedConfig.Exa.TextMaxCharacters, defaultExaSearchTextMaxCharacters),
 		},
 		Tavily: tavilySearchConfig{
 			APIKey:  firstAPIKey(tavilyAPIKeys),
@@ -591,6 +594,14 @@ func (loadedConfig webSearchConfig) maxURLs() int {
 
 func (loadedConfig webSearchConfig) exaUsesAPI() bool {
 	return len(loadedConfig.Exa.apiKeysForAttempts()) > 0
+}
+
+func (settings exaSearchConfig) textMaxCharacters() int {
+	if settings.TextMaxCharacters <= 0 {
+		return defaultExaSearchTextMaxCharacters
+	}
+
+	return settings.TextMaxCharacters
 }
 
 func validateConfig(loadedConfig config) error {
@@ -665,6 +676,13 @@ func validateConfig(loadedConfig config) error {
 func validateWebSearchConfig(loadedConfig webSearchConfig) error {
 	if loadedConfig.MaxURLs <= 0 {
 		return fmt.Errorf("web_search.max_urls must be greater than zero: %w", os.ErrInvalid)
+	}
+
+	if loadedConfig.Exa.TextMaxCharacters <= 0 {
+		return fmt.Errorf(
+			"web_search.exa.text_max_characters must be greater than zero: %w",
+			os.ErrInvalid,
+		)
 	}
 
 	switch loadedConfig.PrimaryProvider {
