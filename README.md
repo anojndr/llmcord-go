@@ -100,6 +100,7 @@ The goal is to make Discord feel like a practical, stateful frontend for LLM wor
 - Automatic YouTube transcript, title, channel, and comment extraction
 - Automatic Reddit thread and comment extraction
 - Automatic generic website content extraction for other links, preferring Exa Contents when `web_search.exa.api_key` is set, then Tavily Extract, then the local HTML/text extractor
+- Generic website fetches only follow public `http`/`https` targets; localhost, private/link-local addresses, and unsafe redirect hops are rejected
 - Reply-target propagation so prompts can use replied-message attachments as current-turn context
 
 ### Search and visual search
@@ -328,7 +329,7 @@ golangci-lint run --default=all
   - YouTube Shorts MP4 downloads for Gemini or Gemini-powered media preprocessing
   - YouTube
   - Reddit
-  - generic websites, using Exa Contents first when configured, then Tavily Extract, then the built-in HTML/text parser
+  - generic websites, using Exa Contents first when configured, then Tavily Extract, then the built-in HTML/text parser; localhost, private/link-local, and unsafe redirect targets are rejected
 
 ### Persistence behavior
 

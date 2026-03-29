@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"regexp"
@@ -26,22 +28,29 @@ const (
 	minimumWebsiteContentSelectionRunes = 300
 	websiteFetchAttemptCapacity         = 3
 	websiteContentCandidateCapacity     = 7
+	websiteRedirectHopLimit             = 10
 	websiteSegmentCapacity              = 32
 )
 
-var websiteURLRegexp = regexp.MustCompile(
-	`(?i)\bhttps?://(?:[\w-]+\.)+[a-z]{2,}(?:/[^\s<>]*)?`,
+var (
+	errUnsafeWebsiteAddress = errors.New("unsafe website address")
+	websiteURLRegexp        = regexp.MustCompile(
+		`(?i)\bhttps?://(?:[\w-]+\.)+[a-z]{2,}(?:/[^\s<>]*)?`,
+	)
 )
 
 type websiteContentClient interface {
 	fetch(ctx context.Context, loadedConfig config, rawURL string) (websitePageContent, error)
 }
 
+type websiteLookupIPFunc func(context.Context, string) ([]netip.Addr, error)
+
 type websiteClient struct {
 	httpClient            *http.Client
 	userAgent             string
 	exaContentsEndpoint   string
 	tavilyExtractEndpoint string
+	lookupIP              websiteLookupIPFunc
 }
 
 type websitePageContent struct {
@@ -57,6 +66,7 @@ func newWebsiteClient(httpClient *http.Client) websiteClient {
 		userAgent:             youtubeUserAgent,
 		exaContentsEndpoint:   defaultExaContentsEndpoint,
 		tavilyExtractEndpoint: defaultTavilyExtractEndpoint,
+		lookupIP:              defaultWebsiteLookupIP,
 	}
 }
 
@@ -172,6 +182,16 @@ func (client websiteClient) fetch(
 
 	requestContext, cancel := context.WithTimeout(ctx, websiteRequestTimeout)
 	defer cancel()
+
+	parsedURL, err := url.Parse(normalizedURL)
+	if err != nil {
+		return websitePageContent{}, fmt.Errorf("parse normalized website url %q: %w", normalizedURL, err)
+	}
+
+	err = validateWebsiteRequestURL(requestContext, parsedURL, client.lookupWebsiteIP())
+	if err != nil {
+		return websitePageContent{}, fmt.Errorf("validate website url %q: %w", rawURL, err)
+	}
 
 	attemptErrors := make([]error, 0, websiteFetchAttemptCapacity)
 
@@ -791,61 +811,515 @@ func firstNonEmptyString(values ...string) string {
 	return ""
 }
 
-func (client websiteClient) doRequest(
-	ctx context.Context,
-	requestURL string,
-) ([]byte, string, string, error) {
-	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
+func mustParseNetipPrefix(rawPrefix string) netip.Prefix {
+	prefix, err := netip.ParsePrefix(rawPrefix)
 	if err != nil {
-		return nil, "", "", fmt.Errorf("create website request %q: %w", requestURL, err)
+		panic(fmt.Sprintf("parse website IP prefix %q: %v", rawPrefix, err))
 	}
 
+	return prefix
+}
+
+func defaultWebsiteLookupIP(ctx context.Context, host string) ([]netip.Addr, error) {
+	resolvedAddrs, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	if err != nil {
+		return nil, fmt.Errorf("resolve website host %q: %w", host, err)
+	}
+
+	addresses := make([]netip.Addr, 0, len(resolvedAddrs))
+
+	for _, resolvedAddr := range resolvedAddrs {
+		address, ok := netip.AddrFromSlice(resolvedAddr.IP)
+		if !ok {
+			continue
+		}
+
+		addresses = append(addresses, address.Unmap())
+	}
+
+	if len(addresses) == 0 {
+		return nil, fmt.Errorf("resolve website host %q: %w", host, os.ErrNotExist)
+	}
+
+	return addresses, nil
+}
+
+func blockedWebsiteIPRanges() []netip.Prefix {
+	return []netip.Prefix{
+		mustParseNetipPrefix("0.0.0.0/8"),
+		mustParseNetipPrefix("100.64.0.0/10"),
+		mustParseNetipPrefix("127.0.0.0/8"),
+		mustParseNetipPrefix("192.0.0.0/24"),
+		mustParseNetipPrefix("192.0.2.0/24"),
+		mustParseNetipPrefix("192.88.99.0/24"),
+		mustParseNetipPrefix("198.18.0.0/15"),
+		mustParseNetipPrefix("198.51.100.0/24"),
+		mustParseNetipPrefix("203.0.113.0/24"),
+		mustParseNetipPrefix("224.0.0.0/4"),
+		mustParseNetipPrefix("240.0.0.0/4"),
+		mustParseNetipPrefix("100::/64"),
+		mustParseNetipPrefix("2001:db8::/32"),
+	}
+}
+
+func (client websiteClient) lookupWebsiteIP() websiteLookupIPFunc {
+	if client.lookupIP != nil {
+		return client.lookupIP
+	}
+
+	return defaultWebsiteLookupIP
+}
+
+func validateWebsiteRequestURL(
+	ctx context.Context,
+	requestURL *url.URL,
+	lookupIP websiteLookupIPFunc,
+) error {
+	if requestURL == nil {
+		return fmt.Errorf("missing website url: %w", os.ErrInvalid)
+	}
+
+	if !isWebsiteScheme(requestURL.Scheme) {
+		return fmt.Errorf("unsupported website scheme %q: %w", requestURL.Scheme, os.ErrInvalid)
+	}
+
+	host := strings.TrimSpace(requestURL.Hostname())
+	if host == "" {
+		return fmt.Errorf("missing website host: %w", os.ErrInvalid)
+	}
+
+	return validateWebsiteHost(ctx, host, lookupIP)
+}
+
+func validateWebsiteHost(
+	ctx context.Context,
+	host string,
+	lookupIP websiteLookupIPFunc,
+) error {
+	normalizedHost := normalizeWebsiteHost(host)
+	if normalizedHost == "" {
+		return fmt.Errorf("missing website host: %w", os.ErrInvalid)
+	}
+
+	if isLocalhostWebsiteHost(normalizedHost) {
+		return fmt.Errorf("blocked website host %q: %w", host, errUnsafeWebsiteAddress)
+	}
+
+	addresses, err := resolveWebsiteHostAddresses(ctx, normalizedHost, lookupIP)
+	if err != nil {
+		return err
+	}
+
+	for _, address := range addresses {
+		if !isPublicWebsiteIP(address) {
+			return fmt.Errorf(
+				"blocked website host %q resolving to %s: %w",
+				host,
+				address,
+				errUnsafeWebsiteAddress,
+			)
+		}
+	}
+
+	return nil
+}
+
+func normalizeWebsiteHost(host string) string {
+	normalizedHost := strings.TrimSpace(strings.ToLower(host))
+	normalizedHost = strings.TrimSuffix(normalizedHost, ".")
+
+	if zoneIndex := strings.Index(normalizedHost, "%"); zoneIndex >= 0 {
+		normalizedHost = normalizedHost[:zoneIndex]
+	}
+
+	return normalizedHost
+}
+
+func isLocalhostWebsiteHost(host string) bool {
+	return host == "localhost" || strings.HasSuffix(host, ".localhost")
+}
+
+func resolveWebsiteHostAddresses(
+	ctx context.Context,
+	host string,
+	lookupIP websiteLookupIPFunc,
+) ([]netip.Addr, error) {
+	if lookupIP == nil {
+		lookupIP = defaultWebsiteLookupIP
+	}
+
+	address, err := netip.ParseAddr(host)
+	if err == nil {
+		return []netip.Addr{address.Unmap()}, nil
+	}
+
+	addresses, err := lookupIP(ctx, host)
+	if err != nil {
+		return nil, fmt.Errorf("resolve website host %q: %w", host, err)
+	}
+
+	if len(addresses) == 0 {
+		return nil, fmt.Errorf("resolve website host %q: %w", host, os.ErrNotExist)
+	}
+
+	return addresses, nil
+}
+
+func isPublicWebsiteIP(address netip.Addr) bool {
+	normalizedAddress := address.Unmap()
+	if !normalizedAddress.IsValid() {
+		return false
+	}
+
+	if normalizedAddress.IsLoopback() ||
+		normalizedAddress.IsPrivate() ||
+		normalizedAddress.IsLinkLocalUnicast() ||
+		normalizedAddress.IsLinkLocalMulticast() ||
+		normalizedAddress.IsMulticast() ||
+		normalizedAddress.IsInterfaceLocalMulticast() ||
+		normalizedAddress.IsUnspecified() {
+		return false
+	}
+
+	for _, blockedRange := range blockedWebsiteIPRanges() {
+		if blockedRange.Contains(normalizedAddress) {
+			return false
+		}
+	}
+
+	return true
+}
+
+type validatingWebsiteTransport struct {
+	baseTransport http.RoundTripper
+	lookupIP      websiteLookupIPFunc
+}
+
+func (transport validatingWebsiteTransport) RoundTrip(
+	request *http.Request,
+) (*http.Response, error) {
+	err := validateWebsiteRequestURL(request.Context(), request.URL, transport.lookupIP)
+	if err != nil {
+		return nil, err
+	}
+
+	response, err := transport.baseTransport.RoundTrip(request)
+	if err != nil {
+		return nil, fmt.Errorf("round trip website request %q: %w", request.URL.String(), err)
+	}
+
+	return response, nil
+}
+
+type ssrfProtectedWebsiteTransport struct {
+	directTransport  *http.Transport
+	proxiedTransport *http.Transport
+	lookupIP         websiteLookupIPFunc
+}
+
+func (transport ssrfProtectedWebsiteTransport) RoundTrip(
+	request *http.Request,
+) (*http.Response, error) {
+	err := validateWebsiteRequestURL(request.Context(), request.URL, transport.lookupIP)
+	if err != nil {
+		return nil, err
+	}
+
+	if transport.proxiedTransport == nil || transport.proxiedTransport.Proxy == nil {
+		return roundTripWebsiteRequest(request, transport.directTransport)
+	}
+
+	proxyURL, err := transport.proxiedTransport.Proxy(request)
+	if err != nil {
+		return nil, fmt.Errorf("resolve website proxy for %q: %w", request.URL.String(), err)
+	}
+
+	if proxyURL != nil {
+		return roundTripWebsiteRequest(request, transport.proxiedTransport)
+	}
+
+	return roundTripWebsiteRequest(request, transport.directTransport)
+}
+
+func roundTripWebsiteRequest(
+	request *http.Request,
+	transport *http.Transport,
+) (*http.Response, error) {
+	response, err := transport.RoundTrip(request)
+	if err != nil {
+		return nil, fmt.Errorf("round trip website request %q: %w", request.URL.String(), err)
+	}
+
+	return response, nil
+}
+
+func newSSRFProtectedWebsiteTransport(
+	baseTransport http.RoundTripper,
+	lookupIP websiteLookupIPFunc,
+) http.RoundTripper {
+	switch transport := baseTransport.(type) {
+	case nil:
+		defaultTransport, ok := http.DefaultTransport.(*http.Transport)
+		if !ok {
+			return validatingWebsiteTransport{
+				baseTransport: http.DefaultTransport,
+				lookupIP:      lookupIP,
+			}
+		}
+
+		return newSSRFProtectedWebsiteHTTPTransport(defaultTransport.Clone(), lookupIP)
+	case *http.Transport:
+		return newSSRFProtectedWebsiteHTTPTransport(transport.Clone(), lookupIP)
+	default:
+		return validatingWebsiteTransport{
+			baseTransport: transport,
+			lookupIP:      lookupIP,
+		}
+	}
+}
+
+func newSSRFProtectedWebsiteHTTPTransport(
+	baseTransport *http.Transport,
+	lookupIP websiteLookupIPFunc,
+) http.RoundTripper {
+	directTransport := baseTransport.Clone()
+	directTransport.DialContext = newSSRFProtectedWebsiteDialContext(
+		directTransport.DialContext,
+		lookupIP,
+	)
+
+	if directTransport.DialTLSContext != nil {
+		directTransport.DialTLSContext = newSSRFProtectedWebsiteDialTLSContext(
+			directTransport.DialTLSContext,
+			lookupIP,
+		)
+	}
+
+	return ssrfProtectedWebsiteTransport{
+		directTransport:  directTransport,
+		proxiedTransport: baseTransport.Clone(),
+		lookupIP:         lookupIP,
+	}
+}
+
+func newSSRFProtectedWebsiteDialContext(
+	baseDialContext func(context.Context, string, string) (net.Conn, error),
+	lookupIP websiteLookupIPFunc,
+) func(context.Context, string, string) (net.Conn, error) {
+	return func(ctx context.Context, network string, address string) (net.Conn, error) {
+		err := validateWebsiteDialAddress(ctx, address, lookupIP)
+		if err != nil {
+			return nil, err
+		}
+
+		if baseDialContext != nil {
+			return baseDialContext(ctx, network, address)
+		}
+
+		var dialer net.Dialer
+
+		return dialer.DialContext(ctx, network, address)
+	}
+}
+
+func newSSRFProtectedWebsiteDialTLSContext(
+	baseDialTLSContext func(context.Context, string, string) (net.Conn, error),
+	lookupIP websiteLookupIPFunc,
+) func(context.Context, string, string) (net.Conn, error) {
+	return func(ctx context.Context, network string, address string) (net.Conn, error) {
+		err := validateWebsiteDialAddress(ctx, address, lookupIP)
+		if err != nil {
+			return nil, err
+		}
+
+		return baseDialTLSContext(ctx, network, address)
+	}
+}
+
+func validateWebsiteDialAddress(
+	ctx context.Context,
+	address string,
+	lookupIP websiteLookupIPFunc,
+) error {
+	host := address
+
+	dialHost, _, err := net.SplitHostPort(address)
+	if err == nil {
+		host = dialHost
+	}
+
+	return validateWebsiteHost(ctx, host, lookupIP)
+}
+
+func (client websiteClient) websiteFetchHTTPClient() *http.Client {
+	baseClient := client.httpClient
+	if baseClient == nil {
+		baseClient = new(http.Client)
+	}
+
+	fetchClient := new(http.Client)
+	*fetchClient = *baseClient
+	fetchClient.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	fetchClient.Transport = newSSRFProtectedWebsiteTransport(
+		baseClient.Transport,
+		client.lookupWebsiteIP(),
+	)
+
+	return fetchClient
+}
+
+func redirectWebsiteRequestURL(
+	currentURL *url.URL,
+	location string,
+) (*url.URL, error) {
+	trimmedLocation := strings.TrimSpace(location)
+	if trimmedLocation == "" {
+		return nil, fmt.Errorf(
+			"redirect website request %q missing location: %w",
+			currentURL.String(),
+			os.ErrInvalid,
+		)
+	}
+
+	nextURL, err := currentURL.Parse(trimmedLocation)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"parse website redirect target %q from %q: %w",
+			trimmedLocation,
+			currentURL.String(),
+			err,
+		)
+	}
+
+	if !isWebsiteScheme(nextURL.Scheme) || strings.TrimSpace(nextURL.Hostname()) == "" {
+		return nil, fmt.Errorf(
+			"unsupported website redirect target %q from %q: %w",
+			trimmedLocation,
+			currentURL.String(),
+			os.ErrInvalid,
+		)
+	}
+
+	nextURL.Scheme = strings.ToLower(nextURL.Scheme)
+	nextURL.Host = strings.ToLower(nextURL.Host)
+	nextURL.Fragment = ""
+
+	return nextURL, nil
+}
+
+func isWebsiteRedirectStatus(statusCode int) bool {
+	switch statusCode {
+	case http.StatusMovedPermanently,
+		http.StatusFound,
+		http.StatusSeeOther,
+		http.StatusTemporaryRedirect,
+		http.StatusPermanentRedirect:
+		return true
+	default:
+		return false
+	}
+}
+
+func setWebsiteRequestHeaders(httpRequest *http.Request, userAgent string) {
 	httpRequest.Header.Set(
 		"Accept",
 		"text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.1",
 	)
 	httpRequest.Header.Set("Accept-Language", youtubeAcceptLanguage)
-	httpRequest.Header.Set("User-Agent", client.userAgent)
+	httpRequest.Header.Set("User-Agent", userAgent)
+}
 
-	httpResponse, err := client.httpClient.Do(httpRequest)
+func (client websiteClient) doRequest(
+	ctx context.Context,
+	requestURL string,
+) ([]byte, string, string, error) {
+	currentURL, err := url.Parse(requestURL)
 	if err != nil {
-		return nil, "", "", fmt.Errorf("send website request %q: %w", requestURL, err)
+		return nil, "", "", fmt.Errorf("parse website request %q: %w", requestURL, err)
 	}
 
-	defer func() {
+	httpClient := client.websiteFetchHTTPClient()
+
+	for redirectHop := 0; ; redirectHop++ {
+		httpRequest, err := http.NewRequestWithContext(ctx, http.MethodGet, currentURL.String(), nil)
+		if err != nil {
+			return nil, "", "", fmt.Errorf("create website request %q: %w", currentURL.String(), err)
+		}
+
+		setWebsiteRequestHeaders(httpRequest, client.userAgent)
+
+		httpResponse, err := httpClient.Do(httpRequest)
+		if err != nil {
+			return nil, "", "", fmt.Errorf("send website request %q: %w", currentURL.String(), err)
+		}
+
+		if isWebsiteRedirectStatus(httpResponse.StatusCode) {
+			_ = httpResponse.Body.Close()
+
+			if redirectHop >= websiteRedirectHopLimit {
+				return nil, "", "", fmt.Errorf(
+					"website request %q exceeded %d redirects: %w",
+					requestURL,
+					websiteRedirectHopLimit,
+					os.ErrInvalid,
+				)
+			}
+
+			nextURL, err := redirectWebsiteRequestURL(currentURL, httpResponse.Header.Get("Location"))
+			if err != nil {
+				return nil, "", "", err
+			}
+
+			err = validateWebsiteRequestURL(ctx, nextURL, client.lookupWebsiteIP())
+			if err != nil {
+				return nil, "", "", fmt.Errorf(
+					"validate website redirect %q from %q: %w",
+					nextURL.String(),
+					currentURL.String(),
+					err,
+				)
+			}
+
+			currentURL = nextURL
+
+			continue
+		}
+
+		responseBody, err := io.ReadAll(io.LimitReader(httpResponse.Body, maxWebsiteResponseBytes+1))
 		_ = httpResponse.Body.Close()
-	}()
 
-	responseBody, err := io.ReadAll(io.LimitReader(httpResponse.Body, maxWebsiteResponseBytes+1))
-	if err != nil {
-		return nil, "", "", fmt.Errorf("read website response %q: %w", requestURL, err)
+		if err != nil {
+			return nil, "", "", fmt.Errorf("read website response %q: %w", currentURL.String(), err)
+		}
+
+		if len(responseBody) > maxWebsiteResponseBytes {
+			return nil, "", "", fmt.Errorf(
+				"website response %q exceeds %d bytes: %w",
+				currentURL.String(),
+				maxWebsiteResponseBytes,
+				os.ErrInvalid,
+			)
+		}
+
+		if httpResponse.StatusCode < http.StatusOK || httpResponse.StatusCode >= http.StatusMultipleChoices {
+			return nil, "", "", fmt.Errorf(
+				"website request %q failed with status %d: %s: %w",
+				currentURL.String(),
+				httpResponse.StatusCode,
+				strings.TrimSpace(string(responseBody)),
+				os.ErrInvalid,
+			)
+		}
+
+		responseURL := currentURL.String()
+		if httpResponse.Request != nil && httpResponse.Request.URL != nil {
+			responseURL = httpResponse.Request.URL.String()
+		}
+
+		return responseBody, responseURL, httpResponse.Header.Get("Content-Type"), nil
 	}
-
-	if len(responseBody) > maxWebsiteResponseBytes {
-		return nil, "", "", fmt.Errorf(
-			"website response %q exceeds %d bytes: %w",
-			requestURL,
-			maxWebsiteResponseBytes,
-			os.ErrInvalid,
-		)
-	}
-
-	if httpResponse.StatusCode < http.StatusOK || httpResponse.StatusCode >= http.StatusMultipleChoices {
-		return nil, "", "", fmt.Errorf(
-			"website request %q failed with status %d: %s: %w",
-			requestURL,
-			httpResponse.StatusCode,
-			strings.TrimSpace(string(responseBody)),
-			os.ErrInvalid,
-		)
-	}
-
-	responseURL := requestURL
-	if httpResponse.Request != nil && httpResponse.Request.URL != nil {
-		responseURL = httpResponse.Request.URL.String()
-	}
-
-	return responseBody, responseURL, httpResponse.Header.Get("Content-Type"), nil
 }
 
 func extractWebsiteURLs(text string) []string {

@@ -3,8 +3,14 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
+	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -51,7 +57,76 @@ func newWebsiteTestClient(httpClient *http.Client, exaURL string, tavilyURL stri
 		userAgent:             youtubeUserAgent,
 		exaContentsEndpoint:   exaURL,
 		tavilyExtractEndpoint: tavilyURL,
+		lookupIP:              testWebsiteLookupIP,
 	}
+}
+
+func testWebsiteLookupIP(_ context.Context, host string) ([]netip.Addr, error) {
+	normalizedHost := normalizeWebsiteHost(host)
+	if normalizedHost == "" {
+		return nil, fmt.Errorf("resolve website host %q: %w", host, os.ErrInvalid)
+	}
+
+	switch normalizedHost {
+	case "example.com",
+		"redirect.example.com",
+		"target.example.com",
+		"allowed.example.com",
+		"resolved.example.com":
+		return []netip.Addr{netip.MustParseAddr("93.184.216.34")}, nil
+	case "metadata.example.com":
+		return []netip.Addr{netip.MustParseAddr("169.254.169.254")}, nil
+	default:
+		return []netip.Addr{netip.MustParseAddr("93.184.216.34")}, nil
+	}
+}
+
+func newWebsiteForwardingHTTPClient(
+	t *testing.T,
+	server *httptest.Server,
+	forwardedHosts ...string,
+) *http.Client {
+	t.Helper()
+
+	serverURL, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatalf("parse test server url %q: %v", server.URL, err)
+	}
+
+	forwardedHostSet := make(map[string]struct{}, len(forwardedHosts))
+	for _, forwardedHost := range forwardedHosts {
+		forwardedHostSet[normalizeWebsiteHost(forwardedHost)] = struct{}{}
+	}
+
+	httpClient := new(http.Client)
+	httpClient.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if _, ok := forwardedHostSet[normalizeWebsiteHost(request.URL.Hostname())]; !ok {
+			response, err := http.DefaultTransport.RoundTrip(request)
+			if err != nil {
+				return nil, fmt.Errorf("forward website test request %q: %w", request.URL.String(), err)
+			}
+
+			return response, nil
+		}
+
+		forwarded := request.Clone(request.Context())
+		forwardedURL := *request.URL
+		forwardedURL.Scheme = serverURL.Scheme
+		forwardedURL.Host = serverURL.Host
+		forwarded.URL = &forwardedURL
+		forwarded.Host = request.Host
+
+		response, err := server.Client().Transport.RoundTrip(forwarded)
+		if err != nil {
+			return nil, fmt.Errorf("forward website test request %q: %w", request.URL.String(), err)
+		}
+
+		response.Request = request
+
+		return response, nil
+	})
+
+	return httpClient
 }
 
 func testWebsiteExaAndTavilyConfig() config {
@@ -80,20 +155,38 @@ func testWebsiteTavilyOnlyConfig() config {
 	return loadedConfig
 }
 
-func mustFetchWebsite(
+func mustFetchWebsiteArticle(
 	t *testing.T,
 	client websiteClient,
 	loadedConfig config,
-	rawURL string,
 ) websitePageContent {
 	t.Helper()
 
-	result, err := client.fetch(context.Background(), loadedConfig, rawURL)
+	result, err := client.fetch(context.Background(), loadedConfig, "https://example.com/article")
 	if err != nil {
 		t.Fatalf("fetch website content: %v", err)
 	}
 
 	return result
+}
+
+func newWebsiteTestResponse(
+	statusCode int,
+	headers http.Header,
+	body string,
+	request *http.Request,
+) *http.Response {
+	response := new(http.Response)
+	response.StatusCode = statusCode
+	response.Status = fmt.Sprintf("%d %s", statusCode, http.StatusText(statusCode))
+	response.Proto = "HTTP/1.1"
+	response.ProtoMajor = 1
+	response.ProtoMinor = 1
+	response.Header = headers
+	response.Body = io.NopCloser(strings.NewReader(body))
+	response.Request = request
+
+	return response
 }
 
 func TestExtractWebsiteURLsNormalizesDeduplicatesAndSkipsSpecializedHosts(t *testing.T) {
@@ -370,17 +463,16 @@ func TestWebsiteClientFetchExtractsMainContentAndIgnoresChrome(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := websiteClient{
-		httpClient:            server.Client(),
-		userAgent:             youtubeUserAgent,
-		exaContentsEndpoint:   defaultExaContentsEndpoint,
-		tavilyExtractEndpoint: defaultTavilyExtractEndpoint,
-	}
+	client := newWebsiteTestClient(
+		newWebsiteForwardingHTTPClient(t, server, "example.com"),
+		defaultExaContentsEndpoint,
+		defaultTavilyExtractEndpoint,
+	)
 
 	result, err := client.fetch(
 		context.Background(),
 		testSearchConfig(),
-		server.URL+"/wiki/Go_(programming_language)",
+		"https://example.com/wiki/Go_(programming_language)",
 	)
 	if err != nil {
 		t.Fatalf("fetch website content: %v", err)
@@ -419,16 +511,154 @@ func TestWebsiteClientFetchRejectsUnsupportedContentType(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := websiteClient{
-		httpClient:            server.Client(),
-		userAgent:             youtubeUserAgent,
-		exaContentsEndpoint:   defaultExaContentsEndpoint,
-		tavilyExtractEndpoint: defaultTavilyExtractEndpoint,
-	}
+	client := newWebsiteTestClient(
+		newWebsiteForwardingHTTPClient(t, server, "example.com"),
+		defaultExaContentsEndpoint,
+		defaultTavilyExtractEndpoint,
+	)
 
-	_, err := client.fetch(context.Background(), testSearchConfig(), server.URL+"/file.bin")
+	_, err := client.fetch(context.Background(), testSearchConfig(), "https://example.com/file.bin")
 	if err == nil {
 		t.Fatal("expected unsupported content type to fail")
+	}
+}
+
+func TestWebsiteClientFetchRejectsResolvedPrivateHosts(t *testing.T) {
+	t.Parallel()
+
+	httpClient := new(http.Client)
+	httpClient.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		t.Fatalf("unexpected request to %q", request.URL.String())
+
+		return nil, os.ErrInvalid
+	})
+
+	client := newWebsiteTestClient(httpClient, defaultExaContentsEndpoint, defaultTavilyExtractEndpoint)
+	client.lookupIP = func(_ context.Context, host string) ([]netip.Addr, error) {
+		if normalizeWebsiteHost(host) != "resolved.example.com" {
+			t.Fatalf("unexpected host lookup %q", host)
+		}
+
+		return []netip.Addr{netip.MustParseAddr("169.254.169.254")}, nil
+	}
+
+	_, err := client.fetch(context.Background(), testSearchConfig(), "https://resolved.example.com/secret")
+	if err == nil {
+		t.Fatal("expected private host resolution to fail")
+	}
+
+	if !errors.Is(err, errUnsafeWebsiteAddress) {
+		t.Fatalf("expected unsafe address error, got %v", err)
+	}
+}
+
+func TestWebsiteClientFetchRejectsRedirectToUnsafeHost(t *testing.T) {
+	t.Parallel()
+
+	requestCount := 0
+
+	httpClient := new(http.Client)
+	httpClient.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		requestCount++
+
+		if requestCount != 1 {
+			t.Fatalf("unexpected request %d to %q", requestCount, request.URL.String())
+		}
+
+		if request.URL.String() != "https://redirect.example.com/article" {
+			t.Fatalf("unexpected redirect source request: %q", request.URL.String())
+		}
+
+		return newWebsiteTestResponse(
+			http.StatusFound,
+			http.Header{
+				"Location": []string{"http://metadata.example.com/latest/meta-data/"},
+			},
+			"",
+			request,
+		), nil
+	})
+
+	client := newWebsiteTestClient(httpClient, defaultExaContentsEndpoint, defaultTavilyExtractEndpoint)
+
+	_, err := client.fetch(context.Background(), testSearchConfig(), "https://redirect.example.com/article")
+	if err == nil {
+		t.Fatal("expected unsafe redirect to fail")
+	}
+
+	if !errors.Is(err, errUnsafeWebsiteAddress) {
+		t.Fatalf("expected unsafe address error, got %v", err)
+	}
+
+	if requestCount != 1 {
+		t.Fatalf("unexpected request count: %d", requestCount)
+	}
+}
+
+func TestWebsiteClientFetchFollowsAllowedRedirects(t *testing.T) {
+	t.Parallel()
+
+	requests := make([]string, 0, 2)
+
+	httpClient := new(http.Client)
+	httpClient.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		requests = append(requests, request.URL.String())
+
+		switch request.URL.String() {
+		case "https://redirect.example.com/article":
+			return newWebsiteTestResponse(
+				http.StatusFound,
+				http.Header{
+					"Location": []string{"https://target.example.com/article"},
+				},
+				"",
+				request,
+			), nil
+		case "https://target.example.com/article":
+			return newWebsiteTestResponse(
+				http.StatusOK,
+				http.Header{
+					"Content-Type": []string{"text/html; charset=utf-8"},
+				},
+				strings.Join([]string{
+					"<!doctype html>",
+					"<html><head><title>Redirect Target</title></head>",
+					"<body><main><p>Redirected content body.</p></main></body></html>",
+				}, ""),
+				request,
+			), nil
+		default:
+			t.Fatalf("unexpected request url: %q", request.URL.String())
+
+			return nil, os.ErrInvalid
+		}
+	})
+
+	client := newWebsiteTestClient(httpClient, defaultExaContentsEndpoint, defaultTavilyExtractEndpoint)
+
+	result, err := client.fetch(
+		context.Background(),
+		testSearchConfig(),
+		"https://redirect.example.com/article",
+	)
+	if err != nil {
+		t.Fatalf("fetch redirected website content: %v", err)
+	}
+
+	if len(requests) != 2 {
+		t.Fatalf("unexpected request count: %d", len(requests))
+	}
+
+	if result.URL != "https://target.example.com/article" {
+		t.Fatalf("unexpected final url: %q", result.URL)
+	}
+
+	if result.Title != "Redirect Target" {
+		t.Fatalf("unexpected title: %q", result.Title)
+	}
+
+	if !containsFold(result.Content, "Redirected content body.") {
+		t.Fatalf("unexpected content: %q", result.Content)
 	}
 }
 
@@ -494,7 +724,7 @@ func TestWebsiteClientFetchUsesExaContentsWhenConfigured(t *testing.T) {
 	loadedConfig := testWebsiteExaAndTavilyConfig()
 	client := newWebsiteTestClient(exaServer.Client(), exaServer.URL, tavilyServer.URL)
 
-	result := mustFetchWebsite(t, client, loadedConfig, "https://example.com/article")
+	result := mustFetchWebsiteArticle(t, client, loadedConfig)
 
 	if exaCallCount != 1 {
 		t.Fatalf("unexpected Exa call count: %d", exaCallCount)
@@ -570,7 +800,7 @@ func TestWebsiteClientFetchUsesTavilyWhenNoExaAPIKeyConfigured(t *testing.T) {
 	loadedConfig := testWebsiteTavilyOnlyConfig()
 	client := newWebsiteTestClient(tavilyServer.Client(), exaServer.URL, tavilyServer.URL)
 
-	result := mustFetchWebsite(t, client, loadedConfig, "https://example.com/article")
+	result := mustFetchWebsiteArticle(t, client, loadedConfig)
 
 	if exaCallCount != 0 {
 		t.Fatalf("unexpected Exa call count: %d", exaCallCount)
@@ -667,7 +897,7 @@ func TestWebsiteClientFetchFallsBackToTavilyWhenExaContentsFails(t *testing.T) {
 	loadedConfig := testWebsiteExaAndTavilyConfig()
 	client := newWebsiteTestClient(exaServer.Client(), exaServer.URL, tavilyServer.URL)
 
-	result := mustFetchWebsite(t, client, loadedConfig, "https://example.com/article")
+	result := mustFetchWebsiteArticle(t, client, loadedConfig)
 
 	if exaCallCount != 1 {
 		t.Fatalf("unexpected Exa call count: %d", exaCallCount)
@@ -740,9 +970,13 @@ func TestWebsiteClientFetchFallsBackToCurrentImplementationWhenExaAndTavilyFail(
 	defer tavilyServer.Close()
 
 	loadedConfig := testWebsiteExaAndTavilyConfig()
-	client := newWebsiteTestClient(localServer.Client(), exaServer.URL, tavilyServer.URL)
+	client := newWebsiteTestClient(
+		newWebsiteForwardingHTTPClient(t, localServer, "example.com"),
+		exaServer.URL,
+		tavilyServer.URL,
+	)
 
-	result := mustFetchWebsite(t, client, loadedConfig, localServer.URL+"/article")
+	result := mustFetchWebsiteArticle(t, client, loadedConfig)
 
 	if exaCallCount != 1 {
 		t.Fatalf("unexpected Exa call count: %d", exaCallCount)
