@@ -265,7 +265,7 @@ func (instance *bot) prepareMessageResponse(
 
 	request, autoCompactResult := instance.autoCompactRequest(ctx, request)
 	if autoCompactResult.Applied {
-		warnings = append(warnings, autoCompactResult.warningForPath("main model"))
+		warnings = append(warnings, autoCompactResult.warningsForPath("main model")...)
 	}
 
 	progress.advance(requestProgressStageGeneratingResponse)

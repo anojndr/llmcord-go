@@ -474,7 +474,7 @@ func (instance *bot) decideWebSearch(
 
 	var warnings []string
 	if autoCompactResult.Applied {
-		warnings = append(warnings, autoCompactResult.warningForPath("search decider"))
+		warnings = append(warnings, autoCompactResult.warningsForPath("search decider")...)
 	}
 
 	responseText, err := collectChatCompletionText(searchContext, instance.chatCompletions, request)

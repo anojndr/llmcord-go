@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 
@@ -161,6 +162,174 @@ func TestAutoCompactRequestUsesConfiguredThresholdPercent(t *testing.T) {
 	}
 }
 
+func TestAutoCompactRequestTruncatesLatestOversizedMessage(t *testing.T) {
+	t.Parallel()
+
+	request := chatCompletionRequest{
+		Provider: providerRequestConfig{
+			APIKind:      "",
+			BaseURL:      "",
+			APIKey:       "",
+			APIKeys:      nil,
+			ExtraHeaders: nil,
+			ExtraQuery:   nil,
+			ExtraBody:    nil,
+		},
+		Model:                       "",
+		ConfiguredModel:             testAutoCompactMainModel,
+		ContextWindow:               1_000,
+		AutoCompactThresholdPercent: 90,
+		SessionID:                   "",
+		Messages: []chatMessage{
+			{Role: messageRoleUser, Content: autoCompactSizedASCIIText(810)},
+		},
+	}
+
+	singleMessageLimit := autoCompactSingleMessageTokenLimit(
+		request.ContextWindow,
+		request.AutoCompactThresholdPercent,
+	)
+	if estimateChatMessageTokens(request.Messages[0]) <= singleMessageLimit {
+		t.Fatalf("unexpected test setup: latest message already fits %d", singleMessageLimit)
+	}
+
+	instance := new(bot)
+	instance.chatCompletions = newUnexpectedCompactionClient(t)
+
+	compactedRequest, result := instance.autoCompactRequest(context.Background(), request)
+	if !result.Applied {
+		t.Fatal("expected oversized latest message truncation to apply")
+	}
+
+	if !result.TruncatedMessage {
+		t.Fatal("expected latest message truncation to be recorded")
+	}
+
+	if result.Strategy != "" {
+		t.Fatalf("did not expect additional compaction strategy: %q", result.Strategy)
+	}
+
+	if len(compactedRequest.Messages) != 1 {
+		t.Fatalf("unexpected truncated request length: %d", len(compactedRequest.Messages))
+	}
+
+	originalText, _ := request.Messages[0].Content.(string)
+
+	truncatedText, ok := compactedRequest.Messages[0].Content.(string)
+	if !ok {
+		t.Fatalf("unexpected truncated content type: %T", compactedRequest.Messages[0].Content)
+	}
+
+	if truncatedText == originalText {
+		t.Fatal("expected latest message text to be truncated")
+	}
+
+	if estimateChatMessageTokens(compactedRequest.Messages[0]) > singleMessageLimit {
+		t.Fatalf(
+			"expected latest message to fit the single-message limit: %d > %d",
+			estimateChatMessageTokens(compactedRequest.Messages[0]),
+			singleMessageLimit,
+		)
+	}
+
+	expectedWarnings := []string{
+		"Warning: main model truncated an oversized message to fit the model context window.",
+	}
+	if !slices.Equal(result.warningsForPath("main model"), expectedWarnings) {
+		t.Fatalf("unexpected truncation warnings: %#v", result.warningsForPath("main model"))
+	}
+}
+
+func TestAutoCompactRequestTruncatesLatestOversizedMessageBeforeSummarizingHistory(t *testing.T) {
+	t.Parallel()
+
+	client := newStubChatClient(func(
+		_ context.Context,
+		request chatCompletionRequest,
+		handle func(streamDelta) error,
+	) error {
+		t.Helper()
+
+		if len(request.Messages) != 2 {
+			t.Fatalf("unexpected compaction request length: %d", len(request.Messages))
+		}
+
+		return handle(newStreamDelta("Condensed older context.", ""))
+	})
+
+	request := chatCompletionRequest{
+		Provider: providerRequestConfig{
+			APIKind:      "",
+			BaseURL:      "",
+			APIKey:       "",
+			APIKeys:      nil,
+			ExtraHeaders: nil,
+			ExtraQuery:   nil,
+			ExtraBody:    nil,
+		},
+		Model:                       "",
+		ConfiguredModel:             testAutoCompactMainModel,
+		ContextWindow:               1_000,
+		AutoCompactThresholdPercent: 90,
+		SessionID:                   "",
+		Messages: []chatMessage{
+			{Role: openAICodexRoleSystem, Content: "Always be helpful."},
+			{Role: messageRoleUser, Content: autoCompactSizedASCIIText(250)},
+			{Role: messageRoleAssistant, Content: autoCompactSizedASCIIText(40)},
+			{Role: messageRoleUser, Content: autoCompactSizedASCIIText(810)},
+		},
+	}
+
+	instance := new(bot)
+	instance.chatCompletions = client
+
+	compactedRequest, result := instance.autoCompactRequest(context.Background(), request)
+	if !result.Applied {
+		t.Fatal("expected truncation and compaction to apply")
+	}
+
+	if !result.TruncatedMessage {
+		t.Fatal("expected latest message truncation to be recorded")
+	}
+
+	if result.Strategy != autoCompactStrategySummary {
+		t.Fatalf("unexpected auto compaction strategy: %q", result.Strategy)
+	}
+
+	expectedWarnings := []string{
+		"Warning: main model truncated an oversized message to fit the model context window.",
+		"Warning: main model auto-compacted older conversation context to fit the model context window.",
+	}
+	if !slices.Equal(result.warningsForPath("main model"), expectedWarnings) {
+		t.Fatalf("unexpected compaction warnings: %#v", result.warningsForPath("main model"))
+	}
+
+	if len(client.requests) == 0 {
+		t.Fatal("expected a compaction request after truncating the latest message")
+	}
+
+	if len(compactedRequest.Messages) != 4 {
+		t.Fatalf("unexpected compacted request length: %d", len(compactedRequest.Messages))
+	}
+
+	summaryText, ok := compactedRequest.Messages[1].Content.(string)
+	if !ok {
+		t.Fatalf("unexpected summary content type: %T", compactedRequest.Messages[1].Content)
+	}
+
+	if !strings.Contains(summaryText, "Condensed older context.") {
+		t.Fatalf("expected summarized content in compacted message: %q", summaryText)
+	}
+
+	latestMessage := compactedRequest.Messages[len(compactedRequest.Messages)-1]
+	if estimateChatMessageTokens(latestMessage) > autoCompactSingleMessageTokenLimit(
+		request.ContextWindow,
+		request.AutoCompactThresholdPercent,
+	) {
+		t.Fatalf("expected latest message to fit the single-message limit: %#v", latestMessage)
+	}
+}
+
 func newConfiguredThresholdAutoCompactRequest() chatCompletionRequest {
 	var request chatCompletionRequest
 
@@ -272,10 +441,11 @@ func TestDecideWebSearchAutoCompactsSearchDeciderRequest(t *testing.T) {
 	}
 
 	expectedWarning := autoCompactResult{
-		Applied:  true,
-		Strategy: autoCompactStrategySummary,
-	}.warningForPath("search decider")
-	if len(warnings) != 1 || warnings[0] != expectedWarning {
+		Applied:          true,
+		Strategy:         autoCompactStrategySummary,
+		TruncatedMessage: false,
+	}.warningsForPath("search decider")
+	if !slices.Equal(warnings, expectedWarning) {
 		t.Fatalf("unexpected compaction warnings: %#v", warnings)
 	}
 
@@ -318,10 +488,12 @@ func TestPrepareMessageResponseAutoCompactsMainRequest(t *testing.T) {
 	}
 
 	expectedWarning := autoCompactResult{
-		Applied:  true,
-		Strategy: autoCompactStrategySummary,
-	}.warningForPath("main model")
-	if !containsFold(strings.Join(warnings, "\n"), expectedWarning) {
+		Applied:          true,
+		Strategy:         autoCompactStrategySummary,
+		TruncatedMessage: false,
+	}.warningsForPath("main model")
+	if len(warnings) < len(expectedWarning) ||
+		!slices.Equal(warnings[len(warnings)-len(expectedWarning):], expectedWarning) {
 		t.Fatalf("expected auto compaction warning in response warnings: %#v", warnings)
 	}
 
@@ -481,4 +653,8 @@ func newPrepareMessageResponseAutoCompactClient(
 
 func repeatedAutoCompactText(fragment string, repeats int) string {
 	return strings.TrimSpace(strings.Repeat(fragment+" ", repeats))
+}
+
+func autoCompactSizedASCIIText(tokens int) string {
+	return strings.Repeat("a", tokens*autoCompactCharsPerToken)
 }

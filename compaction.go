@@ -11,6 +11,9 @@ import (
 const (
 	autoCompactDefaultThresholdPercent = 90
 	autoCompactPercentBase             = 100
+	autoCompactSingleMessageMargin     = 10
+	autoCompactWarningCapacity         = 2
+	autoCompactBinarySearchDivisor     = 2
 	autoCompactMinimumMessages         = 2
 	autoCompactMaxTailMessages         = 4
 	autoCompactMinChunkTokens          = 512
@@ -43,8 +46,9 @@ const (
 )
 
 type autoCompactResult struct {
-	Applied  bool
-	Strategy autoCompactStrategy
+	Applied          bool
+	Strategy         autoCompactStrategy
+	TruncatedMessage bool
 }
 
 func effectiveAutoCompactThresholdPercent(thresholdPercent int) int {
@@ -64,6 +68,30 @@ func autoCompactTokenLimit(contextWindow int, thresholdPercent int) int {
 		autoCompactPercentBase
 }
 
+func autoCompactSingleMessageThresholdPercent(thresholdPercent int) int {
+	singleMessagePercent := effectiveAutoCompactThresholdPercent(thresholdPercent) -
+		autoCompactSingleMessageMargin
+	if singleMessagePercent <= 0 {
+		return 1
+	}
+
+	return singleMessagePercent
+}
+
+func autoCompactSingleMessageTokenLimit(contextWindow int, thresholdPercent int) int {
+	if contextWindow <= 0 {
+		return 0
+	}
+
+	limit := (contextWindow * autoCompactSingleMessageThresholdPercent(thresholdPercent)) /
+		autoCompactPercentBase
+	if limit <= 0 {
+		return 1
+	}
+
+	return limit
+}
+
 func (instance *bot) autoCompactRequest(
 	ctx context.Context,
 	request chatCompletionRequest,
@@ -75,25 +103,35 @@ func (instance *bot) autoCompactRequest(
 
 	if limit <= 0 {
 		return request, autoCompactResult{
-			Applied:  false,
-			Strategy: "",
+			Applied:          false,
+			Strategy:         "",
+			TruncatedMessage: false,
 		}
+	}
+
+	result := autoCompactResult{
+		Applied:          false,
+		Strategy:         "",
+		TruncatedMessage: false,
+	}
+	systemMessages, conversationMessages := splitLeadingSystemMessages(request.Messages)
+
+	conversationMessages, result.TruncatedMessage = truncateLatestConversationMessageToFit(
+		conversationMessages,
+		autoCompactSingleMessageTokenLimit(request.ContextWindow, thresholdPercent),
+	)
+	if result.TruncatedMessage {
+		request.Messages = appendChatMessages(systemMessages, conversationMessages)
+		result.Applied = true
 	}
 
 	estimatedTokens := estimateChatCompletionRequestTokens(request)
 	if estimatedTokens <= limit {
-		return request, autoCompactResult{
-			Applied:  false,
-			Strategy: "",
-		}
+		return request, result
 	}
 
-	systemMessages, conversationMessages := splitLeadingSystemMessages(request.Messages)
 	if len(conversationMessages) < autoCompactMinimumMessages {
-		return request, autoCompactResult{
-			Applied:  false,
-			Strategy: "",
-		}
+		return request, result
 	}
 
 	compactedMessages, warning, err := instance.compactMessagesForRequest(
@@ -120,25 +158,19 @@ func (instance *bot) autoCompactRequest(
 			err,
 		)
 
-		return request, autoCompactResult{
-			Applied:  false,
-			Strategy: "",
-		}
+		return request, result
 	}
 
 	if len(compactedMessages) == 0 || chatMessagesEqual(compactedMessages, request.Messages) {
-		return request, autoCompactResult{
-			Applied:  false,
-			Strategy: "",
-		}
+		return request, result
 	}
 
 	request.Messages = compactedMessages
 
-	return request, autoCompactResult{
-		Applied:  true,
-		Strategy: warning,
-	}
+	result.Applied = true
+	result.Strategy = warning
+
+	return request, result
 }
 
 func (instance *bot) compactMessagesForRequest(
@@ -534,15 +566,29 @@ func autoCompactSummaryMessageText(summaryText string) string {
 	return strings.TrimSpace(autoCompactSummaryPrefix + "\n\n" + strings.TrimSpace(summaryText))
 }
 
-func (result autoCompactResult) warningForPath(path string) string {
+func (result autoCompactResult) warningsForPath(path string) []string {
+	warnings := make([]string, 0, autoCompactWarningCapacity)
+	if result.TruncatedMessage {
+		warnings = append(
+			warnings,
+			"Warning: "+path+" truncated an oversized message to fit the model context window.",
+		)
+	}
+
 	switch result.Strategy {
 	case autoCompactStrategySummary:
-		return "Warning: " + path + " auto-compacted older conversation context to fit the model context window."
+		warnings = append(
+			warnings,
+			"Warning: "+path+" auto-compacted older conversation context to fit the model context window.",
+		)
 	case autoCompactStrategyTrimmed:
-		return "Warning: " + path + " trimmed older conversation context to fit the model context window."
-	default:
-		return ""
+		warnings = append(
+			warnings,
+			"Warning: "+path+" trimmed older conversation context to fit the model context window.",
+		)
 	}
+
+	return warnings
 }
 
 func truncateTextToApproxTokens(text string, tokenLimit int) string {
@@ -550,9 +596,36 @@ func truncateTextToApproxTokens(text string, tokenLimit int) string {
 		return ""
 	}
 
-	charLimit := tokenLimit * autoCompactCharsPerToken
+	trimmedText := strings.TrimSpace(text)
+	if trimmedText == "" {
+		return ""
+	}
 
-	return strings.TrimSpace(truncateRunes(text, charLimit))
+	if estimateTextTokens(trimmedText) <= tokenLimit {
+		return trimmedText
+	}
+
+	runes := []rune(trimmedText)
+	maxRunes := minInt(len(runes), tokenLimit*autoCompactCharsPerToken)
+	low := 0
+	high := maxRunes
+	best := ""
+
+	for low <= high {
+		mid := (low + high) / autoCompactBinarySearchDivisor
+		candidate := strings.TrimSpace(string(runes[:mid]))
+
+		if estimateTextTokens(candidate) <= tokenLimit {
+			best = candidate
+			low = mid + 1
+
+			continue
+		}
+
+		high = mid - 1
+	}
+
+	return best
 }
 
 func autoCompactSummarySystemPrompt() string {
@@ -668,6 +741,145 @@ func splitLeadingSystemMessages(messages []chatMessage) ([]chatMessage, []chatMe
 	conversationMessages := append([]chatMessage(nil), messages[splitIndex:]...)
 
 	return systemMessages, conversationMessages
+}
+
+func truncateLatestConversationMessageToFit(
+	conversationMessages []chatMessage,
+	tokenLimit int,
+) ([]chatMessage, bool) {
+	if len(conversationMessages) == 0 || tokenLimit <= 0 {
+		return conversationMessages, false
+	}
+
+	lastIndex := len(conversationMessages) - 1
+
+	truncatedMessage, truncated := truncateChatMessageToApproxTokens(
+		conversationMessages[lastIndex],
+		tokenLimit,
+	)
+	if !truncated {
+		return conversationMessages, false
+	}
+
+	truncatedMessages := append([]chatMessage(nil), conversationMessages...)
+	truncatedMessages[lastIndex] = truncatedMessage
+
+	return truncatedMessages, true
+}
+
+func truncateChatMessageToApproxTokens(
+	message chatMessage,
+	tokenLimit int,
+) (chatMessage, bool) {
+	if tokenLimit <= 0 || estimateChatMessageTokens(message) <= tokenLimit {
+		return message, false
+	}
+
+	contentTokenLimit := tokenLimit - autoCompactMessageOverheadTokens
+	contentTokenLimit = max(contentTokenLimit, 0)
+
+	switch typedContent := message.Content.(type) {
+	case string:
+		truncatedText := truncateTextToApproxTokens(typedContent, contentTokenLimit)
+		if truncatedText == typedContent {
+			return message, false
+		}
+
+		message.Content = truncatedText
+
+		return message, true
+	case []contentPart:
+		truncatedParts, truncated := truncateContentPartsToApproxTokens(
+			typedContent,
+			contentTokenLimit,
+		)
+		if !truncated {
+			return message, false
+		}
+
+		message.Content = truncatedParts
+
+		return message, true
+	default:
+		return message, false
+	}
+}
+
+func truncateContentPartsToApproxTokens(
+	parts []contentPart,
+	tokenLimit int,
+) ([]contentPart, bool) {
+	if tokenLimit < 0 {
+		tokenLimit = 0
+	}
+
+	nonTextTokens := 0
+
+	for _, part := range parts {
+		partType, _ := part["type"].(string)
+		if partType == contentTypeText {
+			continue
+		}
+
+		nonTextTokens += estimateContentPartTokens(part)
+	}
+
+	if nonTextTokens > tokenLimit {
+		return parts, false
+	}
+
+	remainingTextTokens := tokenLimit - nonTextTokens
+	truncatedParts := make([]contentPart, 0, len(parts))
+	truncated := false
+
+	for _, part := range parts {
+		partType, _ := part["type"].(string)
+		if partType != contentTypeText {
+			truncatedParts = append(truncatedParts, cloneContentPart(part))
+
+			continue
+		}
+
+		textValue, _ := part["text"].(string)
+		if remainingTextTokens <= 0 {
+			if strings.TrimSpace(textValue) != "" {
+				truncated = true
+			}
+
+			continue
+		}
+
+		textTokens := estimateTextTokens(textValue)
+
+		clonedPart := cloneContentPart(part)
+		if textTokens <= remainingTextTokens {
+			truncatedParts = append(truncatedParts, clonedPart)
+			remainingTextTokens -= textTokens
+
+			continue
+		}
+
+		truncatedText := truncateTextToApproxTokens(textValue, remainingTextTokens)
+		if strings.TrimSpace(truncatedText) != strings.TrimSpace(textValue) {
+			truncated = true
+		}
+
+		if strings.TrimSpace(truncatedText) == "" {
+			remainingTextTokens = 0
+
+			continue
+		}
+
+		clonedPart["text"] = truncatedText
+		truncatedParts = append(truncatedParts, clonedPart)
+		remainingTextTokens -= estimateTextTokens(truncatedText)
+	}
+
+	if !truncated {
+		return parts, false
+	}
+
+	return truncatedParts, true
 }
 
 func appendChatMessages(groups ...[]chatMessage) []chatMessage {
