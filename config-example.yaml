@@ -68,6 +68,10 @@ providers:
   openai:
     base_url: https://api.openai.com/v1
     api_key: 
+    # Requests through the built-in `openai` provider default to
+    # `verbosity: low`. To override it for every request:
+    # extra_body:
+    #   verbosity: medium
 
   exa:
     type: exa
@@ -80,8 +84,10 @@ providers:
     # Optional:
     # base_url: https://chatgpt.com/backend-api
     api_key:
-    # Reasoning summaries default to `auto`. To change or disable them:
+    # Requests default to `verbosity: low`, and reasoning summaries default to
+    # `auto`. To override either for every request:
     # extra_body:
+    #   verbosity: medium
     #   reasoning:
     #     summary: concise
 
@@ -119,14 +125,12 @@ models:
   openai/gpt-5:
     context_window: 400000
     reasoning_effort: high
-    verbosity: medium
 
   exa/exa-research-pro:
 
   openai-codex/gpt-5.4:
     context_window: 400000
     reasoning_effort: high
-    verbosity: medium
 
   openrouter/x-ai/grok-4-fast:online:
 

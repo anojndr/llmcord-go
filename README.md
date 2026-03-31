@@ -154,6 +154,7 @@ Notes:
 - Use `type: gemini` for Gemini providers
 - Use `type: exa` for Exa Research Pro providers. It defaults `base_url` to `https://api.exa.ai`.
 - Use `type: openai-codex` for ChatGPT Codex providers
+- The built-in `openai` provider and `type: openai-codex` providers default `verbosity` to `low` unless you override it in config
 
 ### 4) Run the bot
 
@@ -223,8 +224,8 @@ The config schema stays close to the original Python project.
 
 | Setting | Description |
 | --- | --- |
-| `providers` | Provider definitions keyed by provider name. OpenAI-compatible providers use `base_url`. Exa Research Pro providers can use `type: exa`, which defaults `base_url` to `https://api.exa.ai` and still uses OpenAI-compatible chat completions. Gemini providers use `type: gemini` and the native `google.golang.org/genai` client. OpenAI Codex providers use `type: openai-codex` and default to `https://chatgpt.com/backend-api`. `api_key` can be a single string or a YAML list of strings. Optional `extra_headers`, `extra_query`, and `extra_body` are supported. |
-| `models` | Ordered list of `<provider>/<model>` entries. The first entry is the startup default. Append `:vision` for image support heuristics. Model entries can also include local-only settings such as `context_window` for the reply footer and automatic context compaction; this field is not sent upstream. Gemini suffix aliases like `-minimal`, `-low`, `-medium`, and `-high` control thinking level. Codex suffix aliases like `-none`, `-minimal`, `-low`, `-medium`, `-high`, and `-xhigh` control reasoning effort. Alias variants share the same effective `context_window` as their base model. |
+| `providers` | Provider definitions keyed by provider name. OpenAI-compatible providers use `base_url`. Exa Research Pro providers can use `type: exa`, which defaults `base_url` to `https://api.exa.ai` and still uses OpenAI-compatible chat completions. Gemini providers use `type: gemini` and the native `google.golang.org/genai` client. OpenAI Codex providers use `type: openai-codex` and default to `https://chatgpt.com/backend-api`. `api_key` can be a single string or a YAML list of strings. Optional `extra_headers`, `extra_query`, and `extra_body` are supported. The built-in `openai` provider and all `type: openai-codex` providers default `verbosity` to `low` unless you override it. |
+| `models` | Ordered list of `<provider>/<model>` entries. The first entry is the startup default. Append `:vision` for image support heuristics. Model entries can also include local-only settings such as `context_window` for the reply footer and automatic context compaction; this field is not sent upstream. Gemini suffix aliases like `-minimal`, `-low`, `-medium`, and `-high` control thinking level. Codex suffix aliases like `-none`, `-minimal`, `-low`, `-medium`, `-high`, and `-xhigh` control reasoning effort. Model-level `verbosity` or provider `extra_body.verbosity` still overrides the built-in defaults. Alias variants share the same effective `context_window` as their base model. |
 | `channel_model_locks` | Optional map of Discord channel IDs to configured reply models. `/model` is disabled in locked channels. |
 | `search_decider_model` | Optional `<provider>/<model>` used to decide whether web search is required. Defaults to the first configured model. |
 | `media_analysis_model` | Optional `<provider>/<model>` used for Gemini preprocessing of audio/video attachments before non-Gemini replies. |

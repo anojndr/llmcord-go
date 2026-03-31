@@ -13,6 +13,11 @@ import (
 	"github.com/bwmarrin/discordgo"
 )
 
+const (
+	defaultProviderVerbosityLow = "low"
+	defaultOpenAIProviderName   = "openai"
+)
+
 func (instance *bot) handleMessageCreate(
 	_ *discordgo.Session,
 	messageCreate *discordgo.MessageCreate,
@@ -832,6 +837,56 @@ func mergeExtraBody(providerExtraBody map[string]any, modelParameters map[string
 	return mergedBody
 }
 
+func defaultProviderVerbosity(
+	providerName string,
+	providerAPIKind providerAPIKind,
+	extraBody map[string]any,
+) map[string]any {
+	if !usesDefaultProviderVerbosity(providerName, providerAPIKind) || requestBodyHasVerbosity(extraBody) {
+		return extraBody
+	}
+
+	if extraBody == nil {
+		extraBody = make(map[string]any, 1)
+	}
+
+	extraBody["verbosity"] = defaultProviderVerbosityLow
+
+	return extraBody
+}
+
+func usesDefaultProviderVerbosity(providerName string, providerAPIKind providerAPIKind) bool {
+	if providerAPIKind == providerAPIKindOpenAICodex {
+		return true
+	}
+
+	return providerAPIKind == providerAPIKindOpenAI && strings.EqualFold(providerName, defaultOpenAIProviderName)
+}
+
+func requestBodyHasVerbosity(extraBody map[string]any) bool {
+	if len(extraBody) == 0 {
+		return false
+	}
+
+	if _, ok := extraBody["verbosity"]; ok {
+		return true
+	}
+
+	rawTextConfig, hasTextConfig := extraBody["text"]
+	if !hasTextConfig {
+		return false
+	}
+
+	textConfig, textConfigOK := rawTextConfig.(map[string]any)
+	if !textConfigOK {
+		return false
+	}
+
+	_, hasVerbosity := textConfig["verbosity"]
+
+	return hasVerbosity
+}
+
 func requestModelParameters(modelParameters map[string]any) map[string]any {
 	if len(modelParameters) == 0 {
 		return modelParameters
@@ -891,6 +946,7 @@ func buildChatCompletionRequest(
 	modelParameters := requestModelParameters(loadedConfig.Models[providerSlashModel])
 	providerAPIKind := provider.apiKind()
 	extraBody := mergeExtraBody(provider.ExtraBody, modelParameters)
+	extraBody = defaultProviderVerbosity(providerName, providerAPIKind, extraBody)
 
 	if providerAPIKind == providerAPIKindGemini {
 		resolvedModelName, normalizedExtraBody, normalizeErr := normalizeGeminiModelAlias(
