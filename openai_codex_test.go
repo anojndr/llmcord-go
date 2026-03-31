@@ -119,6 +119,49 @@ func TestOpenAICodexClientRejectsInvalidTokenWithoutAccountHeader(t *testing.T) 
 	}
 }
 
+func TestBuildOpenAICodexRequestBodyDefaultsVerbosityToLow(t *testing.T) {
+	t.Parallel()
+
+	provider := new(providerConfig)
+	provider.Type = string(providerAPIKindOpenAICodex)
+
+	var loadedConfig config
+
+	loadedConfig.Providers = map[string]providerConfig{
+		"openai-codex": *provider,
+	}
+	loadedConfig.Models = map[string]map[string]any{
+		"openai-codex/gpt-5.4": nil,
+	}
+
+	request, err := buildChatCompletionRequest(
+		loadedConfig,
+		"openai-codex/gpt-5.4",
+		[]chatMessage{{Role: messageRoleUser, Content: "hello"}},
+	)
+	if err != nil {
+		t.Fatalf("build chat completion request: %v", err)
+	}
+
+	requestBody, err := buildOpenAICodexRequestBody(request)
+	if err != nil {
+		t.Fatalf("build codex request body: %v", err)
+	}
+
+	if _, exists := requestBody["verbosity"]; exists {
+		t.Fatalf("unexpected top-level verbosity key: %#v", requestBody["verbosity"])
+	}
+
+	textConfig, ok := requestBody["text"].(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected text config: %#v", requestBody["text"])
+	}
+
+	if textConfig["verbosity"] != defaultProviderVerbosityLow {
+		t.Fatalf("unexpected text verbosity: %#v", textConfig["verbosity"])
+	}
+}
+
 func TestOpenAICodexClientStreamChatCompletionIncludesCacheMetadata(t *testing.T) {
 	t.Parallel()
 
