@@ -76,7 +76,7 @@ The goal is to make Discord feel like a practical, stateful frontend for LLM wor
 - Plain-response mode using Discord text display components
 - Model labels shown in embed author text
 - Final embeds can show context-window usage from provider token counts when `context_window` is configured for the selected model
-- Automatic context compaction with a configurable global threshold when history approaches the context window, for both main replies and search-decider requests
+- Automatic context compaction with a configurable global threshold when history approaches the context window, plus truncation of a single oversized latest message 10 percentage points below that threshold
 - User-facing error text when upstream streaming fails instead of silently stopping
 - `Show Thinking` button for replies that streamed reasoning
 - `Show Sources` button for web-search and visual-search replies
@@ -225,7 +225,7 @@ The config schema stays close to the original Python project.
 | Setting | Description |
 | --- | --- |
 | `providers` | Provider definitions keyed by provider name. OpenAI-compatible providers use `base_url`. Exa Research Pro providers can use `type: exa`, which defaults `base_url` to `https://api.exa.ai` and still uses OpenAI-compatible chat completions. Gemini providers use `type: gemini` and the native `google.golang.org/genai` client. OpenAI Codex providers use `type: openai-codex` and default to `https://chatgpt.com/backend-api`. `api_key` can be a single string or a YAML list of strings. Optional `extra_headers`, `extra_query`, and `extra_body` are supported. The built-in `openai` provider and all `type: openai-codex` providers default `verbosity` to `low` unless you override it. |
-| `auto_compact_threshold_percent` | Optional global integer percentage for when automatic context compaction begins relative to each model's configured `context_window`. Default: `90`. This setting is local-only and is not sent upstream. |
+| `auto_compact_threshold_percent` | Optional global integer percentage for when automatic context compaction begins relative to each model's configured `context_window`. Default: `90`. The latest oversized conversation message is also truncated at 10 percentage points below this threshold so a single message cannot consume nearly the entire context window by itself. This setting is local-only and is not sent upstream. |
 | `models` | Ordered list of `<provider>/<model>` entries. The first entry is the startup default. Append `:vision` for image support heuristics. Model entries can also include local-only settings such as `context_window` for the reply footer and automatic context compaction; this field is not sent upstream. Gemini suffix aliases like `-minimal`, `-low`, `-medium`, and `-high` control thinking level. Codex suffix aliases like `-none`, `-minimal`, `-low`, `-medium`, `-high`, and `-xhigh` control reasoning effort. Model-level `verbosity` or provider `extra_body.verbosity` still overrides the built-in defaults. Alias variants share the same effective `context_window` as their base model. |
 | `channel_model_locks` | Optional map of Discord channel IDs to configured reply models. `/model` is disabled in locked channels. |
 | `search_decider_model` | Optional `<provider>/<model>` used to decide whether web search is required. Defaults to the first configured model. |
@@ -317,7 +317,7 @@ golangci-lint run --default=all
 - Streaming failures, blocked responses, and prematurely terminated streams are surfaced to users as visible errors.
 - Providers pointing at `https://openrouter.ai/...` automatically send `transforms: ["middle-out"]` unless overridden.
 - OpenAI-compatible chat completions retry once without degraded tools or functions when applicable.
-- When `context_window` is configured for a model, llmcord-go auto-compacts older conversation context before sending oversized main-model or search-decider requests. The default trigger is `90%` of the configured context window, and you can override it globally with `auto_compact_threshold_percent`.
+- When `context_window` is configured for a model, llmcord-go auto-compacts older conversation context before sending oversized main-model or search-decider requests. The default trigger is `90%` of the configured context window, and you can override it globally with `auto_compact_threshold_percent`. The latest oversized conversation message is truncated at 10 percentage points below that threshold before older-context compaction runs.
 - If a provider has multiple API keys, the bot tries them in order until one succeeds or all fail. Gemini, OpenAI, and OpenAI Codex rate-limit responses wait on the same key once when the provider returns a retry delay of 1 minute or less, then rotate to the next key if needed. Longer retry delays skip straight to the next key when one is configured, and rotation only happens before any response chunks have been streamed.
 
 ### Attachment and enrichment behavior
