@@ -96,6 +96,118 @@ func TestAutoCompactRequestAddsSummaryAndPreservesRecentMessages(t *testing.T) {
 	}
 }
 
+func TestAutoCompactRequestUsesConfiguredThresholdPercent(t *testing.T) {
+	t.Parallel()
+
+	originalRequest := newConfiguredThresholdAutoCompactRequest()
+
+	estimatedTokens := estimateChatCompletionRequestTokens(originalRequest)
+	customLimit := autoCompactTokenLimit(
+		originalRequest.ContextWindow,
+		originalRequest.AutoCompactThresholdPercent,
+	)
+	defaultLimit := autoCompactTokenLimit(originalRequest.ContextWindow, 0)
+
+	if estimatedTokens <= customLimit || estimatedTokens > defaultLimit {
+		t.Fatalf(
+			"unexpected test setup: estimated=%d custom_limit=%d default_limit=%d",
+			estimatedTokens,
+			customLimit,
+			defaultLimit,
+		)
+	}
+
+	noCompactInstance := new(bot)
+	noCompactInstance.chatCompletions = newUnexpectedCompactionClient(t)
+
+	defaultThresholdRequest := originalRequest
+	defaultThresholdRequest.AutoCompactThresholdPercent = 0
+
+	uncompactedRequest, defaultResult := noCompactInstance.autoCompactRequest(
+		context.Background(),
+		defaultThresholdRequest,
+	)
+	if defaultResult.Applied {
+		t.Fatal("did not expect auto compaction to apply with the default threshold")
+	}
+
+	if !chatMessagesEqual(uncompactedRequest.Messages, defaultThresholdRequest.Messages) {
+		t.Fatalf("unexpected request mutation without compaction: %#v", uncompactedRequest.Messages)
+	}
+
+	instance := new(bot)
+	instance.chatCompletions = newThresholdCompactionClient(t)
+
+	compactedRequest, result := instance.autoCompactRequest(context.Background(), originalRequest)
+	if !result.Applied {
+		t.Fatal("expected auto compaction to apply with the configured threshold")
+	}
+
+	if result.Strategy != autoCompactStrategySummary {
+		t.Fatalf("unexpected auto compaction strategy: %q", result.Strategy)
+	}
+
+	if len(compactedRequest.Messages) != 3 {
+		t.Fatalf("unexpected compacted request length: %d", len(compactedRequest.Messages))
+	}
+
+	summaryText, ok := compactedRequest.Messages[0].Content.(string)
+	if !ok {
+		t.Fatalf("unexpected summary content type: %T", compactedRequest.Messages[0].Content)
+	}
+
+	if !strings.Contains(summaryText, "Condensed earlier context.") {
+		t.Fatalf("expected summarized content in compacted message: %q", summaryText)
+	}
+}
+
+func newConfiguredThresholdAutoCompactRequest() chatCompletionRequest {
+	var request chatCompletionRequest
+
+	request.ConfiguredModel = testAutoCompactMainModel
+	request.ContextWindow = 200
+	request.AutoCompactThresholdPercent = 50
+	request.Messages = []chatMessage{
+		{Role: messageRoleUser, Content: repeatedAutoCompactText("older details", 32)},
+		{Role: messageRoleAssistant, Content: "Earlier answer."},
+		{Role: messageRoleUser, Content: "Latest question."},
+	}
+
+	return request
+}
+
+func newUnexpectedCompactionClient(t *testing.T) *stubChatCompletionClient {
+	t.Helper()
+
+	return newStubChatClient(func(
+		context.Context,
+		chatCompletionRequest,
+		func(streamDelta) error,
+	) error {
+		t.Fatal("did not expect compaction request when using the default threshold")
+
+		return nil
+	})
+}
+
+func newThresholdCompactionClient(t *testing.T) *stubChatCompletionClient {
+	t.Helper()
+
+	return newStubChatClient(func(
+		_ context.Context,
+		request chatCompletionRequest,
+		handle func(streamDelta) error,
+	) error {
+		t.Helper()
+
+		if len(request.Messages) != 2 {
+			t.Fatalf("unexpected compaction request length: %d", len(request.Messages))
+		}
+
+		return handle(newStreamDelta("Condensed earlier context.", ""))
+	})
+}
+
 func TestDecideWebSearchAutoCompactsSearchDeciderRequest(t *testing.T) {
 	t.Parallel()
 

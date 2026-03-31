@@ -9,20 +9,20 @@ import (
 )
 
 const (
-	autoCompactContextWindowPercent  = 90
-	autoCompactPercentBase           = 100
-	autoCompactMinimumMessages       = 2
-	autoCompactMaxTailMessages       = 4
-	autoCompactMinChunkTokens        = 512
-	autoCompactMaxChunkTokens        = 3000
-	autoCompactChunkDivisor          = 3
-	autoCompactCharsPerToken         = 4
-	autoCompactMessageOverheadTokens = 8
-	autoCompactImageTokens           = 1024
-	autoCompactAudioTokens           = 4096
-	autoCompactDocumentTokens        = 4096
-	autoCompactVideoTokens           = 8192
-	autoCompactSummaryPrefix         = "Earlier conversation summary " +
+	autoCompactDefaultThresholdPercent = 90
+	autoCompactPercentBase             = 100
+	autoCompactMinimumMessages         = 2
+	autoCompactMaxTailMessages         = 4
+	autoCompactMinChunkTokens          = 512
+	autoCompactMaxChunkTokens          = 3000
+	autoCompactChunkDivisor            = 3
+	autoCompactCharsPerToken           = 4
+	autoCompactMessageOverheadTokens   = 8
+	autoCompactImageTokens             = 1024
+	autoCompactAudioTokens             = 4096
+	autoCompactDocumentTokens          = 4096
+	autoCompactVideoTokens             = 8192
+	autoCompactSummaryPrefix           = "Earlier conversation summary " +
 		"(auto-compacted to fit the model context window):"
 	autoCompactSummaryUserPrefix     = "Summarize this earlier conversation context so it can be carried forward:\n\n"
 	autoCompactMergeUserPrefix       = "Merge these partial conversation summaries into one concise summary:\n\n"
@@ -47,19 +47,32 @@ type autoCompactResult struct {
 	Strategy autoCompactStrategy
 }
 
-func autoCompactTokenLimit(contextWindow int) int {
+func effectiveAutoCompactThresholdPercent(thresholdPercent int) int {
+	if thresholdPercent <= 0 {
+		return autoCompactDefaultThresholdPercent
+	}
+
+	return thresholdPercent
+}
+
+func autoCompactTokenLimit(contextWindow int, thresholdPercent int) int {
 	if contextWindow <= 0 {
 		return 0
 	}
 
-	return (contextWindow * autoCompactContextWindowPercent) / autoCompactPercentBase
+	return (contextWindow * effectiveAutoCompactThresholdPercent(thresholdPercent)) /
+		autoCompactPercentBase
 }
 
 func (instance *bot) autoCompactRequest(
 	ctx context.Context,
 	request chatCompletionRequest,
 ) (chatCompletionRequest, autoCompactResult) {
-	limit := autoCompactTokenLimit(request.ContextWindow)
+	thresholdPercent := effectiveAutoCompactThresholdPercent(
+		request.AutoCompactThresholdPercent,
+	)
+	limit := autoCompactTokenLimit(request.ContextWindow, thresholdPercent)
+
 	if limit <= 0 {
 		return request, autoCompactResult{
 			Applied:  false,
@@ -97,6 +110,8 @@ func (instance *bot) autoCompactRequest(
 			request.ConfiguredModel,
 			"context_window",
 			request.ContextWindow,
+			"threshold_percent",
+			thresholdPercent,
 			"estimated_tokens",
 			estimatedTokens,
 			"token_limit",

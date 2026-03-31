@@ -183,57 +183,60 @@ type databaseConfig struct {
 type providerAPIKind string
 
 const (
-	providerAPIKindOpenAI       providerAPIKind = "openai"
-	providerAPIKindOpenAICodex  providerAPIKind = "openai-codex"
-	providerAPIKindGemini       providerAPIKind = "gemini"
-	providerTypeExa                             = "exa"
-	modelConfigContextWindowKey                 = "context_window"
+	providerAPIKindOpenAI                     providerAPIKind = "openai"
+	providerAPIKindOpenAICodex                providerAPIKind = "openai-codex"
+	providerAPIKindGemini                     providerAPIKind = "gemini"
+	providerTypeExa                                           = "exa"
+	modelConfigContextWindowKey                               = "context_window"
+	modelConfigAutoCompactThresholdPercentKey                 = "auto_compact_threshold_percent"
 )
 
 type rawConfig struct {
-	BotToken           scalarString                 `yaml:"bot_token"`
-	ClientID           scalarString                 `yaml:"client_id"`
-	StatusMessage      string                       `yaml:"status_message"`
-	MaxText            *int                         `yaml:"max_text"`
-	MaxImages          *int                         `yaml:"max_images"`
-	MaxMessages        *int                         `yaml:"max_messages"`
-	UsePlainResponses  bool                         `yaml:"use_plain_responses"`
-	AllowDMs           *bool                        `yaml:"allow_dms"`
-	Permissions        permissionsConfig            `yaml:"permissions"`
-	Providers          map[string]rawProviderConfig `yaml:"providers"`
-	Facebook           rawFacebookConfig            `yaml:"facebook"`
-	WebSearch          rawWebSearchConfig           `yaml:"web_search"`
-	VisualSearch       rawVisualSearchConfig        `yaml:"visual_search"`
-	Database           rawDatabaseConfig            `yaml:"database"`
-	Models             map[string]map[string]any    `yaml:"models"`
-	ChannelModelLocks  map[string]scalarString      `yaml:"channel_model_locks"`
-	SearchDeciderModel scalarString                 `yaml:"search_decider_model"`
-	MediaAnalysisModel scalarString                 `yaml:"media_analysis_model"`
-	SystemPrompt       string                       `yaml:"system_prompt"`
+	BotToken                    scalarString                 `yaml:"bot_token"`
+	ClientID                    scalarString                 `yaml:"client_id"`
+	StatusMessage               string                       `yaml:"status_message"`
+	MaxText                     *int                         `yaml:"max_text"`
+	MaxImages                   *int                         `yaml:"max_images"`
+	MaxMessages                 *int                         `yaml:"max_messages"`
+	UsePlainResponses           bool                         `yaml:"use_plain_responses"`
+	AllowDMs                    *bool                        `yaml:"allow_dms"`
+	Permissions                 permissionsConfig            `yaml:"permissions"`
+	Providers                   map[string]rawProviderConfig `yaml:"providers"`
+	Facebook                    rawFacebookConfig            `yaml:"facebook"`
+	WebSearch                   rawWebSearchConfig           `yaml:"web_search"`
+	VisualSearch                rawVisualSearchConfig        `yaml:"visual_search"`
+	Database                    rawDatabaseConfig            `yaml:"database"`
+	AutoCompactThresholdPercent *int                         `yaml:"auto_compact_threshold_percent"`
+	Models                      map[string]map[string]any    `yaml:"models"`
+	ChannelModelLocks           map[string]scalarString      `yaml:"channel_model_locks"`
+	SearchDeciderModel          scalarString                 `yaml:"search_decider_model"`
+	MediaAnalysisModel          scalarString                 `yaml:"media_analysis_model"`
+	SystemPrompt                string                       `yaml:"system_prompt"`
 }
 
 type config struct {
-	BotToken            string
-	ClientID            string
-	StatusMessage       string
-	MaxText             int
-	MaxImages           int
-	MaxMessages         int
-	UsePlainResponses   bool
-	AllowDMs            bool
-	Permissions         permissionsConfig
-	Providers           map[string]providerConfig
-	Facebook            facebookExtractorConfig
-	WebSearch           webSearchConfig
-	VisualSearch        visualSearchConfig
-	Database            databaseConfig
-	Models              map[string]map[string]any
-	ModelContextWindows map[string]int
-	ModelOrder          []string
-	ChannelModelLocks   map[string]string
-	SearchDeciderModel  string
-	MediaAnalysisModel  string
-	SystemPrompt        string
+	BotToken                    string
+	ClientID                    string
+	StatusMessage               string
+	MaxText                     int
+	MaxImages                   int
+	MaxMessages                 int
+	UsePlainResponses           bool
+	AllowDMs                    bool
+	Permissions                 permissionsConfig
+	Providers                   map[string]providerConfig
+	Facebook                    facebookExtractorConfig
+	WebSearch                   webSearchConfig
+	VisualSearch                visualSearchConfig
+	Database                    databaseConfig
+	AutoCompactThresholdPercent int
+	Models                      map[string]map[string]any
+	ModelContextWindows         map[string]int
+	ModelOrder                  []string
+	ChannelModelLocks           map[string]string
+	SearchDeciderModel          string
+	MediaAnalysisModel          string
+	SystemPrompt                string
 }
 
 func loadConfig(filename string) (config, error) {
@@ -294,6 +297,15 @@ func buildLoadedConfig(
 		return config{}, fmt.Errorf("resolve model context windows from %q: %w", filename, err)
 	}
 
+	err = validateNoModelLocalAutoCompactThreshold(rawLoadedConfig.Models)
+	if err != nil {
+		return config{}, fmt.Errorf(
+			"validate model settings from %q: %w",
+			filename,
+			err,
+		)
+	}
+
 	loadedConfig := config{
 		BotToken:          string(rawLoadedConfig.BotToken),
 		ClientID:          string(rawLoadedConfig.ClientID),
@@ -313,7 +325,11 @@ func buildLoadedConfig(
 				APIKeys: serpAPIVisualSearchKeys,
 			},
 		},
-		Database:            normalizeDatabaseConfig(rawLoadedConfig.Database),
+		Database: normalizeDatabaseConfig(rawLoadedConfig.Database),
+		AutoCompactThresholdPercent: intValueOrDefault(
+			rawLoadedConfig.AutoCompactThresholdPercent,
+			autoCompactDefaultThresholdPercent,
+		),
 		Models:              rawLoadedConfig.Models,
 		ModelContextWindows: modelContextWindows,
 		ModelOrder:          modelOrder,
@@ -405,7 +421,7 @@ func normalizeStringScalarMap(rawValues map[string]scalarString) map[string]stri
 	return values
 }
 
-type modelContextWindowSetting struct {
+type modelIntSetting struct {
 	GroupKey string
 	Value    int
 	Explicit bool
@@ -415,11 +431,25 @@ func effectiveModelContextWindows(
 	providers map[string]providerConfig,
 	models map[string]map[string]any,
 ) (map[string]int, error) {
+	return effectiveAliasedModelIntSettings(
+		providers,
+		models,
+		modelConfigContextWindowKey,
+		nil,
+	)
+}
+
+func effectiveAliasedModelIntSettings(
+	providers map[string]providerConfig,
+	models map[string]map[string]any,
+	settingKey string,
+	validate func(int) error,
+) (map[string]int, error) {
 	if len(models) == 0 {
 		return map[string]int{}, nil
 	}
 
-	settings := make(map[string]modelContextWindowSetting, len(models))
+	settings := make(map[string]modelIntSetting, len(models))
 	groupValues := make(map[string]int)
 	groupSources := make(map[string]string)
 
@@ -431,19 +461,26 @@ func effectiveModelContextWindows(
 
 		baseModelName := modelName
 		if provider, ok := providers[providerName]; ok {
-			baseModelName, err = modelContextWindowBaseModel(provider, modelName)
+			baseModelName, err = modelLocalSettingBaseModel(provider, modelName)
 			if err != nil {
 				return nil, fmt.Errorf("normalize base model for %q: %w", configuredModel, err)
 			}
 		}
 
-		value, explicit, err := modelContextWindowValue(modelParameters)
+		value, explicit, err := modelPositiveIntSettingValue(modelParameters, settingKey)
 		if err != nil {
-			return nil, fmt.Errorf("read %s for model %q: %w", modelConfigContextWindowKey, configuredModel, err)
+			return nil, fmt.Errorf("read %s for model %q: %w", settingKey, configuredModel, err)
+		}
+
+		if explicit && validate != nil {
+			err = validate(value)
+			if err != nil {
+				return nil, fmt.Errorf("validate %s for model %q: %w", settingKey, configuredModel, err)
+			}
 		}
 
 		groupKey := providerName + "/" + baseModelName
-		settings[configuredModel] = modelContextWindowSetting{
+		settings[configuredModel] = modelIntSetting{
 			GroupKey: groupKey,
 			Value:    value,
 			Explicit: explicit,
@@ -458,7 +495,7 @@ func effectiveModelContextWindows(
 				"models %q and %q must share the same %s because they resolve to base model %q: %w",
 				groupSources[groupKey],
 				configuredModel,
-				modelConfigContextWindowKey,
+				settingKey,
 				groupKey,
 				os.ErrInvalid,
 			)
@@ -493,7 +530,7 @@ func effectiveModelContextWindows(
 	return effectiveValues, nil
 }
 
-func modelContextWindowBaseModel(provider providerConfig, modelName string) (string, error) {
+func modelLocalSettingBaseModel(provider providerConfig, modelName string) (string, error) {
 	switch provider.apiKind() {
 	case providerAPIKindOpenAI:
 		return modelName, nil
@@ -513,12 +550,15 @@ func modelContextWindowBaseModel(provider providerConfig, modelName string) (str
 	}
 }
 
-func modelContextWindowValue(modelParameters map[string]any) (int, bool, error) {
+func modelPositiveIntSettingValue(
+	modelParameters map[string]any,
+	settingKey string,
+) (int, bool, error) {
 	if len(modelParameters) == 0 {
 		return 0, false, nil
 	}
 
-	rawValue, ok := modelParameters[modelConfigContextWindowKey]
+	rawValue, ok := modelParameters[settingKey]
 	if !ok {
 		return 0, false, nil
 	}
@@ -529,6 +569,44 @@ func modelContextWindowValue(modelParameters map[string]any) (int, bool, error) 
 	}
 
 	return value, true, nil
+}
+
+func validateNoModelLocalAutoCompactThreshold(models map[string]map[string]any) error {
+	for configuredModel, modelParameters := range models {
+		if len(modelParameters) == 0 {
+			continue
+		}
+
+		if _, ok := modelParameters[modelConfigAutoCompactThresholdPercentKey]; !ok {
+			continue
+		}
+
+		return fmt.Errorf(
+			"model %q must not define %s; use top-level %s instead: %w",
+			configuredModel,
+			modelConfigAutoCompactThresholdPercentKey,
+			modelConfigAutoCompactThresholdPercentKey,
+			os.ErrInvalid,
+		)
+	}
+
+	return nil
+}
+
+func validateAutoCompactThresholdPercent(value int) error {
+	if value <= 0 {
+		return fmt.Errorf("must be greater than zero: %w", os.ErrInvalid)
+	}
+
+	if value > autoCompactPercentBase {
+		return fmt.Errorf(
+			"must be less than or equal to %d: %w",
+			autoCompactPercentBase,
+			os.ErrInvalid,
+		)
+	}
+
+	return nil
 }
 
 func anyPositiveIntValue(value any) (int, error) {
@@ -704,6 +782,11 @@ func validateConfig(loadedConfig config) error {
 	err = validateDatabaseConfig(loadedConfig.Database)
 	if err != nil {
 		return err
+	}
+
+	err = validateAutoCompactThresholdPercent(loadedConfig.AutoCompactThresholdPercent)
+	if err != nil {
+		return fmt.Errorf("auto_compact_threshold_percent %w", err)
 	}
 
 	for _, modelName := range loadedConfig.ModelOrder {

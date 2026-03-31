@@ -154,10 +154,11 @@ func TestOpenAIClientStreamChatCompletion(t *testing.T) {
 				"temperature": 0.2,
 			},
 		},
-		Model:           "gpt-test",
-		ConfiguredModel: "",
-		ContextWindow:   0,
-		SessionID:       "",
+		Model:                       "gpt-test",
+		ConfiguredModel:             "",
+		ContextWindow:               0,
+		AutoCompactThresholdPercent: 0,
+		SessionID:                   "",
 		Messages: []chatMessage{
 			{Role: "user", Content: "hello"},
 		},
@@ -218,11 +219,12 @@ func TestOpenAIClientRetriesWithoutStreamingUsageWhenProviderRejectsIt(t *testin
 			ExtraQuery:   nil,
 			ExtraBody:    nil,
 		},
-		Model:           "gpt-test",
-		ConfiguredModel: "",
-		ContextWindow:   0,
-		SessionID:       "",
-		Messages:        []chatMessage{{Role: "user", Content: "hello"}},
+		Model:                       "gpt-test",
+		ConfiguredModel:             "",
+		ContextWindow:               0,
+		AutoCompactThresholdPercent: 0,
+		SessionID:                   "",
+		Messages:                    []chatMessage{{Role: "user", Content: "hello"}},
 	}
 
 	var joinedContent strings.Builder
@@ -355,11 +357,12 @@ func TestOpenAIClientStreamChatCompletionReturnsStatusErrors(t *testing.T) {
 			ExtraQuery:   nil,
 			ExtraBody:    nil,
 		},
-		Model:           "gpt-test",
-		ConfiguredModel: "",
-		ContextWindow:   0,
-		SessionID:       "",
-		Messages:        []chatMessage{{Role: "user", Content: "hello"}},
+		Model:                       "gpt-test",
+		ConfiguredModel:             "",
+		ContextWindow:               0,
+		AutoCompactThresholdPercent: 0,
+		SessionID:                   "",
+		Messages:                    []chatMessage{{Role: "user", Content: "hello"}},
 	}
 
 	err := client.streamChatCompletion(context.Background(), request, func(streamDelta) error {
@@ -403,11 +406,12 @@ func TestOpenAIClientStreamChatCompletionParsesJSONStatusErrors(t *testing.T) {
 			ExtraQuery:   nil,
 			ExtraBody:    nil,
 		},
-		Model:           "gpt-test",
-		ConfiguredModel: "",
-		ContextWindow:   0,
-		SessionID:       "",
-		Messages:        []chatMessage{{Role: "user", Content: "hello"}},
+		Model:                       "gpt-test",
+		ConfiguredModel:             "",
+		ContextWindow:               0,
+		AutoCompactThresholdPercent: 0,
+		SessionID:                   "",
+		Messages:                    []chatMessage{{Role: "user", Content: "hello"}},
 	}
 
 	err := client.streamChatCompletion(context.Background(), request, func(streamDelta) error {
@@ -457,11 +461,12 @@ func TestOpenAIClientStreamChatCompletionReturnsStreamEventErrors(t *testing.T) 
 			ExtraQuery:   nil,
 			ExtraBody:    nil,
 		},
-		Model:           "gpt-test",
-		ConfiguredModel: "",
-		ContextWindow:   0,
-		SessionID:       "",
-		Messages:        []chatMessage{{Role: "user", Content: "hello"}},
+		Model:                       "gpt-test",
+		ConfiguredModel:             "",
+		ContextWindow:               0,
+		AutoCompactThresholdPercent: 0,
+		SessionID:                   "",
+		Messages:                    []chatMessage{{Role: "user", Content: "hello"}},
 	}
 
 	err := client.streamChatCompletion(context.Background(), request, func(streamDelta) error {
@@ -505,11 +510,12 @@ func TestOpenAIClientStreamChatCompletionReturnsBlockedFinishReasonErrors(t *tes
 			ExtraQuery:   nil,
 			ExtraBody:    nil,
 		},
-		Model:           "gpt-test",
-		ConfiguredModel: "",
-		ContextWindow:   0,
-		SessionID:       "",
-		Messages:        []chatMessage{{Role: "user", Content: "hello"}},
+		Model:                       "gpt-test",
+		ConfiguredModel:             "",
+		ContextWindow:               0,
+		AutoCompactThresholdPercent: 0,
+		SessionID:                   "",
+		Messages:                    []chatMessage{{Role: "user", Content: "hello"}},
 	}
 
 	err := client.streamChatCompletion(context.Background(), request, func(streamDelta) error {
@@ -547,11 +553,12 @@ func TestOpenAIClientStreamChatCompletionReturnsErrorWithoutDoneMarker(t *testin
 			ExtraQuery:   nil,
 			ExtraBody:    nil,
 		},
-		Model:           "gpt-test",
-		ConfiguredModel: "",
-		ContextWindow:   0,
-		SessionID:       "",
-		Messages:        []chatMessage{{Role: "user", Content: "hello"}},
+		Model:                       "gpt-test",
+		ConfiguredModel:             "",
+		ContextWindow:               0,
+		AutoCompactThresholdPercent: 0,
+		SessionID:                   "",
+		Messages:                    []chatMessage{{Role: "user", Content: "hello"}},
 	}
 
 	err := client.streamChatCompletion(context.Background(), request, func(streamDelta) error {
@@ -661,11 +668,12 @@ func newOpenAIDegradedFunctionRetryRequest(baseURL string) chatCompletionRequest
 				},
 			},
 		},
-		Model:           "gpt-test",
-		ConfiguredModel: "openai/gpt-test",
-		ContextWindow:   0,
-		SessionID:       "",
-		Messages:        []chatMessage{{Role: messageRoleUser, Content: "hello"}},
+		Model:                       "gpt-test",
+		ConfiguredModel:             "openai/gpt-test",
+		ContextWindow:               0,
+		AutoCompactThresholdPercent: 0,
+		SessionID:                   "",
+		Messages:                    []chatMessage{{Role: messageRoleUser, Content: "hello"}},
 	}
 }
 

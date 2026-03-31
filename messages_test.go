@@ -144,6 +144,7 @@ func TestBuildChatCompletionRequestUsesContextWindowWithoutSendingItToProvider(t
 	loadedConfig.ModelContextWindows = map[string]int{
 		"openai/gpt-5.1": 400_000,
 	}
+	loadedConfig.AutoCompactThresholdPercent = 75
 
 	request, err := buildChatCompletionRequest(
 		loadedConfig,
@@ -156,6 +157,10 @@ func TestBuildChatCompletionRequestUsesContextWindowWithoutSendingItToProvider(t
 
 	if request.ContextWindow != 400_000 {
 		t.Fatalf("unexpected context window: %d", request.ContextWindow)
+	}
+
+	if request.AutoCompactThresholdPercent != 75 {
+		t.Fatalf("unexpected auto compact threshold percent: %d", request.AutoCompactThresholdPercent)
 	}
 
 	if _, ok := request.Provider.ExtraBody[modelConfigContextWindowKey]; ok {

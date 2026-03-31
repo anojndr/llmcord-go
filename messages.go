@@ -893,11 +893,14 @@ func requestModelParameters(modelParameters map[string]any) map[string]any {
 	}
 
 	if _, ok := modelParameters[modelConfigContextWindowKey]; !ok {
-		return modelParameters
+		if _, ok := modelParameters[modelConfigAutoCompactThresholdPercentKey]; !ok {
+			return modelParameters
+		}
 	}
 
 	filteredParameters := maps.Clone(modelParameters)
 	delete(filteredParameters, modelConfigContextWindowKey)
+	delete(filteredParameters, modelConfigAutoCompactThresholdPercentKey)
 
 	return filteredParameters
 }
@@ -981,10 +984,11 @@ func buildChatCompletionRequest(
 			ExtraQuery:   provider.ExtraQuery,
 			ExtraBody:    extraBody,
 		},
-		Model:           modelName,
-		ConfiguredModel: providerSlashModel,
-		ContextWindow:   loadedConfig.modelContextWindow(providerSlashModel),
-		SessionID:       "",
-		Messages:        messages,
+		Model:                       modelName,
+		ConfiguredModel:             providerSlashModel,
+		ContextWindow:               loadedConfig.modelContextWindow(providerSlashModel),
+		AutoCompactThresholdPercent: loadedConfig.AutoCompactThresholdPercent,
+		SessionID:                   "",
+		Messages:                    messages,
 	}, nil
 }
