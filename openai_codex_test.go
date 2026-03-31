@@ -37,10 +37,11 @@ func TestOpenAICodexClientStreamChatCompletion(t *testing.T) {
 			map[string]any{"feature": "enabled"},
 			map[string]any{"verbosity": "high", "reasoning_effort": "medium"},
 		),
-		Model:           testOpenAICodexModel,
-		ConfiguredModel: "",
-		ContextWindow:   0,
-		SessionID:       "",
+		Model:                       testOpenAICodexModel,
+		ConfiguredModel:             "",
+		ContextWindow:               0,
+		AutoCompactThresholdPercent: 0,
+		SessionID:                   "",
 		Messages: []chatMessage{
 			{Role: openAICodexRoleSystem, Content: "Be brief."},
 			{
@@ -95,11 +96,12 @@ func TestOpenAICodexClientRejectsInvalidTokenWithoutAccountHeader(t *testing.T) 
 
 	client := newOpenAICodexClient(new(http.Client))
 	request := chatCompletionRequest{
-		Provider:        newOpenAICodexProviderRequestConfig("not-a-jwt", "", nil, nil, nil),
-		Model:           testOpenAICodexModel,
-		ConfiguredModel: "",
-		ContextWindow:   0,
-		SessionID:       "",
+		Provider:                    newOpenAICodexProviderRequestConfig("not-a-jwt", "", nil, nil, nil),
+		Model:                       testOpenAICodexModel,
+		ConfiguredModel:             "",
+		ContextWindow:               0,
+		AutoCompactThresholdPercent: 0,
+		SessionID:                   "",
 		Messages: []chatMessage{
 			{Role: openAICodexRoleSystem, Content: "Be brief."},
 			{Role: messageRoleUser, Content: testOpenAICodexHelloText},
@@ -192,10 +194,11 @@ func TestOpenAICodexClientStreamChatCompletionIncludesCacheMetadata(t *testing.T
 			map[string]any{"feature": "enabled"},
 			map[string]any{"verbosity": "high", "reasoning_effort": "medium"},
 		),
-		Model:           testOpenAICodexModel,
-		ConfiguredModel: "codex/gpt-5.2-codex",
-		ContextWindow:   0,
-		SessionID:       sessionID,
+		Model:                       testOpenAICodexModel,
+		ConfiguredModel:             "codex/gpt-5.2-codex",
+		ContextWindow:               0,
+		AutoCompactThresholdPercent: 0,
+		SessionID:                   sessionID,
 		Messages: []chatMessage{
 			{Role: openAICodexRoleSystem, Content: "Be brief."},
 			{
@@ -233,10 +236,11 @@ func TestBuildOpenAICodexRequestBodyPreservesNestedReasoningConfig(t *testing.T)
 				},
 			},
 		),
-		Model:           "gpt-5.4",
-		ConfiguredModel: "",
-		ContextWindow:   0,
-		SessionID:       "",
+		Model:                       "gpt-5.4",
+		ConfiguredModel:             "",
+		ContextWindow:               0,
+		AutoCompactThresholdPercent: 0,
+		SessionID:                   "",
 		Messages: []chatMessage{
 			{Role: messageRoleUser, Content: testOpenAICodexHelloText},
 		},
@@ -276,10 +280,11 @@ func TestBuildOpenAICodexRequestBodyDefaultsReasoningSummaryWithoutEffort(t *tes
 			nil,
 			nil,
 		),
-		Model:           "gpt-5.4",
-		ConfiguredModel: "",
-		ContextWindow:   0,
-		SessionID:       "",
+		Model:                       "gpt-5.4",
+		ConfiguredModel:             "",
+		ContextWindow:               0,
+		AutoCompactThresholdPercent: 0,
+		SessionID:                   "",
 		Messages: []chatMessage{
 			{Role: messageRoleUser, Content: testOpenAICodexHelloText},
 		},
@@ -321,10 +326,11 @@ func TestBuildOpenAICodexRequestBodyClampsNestedReasoningConfigWithoutMutatingOr
 				"reasoning": originalReasoningConfig,
 			},
 		),
-		Model:           "gpt-5.4",
-		ConfiguredModel: "",
-		ContextWindow:   0,
-		SessionID:       "",
+		Model:                       "gpt-5.4",
+		ConfiguredModel:             "",
+		ContextWindow:               0,
+		AutoCompactThresholdPercent: 0,
+		SessionID:                   "",
 		Messages: []chatMessage{
 			{Role: messageRoleUser, Content: testOpenAICodexHelloText},
 		},
@@ -561,12 +567,13 @@ func TestOpenAICodexClientStreamChatCompletionParsesJSONStatusErrors(t *testing.
 
 	client := newOpenAICodexClient(server.Client())
 	request := chatCompletionRequest{
-		Provider:        newOpenAICodexProviderRequestConfig(apiKey, server.URL, nil, nil, nil),
-		Model:           testOpenAICodexModel,
-		ConfiguredModel: "",
-		ContextWindow:   0,
-		SessionID:       "",
-		Messages:        []chatMessage{{Role: messageRoleUser, Content: testOpenAICodexHelloText}},
+		Provider:                    newOpenAICodexProviderRequestConfig(apiKey, server.URL, nil, nil, nil),
+		Model:                       testOpenAICodexModel,
+		ConfiguredModel:             "",
+		ContextWindow:               0,
+		AutoCompactThresholdPercent: 0,
+		SessionID:                   "",
+		Messages:                    []chatMessage{{Role: messageRoleUser, Content: testOpenAICodexHelloText}},
 	}
 
 	err := client.streamChatCompletion(context.Background(), request, func(streamDelta) error {

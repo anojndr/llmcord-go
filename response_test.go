@@ -835,11 +835,12 @@ func emptyChatCompletionRequest() chatCompletionRequest {
 			ExtraQuery:   nil,
 			ExtraBody:    nil,
 		},
-		Model:           "",
-		ConfiguredModel: "",
-		ContextWindow:   0,
-		SessionID:       "",
-		Messages:        nil,
+		Model:                       "",
+		ConfiguredModel:             "",
+		ContextWindow:               0,
+		AutoCompactThresholdPercent: 0,
+		SessionID:                   "",
+		Messages:                    nil,
 	}
 }
 

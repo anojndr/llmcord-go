@@ -1047,11 +1047,12 @@ func newOpenAIRetryRequest(baseURL string) chatCompletionRequest {
 			ExtraQuery:   nil,
 			ExtraBody:    nil,
 		},
-		Model:           "gpt-test",
-		ConfiguredModel: "",
-		ContextWindow:   0,
-		SessionID:       "",
-		Messages:        []chatMessage{{Role: messageRoleUser, Content: "hello"}},
+		Model:                       "gpt-test",
+		ConfiguredModel:             "",
+		ContextWindow:               0,
+		AutoCompactThresholdPercent: 0,
+		SessionID:                   "",
+		Messages:                    []chatMessage{{Role: messageRoleUser, Content: "hello"}},
 	}
 }
 
@@ -1119,10 +1120,11 @@ func newOpenAICodexRetryRequest(baseURL string, validAPIKey string) chatCompleti
 			ExtraQuery:   map[string]any{"feature": "enabled"},
 			ExtraBody:    map[string]any{"verbosity": "high", "reasoning_effort": "medium"},
 		},
-		Model:           testOpenAICodexModel,
-		ConfiguredModel: "",
-		ContextWindow:   0,
-		SessionID:       "",
+		Model:                       testOpenAICodexModel,
+		ConfiguredModel:             "",
+		ContextWindow:               0,
+		AutoCompactThresholdPercent: 0,
+		SessionID:                   "",
 		Messages: []chatMessage{
 			{Role: openAICodexRoleSystem, Content: "Be brief."},
 			{
@@ -1248,11 +1250,12 @@ func newGeminiRetryRequest() chatCompletionRequest {
 			ExtraQuery:   nil,
 			ExtraBody:    nil,
 		},
-		Model:           "gemini-3-flash-preview",
-		ConfiguredModel: "",
-		ContextWindow:   0,
-		SessionID:       "",
-		Messages:        []chatMessage{{Role: messageRoleUser, Content: "hello"}},
+		Model:                       "gemini-3-flash-preview",
+		ConfiguredModel:             "",
+		ContextWindow:               0,
+		AutoCompactThresholdPercent: 0,
+		SessionID:                   "",
+		Messages:                    []chatMessage{{Role: messageRoleUser, Content: "hello"}},
 	}
 }
 

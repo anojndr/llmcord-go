@@ -90,6 +90,13 @@ models:
 	if loadedConfig.Database.StoreKey != "" {
 		t.Fatalf("unexpected default database store key: %q", loadedConfig.Database.StoreKey)
 	}
+
+	if loadedConfig.AutoCompactThresholdPercent != autoCompactDefaultThresholdPercent {
+		t.Fatalf(
+			"unexpected default auto compact threshold percent: %d",
+			loadedConfig.AutoCompactThresholdPercent,
+		)
+	}
 }
 
 func assertDefaultLoadedConfig(t *testing.T, loadedConfig config) {
@@ -840,6 +847,66 @@ models:
 	}
 }
 
+func TestLoadConfigUsesConfiguredAutoCompactThresholdPercent(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	configText := `
+bot_token: discord-token
+providers:
+  openai:
+    base_url: https://api.example.com/v1
+auto_compact_threshold_percent: 75
+models:
+  openai/gpt-5.1:
+`
+
+	err := os.WriteFile(configPath, []byte(configText), 0o600)
+	if err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	loadedConfig, err := loadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	if loadedConfig.AutoCompactThresholdPercent != 75 {
+		t.Fatalf(
+			"unexpected auto compact threshold percent: %d",
+			loadedConfig.AutoCompactThresholdPercent,
+		)
+	}
+}
+
+func TestLoadConfigRejectsModelLocalAutoCompactThresholdPercent(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	configText := `
+bot_token: discord-token
+providers:
+  codex:
+    type: openai-codex
+    api_key: test-token
+models:
+  codex/gpt-5.4:
+    auto_compact_threshold_percent: 80
+`
+
+	err := os.WriteFile(configPath, []byte(configText), 0o600)
+	if err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	_, err = loadConfig(configPath)
+	if err == nil {
+		t.Fatal("expected model-local auto compact threshold percent to fail validation")
+	}
+}
+
 func TestLoadConfigRejectsMismatchedContextWindowAcrossAliasModels(t *testing.T) {
 	t.Parallel()
 
@@ -892,6 +959,58 @@ models:
 	_, err = loadConfig(configPath)
 	if err == nil {
 		t.Fatal("expected non-positive context window to fail validation")
+	}
+}
+
+func TestLoadConfigRejectsOutOfRangeAutoCompactThresholdPercent(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	configText := `
+bot_token: discord-token
+providers:
+  openai:
+    base_url: https://api.example.com/v1
+auto_compact_threshold_percent: 101
+models:
+  openai/gpt-5.1:
+`
+
+	err := os.WriteFile(configPath, []byte(configText), 0o600)
+	if err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	_, err = loadConfig(configPath)
+	if err == nil {
+		t.Fatal("expected out-of-range auto compact threshold percent to fail validation")
+	}
+}
+
+func TestLoadConfigRejectsNonPositiveAutoCompactThresholdPercent(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	configText := `
+bot_token: discord-token
+providers:
+  openai:
+    base_url: https://api.example.com/v1
+auto_compact_threshold_percent: 0
+models:
+  openai/gpt-5.1:
+`
+
+	err := os.WriteFile(configPath, []byte(configText), 0o600)
+	if err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	_, err = loadConfig(configPath)
+	if err == nil {
+		t.Fatal("expected non-positive auto compact threshold percent to fail validation")
 	}
 }
 

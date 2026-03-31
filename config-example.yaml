@@ -113,6 +113,10 @@ providers:
   vllm:
     base_url: http://localhost:8000/v1
 
+# Optional global percent threshold for starting auto compaction.
+# Default: 90
+auto_compact_threshold_percent: 90
+
 models:
   # Optional local-only field for reply embeds and auto compaction:
   # context_window: 400000

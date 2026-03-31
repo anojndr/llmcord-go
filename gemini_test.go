@@ -780,11 +780,12 @@ func newGeminiMediaUploadRequest() chatCompletionRequest {
 	provider.APIKind = providerAPIKindGemini
 
 	return chatCompletionRequest{
-		Provider:        provider,
-		Model:           "gemini-3-flash-preview",
-		ConfiguredModel: "",
-		ContextWindow:   0,
-		SessionID:       "",
+		Provider:                    provider,
+		Model:                       "gemini-3-flash-preview",
+		ConfiguredModel:             "",
+		ContextWindow:               0,
+		AutoCompactThresholdPercent: 0,
+		SessionID:                   "",
 		Messages: []chatMessage{
 			{
 				Role: messageRoleUser,
@@ -887,10 +888,11 @@ func newGeminiBuildTestRequest() chatCompletionRequest {
 				"temperature": 0.2,
 			},
 		},
-		Model:           "gemini-3-flash-preview",
-		ConfiguredModel: "",
-		ContextWindow:   0,
-		SessionID:       "",
+		Model:                       "gemini-3-flash-preview",
+		ConfiguredModel:             "",
+		ContextWindow:               0,
+		AutoCompactThresholdPercent: 0,
+		SessionID:                   "",
 		Messages: []chatMessage{
 			{Role: "system", Content: "Be concise."},
 			{
@@ -919,11 +921,12 @@ func newSimpleGeminiStreamRequest() chatCompletionRequest {
 			ExtraQuery:   nil,
 			ExtraBody:    nil,
 		},
-		Model:           "gemini-3-flash-preview",
-		ConfiguredModel: "",
-		ContextWindow:   0,
-		SessionID:       "",
-		Messages:        []chatMessage{{Role: messageRoleUser, Content: "hello"}},
+		Model:                       "gemini-3-flash-preview",
+		ConfiguredModel:             "",
+		ContextWindow:               0,
+		AutoCompactThresholdPercent: 0,
+		SessionID:                   "",
+		Messages:                    []chatMessage{{Role: messageRoleUser, Content: "hello"}},
 	}
 }
 
