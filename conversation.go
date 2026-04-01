@@ -855,7 +855,7 @@ func attachmentContentType(attachment *discordgo.MessageAttachment) string {
 	return ""
 }
 
-func inferredAttachmentContentType(filename string, rawURL string) string {
+func inferredAttachmentContentType(filename, rawURL string) string {
 	for _, candidate := range []string{filename, attachmentURLPath(rawURL)} {
 		extension := strings.ToLower(strings.TrimSpace(path.Ext(candidate)))
 		if extension == "" {
@@ -948,25 +948,9 @@ func unsupportedPreprocessedPartCount(
 }
 
 func (instance *bot) resolveParentMessage(message *discordgo.Message) (*discordgo.Message, bool) {
-	if message.MessageReference == nil && !messageMentionsBot(message, instance.session.State.User.ID) {
-		previousMessage, found, err := instance.previousMessageInChannel(message)
-		if err != nil {
-			slog.Warn("fetch previous message", "channel_id", message.ChannelID, "error", err)
-
-			return nil, true
-		}
-
-		expectedAuthorID := message.Author.ID
-		if isDirectMessage(message) {
-			expectedAuthorID = instance.session.State.User.ID
-		}
-
-		if found &&
-			messageCanChain(previousMessage.Type) &&
-			previousMessage.Author != nil &&
-			previousMessage.Author.ID == expectedAuthorID {
-			return previousMessage, false
-		}
+	implicitParent, failed := instance.resolveImplicitParentMessage(message)
+	if failed || implicitParent != nil {
+		return implicitParent, failed
 	}
 
 	channel, err := instance.channelByID(message.ChannelID)
@@ -987,22 +971,7 @@ func (instance *bot) resolveParentMessage(message *discordgo.Message) (*discordg
 		}
 
 		if parentChannel.Type == discordgo.ChannelTypeGuildText {
-			parentMessage, messageErr := instance.session.ChannelMessage(parentChannel.ID, channel.ID)
-			if messageErr != nil {
-				slog.Warn(
-					"fetch thread starter message",
-					"channel_id",
-					parentChannel.ID,
-					"message_id",
-					channel.ID,
-					"error",
-					messageErr,
-				)
-
-				return nil, true
-			}
-
-			return parentMessage, false
+			return instance.threadStarterMessage(parentChannel.ID, channel.ID)
 		}
 	}
 
@@ -1019,17 +988,73 @@ func (instance *bot) resolveParentMessage(message *discordgo.Message) (*discordg
 		referenceChannelID = message.ChannelID
 	}
 
-	referencedMessage, err := instance.session.ChannelMessage(
-		referenceChannelID,
-		message.MessageReference.MessageID,
-	)
+	return instance.fetchReferencedParentMessage(referenceChannelID, message.MessageReference.MessageID)
+}
+
+func (instance *bot) resolveImplicitParentMessage(message *discordgo.Message) (*discordgo.Message, bool) {
+	if message.MessageReference != nil || messageMentionsBot(message, instance.session.State.User.ID) {
+		return nil, false
+	}
+
+	previousMessage, found, err := instance.previousMessageInChannel(message)
+	if err != nil {
+		slog.Warn("fetch previous message", "channel_id", message.ChannelID, "error", err)
+
+		return nil, true
+	}
+
+	if !found || !previousMessageCanChain(message, previousMessage, instance.session.State.User.ID) {
+		return nil, false
+	}
+
+	return previousMessage, false
+}
+
+func previousMessageCanChain(
+	message *discordgo.Message,
+	previousMessage *discordgo.Message,
+	botUserID string,
+) bool {
+	expectedAuthorID := message.Author.ID
+	if isDirectMessage(message) {
+		expectedAuthorID = botUserID
+	}
+
+	return messageCanChain(previousMessage.Type) &&
+		previousMessage.Author != nil &&
+		previousMessage.Author.ID == expectedAuthorID
+}
+
+func (instance *bot) threadStarterMessage(parentChannelID, messageID string) (*discordgo.Message, bool) {
+	parentMessage, err := instance.session.ChannelMessage(parentChannelID, messageID)
+	if err != nil {
+		slog.Warn(
+			"fetch thread starter message",
+			"channel_id",
+			parentChannelID,
+			"message_id",
+			messageID,
+			"error",
+			err,
+		)
+
+		return nil, true
+	}
+
+	return parentMessage, false
+}
+
+func (instance *bot) fetchReferencedParentMessage(
+	referenceChannelID, messageID string,
+) (*discordgo.Message, bool) {
+	referencedMessage, err := instance.session.ChannelMessage(referenceChannelID, messageID)
 	if err != nil {
 		slog.Warn(
 			"fetch referenced message",
 			"channel_id",
 			referenceChannelID,
 			"message_id",
-			message.MessageReference.MessageID,
+			messageID,
 			"error",
 			err,
 		)

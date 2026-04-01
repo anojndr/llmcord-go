@@ -802,7 +802,7 @@ func assertPersistedAssistantMetadata(
 	if !slices.EqualFunc(
 		metadata.VisualSearchSources,
 		expectedVisualSearchSources,
-		func(left visualSearchSourceGroup, right visualSearchSourceGroup) bool {
+		func(left, right visualSearchSourceGroup) bool {
 			return slices.Equal(left.Sources, right.Sources)
 		},
 	) {

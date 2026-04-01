@@ -49,7 +49,9 @@ var (
 	facebookQualityRegexp     = regexp.MustCompile(`(\d{3,4})`)
 )
 
-type facebookContentClient interface {
+const facebookRequestContextErrorFormat = "facebook request context: %w"
+
+type facebookFetcher interface {
 	fetch(
 		ctx context.Context,
 		rawURL string,
@@ -180,13 +182,15 @@ func (instance *bot) prepareFacebookAugmentation(
 
 	return prepareDownloadedVideoAugmentation(
 		ctx,
-		instance,
-		loadedConfig,
-		providerSlashModel,
-		videoContents,
-		warnings,
-		facebookWarningText,
-		"facebook",
+		downloadedVideoAugmentationRequest[facebookVideoContent]{
+			instance:           instance,
+			loadedConfig:       loadedConfig,
+			providerSlashModel: providerSlashModel,
+			videoContents:      videoContents,
+			warnings:           warnings,
+			warningText:        facebookWarningText,
+			label:              "facebook",
+		},
 	)
 }
 
@@ -382,7 +386,7 @@ func (client facebookClient) fetchGetMyFBDownloadCandidates(
 ) ([]facebookDownloadCandidate, error) {
 	err := ctx.Err()
 	if err != nil {
-		return nil, fmt.Errorf("facebook request context: %w", err)
+		return nil, fmt.Errorf(facebookRequestContextErrorFormat, err)
 	}
 
 	formValues := url.Values{
@@ -419,7 +423,7 @@ func (client facebookClient) fetchGetMyFBDownloadCandidates(
 
 	err = ctx.Err()
 	if err != nil {
-		return nil, fmt.Errorf("facebook request context: %w", err)
+		return nil, fmt.Errorf(facebookRequestContextErrorFormat, err)
 	}
 
 	return parseGetMyFBDownloadCandidates(
@@ -434,7 +438,7 @@ func (client facebookClient) fetchSearchTokens(
 ) (facebookSearchTokens, error) {
 	err := ctx.Err()
 	if err != nil {
-		return facebookSearchTokens{}, fmt.Errorf("facebook request context: %w", err)
+		return facebookSearchTokens{}, fmt.Errorf(facebookRequestContextErrorFormat, err)
 	}
 
 	httpResponse, err := client.scraper.Get(client.pageURL)
@@ -462,7 +466,7 @@ func (client facebookClient) fetchSearchTokens(
 
 	err = ctx.Err()
 	if err != nil {
-		return facebookSearchTokens{}, fmt.Errorf("facebook request context: %w", err)
+		return facebookSearchTokens{}, fmt.Errorf(facebookRequestContextErrorFormat, err)
 	}
 
 	return parseFacebookSearchTokens(responseBody)
@@ -475,7 +479,7 @@ func (client facebookClient) fetchDownloadCandidates(
 ) ([]facebookDownloadCandidate, error) {
 	err := ctx.Err()
 	if err != nil {
-		return nil, fmt.Errorf("facebook request context: %w", err)
+		return nil, fmt.Errorf(facebookRequestContextErrorFormat, err)
 	}
 
 	formValues := url.Values{
@@ -518,7 +522,7 @@ func (client facebookClient) fetchDownloadCandidates(
 
 	err = ctx.Err()
 	if err != nil {
-		return nil, fmt.Errorf("facebook request context: %w", err)
+		return nil, fmt.Errorf(facebookRequestContextErrorFormat, err)
 	}
 
 	return parseFacebookDownloadCandidates(client.searchURL, responseBody)
@@ -542,161 +546,66 @@ func parseFacebookDownloadCandidates(
 	baseURL string,
 	responseBody []byte,
 ) ([]facebookDownloadCandidate, error) {
-	var response facebookSearchResponse
-
-	err := json.Unmarshal(responseBody, &response)
+	responseFragment, err := facebookSearchResponseFragment(responseBody)
 	if err != nil {
-		return nil, fmt.Errorf("decode facebook search response: %w", err)
+		return nil, err
 	}
 
-	if !strings.EqualFold(strings.TrimSpace(response.Status), "ok") {
-		message := strings.TrimSpace(response.ErrorMessage)
-		if message == "" {
-			message = strings.TrimSpace(string(responseBody))
-		}
-
-		return nil, fmt.Errorf(
-			"facebook search response not ok: %s: %w",
-			message,
-			os.ErrInvalid,
-		)
-	}
-
-	responseFragment := strings.TrimSpace(response.Data)
-	if responseFragment == "" {
-		return nil, fmt.Errorf("empty facebook search response: %w", os.ErrInvalid)
-	}
-
-	document, err := html.Parse(strings.NewReader("<html><body>" + responseFragment + "</body></html>"))
+	document, err := parseFacebookDownloadDocument(responseFragment, "parse facebook result html")
 	if err != nil {
-		return nil, fmt.Errorf("parse facebook result html: %w", err)
+		return nil, err
 	}
 
-	downloadCandidates := make([]facebookDownloadCandidate, 0, facebookDownloadCandidateCapacity)
-
-	var walk func(*html.Node)
-
-	walk = func(node *html.Node) {
-		if node == nil {
-			return
-		}
-
-		if node.Type == html.ElementNode && node.DataAtom == atom.Tr {
-			candidate, ok := extractFacebookDownloadCandidate(baseURL, node)
-			if ok {
-				downloadCandidates = append(downloadCandidates, candidate)
+	downloadCandidates := collectFacebookDownloadCandidates(
+		document,
+		func(node *html.Node) (facebookDownloadCandidate, bool) {
+			if node.Type != html.ElementNode || node.DataAtom != atom.Tr {
+				return emptyFacebookDownloadCandidate(), false
 			}
-		}
 
-		for child := node.FirstChild; child != nil; child = child.NextSibling {
-			walk(child)
-		}
-	}
-
-	walk(document)
-
+			return extractFacebookDownloadCandidate(baseURL, node)
+		},
+	)
 	if len(downloadCandidates) == 0 {
 		return nil, fmt.Errorf("find facebook download url: %w", os.ErrInvalid)
 	}
 
-	sort.SliceStable(downloadCandidates, func(leftIndex int, rightIndex int) bool {
-		leftCandidate := downloadCandidates[leftIndex]
-		rightCandidate := downloadCandidates[rightIndex]
-
-		if leftCandidate.Score != rightCandidate.Score {
-			return leftCandidate.Score > rightCandidate.Score
-		}
-
-		return strings.Compare(leftCandidate.QualityLabel, rightCandidate.QualityLabel) < 0
-	})
+	sortFacebookDownloadCandidates(downloadCandidates)
 
 	return downloadCandidates, nil
 }
 
 func parseGetMyFBDownloadCandidates(
-	baseURL string,
-	responseTrigger string,
+	baseURL, responseTrigger string,
 	responseBody []byte,
 ) ([]facebookDownloadCandidate, error) {
-	trimmedResponseBody := strings.TrimSpace(string(responseBody))
-	if trimmedResponseBody == "" {
-		return nil, fmt.Errorf("empty getmyfb response: %w", os.ErrInvalid)
-	}
-
-	if strings.HasPrefix(trimmedResponseBody, "{") {
-		var response struct {
-			Error   string `json:"error"`
-			Message string `json:"message"`
-		}
-
-		err := json.Unmarshal(responseBody, &response)
-		if err != nil {
-			return nil, fmt.Errorf("decode getmyfb response: %w", err)
-		}
-
-		message := strings.TrimSpace(response.Message)
-		if message == "" {
-			message = strings.TrimSpace(response.Error)
-		}
-
-		if message == "" {
-			message = trimmedResponseBody
-		}
-
-		return nil, fmt.Errorf("getmyfb response failed: %s: %w", message, os.ErrInvalid)
-	}
-
-	document, err := html.Parse(strings.NewReader("<html><body>" + trimmedResponseBody + "</body></html>"))
+	trimmedResponseBody, err := normalizedGetMyFBResponseBody(responseBody)
 	if err != nil {
-		return nil, fmt.Errorf("parse getmyfb result html: %w", err)
+		return nil, err
 	}
 
-	downloadCandidates := make([]facebookDownloadCandidate, 0, facebookDownloadCandidateCapacity)
+	document, err := parseFacebookDownloadDocument(trimmedResponseBody, "parse getmyfb result html")
+	if err != nil {
+		return nil, err
+	}
 
-	var walk func(*html.Node)
-
-	walk = func(node *html.Node) {
-		if node == nil {
-			return
-		}
-
-		if node.Type == html.ElementNode && node.DataAtom == atom.Li && hasHTMLClass(node, "results-list-item") {
-			candidate, ok := extractGetMyFBDownloadCandidate(baseURL, node)
-			if ok {
-				downloadCandidates = append(downloadCandidates, candidate)
+	downloadCandidates := collectFacebookDownloadCandidates(
+		document,
+		func(node *html.Node) (facebookDownloadCandidate, bool) {
+			if node.Type != html.ElementNode || node.DataAtom != atom.Li || !hasHTMLClass(node, "results-list-item") {
+				return emptyFacebookDownloadCandidate(), false
 			}
-		}
 
-		for child := node.FirstChild; child != nil; child = child.NextSibling {
-			walk(child)
-		}
-	}
-
-	walk(document)
-
+			return extractGetMyFBDownloadCandidate(baseURL, node)
+		},
+	)
 	if len(downloadCandidates) == 0 {
-		message := strings.TrimSpace(findGetMyFBErrorMessage(document))
-		if message == "" {
-			message = strings.TrimSpace(responseTrigger)
-		}
-
-		if message == "" {
-			message = trimmedResponseBody
-		}
+		message := getMyFBDownloadErrorMessage(document, responseTrigger, trimmedResponseBody)
 
 		return nil, fmt.Errorf("getmyfb response did not include video downloads: %s: %w", message, os.ErrInvalid)
 	}
 
-	sort.SliceStable(downloadCandidates, func(leftIndex int, rightIndex int) bool {
-		leftCandidate := downloadCandidates[leftIndex]
-		rightCandidate := downloadCandidates[rightIndex]
-
-		if leftCandidate.Score != rightCandidate.Score {
-			return leftCandidate.Score > rightCandidate.Score
-		}
-
-		return strings.Compare(leftCandidate.QualityLabel, rightCandidate.QualityLabel) < 0
-	})
+	sortFacebookDownloadCandidates(downloadCandidates)
 
 	return downloadCandidates, nil
 }
@@ -755,6 +664,148 @@ func extractGetMyFBDownloadCandidate(
 	row *html.Node,
 ) (facebookDownloadCandidate, bool) {
 	qualityLabel := facebookGetMyFBQualityLabel(row)
+	directURL, skipCandidate := getMyFBDownloadCandidateDetails(baseURL, row, qualityLabel)
+
+	if skipCandidate || strings.TrimSpace(directURL) == "" {
+		return facebookDownloadCandidate{
+			QualityLabel: "",
+			Score:        0,
+			DirectURL:    "",
+		}, false
+	}
+
+	return facebookDownloadCandidate{
+		QualityLabel: qualityLabel,
+		Score:        facebookDownloadQualityScore(qualityLabel),
+		DirectURL:    strings.TrimSpace(directURL),
+	}, true
+}
+
+func facebookSearchResponseFragment(responseBody []byte) (string, error) {
+	var response facebookSearchResponse
+
+	err := json.Unmarshal(responseBody, &response)
+	if err != nil {
+		return "", fmt.Errorf("decode facebook search response: %w", err)
+	}
+
+	if !strings.EqualFold(strings.TrimSpace(response.Status), "ok") {
+		message := strings.TrimSpace(response.ErrorMessage)
+		if message == "" {
+			message = strings.TrimSpace(string(responseBody))
+		}
+
+		return "", fmt.Errorf("facebook search response not ok: %s: %w", message, os.ErrInvalid)
+	}
+
+	responseFragment := strings.TrimSpace(response.Data)
+	if responseFragment == "" {
+		return "", fmt.Errorf("empty facebook search response: %w", os.ErrInvalid)
+	}
+
+	return responseFragment, nil
+}
+
+func normalizedGetMyFBResponseBody(responseBody []byte) (string, error) {
+	trimmedResponseBody := strings.TrimSpace(string(responseBody))
+	if trimmedResponseBody == "" {
+		return "", fmt.Errorf("empty getmyfb response: %w", os.ErrInvalid)
+	}
+
+	if strings.HasPrefix(trimmedResponseBody, "{") {
+		var response struct {
+			Error   string `json:"error"`
+			Message string `json:"message"`
+		}
+
+		err := json.Unmarshal(responseBody, &response)
+		if err != nil {
+			return "", fmt.Errorf("decode getmyfb response: %w", err)
+		}
+
+		message := strings.TrimSpace(response.Message)
+		if message == "" {
+			message = strings.TrimSpace(response.Error)
+		}
+
+		if message == "" {
+			message = trimmedResponseBody
+		}
+
+		return "", fmt.Errorf("getmyfb response failed: %s: %w", message, os.ErrInvalid)
+	}
+
+	return trimmedResponseBody, nil
+}
+
+func parseFacebookDownloadDocument(responseText, context string) (*html.Node, error) {
+	document, err := html.Parse(strings.NewReader("<html><body>" + responseText + "</body></html>"))
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", context, err)
+	}
+
+	return document, nil
+}
+
+func collectFacebookDownloadCandidates(
+	document *html.Node,
+	extractCandidate func(*html.Node) (facebookDownloadCandidate, bool),
+) []facebookDownloadCandidate {
+	downloadCandidates := make([]facebookDownloadCandidate, 0, facebookDownloadCandidateCapacity)
+
+	var walk func(*html.Node)
+
+	walk = func(node *html.Node) {
+		if node == nil {
+			return
+		}
+
+		candidate, ok := extractCandidate(node)
+		if ok {
+			downloadCandidates = append(downloadCandidates, candidate)
+		}
+
+		for child := node.FirstChild; child != nil; child = child.NextSibling {
+			walk(child)
+		}
+	}
+
+	walk(document)
+
+	return downloadCandidates
+}
+
+func sortFacebookDownloadCandidates(downloadCandidates []facebookDownloadCandidate) {
+	sort.SliceStable(downloadCandidates, func(leftIndex, rightIndex int) bool {
+		leftCandidate := downloadCandidates[leftIndex]
+		rightCandidate := downloadCandidates[rightIndex]
+
+		if leftCandidate.Score != rightCandidate.Score {
+			return leftCandidate.Score > rightCandidate.Score
+		}
+
+		return strings.Compare(leftCandidate.QualityLabel, rightCandidate.QualityLabel) < 0
+	})
+}
+
+func getMyFBDownloadErrorMessage(document *html.Node, responseTrigger string, responseBody string) string {
+	message := strings.TrimSpace(findGetMyFBErrorMessage(document))
+	if message == "" {
+		message = strings.TrimSpace(responseTrigger)
+	}
+
+	if message == "" {
+		message = strings.TrimSpace(responseBody)
+	}
+
+	return message
+}
+
+func getMyFBDownloadCandidateDetails(
+	baseURL string,
+	row *html.Node,
+	qualityLabel string,
+) (string, bool) {
 	directURL := ""
 	skipCandidate := false
 
@@ -785,19 +836,15 @@ func extractGetMyFBDownloadCandidate(
 
 	walk(row)
 
-	if skipCandidate || strings.TrimSpace(directURL) == "" {
-		return facebookDownloadCandidate{
-			QualityLabel: "",
-			Score:        0,
-			DirectURL:    "",
-		}, false
-	}
+	return directURL, skipCandidate
+}
 
+func emptyFacebookDownloadCandidate() facebookDownloadCandidate {
 	return facebookDownloadCandidate{
-		QualityLabel: qualityLabel,
-		Score:        facebookDownloadQualityScore(qualityLabel),
-		DirectURL:    strings.TrimSpace(directURL),
-	}, true
+		QualityLabel: "",
+		Score:        0,
+		DirectURL:    "",
+	}
 }
 
 func facebookGetMyFBQualityLabel(row *html.Node) string {
@@ -882,7 +929,7 @@ func facebookSearchWebHost(pageURL string) string {
 	return host
 }
 
-func resolveFacebookDownloadURL(pageURL string, rawURL string) string {
+func resolveFacebookDownloadURL(pageURL, rawURL string) string {
 	trimmedURL := strings.TrimSpace(rawURL)
 	if trimmedURL == "" {
 		return ""
@@ -979,7 +1026,7 @@ func normalizedFacebookMIMEType(contentType string) string {
 	return mediaType
 }
 
-func facebookFilename(sourceURL string, contentDisposition string) string {
+func facebookFilename(sourceURL, contentDisposition string) string {
 	trimmedContentDisposition := strings.TrimSpace(contentDisposition)
 	if trimmedContentDisposition != "" {
 		_, params, err := mime.ParseMediaType(trimmedContentDisposition)

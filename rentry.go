@@ -25,7 +25,7 @@ var (
 	rentryCSRFTokenRegexp     = regexp.MustCompile(`name="csrfmiddlewaretoken" value="([^"]+)"`)
 )
 
-type rentryClient interface {
+type rentryCreator interface {
 	createEntry(ctx context.Context, text string) (string, error)
 }
 

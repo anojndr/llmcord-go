@@ -34,12 +34,54 @@ type openAIHTTPErrorInfo struct {
 	RetryDelay      time.Duration
 }
 
+type openAIHTTPErrorEnvelope struct {
+	Error *openAIHTTPErrorPayload `json:"error"`
+}
+
+type openAIHTTPErrorPayload struct {
+	Message  string `json:"message"`
+	Type     string `json:"type"`
+	Param    any    `json:"param"`
+	Code     any    `json:"code"`
+	PlanType string `json:"plan_type"`
+	ResetsAt *int64 `json:"resets_at"`
+}
+
 func parseOpenAIHTTPErrorResponse(
 	statusCode int,
 	statusText string,
 	responseHeaders http.Header,
 	responseBody []byte,
 	includeFriendlyUsageLimit bool,
+) openAIHTTPErrorInfo {
+	errorInfo := defaultOpenAIHTTPErrorInfo(statusText, responseHeaders, responseBody)
+
+	errorPayload, ok := parseOpenAIHTTPErrorPayload(responseBody)
+	if !ok {
+		return errorInfo
+	}
+
+	errorInfo = updateOpenAIHTTPErrorInfoFromPayload(errorInfo, errorPayload)
+
+	errorInfo = applyOpenAIFriendlyUsageLimit(
+		errorInfo,
+		errorPayload,
+		statusCode,
+		includeFriendlyUsageLimit,
+	)
+	if strings.TrimSpace(errorPayload.Message) != "" {
+		errorInfo.Message = strings.TrimSpace(errorPayload.Message)
+	} else if errorInfo.FriendlyMessage != "" {
+		errorInfo.Message = errorInfo.FriendlyMessage
+	}
+
+	return errorInfo
+}
+
+func defaultOpenAIHTTPErrorInfo(
+	statusText string,
+	responseHeaders http.Header,
+	responseBody []byte,
 ) openAIHTTPErrorInfo {
 	errorInfo := openAIHTTPErrorInfo{
 		Message:         strings.TrimSpace(string(responseBody)),
@@ -58,66 +100,91 @@ func parseOpenAIHTTPErrorResponse(
 		errorInfo.Message = providerRequestFailedText
 	}
 
-	var envelope struct {
-		Error *struct {
-			Message  string `json:"message"`
-			Type     string `json:"type"`
-			Param    any    `json:"param"`
-			Code     any    `json:"code"`
-			PlanType string `json:"plan_type"`
-			ResetsAt *int64 `json:"resets_at"`
-		} `json:"error"`
-	}
+	return errorInfo
+}
+
+func parseOpenAIHTTPErrorPayload(responseBody []byte) (*openAIHTTPErrorPayload, bool) {
+	var envelope openAIHTTPErrorEnvelope
 
 	err := json.Unmarshal(responseBody, &envelope)
 	if err != nil || envelope.Error == nil {
+		return nil, false
+	}
+
+	return envelope.Error, true
+}
+
+func updateOpenAIHTTPErrorInfoFromPayload(
+	errorInfo openAIHTTPErrorInfo,
+	errorPayload *openAIHTTPErrorPayload,
+) openAIHTTPErrorInfo {
+	errorInfo.Code = openAIErrorStringValue(errorPayload.Code)
+	errorInfo.Type = strings.TrimSpace(errorPayload.Type)
+	errorInfo.Param = openAIErrorStringValue(errorPayload.Param)
+
+	return errorInfo
+}
+
+func applyOpenAIFriendlyUsageLimit(
+	errorInfo openAIHTTPErrorInfo,
+	errorPayload *openAIHTTPErrorPayload,
+	statusCode int,
+	includeFriendlyUsageLimit bool,
+) openAIHTTPErrorInfo {
+	if !includeFriendlyUsageLimit || !openAIHTTPErrorIsUsageLimit(statusCode, errorInfo) {
 		return errorInfo
 	}
 
-	errorInfo.Code = openAIErrorStringValue(envelope.Error.Code)
-	errorInfo.Type = strings.TrimSpace(envelope.Error.Type)
-	errorInfo.Param = openAIErrorStringValue(envelope.Error.Param)
+	friendlyMessage, retryDelay := openAIFriendlyUsageLimitMessage(
+		errorPayload.PlanType,
+		errorPayload.ResetsAt,
+		errorInfo.RetryDelay,
+	)
+	errorInfo.FriendlyMessage = friendlyMessage
+	errorInfo.RetryDelay = retryDelay
 
+	return errorInfo
+}
+
+func openAIHTTPErrorIsUsageLimit(statusCode int, errorInfo openAIHTTPErrorInfo) bool {
 	codeOrType := errorInfo.Code
 	if codeOrType == "" {
 		codeOrType = errorInfo.Type
 	}
 
-	if includeFriendlyUsageLimit &&
-		(statusCode == httpStatusTooManyRequests ||
-			strings.EqualFold(codeOrType, openAICodexUsageLimitReachedCode) ||
-			strings.EqualFold(codeOrType, openAICodexUsageNotIncludedCode) ||
-			strings.EqualFold(codeOrType, openAIRateLimitExceededCode)) {
-		planText := ""
-		if strings.TrimSpace(envelope.Error.PlanType) != "" {
-			planText = fmt.Sprintf(" (%s plan)", strings.ToLower(strings.TrimSpace(envelope.Error.PlanType)))
-		}
+	return statusCode == httpStatusTooManyRequests ||
+		strings.EqualFold(codeOrType, openAICodexUsageLimitReachedCode) ||
+		strings.EqualFold(codeOrType, openAICodexUsageNotIncludedCode) ||
+		strings.EqualFold(codeOrType, openAIRateLimitExceededCode)
+}
 
-		retryText := ""
-
-		if envelope.Error.ResetsAt != nil {
-			resetTime := time.Unix(*envelope.Error.ResetsAt, 0)
-			minutesUntilReset := max(0, int(time.Until(resetTime).Round(time.Minute)/time.Minute))
-
-			if retryDelay := time.Until(resetTime); retryDelay > errorInfo.RetryDelay {
-				errorInfo.RetryDelay = retryDelay
-			}
-
-			retryText = fmt.Sprintf(" Try again in ~%d min.", minutesUntilReset)
-		}
-
-		errorInfo.FriendlyMessage = strings.TrimSpace(
-			fmt.Sprintf("You have hit your ChatGPT usage limit%s.%s", planText, retryText),
-		)
+func openAIFriendlyUsageLimitMessage(
+	planType string,
+	resetsAt *int64,
+	currentDelay time.Duration,
+) (string, time.Duration) {
+	planText := ""
+	if strings.TrimSpace(planType) != "" {
+		planText = fmt.Sprintf(" (%s plan)", strings.ToLower(strings.TrimSpace(planType)))
 	}
 
-	if strings.TrimSpace(envelope.Error.Message) != "" {
-		errorInfo.Message = strings.TrimSpace(envelope.Error.Message)
-	} else if errorInfo.FriendlyMessage != "" {
-		errorInfo.Message = errorInfo.FriendlyMessage
+	retryText := ""
+	retryDelay := currentDelay
+
+	if resetsAt != nil {
+		resetTime := time.Unix(*resetsAt, 0)
+
+		minutesUntilReset := max(0, int(time.Until(resetTime).Round(time.Minute)/time.Minute))
+		if candidateDelay := time.Until(resetTime); candidateDelay > retryDelay {
+			retryDelay = candidateDelay
+		}
+
+		retryText = fmt.Sprintf(" Try again in ~%d min.", minutesUntilReset)
 	}
 
-	return errorInfo
+	return strings.TrimSpace(
+		fmt.Sprintf("You have hit your ChatGPT usage limit%s.%s", planText, retryText),
+	), retryDelay
 }
 
 func openAIHTTPRetryDelay(headers http.Header) time.Duration {

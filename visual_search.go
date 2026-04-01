@@ -41,17 +41,27 @@ const (
 	yandexVisualSearchProviderName    = "Yandex Images"
 )
 
-type visualSearchClient interface {
+const (
+	visualSearchTopMatchPrefix  = "Top match: "
+	visualSearchSiteMatchPrefix = "Site match: "
+)
+
+type visualSearcher interface {
 	search(ctx context.Context, imageURL string) (visualSearchResult, error)
 }
 
-type serpAPIVisualSearchClient interface {
+type serpAPIVisualSearcher interface {
 	search(ctx context.Context, loadedConfig config, imageURL string) (visualSearchResult, error)
 }
 
 type visualSearchProvider struct {
 	name   string
 	search func(context.Context, string) (visualSearchResult, error)
+}
+
+type indexedVisualSearchResult struct {
+	result visualSearchResult
+	ok     bool
 }
 
 type visualSearchTopMatch struct {
@@ -103,6 +113,8 @@ type serpAPIGoogleLensClient struct {
 	httpClient *http.Client
 	userAgent  string
 }
+
+const visualSearchNumberedTitleFormat = "%d. %s"
 
 type serpAPIGoogleLensResponse struct {
 	SearchMetadata serpAPIGoogleLensSearchMetadata  `json:"search_metadata"`
@@ -163,7 +175,7 @@ func emptyVisualSearchResult() visualSearchResult {
 	}
 }
 
-func newVisualSearchResult(imageURL string, searchURL string) visualSearchResult {
+func newVisualSearchResult(imageURL, searchURL string) visualSearchResult {
 	result := emptyVisualSearchResult()
 	result.ImageURL = strings.TrimSpace(imageURL)
 	result.SearchURL = strings.TrimSpace(searchURL)
@@ -444,14 +456,6 @@ func (client serpAPIGoogleLensClient) parseResponse(
 		}
 	case strings.EqualFold(status, serpAPISearchStatusSuccess):
 		return parseSerpAPIGoogleLensResponse(imageURL, response), nil
-	case strings.EqualFold(status, serpAPISearchStatusQueued),
-		strings.EqualFold(status, serpAPISearchStatusProcessing),
-		strings.EqualFold(status, serpAPISearchStatusError):
-		return emptyVisualSearchResult(), newSerpAPISearchStatusError(
-			imageURL,
-			status,
-			responseError,
-		)
 	default:
 		return emptyVisualSearchResult(), newSerpAPISearchStatusError(
 			imageURL,
@@ -463,7 +467,7 @@ func (client serpAPIGoogleLensClient) parseResponse(
 	return parseSerpAPIGoogleLensResponse(imageURL, response), nil
 }
 
-func (client serpAPIGoogleLensClient) requestURL(imageURL string, apiKey string) (string, error) {
+func (client serpAPIGoogleLensClient) requestURL(imageURL, apiKey string) (string, error) {
 	parsedURL, err := neturl.Parse(client.endpoint)
 	if err != nil {
 		return "", fmt.Errorf(
@@ -800,11 +804,37 @@ func (instance *bot) runVisualSearchProviders(
 		return nil, nil
 	}
 
-	type indexedVisualSearchResult struct {
-		result visualSearchResult
-		ok     bool
+	results, fetchFailed := instance.fetchVisualSearchProviderResults(ctx, imageURLs, providers)
+	formattedResults := collectVisualSearchResults(results)
+
+	return formattedResults, visualSearchWarnings(fetchFailed, len(formattedResults))
+}
+
+func (instance *bot) visualSearchImageURLs(
+	ctx context.Context,
+	sourceMessage *discordgo.Message,
+) []string {
+	return imageAttachmentURLsForMessages(
+		instance.attachmentAugmentationMessages(ctx, sourceMessage),
+	)
+}
+
+func imageAttachmentURLsForMessages(messages []*discordgo.Message) []string {
+	imageURLs := make([]string, 0)
+	seenURLs := make(map[string]struct{})
+
+	for _, message := range messages {
+		appendImageAttachmentURLs(&imageURLs, seenURLs, message)
 	}
 
+	return imageURLs
+}
+
+func (instance *bot) fetchVisualSearchProviderResults(
+	ctx context.Context,
+	imageURLs []string,
+	providers []visualSearchProvider,
+) ([]indexedVisualSearchResult, bool) {
 	results := make([]indexedVisualSearchResult, len(imageURLs)*len(providers))
 
 	var (
@@ -835,15 +865,8 @@ func (instance *bot) runVisualSearchProviders(
 					return
 				}
 
-				result.ImageIndex = imageIndex
-				result.ImageURL = strings.TrimSpace(imageURL)
-
-				if strings.TrimSpace(result.Provider) == "" {
-					result.Provider = provider.name
-				}
-
 				results[imageIndex*len(providers)+providerIndex] = indexedVisualSearchResult{
-					result: result,
+					result: normalizeVisualSearchResult(result, imageIndex, imageURL, provider.name),
 					ok:     true,
 				}
 			}(imageIndex, imageURL, providerIndex, provider)
@@ -852,6 +875,26 @@ func (instance *bot) runVisualSearchProviders(
 
 	waitGroup.Wait()
 
+	return results, fetchFailed
+}
+
+func normalizeVisualSearchResult(
+	result visualSearchResult,
+	imageIndex int,
+	imageURL string,
+	providerName string,
+) visualSearchResult {
+	result.ImageIndex = imageIndex
+
+	result.ImageURL = strings.TrimSpace(imageURL)
+	if strings.TrimSpace(result.Provider) == "" {
+		result.Provider = providerName
+	}
+
+	return result
+}
+
+func collectVisualSearchResults(results []indexedVisualSearchResult) []visualSearchResult {
 	formattedResults := make([]visualSearchResult, 0, len(results))
 	for _, item := range results {
 		if !item.ok {
@@ -861,63 +904,62 @@ func (instance *bot) runVisualSearchProviders(
 		formattedResults = append(formattedResults, item.result)
 	}
 
-	warnings := make([]string, 0, 1)
+	return formattedResults
+}
 
-	if fetchFailed {
-		warningText := visualSearchPartialWarningText
-		if len(formattedResults) == 0 {
-			warningText = visualSearchWarningText
-		}
-
-		warnings = append(warnings, warningText)
+func visualSearchWarnings(fetchFailed bool, resultCount int) []string {
+	if !fetchFailed {
+		return nil
 	}
 
-	return formattedResults, warnings
+	warningText := visualSearchPartialWarningText
+	if resultCount == 0 {
+		warningText = visualSearchWarningText
+	}
+
+	return []string{warningText}
 }
 
-func (instance *bot) visualSearchImageURLs(
-	ctx context.Context,
-	sourceMessage *discordgo.Message,
-) []string {
-	return imageAttachmentURLsForMessages(
-		instance.attachmentAugmentationMessages(ctx, sourceMessage),
-	)
-}
+func appendImageAttachmentURLs(
+	imageURLs *[]string,
+	seenURLs map[string]struct{},
+	message *discordgo.Message,
+) {
+	if message == nil {
+		return
+	}
 
-func imageAttachmentURLsForMessages(messages []*discordgo.Message) []string {
-	imageURLs := make([]string, 0)
-	seenURLs := make(map[string]struct{})
-
-	for _, message := range messages {
-		if message == nil {
+	for _, attachment := range message.Attachments {
+		imageURL, ok := imageAttachmentURL(attachment)
+		if !ok {
 			continue
 		}
 
-		for _, attachment := range message.Attachments {
-			if attachment == nil {
-				continue
-			}
-
-			contentType := attachmentContentType(attachment)
-			if !strings.HasPrefix(strings.TrimSpace(contentType), "image/") {
-				continue
-			}
-
-			imageURL := strings.TrimSpace(attachment.URL)
-			if imageURL == "" {
-				continue
-			}
-
-			if _, ok := seenURLs[imageURL]; ok {
-				continue
-			}
-
-			seenURLs[imageURL] = struct{}{}
-			imageURLs = append(imageURLs, imageURL)
+		if _, exists := seenURLs[imageURL]; exists {
+			continue
 		}
+
+		seenURLs[imageURL] = struct{}{}
+		*imageURLs = append(*imageURLs, imageURL)
+	}
+}
+
+func imageAttachmentURL(attachment *discordgo.MessageAttachment) (string, bool) {
+	if attachment == nil {
+		return "", false
 	}
 
-	return imageURLs
+	contentType := attachmentContentType(attachment)
+	if !strings.HasPrefix(strings.TrimSpace(contentType), "image/") {
+		return "", false
+	}
+
+	imageURL := strings.TrimSpace(attachment.URL)
+	if imageURL == "" {
+		return "", false
+	}
+
+	return imageURL, true
 }
 
 func rewriteVisualSearchUserQuery(query string) (string, bool) {
@@ -1285,7 +1327,7 @@ func nodeTextContent(root *html.Node) string {
 	return strings.TrimSpace(builder.String())
 }
 
-func resolveVisualSearchURL(baseURL string, rawURL string) string {
+func resolveVisualSearchURL(baseURL, rawURL string) string {
 	trimmedURL := strings.TrimSpace(rawURL)
 	if trimmedURL == "" {
 		return ""
@@ -1325,7 +1367,7 @@ func extractVisualSearchSources(result visualSearchResult) []searchSource {
 	sources := make([]searchSource, 0, 2+len(result.SimilarImages)+len(result.SiteMatches)+len(result.RelatedContent))
 	seenURLs := make(map[string]struct{})
 
-	appendSource := func(title string, rawURL string) {
+	appendSource := func(title, rawURL string) {
 		url := strings.TrimSpace(rawURL)
 		if url == "" {
 			return
@@ -1414,11 +1456,11 @@ func visualSearchTopMatchSourceTitle(topMatch visualSearchTopMatch) string {
 
 	switch {
 	case title != "" && source != "" && !strings.EqualFold(title, source):
-		return "Top match: " + title + " (" + source + ")"
+		return visualSearchTopMatchPrefix + title + " (" + source + ")"
 	case title != "":
-		return "Top match: " + title
+		return visualSearchTopMatchPrefix + title
 	case source != "":
-		return "Top match: " + source
+		return visualSearchTopMatchPrefix + source
 	default:
 		return ""
 	}
@@ -1439,11 +1481,11 @@ func visualSearchSiteMatchSourceTitle(item visualSearchSiteMatch) string {
 
 	switch {
 	case title != "" && domain != "" && !strings.EqualFold(title, domain):
-		return "Site match: " + title + " (" + domain + ")"
+		return visualSearchSiteMatchPrefix + title + " (" + domain + ")"
 	case title != "":
-		return "Site match: " + title
+		return visualSearchSiteMatchPrefix + title
 	case domain != "":
-		return "Site match: " + domain
+		return visualSearchSiteMatchPrefix + domain
 	default:
 		return ""
 	}
@@ -1517,7 +1559,7 @@ func formatVisualSearchTopMatch(topMatch visualSearchTopMatch) []string {
 	lines := make([]string, 0, visualSearchTopMatchLineCapacity)
 
 	if title := strings.TrimSpace(topMatch.Title); title != "" {
-		lines = append(lines, "Top match: "+title)
+		lines = append(lines, visualSearchTopMatchPrefix+title)
 	}
 
 	if subtitle := strings.TrimSpace(topMatch.Subtitle); subtitle != "" {
@@ -1548,7 +1590,7 @@ func formatVisualSearchSimilarImages(items []visualSearchSimilarImage) string {
 	lines = append(lines, "Similar images:")
 
 	for itemIndex, item := range items {
-		line := fmt.Sprintf("%d. %s", itemIndex+1, item.Title)
+		line := fmt.Sprintf(visualSearchNumberedTitleFormat, itemIndex+1, item.Title)
 		if item.URL != "" {
 			line += " <" + item.URL + ">"
 		}
@@ -1568,7 +1610,7 @@ func formatVisualSearchSiteMatches(items []visualSearchSiteMatch) string {
 	lines = append(lines, "Sites with information about the image:")
 
 	for itemIndex, item := range items {
-		titleLine := fmt.Sprintf("%d. %s", itemIndex+1, item.Title)
+		titleLine := fmt.Sprintf(visualSearchNumberedTitleFormat, itemIndex+1, item.Title)
 		if item.Domain != "" && !strings.EqualFold(item.Title, item.Domain) {
 			titleLine += " (" + item.Domain + ")"
 		}
@@ -1596,7 +1638,7 @@ func formatVisualSearchRelatedContent(items []visualSearchRelatedContent) string
 	lines = append(lines, "Related content:")
 
 	for itemIndex, item := range items {
-		line := fmt.Sprintf("%d. %s", itemIndex+1, item.Query)
+		line := fmt.Sprintf(visualSearchNumberedTitleFormat, itemIndex+1, item.Query)
 		if strings.TrimSpace(item.Query) == "" {
 			line = fmt.Sprintf("%d. Related content", itemIndex+1)
 		}

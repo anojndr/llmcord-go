@@ -427,6 +427,13 @@ type modelIntSetting struct {
 	Explicit bool
 }
 
+type modelIntSettingGroups struct {
+	Values  map[string]int
+	Sources map[string]string
+}
+
+const errPositiveIntMustBeGreaterThanZero = "must be greater than zero: %w"
+
 func effectiveModelContextWindows(
 	providers map[string]providerConfig,
 	models map[string]map[string]any,
@@ -450,65 +457,142 @@ func effectiveAliasedModelIntSettings(
 	}
 
 	settings := make(map[string]modelIntSetting, len(models))
-	groupValues := make(map[string]int)
-	groupSources := make(map[string]string)
-
-	for configuredModel, modelParameters := range models {
-		providerName, modelName, err := splitConfiguredModel(configuredModel)
-		if err != nil {
-			return nil, fmt.Errorf("parse model %q: %w", configuredModel, err)
-		}
-
-		baseModelName := modelName
-		if provider, ok := providers[providerName]; ok {
-			baseModelName, err = modelLocalSettingBaseModel(provider, modelName)
-			if err != nil {
-				return nil, fmt.Errorf("normalize base model for %q: %w", configuredModel, err)
-			}
-		}
-
-		value, explicit, err := modelPositiveIntSettingValue(modelParameters, settingKey)
-		if err != nil {
-			return nil, fmt.Errorf("read %s for model %q: %w", settingKey, configuredModel, err)
-		}
-
-		if explicit && validate != nil {
-			err = validate(value)
-			if err != nil {
-				return nil, fmt.Errorf("validate %s for model %q: %w", settingKey, configuredModel, err)
-			}
-		}
-
-		groupKey := providerName + "/" + baseModelName
-		settings[configuredModel] = modelIntSetting{
-			GroupKey: groupKey,
-			Value:    value,
-			Explicit: explicit,
-		}
-
-		if !explicit {
-			continue
-		}
-
-		if previousValue, ok := groupValues[groupKey]; ok && previousValue != value {
-			return nil, fmt.Errorf(
-				"models %q and %q must share the same %s because they resolve to base model %q: %w",
-				groupSources[groupKey],
-				configuredModel,
-				settingKey,
-				groupKey,
-				os.ErrInvalid,
-			)
-		}
-
-		groupValues[groupKey] = value
-		groupSources[groupKey] = configuredModel
+	groups := modelIntSettingGroups{
+		Values:  make(map[string]int),
+		Sources: make(map[string]string),
 	}
 
-	if len(groupValues) == 0 {
+	for configuredModel, modelParameters := range models {
+		setting, err := readAliasedModelIntSetting(
+			providers,
+			configuredModel,
+			modelParameters,
+			settingKey,
+			validate,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		settings[configuredModel] = setting
+
+		err = groups.register(configuredModel, setting, settingKey)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if len(groups.Values) == 0 {
 		return map[string]int{}, nil
 	}
 
+	effectiveValues := effectiveAliasedModelIntSettingValues(settings, groups.Values)
+
+	if len(effectiveValues) == 0 {
+		return map[string]int{}, nil
+	}
+
+	return effectiveValues, nil
+}
+
+func readAliasedModelIntSetting(
+	providers map[string]providerConfig,
+	configuredModel string,
+	modelParameters map[string]any,
+	settingKey string,
+	validate func(int) error,
+) (modelIntSetting, error) {
+	groupKey, err := aliasedModelIntSettingGroupKey(providers, configuredModel)
+	if err != nil {
+		return modelIntSetting{}, err
+	}
+
+	value, explicit, err := modelPositiveIntSettingValue(modelParameters, settingKey)
+	if err != nil {
+		return modelIntSetting{}, fmt.Errorf("read %s for model %q: %w", settingKey, configuredModel, err)
+	}
+
+	err = validateAliasedModelIntSetting(value, explicit, validate, settingKey, configuredModel)
+	if err != nil {
+		return modelIntSetting{}, err
+	}
+
+	return modelIntSetting{
+		GroupKey: groupKey,
+		Value:    value,
+		Explicit: explicit,
+	}, nil
+}
+
+func aliasedModelIntSettingGroupKey(
+	providers map[string]providerConfig,
+	configuredModel string,
+) (string, error) {
+	providerName, modelName, err := splitConfiguredModel(configuredModel)
+	if err != nil {
+		return "", fmt.Errorf("parse model %q: %w", configuredModel, err)
+	}
+
+	baseModelName := modelName
+	if provider, ok := providers[providerName]; ok {
+		baseModelName, err = modelLocalSettingBaseModel(provider, modelName)
+		if err != nil {
+			return "", fmt.Errorf("normalize base model for %q: %w", configuredModel, err)
+		}
+	}
+
+	return providerName + "/" + baseModelName, nil
+}
+
+func validateAliasedModelIntSetting(
+	value int,
+	explicit bool,
+	validate func(int) error,
+	settingKey string,
+	configuredModel string,
+) error {
+	if !explicit || validate == nil {
+		return nil
+	}
+
+	err := validate(value)
+	if err != nil {
+		return fmt.Errorf("validate %s for model %q: %w", settingKey, configuredModel, err)
+	}
+
+	return nil
+}
+
+func (groups modelIntSettingGroups) register(
+	configuredModel string,
+	setting modelIntSetting,
+	settingKey string,
+) error {
+	if !setting.Explicit {
+		return nil
+	}
+
+	if previousValue, ok := groups.Values[setting.GroupKey]; ok && previousValue != setting.Value {
+		return fmt.Errorf(
+			"models %q and %q must share the same %s because they resolve to base model %q: %w",
+			groups.Sources[setting.GroupKey],
+			configuredModel,
+			settingKey,
+			setting.GroupKey,
+			os.ErrInvalid,
+		)
+	}
+
+	groups.Values[setting.GroupKey] = setting.Value
+	groups.Sources[setting.GroupKey] = configuredModel
+
+	return nil
+}
+
+func effectiveAliasedModelIntSettingValues(
+	settings map[string]modelIntSetting,
+	groupValues map[string]int,
+) map[string]int {
 	effectiveValues := make(map[string]int, len(settings))
 	for configuredModel, setting := range settings {
 		if setting.Explicit {
@@ -523,11 +607,7 @@ func effectiveAliasedModelIntSettings(
 		}
 	}
 
-	if len(effectiveValues) == 0 {
-		return map[string]int{}, nil
-	}
-
-	return effectiveValues, nil
+	return effectiveValues
 }
 
 func modelLocalSettingBaseModel(provider providerConfig, modelName string) (string, error) {
@@ -595,7 +675,7 @@ func validateNoModelLocalAutoCompactThreshold(models map[string]map[string]any) 
 
 func validateAutoCompactThresholdPercent(value int) error {
 	if value <= 0 {
-		return fmt.Errorf("must be greater than zero: %w", os.ErrInvalid)
+		return fmt.Errorf(errPositiveIntMustBeGreaterThanZero, os.ErrInvalid)
 	}
 
 	if value > autoCompactPercentBase {
@@ -615,19 +695,19 @@ func anyPositiveIntValue(value any) (int, error) {
 	switch typedValue := value.(type) {
 	case int:
 		if typedValue <= 0 {
-			return 0, fmt.Errorf("must be greater than zero: %w", os.ErrInvalid)
+			return 0, fmt.Errorf(errPositiveIntMustBeGreaterThanZero, os.ErrInvalid)
 		}
 
 		return typedValue, nil
 	case int64:
 		if typedValue <= 0 || typedValue > int64(maxIntValue) {
-			return 0, fmt.Errorf("must be greater than zero: %w", os.ErrInvalid)
+			return 0, fmt.Errorf(errPositiveIntMustBeGreaterThanZero, os.ErrInvalid)
 		}
 
 		return int(typedValue), nil
 	case uint64:
 		if typedValue == 0 || typedValue > uint64(maxIntValue) {
-			return 0, fmt.Errorf("must be greater than zero: %w", os.ErrInvalid)
+			return 0, fmt.Errorf(errPositiveIntMustBeGreaterThanZero, os.ErrInvalid)
 		}
 
 		parsedValue, err := strconv.Atoi(strconv.FormatUint(typedValue, 10))
@@ -749,27 +829,12 @@ func (loadedConfig facebookExtractorConfig) providersInOrder() []facebookExtract
 }
 
 func validateConfig(loadedConfig config) error {
-	if strings.TrimSpace(loadedConfig.BotToken) == "" {
-		return fmt.Errorf("bot_token is required: %w", os.ErrInvalid)
+	err := validateConfigBasics(loadedConfig)
+	if err != nil {
+		return err
 	}
 
-	if len(loadedConfig.ModelOrder) == 0 {
-		return fmt.Errorf("models must contain at least one entry: %w", os.ErrInvalid)
-	}
-
-	if loadedConfig.MaxText <= 0 {
-		return fmt.Errorf("max_text must be greater than zero: %w", os.ErrInvalid)
-	}
-
-	if loadedConfig.MaxImages < 0 {
-		return fmt.Errorf("max_images must not be negative: %w", os.ErrInvalid)
-	}
-
-	if loadedConfig.MaxMessages <= 0 {
-		return fmt.Errorf("max_messages must be greater than zero: %w", os.ErrInvalid)
-	}
-
-	err := validateFacebookConfig(loadedConfig.Facebook)
+	err = validateFacebookConfig(loadedConfig.Facebook)
 	if err != nil {
 		return err
 	}
@@ -789,6 +854,37 @@ func validateConfig(loadedConfig config) error {
 		return fmt.Errorf("auto_compact_threshold_percent %w", err)
 	}
 
+	err = validateConfiguredModels(loadedConfig)
+	if err != nil {
+		return err
+	}
+
+	err = validateChannelModelLocks(loadedConfig)
+	if err != nil {
+		return err
+	}
+
+	return validateMediaAnalysisModel(loadedConfig)
+}
+
+func validateConfigBasics(loadedConfig config) error {
+	switch {
+	case strings.TrimSpace(loadedConfig.BotToken) == "":
+		return fmt.Errorf("bot_token is required: %w", os.ErrInvalid)
+	case len(loadedConfig.ModelOrder) == 0:
+		return fmt.Errorf("models must contain at least one entry: %w", os.ErrInvalid)
+	case loadedConfig.MaxText <= 0:
+		return fmt.Errorf("max_text must be greater than zero: %w", os.ErrInvalid)
+	case loadedConfig.MaxImages < 0:
+		return fmt.Errorf("max_images must not be negative: %w", os.ErrInvalid)
+	case loadedConfig.MaxMessages <= 0:
+		return fmt.Errorf("max_messages must be greater than zero: %w", os.ErrInvalid)
+	default:
+		return nil
+	}
+}
+
+func validateConfiguredModels(loadedConfig config) error {
 	for _, modelName := range loadedConfig.ModelOrder {
 		providerName, _, err := splitConfiguredModel(modelName)
 		if err != nil {
@@ -812,16 +908,6 @@ func validateConfig(loadedConfig config) error {
 			loadedConfig.SearchDeciderModel,
 			os.ErrNotExist,
 		)
-	}
-
-	err = validateChannelModelLocks(loadedConfig)
-	if err != nil {
-		return err
-	}
-
-	err = validateMediaAnalysisModel(loadedConfig)
-	if err != nil {
-		return err
 	}
 
 	return nil

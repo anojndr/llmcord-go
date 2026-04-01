@@ -44,7 +44,7 @@ func newStubWebsiteContentClient(
 	return client
 }
 
-func newWebsiteTestBot(website websiteContentClient) *bot {
+func newWebsiteTestBot(website websiteFetcher) *bot {
 	instance := new(bot)
 	instance.website = website
 

@@ -49,7 +49,7 @@ func containsID(values []string, candidate string) bool {
 	return slices.Contains(values, candidate)
 }
 
-func containsAnyID(values []string, candidates []string) bool {
+func containsAnyID(values, candidates []string) bool {
 	for _, candidate := range candidates {
 		if containsID(values, candidate) {
 			return true

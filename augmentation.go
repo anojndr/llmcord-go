@@ -448,7 +448,7 @@ func renderMediaAnalyses(analyses []string) string {
 	return strings.Join(blocks, "\n\n")
 }
 
-func appendPromptUserQuery(userQuery string, addition string) string {
+func appendPromptUserQuery(userQuery, addition string) string {
 	trimmedQuery := strings.TrimSpace(userQuery)
 	trimmedAddition := strings.TrimSpace(addition)
 

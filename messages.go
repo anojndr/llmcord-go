@@ -124,7 +124,7 @@ func (instance *bot) messageChannelIDs(message *discordgo.Message) ([]string, er
 	return instance.channelContextIDs(message.ChannelID, message.GuildID)
 }
 
-func (instance *bot) channelContextIDs(channelID string, guildID string) ([]string, error) {
+func (instance *bot) channelContextIDs(channelID, guildID string) ([]string, error) {
 	channelIDs := make([]string, 0, smallMapCapacity)
 	channelIDSet := make(map[string]struct{}, smallMapCapacity)
 	channelIDs = appendUniqueChannelID(channelIDs, channelIDSet, channelID)
@@ -825,7 +825,7 @@ func prependSystemPrompt(
 	}}, messages...)
 }
 
-func mergeExtraBody(providerExtraBody map[string]any, modelParameters map[string]any) map[string]any {
+func mergeExtraBody(providerExtraBody, modelParameters map[string]any) map[string]any {
 	if len(providerExtraBody) == 0 && len(modelParameters) == 0 {
 		return nil
 	}

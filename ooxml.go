@@ -77,11 +77,11 @@ func ooxmlArchiveFiles(
 		}
 	}
 
-	sort.Slice(xmlFiles, func(left int, right int) bool {
+	sort.Slice(xmlFiles, func(left, right int) bool {
 		return strings.ToLower(xmlFiles[left].Name) < strings.ToLower(xmlFiles[right].Name)
 	})
 
-	sort.Slice(mediaFiles, func(left int, right int) bool {
+	sort.Slice(mediaFiles, func(left, right int) bool {
 		return strings.ToLower(mediaFiles[left].Name) < strings.ToLower(mediaFiles[right].Name)
 	})
 
@@ -177,41 +177,81 @@ func extractOOXMLText(xmlBytes []byte) (string, error) {
 			return "", fmt.Errorf("decode OOXML XML token: %w", err)
 		}
 
-		switch typedToken := token.(type) {
-		case xml.StartElement:
-			elementName := strings.ToLower(typedToken.Name.Local)
-
-			switch {
-			case ooxmlTextElement(elementName):
-				textElementDepth++
-			case ooxmlLineBreakElement(elementName):
-				flushLine()
-			case elementName == "tab":
-				appendOOXMLTextChunk(&lineBuilder, " ")
-			}
-		case xml.EndElement:
-			elementName := strings.ToLower(typedToken.Name.Local)
-
-			switch {
-			case ooxmlTextElement(elementName):
-				if textElementDepth > 0 {
-					textElementDepth--
-				}
-			case ooxmlParagraphElement(elementName):
-				flushLine()
-			}
-		case xml.CharData:
-			if textElementDepth == 0 {
-				continue
-			}
-
-			appendOOXMLTextChunk(&lineBuilder, string(typedToken))
-		}
+		textElementDepth = processOOXMLToken(token, textElementDepth, &lineBuilder, flushLine)
 	}
 
 	flushLine()
 
 	return strings.TrimSpace(strings.Join(lines, "\n")), nil
+}
+
+func processOOXMLToken(
+	token xml.Token,
+	textElementDepth int,
+	lineBuilder *strings.Builder,
+	flushLine func(),
+) int {
+	switch typedToken := token.(type) {
+	case xml.StartElement:
+		return processOOXMLStartElement(typedToken, textElementDepth, lineBuilder, flushLine)
+	case xml.EndElement:
+		return processOOXMLEndElement(typedToken, textElementDepth, flushLine)
+	case xml.CharData:
+		processOOXMLCharData(typedToken, textElementDepth, lineBuilder)
+	}
+
+	return textElementDepth
+}
+
+func processOOXMLStartElement(
+	element xml.StartElement,
+	textElementDepth int,
+	lineBuilder *strings.Builder,
+	flushLine func(),
+) int {
+	elementName := strings.ToLower(element.Name.Local)
+
+	switch {
+	case ooxmlTextElement(elementName):
+		return textElementDepth + 1
+	case ooxmlLineBreakElement(elementName):
+		flushLine()
+	case elementName == "tab":
+		appendOOXMLTextChunk(lineBuilder, " ")
+	}
+
+	return textElementDepth
+}
+
+func processOOXMLEndElement(
+	element xml.EndElement,
+	textElementDepth int,
+	flushLine func(),
+) int {
+	elementName := strings.ToLower(element.Name.Local)
+
+	switch {
+	case ooxmlTextElement(elementName):
+		if textElementDepth > 0 {
+			return textElementDepth - 1
+		}
+	case ooxmlParagraphElement(elementName):
+		flushLine()
+	}
+
+	return textElementDepth
+}
+
+func processOOXMLCharData(
+	charData xml.CharData,
+	textElementDepth int,
+	lineBuilder *strings.Builder,
+) {
+	if textElementDepth == 0 {
+		return
+	}
+
+	appendOOXMLTextChunk(lineBuilder, string(charData))
 }
 
 func ooxmlTextElement(elementName string) bool {

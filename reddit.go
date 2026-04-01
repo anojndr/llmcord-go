@@ -28,7 +28,7 @@ var redditURLRegexp = regexp.MustCompile(
 	`(?i)\b(?:https?://)?(?:[\w-]+\.)?reddit\.com/[^\s<>()]+`,
 )
 
-type redditContentClient interface {
+type redditFetcher interface {
 	fetch(ctx context.Context, rawURL string) (redditThreadContent, error)
 }
 
@@ -360,7 +360,7 @@ func isRedditHost(host string) bool {
 	return normalizedHost == "reddit.com" || strings.HasSuffix(normalizedHost, ".reddit.com")
 }
 
-func resolveRedditRequestURL(baseURL string, requestPath string) (string, error) {
+func resolveRedditRequestURL(baseURL, requestPath string) (string, error) {
 	parsedBaseURL, err := url.Parse(baseURL)
 	if err != nil {
 		return "", fmt.Errorf("parse reddit base url %q: %w", baseURL, err)

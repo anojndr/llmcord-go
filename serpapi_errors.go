@@ -88,7 +88,7 @@ func newSerpAPIProviderError(
 	}
 }
 
-func newSerpAPISearchStatusError(imageURL string, status string, responseError string) error {
+func newSerpAPISearchStatusError(imageURL, status, responseError string) error {
 	trimmedStatus := strings.TrimSpace(status)
 
 	trimmedError := strings.TrimSpace(responseError)

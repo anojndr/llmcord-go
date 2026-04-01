@@ -45,8 +45,8 @@ func newStubTikTokContentClient(
 }
 
 func newTikTokTestBot(
-	tiktok tiktokContentClient,
-	chatCompletions chatCompletionClient,
+	tiktok tiktokFetcher,
+	chatCompletions chatCompletionStreamer,
 ) *bot {
 	instance := new(bot)
 	instance.tiktok = tiktok

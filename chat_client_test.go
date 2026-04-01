@@ -1109,7 +1109,7 @@ func newOpenAICodexRetryTestServer(
 	}))
 }
 
-func newOpenAICodexRetryRequest(baseURL string, validAPIKey string) chatCompletionRequest {
+func newOpenAICodexRetryRequest(baseURL, validAPIKey string) chatCompletionRequest {
 	return chatCompletionRequest{
 		Provider: providerRequestConfig{
 			APIKind:      providerAPIKindOpenAICodex,
@@ -1291,7 +1291,7 @@ func newGeminiRetryStream(apiKey string) func(
 	}
 }
 
-func newTestGeminiRetryDelayError(message string, retryDelay string) error {
+func newTestGeminiRetryDelayError(message, retryDelay string) error {
 	apiErr := new(genai.APIError)
 	apiErr.Code = http.StatusTooManyRequests
 	apiErr.Message = message

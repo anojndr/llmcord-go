@@ -39,7 +39,7 @@ func newStubYouTubeContentClient(
 	return client
 }
 
-func newYouTubeTestBot(youtube youtubeContentClient) *bot {
+func newYouTubeTestBot(youtube youtubeFetcher) *bot {
 	instance := new(bot)
 	instance.youtube = youtube
 
@@ -789,7 +789,7 @@ func newNoteGPTTranscriptData(
 	}
 }
 
-func newNoteGPTLanguageCode(code string, name string) noteGPTLanguageCode {
+func newNoteGPTLanguageCode(code, name string) noteGPTLanguageCode {
 	return noteGPTLanguageCode{
 		Code: code,
 		Name: name,
@@ -797,8 +797,7 @@ func newNoteGPTLanguageCode(code string, name string) noteGPTLanguageCode {
 }
 
 func newNoteGPTTranscriptTracks(
-	defaultTexts []string,
-	customTexts []string,
+	defaultTexts, customTexts []string,
 ) noteGPTTranscriptTracks {
 	return noteGPTTranscriptTracks{
 		Custom:  newNoteGPTTranscriptSegments(customTexts...),
@@ -937,7 +936,7 @@ func assertMockYouTubeResult(
 	}
 }
 
-func mockYouTubeWatchHTML(apiKey string, clientVersion string, continuationToken string) string {
+func mockYouTubeWatchHTML(apiKey, clientVersion, continuationToken string) string {
 	initialData := map[string]any{
 		"engagementPanels": []any{
 			map[string]any{

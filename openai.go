@@ -89,16 +89,7 @@ func (client openAIClient) streamChatCompletion(
 	includeStreamingUsage := true
 
 	for {
-		requestBody := buildChatCompletionRequestBodyWithUsageOption(request, includeStreamingUsage)
-		if len(excludedFunctionIDs) > 0 {
-			sanitizedRequestBody, changed := excludeDegradedFunctionsFromChatCompletionRequestBody(
-				requestBody,
-				excludedFunctionIDs,
-			)
-			if changed {
-				requestBody = sanitizedRequestBody
-			}
-		}
+		requestBody := openAIStreamRequestBody(request, includeStreamingUsage, excludedFunctionIDs)
 
 		statusCode, statusText, responseHeaders, responseBody, err := client.streamChatCompletionAttempt(
 			ctx,
@@ -115,29 +106,19 @@ func (client openAIClient) streamChatCompletion(
 			return nil
 		}
 
-		if statusCode == http.StatusBadRequest {
-			if includeStreamingUsage &&
-				openAIShouldRetryWithoutStreamingUsage(
-					statusCode,
-					statusText,
-					responseHeaders,
-					responseBody,
-				) {
-				includeStreamingUsage = false
+		retry, nextIncludeStreamingUsage := openAIShouldRetryChatCompletion(
+			statusCode,
+			statusText,
+			responseHeaders,
+			responseBody,
+			requestBody,
+			includeStreamingUsage,
+			excludedFunctionIDs,
+		)
+		includeStreamingUsage = nextIncludeStreamingUsage
 
-				continue
-			}
-
-			degradedFunctionIDs := openAIDegradedFunctionIDs(responseBody)
-			if addOpenAIExcludedFunctionIDs(excludedFunctionIDs, degradedFunctionIDs) {
-				_, changed := excludeDegradedFunctionsFromChatCompletionRequestBody(
-					requestBody,
-					excludedFunctionIDs,
-				)
-				if changed {
-					continue
-				}
-			}
+		if retry {
+			continue
 		}
 
 		return newOpenAIProviderStatusError(
@@ -149,6 +130,64 @@ func (client openAIClient) streamChatCompletion(
 			false,
 		)
 	}
+}
+
+func openAIStreamRequestBody(
+	request chatCompletionRequest,
+	includeStreamingUsage bool,
+	excludedFunctionIDs map[string]struct{},
+) map[string]any {
+	requestBody := buildChatCompletionRequestBodyWithUsageOption(request, includeStreamingUsage)
+	if len(excludedFunctionIDs) == 0 {
+		return requestBody
+	}
+
+	sanitizedRequestBody, changed := excludeDegradedFunctionsFromChatCompletionRequestBody(
+		requestBody,
+		excludedFunctionIDs,
+	)
+	if !changed {
+		return requestBody
+	}
+
+	return sanitizedRequestBody
+}
+
+func openAIShouldRetryChatCompletion(
+	statusCode int,
+	statusText string,
+	responseHeaders http.Header,
+	responseBody []byte,
+	requestBody map[string]any,
+	includeStreamingUsage bool,
+	excludedFunctionIDs map[string]struct{},
+) (bool, bool) {
+	if statusCode != http.StatusBadRequest {
+		return false, includeStreamingUsage
+	}
+
+	if includeStreamingUsage &&
+		openAIShouldRetryWithoutStreamingUsage(
+			statusCode,
+			statusText,
+			responseHeaders,
+			responseBody,
+		) {
+		return true, false
+	}
+
+	degradedFunctionIDs := openAIDegradedFunctionIDs(responseBody)
+	if addOpenAIExcludedFunctionIDs(excludedFunctionIDs, degradedFunctionIDs) {
+		_, changed := excludeDegradedFunctionsFromChatCompletionRequestBody(
+			requestBody,
+			excludedFunctionIDs,
+		)
+		if changed {
+			return true, includeStreamingUsage
+		}
+	}
+
+	return false, includeStreamingUsage
 }
 
 func (client openAIClient) streamChatCompletionAttempt(
@@ -392,19 +431,7 @@ func openAIRequestValueReferencesExcludedFunction(
 
 	object, mapOK := openAIRequestValueMap(value)
 	if mapOK {
-		for key, child := range object {
-			if isOpenAIFunctionIDField(key) {
-				if _, found := excludedFunctionIDs[strings.TrimSpace(stringifyValue(child))]; found {
-					return true
-				}
-			}
-
-			if openAIRequestValueReferencesExcludedFunction(child, excludedFunctionIDs) {
-				return true
-			}
-		}
-
-		return false
+		return openAIRequestMapReferencesExcludedFunction(object, excludedFunctionIDs)
 	}
 
 	values, ok := openAIRequestValueSlice(value)
@@ -412,13 +439,7 @@ func openAIRequestValueReferencesExcludedFunction(
 		return false
 	}
 
-	for _, child := range values {
-		if openAIRequestValueReferencesExcludedFunction(child, excludedFunctionIDs) {
-			return true
-		}
-	}
-
-	return false
+	return openAIRequestSliceReferencesExcludedFunction(values, excludedFunctionIDs)
 }
 
 func isOpenAIFunctionIDField(field string) bool {
@@ -585,31 +606,15 @@ func consumeServerSentEvents(reader io.Reader, handle func([]byte) error) (bool,
 
 	for scanner.Scan() {
 		line := scanner.Text()
-		if strings.TrimSpace(line) == "" {
-			err := flushEvent()
-			if err != nil {
-				return doneSeen, err
-			}
 
-			continue
+		doneReached, err := appendServerSentEventLine(line, &eventData, &doneSeen, flushEvent)
+		if err != nil {
+			return doneSeen, err
 		}
 
-		if !strings.HasPrefix(line, "data:") {
-			continue
-		}
-
-		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-		if payload == "[DONE]" {
-			doneSeen = true
-
+		if doneReached {
 			return doneSeen, nil
 		}
-
-		if eventData.Len() > 0 {
-			eventData.WriteByte('\n')
-		}
-
-		eventData.WriteString(payload)
 	}
 
 	err := scanner.Err()
@@ -623,6 +628,76 @@ func consumeServerSentEvents(reader io.Reader, handle func([]byte) error) (bool,
 	}
 
 	return doneSeen, nil
+}
+
+func openAIRequestMapReferencesExcludedFunction(
+	object map[string]any,
+	excludedFunctionIDs map[string]struct{},
+) bool {
+	for key, child := range object {
+		if openAIRequestFieldReferencesExcludedFunction(key, child, excludedFunctionIDs) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func openAIRequestFieldReferencesExcludedFunction(
+	key string,
+	child any,
+	excludedFunctionIDs map[string]struct{},
+) bool {
+	if isOpenAIFunctionIDField(key) {
+		if _, found := excludedFunctionIDs[strings.TrimSpace(stringifyValue(child))]; found {
+			return true
+		}
+	}
+
+	return openAIRequestValueReferencesExcludedFunction(child, excludedFunctionIDs)
+}
+
+func openAIRequestSliceReferencesExcludedFunction(
+	values []any,
+	excludedFunctionIDs map[string]struct{},
+) bool {
+	for _, child := range values {
+		if openAIRequestValueReferencesExcludedFunction(child, excludedFunctionIDs) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func appendServerSentEventLine(
+	line string,
+	eventData *strings.Builder,
+	doneSeen *bool,
+	flushEvent func() error,
+) (bool, error) {
+	if strings.TrimSpace(line) == "" {
+		return false, flushEvent()
+	}
+
+	if !strings.HasPrefix(line, "data:") {
+		return false, nil
+	}
+
+	payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+	if payload == "[DONE]" {
+		*doneSeen = true
+
+		return true, nil
+	}
+
+	if eventData.Len() > 0 {
+		eventData.WriteByte('\n')
+	}
+
+	eventData.WriteString(payload)
+
+	return false, nil
 }
 
 func handleStreamPayload(payload []byte, handle func(streamDelta) error) error {
@@ -639,7 +714,7 @@ func handleStreamPayload(payload []byte, handle func(streamDelta) error) error {
 			Usage:        nil,
 		})
 		if err != nil {
-			return fmt.Errorf("handle stream delta: %w", err)
+			return fmt.Errorf(handleStreamDeltaErrorFormat, err)
 		}
 	}
 
@@ -651,7 +726,7 @@ func handleStreamPayload(payload []byte, handle func(streamDelta) error) error {
 			Usage:        cloneTokenUsage(delta.Usage),
 		})
 		if err != nil {
-			return fmt.Errorf("handle stream delta: %w", err)
+			return fmt.Errorf(handleStreamDeltaErrorFormat, err)
 		}
 	}
 
@@ -668,7 +743,7 @@ func handleStreamPayload(payload []byte, handle func(streamDelta) error) error {
 			Usage:        nil,
 		})
 		if err != nil {
-			return fmt.Errorf("handle stream delta: %w", err)
+			return fmt.Errorf(handleStreamDeltaErrorFormat, err)
 		}
 	}
 

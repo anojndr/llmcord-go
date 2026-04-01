@@ -791,7 +791,7 @@ func assertGeminiMediaAnalysisRequest(
 }
 
 func newMediaAnalysisTestBot(
-	chatClient chatCompletionClient,
+	chatClient chatCompletionStreamer,
 	messageID string,
 	media []contentPart,
 ) (*bot, *discordgo.Message) {

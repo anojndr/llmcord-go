@@ -65,6 +65,21 @@ func TestExtractPPTXContentReturnsTextAndImages(t *testing.T) {
 	}
 }
 
+func TestExtractOOXMLTextHandlesTabsAndLineBreaks(t *testing.T) {
+	t.Parallel()
+
+	xmlText := `<document><p><r><t>Alpha</t></r><tab/><r><t>Beta</t></r><br/><r><t>Gamma</t></r></p></document>`
+
+	text, err := extractOOXMLText([]byte(xmlText))
+	if err != nil {
+		t.Fatalf("extract OOXML text: %v", err)
+	}
+
+	if text != "Alpha Beta\nGamma" {
+		t.Fatalf("unexpected extracted OOXML text: %q", text)
+	}
+}
+
 func testDOCXDocumentPart(
 	t *testing.T,
 	text string,

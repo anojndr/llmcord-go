@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
-	_ "github.com/lib/pq"
+	_ "github.com/lib/pq" // Register the PostgreSQL driver for database/sql.
 )
 
 const (
@@ -584,7 +584,7 @@ func defaultMessageNodeStoreKey(configPath string) string {
 	return fmt.Sprintf("message-history-%x", hash[:8])
 }
 
-func messageNodeStoreKey(configPath string, configuredStoreKey string) string {
+func messageNodeStoreKey(configPath, configuredStoreKey string) string {
 	trimmedStoreKey := strings.TrimSpace(configuredStoreKey)
 	if trimmedStoreKey != "" {
 		return trimmedStoreKey

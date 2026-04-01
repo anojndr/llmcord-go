@@ -26,7 +26,7 @@ const (
 	youtubeQuality8K              = 4320
 )
 
-type youtubeShortsContentClient interface {
+type youtubeShortsFetcher interface {
 	fetch(ctx context.Context, rawURL string) (youtubeShortsVideoContent, error)
 }
 
@@ -155,13 +155,15 @@ func (instance *bot) prepareYouTubeShortsAugmentation(
 
 	return prepareDownloadedVideoAugmentation(
 		ctx,
-		instance,
-		loadedConfig,
-		providerSlashModel,
-		videoContents,
-		warnings,
-		youtubeShortsWarningText,
-		"youtube shorts",
+		downloadedVideoAugmentationRequest[youtubeShortsVideoContent]{
+			instance:           instance,
+			loadedConfig:       loadedConfig,
+			providerSlashModel: providerSlashModel,
+			videoContents:      videoContents,
+			warnings:           warnings,
+			warningText:        youtubeShortsWarningText,
+			label:              "youtube shorts",
+		},
 	)
 }
 
@@ -308,7 +310,7 @@ func (client youtubeShortsClient) fetchInfo(
 	return response.ResData, nil
 }
 
-func buildYouTubeShortsRequestURL(baseURL string, resolvedURL string) (string, error) {
+func buildYouTubeShortsRequestURL(baseURL, resolvedURL string) (string, error) {
 	parsedURL, err := url.Parse(baseURL)
 	if err != nil {
 		return "", fmt.Errorf("parse youtube shorts request url %q: %w", baseURL, err)
@@ -642,7 +644,7 @@ func normalizedYouTubeShortsMIMEType(contentType string) string {
 	return mediaType
 }
 
-func youtubeShortsFilename(resolvedURL string, contentDisposition string) string {
+func youtubeShortsFilename(resolvedURL, contentDisposition string) string {
 	trimmedContentDisposition := strings.TrimSpace(contentDisposition)
 	if trimmedContentDisposition != "" {
 		_, params, err := mime.ParseMediaType(trimmedContentDisposition)

@@ -1274,14 +1274,12 @@ func newModelTestBot(configPath string) *bot {
 	return instance
 }
 
-func newModelCommandInteraction(userID string, modelName string) *discordgo.InteractionCreate {
+func newModelCommandInteraction(userID, modelName string) *discordgo.InteractionCreate {
 	return newModelCommandInteractionInChannel(userID, modelName, "")
 }
 
 func newModelCommandInteractionInChannel(
-	userID string,
-	modelName string,
-	channelID string,
+	userID, modelName, channelID string,
 ) *discordgo.InteractionCreate {
 	return newConfiguredModelCommandInteraction(
 		userID,
@@ -1293,16 +1291,13 @@ func newModelCommandInteractionInChannel(
 }
 
 func newSearchDeciderModelCommandInteraction(
-	userID string,
-	modelName string,
+	userID, modelName string,
 ) *discordgo.InteractionCreate {
 	return newSearchDeciderModelCommandInteractionInChannel(userID, modelName, "")
 }
 
 func newSearchDeciderModelCommandInteractionInChannel(
-	userID string,
-	modelName string,
-	channelID string,
+	userID, modelName, channelID string,
 ) *discordgo.InteractionCreate {
 	return newConfiguredModelCommandInteraction(
 		userID,
@@ -1313,7 +1308,7 @@ func newSearchDeciderModelCommandInteractionInChannel(
 	)
 }
 
-func newSearchTypeCommandInteraction(userID string, searchType string) *discordgo.InteractionCreate {
+func newSearchTypeCommandInteraction(userID, searchType string) *discordgo.InteractionCreate {
 	return newConfiguredStringCommandInteraction(
 		userID,
 		searchType,
@@ -1324,7 +1319,7 @@ func newSearchTypeCommandInteraction(userID string, searchType string) *discordg
 	)
 }
 
-func newSearchTypeAutocompleteInteraction(userID string, currentText string) *discordgo.InteractionCreate {
+func newSearchTypeAutocompleteInteraction(userID, currentText string) *discordgo.InteractionCreate {
 	return newConfiguredStringCommandInteraction(
 		userID,
 		currentText,
@@ -1336,11 +1331,7 @@ func newSearchTypeAutocompleteInteraction(userID string, currentText string) *di
 }
 
 func newConfiguredModelCommandInteraction(
-	userID string,
-	modelName string,
-	commandName string,
-	optionName string,
-	channelID string,
+	userID, modelName, commandName, optionName, channelID string,
 ) *discordgo.InteractionCreate {
 	return newConfiguredStringCommandInteraction(
 		userID,
@@ -1400,7 +1391,7 @@ func newShowThinkingInteraction() *discordgo.InteractionCreate {
 	return newComponentInteraction("response-message", showThinkingButtonCustomID)
 }
 
-func newComponentInteraction(messageID string, customID string) *discordgo.InteractionCreate {
+func newComponentInteraction(messageID, customID string) *discordgo.InteractionCreate {
 	message := new(discordgo.Message)
 	message.ID = messageID
 

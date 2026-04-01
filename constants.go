@@ -29,6 +29,8 @@ const (
 	plainResponseMaxLength               = 4000
 	streamingIndicator                   = " ..."
 	unknownText                          = "Unknown"
+	applicationJSONContentType           = "application/json"
+	contentTypeHeader                    = "Content-Type"
 	embedResponseMaxLength               = 4096 - len(streamingIndicator)
 	embedColorComplete                   = 0x006400
 	embedColorIncomplete                 = 0xffa500
@@ -102,11 +104,14 @@ const (
 	publicHTTPShutdownTimeout            = 5 * time.Second
 	discordStartupProbeReadLimit         = 4096
 	errorBodySnippetMaxLength            = 200
+	handleStreamDeltaErrorFormat         = "handle stream delta: %w"
+	numberedListLineFormat               = "%d. %s\n"
 	sseScannerInitialBuffer              = 64 * 1024
 	sseScannerMaxBuffer                  = 1024 * 1024
 	mappingNodePairSize                  = 2
 	smallMapCapacity                     = 3
 	tavilyResultFieldCapacity            = 4
+	userAgentHeader                      = "User-Agent"
 	requestBodyBaseFields                = 3
 	configuredModelParts                 = 2
 )

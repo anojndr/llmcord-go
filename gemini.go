@@ -22,7 +22,7 @@ import (
 
 var geminiAPIVersionPattern = regexp.MustCompile(`^v[0-9]+(?:(?:alpha|beta)[0-9]*)?$`)
 
-type geminiModelsClient interface {
+type geminiContentStreamer interface {
 	GenerateContentStream(
 		ctx context.Context,
 		model string,
@@ -41,7 +41,7 @@ type geminiFilesClient interface {
 }
 
 type geminiAPIClient interface {
-	geminiModelsClient
+	geminiContentStreamer
 	geminiFilesClient
 }
 
@@ -143,35 +143,12 @@ func (client geminiClient) streamChatCompletion(
 		contents,
 		generateConfig,
 	) {
-		if streamErr != nil {
-			return fmt.Errorf("stream gemini content: %w", streamErr)
-		}
-
-		delta, processErr := geminiStreamDelta(response)
-		if processErr != nil {
-			err = geminiHandleStreamUpdate(handle, delta)
-			if err != nil {
-				return err
-			}
-
-			return fmt.Errorf("process gemini stream response: %w", processErr)
-		}
-
-		err = geminiHandleStreamUpdate(handle, delta)
+		finished, err := processGeminiStreamResponse(handle, response, streamErr)
 		if err != nil {
 			return err
 		}
 
-		if delta.FinishReason == "" {
-			continue
-		}
-
-		finishSeen = true
-
-		err = geminiHandleFinishReason(handle, delta.FinishReason)
-		if err != nil {
-			return err
-		}
+		finishSeen = finishSeen || finished
 	}
 
 	if !finishSeen {
@@ -179,6 +156,38 @@ func (client geminiClient) streamChatCompletion(
 	}
 
 	return nil
+}
+
+func processGeminiStreamResponse(
+	handle func(streamDelta) error,
+	response *genai.GenerateContentResponse,
+	streamErr error,
+) (bool, error) {
+	if streamErr != nil {
+		return false, fmt.Errorf("stream gemini content: %w", streamErr)
+	}
+
+	delta, processErr := geminiStreamDelta(response)
+
+	err := geminiHandleStreamUpdate(handle, delta)
+	if err != nil {
+		return false, err
+	}
+
+	if processErr != nil {
+		return false, fmt.Errorf("process gemini stream response: %w", processErr)
+	}
+
+	if delta.FinishReason == "" {
+		return false, nil
+	}
+
+	err = geminiHandleFinishReason(handle, delta.FinishReason)
+	if err != nil {
+		return false, err
+	}
+
+	return true, nil
 }
 
 func geminiHandleStreamUpdate(handle func(streamDelta) error, delta streamDelta) error {
@@ -190,7 +199,7 @@ func geminiHandleStreamUpdate(handle func(streamDelta) error, delta streamDelta)
 			Usage:        nil,
 		})
 		if err != nil {
-			return fmt.Errorf("handle stream delta: %w", err)
+			return fmt.Errorf(handleStreamDeltaErrorFormat, err)
 		}
 	}
 
@@ -202,7 +211,7 @@ func geminiHandleStreamUpdate(handle func(streamDelta) error, delta streamDelta)
 			Usage:        cloneTokenUsage(delta.Usage),
 		})
 		if err != nil {
-			return fmt.Errorf("handle stream delta: %w", err)
+			return fmt.Errorf(handleStreamDeltaErrorFormat, err)
 		}
 	}
 
@@ -217,7 +226,7 @@ func geminiHandleFinishReason(handle func(streamDelta) error, finishReason strin
 		Usage:        nil,
 	})
 	if err != nil {
-		return fmt.Errorf("handle stream delta: %w", err)
+		return fmt.Errorf(handleStreamDeltaErrorFormat, err)
 	}
 
 	return nil

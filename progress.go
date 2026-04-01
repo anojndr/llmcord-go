@@ -225,8 +225,7 @@ func buildRequestProgressEmbed(
 }
 
 func buildRequestProgressFailureEmbed(
-	modelName string,
-	errorText string,
+	modelName, errorText string,
 ) *discordgo.MessageEmbed {
 	return buildResponseEmbed(
 		strings.TrimSpace(errorText),

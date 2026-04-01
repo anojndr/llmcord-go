@@ -13,6 +13,16 @@ type downloadedURLVideoContent interface {
 	mediaPart() contentPart
 }
 
+type downloadedVideoAugmentationRequest[T downloadedURLVideoContent] struct {
+	instance           *bot
+	loadedConfig       config
+	providerSlashModel string
+	videoContents      []T
+	warnings           []string
+	warningText        string
+	label              string
+}
+
 func downloadedVideoMediaParts[T downloadedURLVideoContent](
 	videoContents []T,
 ) []contentPart {
@@ -75,128 +85,98 @@ func buildDownloadedVideoAugmentation(
 
 func resolveDownloadedVideoAugmentation[T downloadedURLVideoContent](
 	ctx context.Context,
-	instance *bot,
-	loadedConfig config,
-	providerSlashModel string,
-	videoContents []T,
-	warnings []string,
-	warningText string,
-	label string,
+	request downloadedVideoAugmentationRequest[T],
 ) ([]contentPart, []string, []string, error) {
-	replyModelAPIKind, err := configuredModelAPIKind(loadedConfig, providerSlashModel)
+	replyModelAPIKind, err := configuredModelAPIKind(
+		request.loadedConfig,
+		request.providerSlashModel,
+	)
 	if err != nil {
 		return nil, nil, nil, err
 	}
 
-	searchDeciderNeedsAnalysis, err := instance.searchDeciderNeedsURLVideoAnalysis(
-		loadedConfig,
+	searchDeciderNeedsAnalysis, err := request.instance.searchDeciderNeedsURLVideoAnalysis(
+		request.loadedConfig,
 	)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf(
 			"check %s search decider support: %w",
-			label,
+			request.label,
 			err,
 		)
 	}
 
-	mediaParts := downloadedVideoMediaParts(videoContents)
+	mediaParts := downloadedVideoMediaParts(request.videoContents)
 
 	switch {
 	case replyModelAPIKind == providerAPIKindGemini && !searchDeciderNeedsAnalysis:
-		return mediaParts, nil, warnings, nil
+		return mediaParts, nil, request.warnings, nil
 	case replyModelAPIKind == providerAPIKindGemini && searchDeciderNeedsAnalysis:
 		analyses, analysisErr := downloadedVideoAnalysesWithGemini(
 			ctx,
-			instance,
-			loadedConfig,
-			videoContents,
-			label,
+			request.instance,
+			request.loadedConfig,
+			request.videoContents,
+			request.label,
 		)
 		if analysisErr != nil {
 			return nil, nil, nil, analysisErr
 		}
 
-		return mediaParts, analyses, warnings, nil
+		return mediaParts, analyses, request.warnings, nil
 	default:
-		return resolveDownloadedVideoAnalysesForNonGeminiModel(
-			ctx,
-			instance,
-			loadedConfig,
-			providerSlashModel,
-			videoContents,
-			warnings,
-			warningText,
-			label,
-		)
+		return resolveDownloadedVideoAnalysesForNonGeminiModel(ctx, request)
 	}
 }
 
 func resolveDownloadedVideoAnalysesForNonGeminiModel[T downloadedURLVideoContent](
 	ctx context.Context,
-	instance *bot,
-	loadedConfig config,
-	providerSlashModel string,
-	videoContents []T,
-	warnings []string,
-	warningText string,
-	label string,
+	request downloadedVideoAugmentationRequest[T],
 ) ([]contentPart, []string, []string, error) {
 	canUseMediaAnalysis, err := canUseGeminiMediaAnalysis(
-		loadedConfig,
-		providerSlashModel,
+		request.loadedConfig,
+		request.providerSlashModel,
 	)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf(
 			"check %s media analysis support: %w",
-			label,
+			request.label,
 			err,
 		)
 	}
 
 	if !canUseMediaAnalysis {
-		return nil, nil, mergeURLVideoWarnings(warnings, warningText), nil
+		return nil, nil, mergeURLVideoWarnings(request.warnings, request.warningText), nil
 	}
 
 	analyses, err := downloadedVideoAnalysesWithGemini(
 		ctx,
-		instance,
-		loadedConfig,
-		videoContents,
-		label,
+		request.instance,
+		request.loadedConfig,
+		request.videoContents,
+		request.label,
 	)
 	if err != nil {
 		return nil, nil, nil, err
 	}
 
-	return nil, analyses, warnings, nil
+	return nil, analyses, request.warnings, nil
 }
 
 func prepareDownloadedVideoAugmentation[T downloadedURLVideoContent](
 	ctx context.Context,
-	instance *bot,
-	loadedConfig config,
-	providerSlashModel string,
-	videoContents []T,
-	warnings []string,
-	warningText string,
-	label string,
+	request downloadedVideoAugmentationRequest[T],
 ) (preparedConversationAugmentation, error) {
 	mediaParts, analyses, resolvedWarnings, err := resolveDownloadedVideoAugmentation(
 		ctx,
-		instance,
-		loadedConfig,
-		providerSlashModel,
-		videoContents,
-		warnings,
-		warningText,
-		label,
+		request,
 	)
 	if err != nil {
 		return emptyPreparedConversationAugmentation(), err
 	}
 
 	return buildDownloadedVideoAugmentation(
-		label,
+		request.label,
 		resolvedWarnings,
 		mediaParts,
 		analyses,

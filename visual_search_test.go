@@ -39,7 +39,7 @@ type visualSearchProviderGate struct {
 	release chan struct{}
 }
 
-func newVisualSearchSourceMessage(messageID string, userID string) *discordgo.Message {
+func newVisualSearchSourceMessage(messageID, userID string) *discordgo.Message {
 	message := new(discordgo.Message)
 
 	message.ID = messageID
@@ -163,6 +163,42 @@ func testSerpAPIVisualSearchResult(imageURL string) visualSearchResult {
 	}}
 
 	return result
+}
+
+func TestImageAttachmentURLsForMessagesDeduplicatesAndFilters(t *testing.T) {
+	t.Parallel()
+
+	messages := []*discordgo.Message{
+		nil,
+		{
+			Attachments: []*discordgo.MessageAttachment{
+				{
+					URL:         testVisualSearchAttachmentURL,
+					Filename:    "image.png",
+					ContentType: "image/png",
+				},
+				{
+					URL:         testVisualSearchAttachmentURL,
+					Filename:    "duplicate.png",
+					ContentType: "image/png",
+				},
+				{
+					URL:         "https://cdn.discordapp.com/attachments/file.txt",
+					Filename:    "file.txt",
+					ContentType: "text/plain",
+				},
+			},
+		},
+	}
+
+	imageURLs := imageAttachmentURLsForMessages(messages)
+	if len(imageURLs) != 1 {
+		t.Fatalf("unexpected image URL count: %#v", imageURLs)
+	}
+
+	if imageURLs[0] != testVisualSearchAttachmentURL {
+		t.Fatalf("unexpected image URL: %#v", imageURLs)
+	}
 }
 
 func runVisualSearchAugmentAsync(
@@ -846,9 +882,7 @@ func marshalSerpAPIErrorResponse(t *testing.T, errorMessage string) string {
 }
 
 func newTestSerpAPIGoogleLensResponse(
-	status string,
-	googleLensURL string,
-	errorMessage string,
+	status, googleLensURL, errorMessage string,
 ) serpAPIGoogleLensResponse {
 	response := new(serpAPIGoogleLensResponse)
 	response.SearchMetadata = serpAPIGoogleLensSearchMetadata{
