@@ -153,7 +153,7 @@ func sortMessageIDs(messageIDs []string) {
 	slices.SortFunc(messageIDs, compareMessageIDs)
 }
 
-func compareMessageIDs(left string, right string) int {
+func compareMessageIDs(left, right string) int {
 	leftValue, leftErr := strconv.ParseUint(left, 10, 64)
 
 	rightValue, rightErr := strconv.ParseUint(right, 10, 64)

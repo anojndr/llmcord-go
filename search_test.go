@@ -369,7 +369,7 @@ func newStubWebSearchClient(
 	return client
 }
 
-func newSearchTestBot(chatCompletions chatCompletionClient, webSearch webSearchClient) *bot {
+func newSearchTestBot(chatCompletions chatCompletionStreamer, webSearch webSearcher) *bot {
 	instance := new(bot)
 	instance.chatCompletions = chatCompletions
 	instance.webSearch = webSearch
@@ -438,7 +438,7 @@ func TestSearchDeciderPromptRetainsCriticalInstructions(t *testing.T) {
 		`1. Check explicit search instructions first.`,
 		`2. Use conversation context to resolve references.`,
 		`3. Use both text and images.`,
-		`5. Return {"needs_search": true, "queries": [...]} when a web search is necessary.`,
+		`5. Return {"needs_search": true, "queries": [...]} in all other cases, especially when the request involves:`,
 		`14. Preserve the substance of the claim when the user asks to verify it.`,
 	}
 

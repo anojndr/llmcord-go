@@ -18,17 +18,17 @@ type bot struct {
 	configPath                string
 	session                   *discordgo.Session
 	httpClient                *http.Client
-	chatCompletions           chatCompletionClient
-	webSearch                 webSearchClient
-	visualSearch              visualSearchClient
-	serpAPIVisualSearch       serpAPIVisualSearchClient
-	rentry                    rentryClient
-	tiktok                    tiktokContentClient
-	facebook                  facebookContentClient
-	youtubeShorts             youtubeShortsContentClient
-	youtube                   youtubeContentClient
-	reddit                    redditContentClient
-	website                   websiteContentClient
+	chatCompletions           chatCompletionStreamer
+	webSearch                 webSearcher
+	visualSearch              visualSearcher
+	serpAPIVisualSearch       serpAPIVisualSearcher
+	rentry                    rentryCreator
+	tiktok                    tiktokFetcher
+	facebook                  facebookFetcher
+	youtubeShorts             youtubeShortsFetcher
+	youtube                   youtubeFetcher
+	reddit                    redditFetcher
+	website                   websiteFetcher
 	nodes                     *messageNodeStore
 	currentModel              string
 	currentExaSearchTypeValue string
@@ -317,10 +317,7 @@ func newSearchTypeCommand() *discordgo.ApplicationCommand {
 }
 
 func newConfiguredModelCommand(
-	commandName string,
-	commandDescription string,
-	optionName string,
-	optionDescription string,
+	commandName, commandDescription, optionName, optionDescription string,
 ) *discordgo.ApplicationCommand {
 	command := new(discordgo.ApplicationCommand)
 	command.Name = commandName

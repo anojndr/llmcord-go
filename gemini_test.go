@@ -1084,10 +1084,7 @@ func newGeminiGenerateContentResponseWithParts(
 }
 
 func newGeminiUsageMetadata(
-	promptTokens int32,
-	toolUsePromptTokens int32,
-	candidateTokens int32,
-	thoughtTokens int32,
+	promptTokens, toolUsePromptTokens, candidateTokens, thoughtTokens int32,
 ) *genai.GenerateContentResponseUsageMetadata {
 	return &genai.GenerateContentResponseUsageMetadata{
 		CacheTokensDetails:         nil,

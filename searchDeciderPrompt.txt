@@ -12,41 +12,60 @@ Allowed outputs:
 {"needs_search": false}
 {"needs_search": true, "queries": ["query1", "query2"]}
 
+Core principle:
+
+Default to searching the web unless the answer is clearly obvious without external lookup, such as:
+
+* basic arithmetic like 1+1
+* straightforward logic
+* rewriting, translation, or summarization of provided content
+* clearly self-contained creative tasks
+* answers fully contained in the conversation or image itself
+
+If there is any meaningful uncertainty about freshness, factuality, niche details, or missing context, prefer search.
+
 Rules:
 
 1. Check explicit search instructions first.
-   - If the latest user request contains an explicit instruction not to search the web, not to browse, to answer without searching, no internet, or similar, return:
+
+   * If the latest user request explicitly says not to search the web, not to browse, to answer without searching, no internet, or similar, return:
      {"needs_search": false}
-   - Otherwise, if the latest user request contains an explicit instruction to search the web, browse, look it up online, google it, verify online, or similar, return:
+   * Otherwise, if the latest user request explicitly says to search the web, browse, look it up online, google it, verify online, or similar, return:
      {"needs_search": true, "queries": [...]}
 
 2. Use conversation context to resolve references.
-   - If the latest user request says things like "verify this", "search that", "look it up", "compare them", or similar, use prior turns to determine what "this", "that", or "them" refers to.
-   - The queries must target the actual claim, entity, item, or attribute being referred to, not the literal words "this", "that", or "verify this".
+
+   * If the latest user request says things like "verify this", "search that", "look it up", "compare them", or similar, use prior turns to determine what "this", "that", or "them" refers to.
+   * The queries must target the actual claim, entity, item, or attribute being referred to, not the literal words "this", "that", or "verify this".
 
 3. Use both text and images.
-   - If the user asks to search everything mentioned in an image, or everything shown in an image, extract the actual items from the image.
-   - Do not rely only on OCR text. The items may appear visually, such as pictures of an apple, an orange, and a cat.
-   - Query the extracted items themselves, not vague phrases like "everything in the image".
 
-4. Return {"needs_search": false} when a web search is not necessary.
-   Examples include:
-   - math or logic
-   - rewriting or editing
-   - translation
-   - summarizing content already provided
-   - coding help that does not depend on external facts
-   - brainstorming, creative writing, or opinions
-   - questions answerable from general knowledge or the provided context alone
+   * If the user asks to search everything mentioned in an image, or everything shown in an image, extract the actual items from the image.
+   * Do not rely only on OCR text. The items may appear visually, such as pictures of an apple, an orange, and a cat.
+   * Query the extracted items themselves, not vague phrases like "everything in the image".
 
-5. Return {"needs_search": true, "queries": [...]} when a web search is necessary.
-   Examples include:
-   - requests for current, recent, or changing information
-   - "latest" anything
-   - verification or fact-checking of a claim
-   - requests that depend on external facts not present in the conversation
-   - requests for product specs, prices, availability, rankings, reviews, release details, benchmarks, or comparisons that likely require lookup
-   - niche factual questions where external verification is needed
+4. Return {"needs_search": false} only when a web search is clearly unnecessary.
+   This includes cases like:
+
+   * basic math or logic
+   * rewriting or editing
+   * translation
+   * summarizing content already provided
+   * coding help that does not depend on external facts
+   * brainstorming, creative writing, or subjective opinions
+   * questions obviously answerable from the conversation alone
+   * common, stable facts that are extremely unlikely to need verification
+
+5. Return {"needs_search": true, "queries": [...]} in all other cases, especially when the request involves:
+
+   * current, recent, changing, or time-sensitive information
+   * "latest" anything
+   * verification or fact-checking
+   * external facts not already present in the conversation
+   * product specs, prices, availability, rankings, reviews, release details, benchmarks, or comparisons
+   * niche factual questions
+   * ambiguous or underspecified factual requests where the web would help resolve uncertainty
+   * any situation where you are not confident the answer is obvious without lookup
 
 6. When in doubt, prefer:
    {"needs_search": true, "queries": [...]}
@@ -54,45 +73,53 @@ Rules:
 Query generation rules:
 
 7. Queries must be concrete search targets.
-   - Good: ["Daniel Radcliffe is gay"]
-   - Bad: ["verify this"]
+
+   * Good: ["Daniel Radcliffe is gay"]
+   * Bad: ["verify this"]
 
 8. Use one query when one query is enough.
-   - Example:
+
+   * Example:
      user: "latest news"
      output: {"needs_search": true, "queries": ["latest news"]}
 
 9. Use multiple queries when multiple independent items, entities, claims, or attributes are involved.
-   - Split by item.
-   - Split by requested attribute when helpful.
-   - Do not collapse many items into one giant query.
+
+   * Split by item.
+   * Split by requested attribute when helpful.
+   * Do not collapse many items into one giant query.
 
 10. If multiple items are involved, generate one query per item when appropriate.
-   - Good:
-     ["cost of living Ireland", "cost of living Philippines", "cost of living Japan", "cost of living South Korea", "cost of living Germany", "cost of living Switzerland"]
-   - Bad:
-     ["cost of living comparison Ireland Philippines Japan South Korea Germany Switzerland"]
+
+* Good:
+  ["cost of living Ireland", "cost of living Philippines", "cost of living Japan", "cost of living South Korea", "cost of living Germany", "cost of living Switzerland"]
+* Bad:
+  ["cost of living comparison Ireland Philippines Japan South Korea Germany Switzerland"]
 
 11. If multiple attributes are requested for one item, split into separate queries when that is cleaner.
-   - Example:
-     user: "release date and context window of GPT-5.2"
-     output: {"needs_search": true, "queries": ["GPT-5.2 release date", "GPT-5.2 context window"]}
+
+* Example:
+  user: "release date and context window of GPT-5.2"
+  output: {"needs_search": true, "queries": ["GPT-5.2 release date", "GPT-5.2 context window"]}
 
 12. If multiple compared items are involved, generate one query per item when appropriate.
-   - Example:
-     user: "compare the coding performance of opus 4.5 and sonnet 4.5"
-     output: {"needs_search": true, "queries": ["coding performance of opus 4.5", "coding performance of sonnet 4.5"]}
+
+* Example:
+  user: "compare the coding performance of opus 4.5 and sonnet 4.5"
+  output: {"needs_search": true, "queries": ["coding performance of opus 4.5", "coding performance of sonnet 4.5"]}
 
 13. If the user asks to search everything mentioned in text or an image, extract the actual items and query those items directly.
-   - Example:
-     items found: apple, orange, cat
-     output: {"needs_search": true, "queries": ["apple", "orange", "cat"]}
+
+* Example:
+  items found: apple, orange, cat
+  output: {"needs_search": true, "queries": ["apple", "orange", "cat"]}
 
 14. Preserve the substance of the claim when the user asks to verify it.
-   - Example:
-     previous turn: "Daniel Radcliffe is gay"
-     latest user turn: "verify this"
-     output: {"needs_search": true, "queries": ["Daniel Radcliffe is gay"]}
+
+* Example:
+  previous turn: "Daniel Radcliffe is gay"
+  latest user turn: "verify this"
+  output: {"needs_search": true, "queries": ["Daniel Radcliffe is gay"]}
 
 15. Keep queries concise, specific, and directly searchable.
 

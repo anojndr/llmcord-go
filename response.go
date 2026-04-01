@@ -87,14 +87,14 @@ func (accumulator *segmentAccumulator) joined() string {
 	return strings.Join(accumulator.segments, "")
 }
 
-func visibleResponseText(thinkingText string, answerText string) string {
+func visibleResponseText(thinkingText, answerText string) string {
 	switch {
 	case thinkingText == "":
 		return answerText
 	case answerText == "":
-		return "**Thinking**\n" + thinkingText
+		return thinkingResponsePrefix + thinkingText
 	default:
-		return "**Thinking**\n" + thinkingText + "\n\n**Answer**\n" + answerText
+		return thinkingResponsePrefix + thinkingText + answerResponseSeparator + answerText
 	}
 }
 
@@ -210,20 +210,18 @@ func (instance *bot) generateAndSendResponse(
 	var finishReason string
 
 	lastRenderTime := time.Time{}
+	streamState := generatedStreamState{
+		warnings:            warnings,
+		answerAccumulator:   &accumulator,
+		thinkingAccumulator: &thinkingAccumulator,
+		finishReason:        &finishReason,
+		lastRenderTime:      &lastRenderTime,
+		maxLength:           maxLength,
+		usePlainResponses:   usePlainResponses,
+	}
 
 	streamErr := instance.chatCompletions.streamChatCompletion(ctx, request, func(delta streamDelta) error {
-		return instance.handleGeneratedStreamDelta(
-			ctx,
-			tracker,
-			warnings,
-			&accumulator,
-			&thinkingAccumulator,
-			delta,
-			&finishReason,
-			&lastRenderTime,
-			maxLength,
-			usePlainResponses,
-		)
+		return instance.handleGeneratedStreamDelta(ctx, tracker, streamState, delta)
 	})
 	if streamErr != nil && finishReason == "" {
 		finishReason = "error"
@@ -261,54 +259,58 @@ func (instance *bot) generateAndSendResponse(
 	return responseErr
 }
 
+type generatedStreamState struct {
+	warnings            []string
+	answerAccumulator   *segmentAccumulator
+	thinkingAccumulator *segmentAccumulator
+	finishReason        *string
+	lastRenderTime      *time.Time
+	maxLength           int
+	usePlainResponses   bool
+}
+
 func (instance *bot) handleGeneratedStreamDelta(
 	ctx context.Context,
 	tracker *responseTracker,
-	warnings []string,
-	answerAccumulator *segmentAccumulator,
-	thinkingAccumulator *segmentAccumulator,
+	state generatedStreamState,
 	delta streamDelta,
-	finishReason *string,
-	lastRenderTime *time.Time,
-	maxLength int,
-	usePlainResponses bool,
 ) error {
 	splitOccurred := false
 	if delta.Thinking != "" {
-		splitOccurred = thinkingAccumulator.appendText(delta.Thinking) || splitOccurred
+		splitOccurred = state.thinkingAccumulator.appendText(delta.Thinking) || splitOccurred
 	}
 
 	if delta.Content != "" {
-		splitOccurred = answerAccumulator.appendText(delta.Content) || splitOccurred
+		splitOccurred = state.answerAccumulator.appendText(delta.Content) || splitOccurred
 	}
 
 	if delta.FinishReason != "" {
-		*finishReason = delta.FinishReason
+		*state.finishReason = delta.FinishReason
 	}
 
 	if delta.Usage != nil {
 		tracker.usage = cloneTokenUsage(delta.Usage)
 	}
 
-	if usePlainResponses {
+	if state.usePlainResponses {
 		return nil
 	}
 
 	segments := visibleResponseSegments(
-		thinkingAccumulator.joined(),
-		answerAccumulator.joined(),
-		maxLength,
+		state.thinkingAccumulator.joined(),
+		state.answerAccumulator.joined(),
+		state.maxLength,
 	)
-	if !shouldRenderProgress(segments, splitOccurred, *lastRenderTime) {
+	if !shouldRenderProgress(segments, splitOccurred, *state.lastRenderTime) {
 		return nil
 	}
 
 	err := instance.renderEmbedResponse(
 		ctx,
 		tracker,
-		warnings,
+		state.warnings,
 		segments,
-		*finishReason,
+		*state.finishReason,
 		false,
 		false,
 	)
@@ -316,12 +318,12 @@ func (instance *bot) handleGeneratedStreamDelta(
 		return fmt.Errorf("render embed response: %w", err)
 	}
 
-	*lastRenderTime = time.Now()
+	*state.lastRenderTime = time.Now()
 
 	return nil
 }
 
-func responseTextWithError(responseText string, errorText string) string {
+func responseTextWithError(responseText, errorText string) string {
 	trimmedResponseText := strings.TrimSpace(responseText)
 	trimmedErrorText := strings.TrimSpace(errorText)
 
@@ -407,75 +409,18 @@ func (instance *bot) renderFailureResponse(
 
 	failureEmbed := buildRequestProgressFailureEmbed(tracker.modelName, errorText)
 
-	var renderErr error
-
-	if tracker.progressActive && len(tracker.responseMessages) > 0 {
-		tracker.progressActive = false
-
-		err := instance.waitForEditSlotForMessage(
-			withoutCancelContext(ctx),
-			tracker.responseMessages[0].ID,
-		)
-		if err != nil {
-			renderErr = fmt.Errorf("wait before progress failure edit: %w", err)
-		} else {
-			err = instance.editEmbedMessage(
-				tracker.responseMessages[0],
-				failureEmbed,
-				nil,
-			)
-			if err == nil {
-				tracker.responseVisible = true
-
-				return nil
-			}
-
-			renderErr = fmt.Errorf("edit progress message: %w", err)
-		}
+	handled, renderErr := instance.renderFailureOnProgressMessage(ctx, tracker, failureEmbed)
+	if handled {
+		return nil
 	}
 
-	fallbackTracker := newResponseTracker(tracker.sourceMessage, tracker.modelName)
-	fallbackTracker.searchMetadata = cloneSearchMetadata(tracker.searchMetadata)
-	fallbackTracker.responseMessages = append(fallbackTracker.responseMessages, tracker.responseMessages...)
-
-	var (
-		sentMessage *discordgo.Message
-		pending     pendingResponse
-		err         error
+	return instance.sendFallbackFailureResponse(
+		tracker,
+		errorText,
+		failureEmbed,
+		usePlainResponses,
+		renderErr,
 	)
-
-	if usePlainResponses {
-		sentMessage, pending, err = instance.sendPlainMessage(
-			fallbackTracker,
-			errorText,
-			responseActions{showSources: false, showThinking: false, showRentry: false},
-		)
-	} else {
-		sentMessage, pending, err = instance.sendEmbedMessage(
-			fallbackTracker,
-			failureEmbed,
-			responseActions{showSources: false, showThinking: false, showRentry: false},
-		)
-	}
-
-	if err != nil {
-		if renderErr != nil {
-			return errors.Join(renderErr, fmt.Errorf("send failure response: %w", err))
-		}
-
-		return fmt.Errorf("send failure response: %w", err)
-	}
-
-	tracker.progressActive = false
-	tracker.responseVisible = true
-	tracker.responseMessages = append(tracker.responseMessages, sentMessage)
-	tracker.pendingResponses = append(tracker.pendingResponses, pending)
-
-	if renderErr != nil {
-		return renderErr
-	}
-
-	return nil
 }
 
 func shouldRenderProgress(
@@ -699,44 +644,19 @@ func (instance *bot) sendPlainResponse(
 	hasThinking bool,
 ) error {
 	for index, segment := range segments {
-		actions := responseActions{
-			showSources:  tracker.searchMetadata != nil && index == len(segments)-1,
-			showThinking: hasThinking && index == len(segments)-1,
-			showRentry:   index == len(segments)-1,
-		}
-
+		actions := plainResponseActions(tracker, index, len(segments), hasThinking)
 		if index < len(tracker.responseMessages) {
-			err := instance.waitForEditSlotForMessage(
-				ctx,
-				tracker.responseMessages[index].ID,
-			)
+			err := instance.updatePlainResponseMessage(ctx, tracker, index, segment, actions)
 			if err != nil {
-				return fmt.Errorf("wait before plain message update: %w", err)
-			}
-
-			err = instance.editPlainMessage(
-				tracker.responseMessages[index],
-				segment,
-				actions,
-			)
-			if err != nil {
-				return fmt.Errorf("edit plain message: %w", err)
-			}
-
-			if index == 0 {
-				tracker.progressActive = false
+				return err
 			}
 
 			continue
 		}
 
-		sentMessage, pending, err := instance.sendPlainMessage(
-			tracker,
-			segment,
-			actions,
-		)
+		sentMessage, pending, err := instance.sendPlainResponseMessage(tracker, segment, actions)
 		if err != nil {
-			return fmt.Errorf("send plain message: %w", err)
+			return err
 		}
 
 		tracker.responseMessages = append(tracker.responseMessages, sentMessage)
@@ -746,6 +666,156 @@ func (instance *bot) sendPlainResponse(
 	tracker.responseVisible = true
 
 	return nil
+}
+
+func (instance *bot) renderFailureOnProgressMessage(
+	ctx context.Context,
+	tracker *responseTracker,
+	failureEmbed *discordgo.MessageEmbed,
+) (bool, error) {
+	if !tracker.progressActive || len(tracker.responseMessages) == 0 {
+		tracker.progressActive = false
+
+		return false, nil
+	}
+
+	tracker.progressActive = false
+
+	err := instance.waitForEditSlotForMessage(
+		withoutCancelContext(ctx),
+		tracker.responseMessages[0].ID,
+	)
+	if err != nil {
+		return false, fmt.Errorf("wait before progress failure edit: %w", err)
+	}
+
+	err = instance.editEmbedMessage(
+		tracker.responseMessages[0],
+		failureEmbed,
+		nil,
+	)
+	if err != nil {
+		return false, fmt.Errorf("edit progress message: %w", err)
+	}
+
+	tracker.responseVisible = true
+
+	return true, nil
+}
+
+func (instance *bot) sendFallbackFailureResponse(
+	tracker *responseTracker,
+	errorText string,
+	failureEmbed *discordgo.MessageEmbed,
+	usePlainResponses bool,
+	renderErr error,
+) error {
+	fallbackTracker := newResponseTracker(tracker.sourceMessage, tracker.modelName)
+	fallbackTracker.searchMetadata = cloneSearchMetadata(tracker.searchMetadata)
+	fallbackTracker.responseMessages = append(fallbackTracker.responseMessages, tracker.responseMessages...)
+
+	sentMessage, pending, err := instance.sendFailureResponseMessage(
+		fallbackTracker,
+		errorText,
+		failureEmbed,
+		usePlainResponses,
+	)
+	if err != nil {
+		if renderErr != nil {
+			return errors.Join(renderErr, fmt.Errorf("send failure response: %w", err))
+		}
+
+		return fmt.Errorf("send failure response: %w", err)
+	}
+
+	tracker.progressActive = false
+	tracker.responseVisible = true
+	tracker.responseMessages = append(tracker.responseMessages, sentMessage)
+	tracker.pendingResponses = append(tracker.pendingResponses, pending)
+
+	return renderErr
+}
+
+func (instance *bot) sendFailureResponseMessage(
+	fallbackTracker *responseTracker,
+	errorText string,
+	failureEmbed *discordgo.MessageEmbed,
+	usePlainResponses bool,
+) (*discordgo.Message, pendingResponse, error) {
+	if usePlainResponses {
+		return instance.sendPlainMessage(
+			fallbackTracker,
+			errorText,
+			responseActions{showSources: false, showThinking: false, showRentry: false},
+		)
+	}
+
+	return instance.sendEmbedMessage(
+		fallbackTracker,
+		failureEmbed,
+		responseActions{showSources: false, showThinking: false, showRentry: false},
+	)
+}
+
+func plainResponseActions(
+	tracker *responseTracker,
+	index int,
+	totalSegments int,
+	hasThinking bool,
+) responseActions {
+	return responseActions{
+		showSources:  tracker.searchMetadata != nil && index == totalSegments-1,
+		showThinking: hasThinking && index == totalSegments-1,
+		showRentry:   index == totalSegments-1,
+	}
+}
+
+func (instance *bot) updatePlainResponseMessage(
+	ctx context.Context,
+	tracker *responseTracker,
+	index int,
+	segment string,
+	actions responseActions,
+) error {
+	err := instance.waitForEditSlotForMessage(
+		ctx,
+		tracker.responseMessages[index].ID,
+	)
+	if err != nil {
+		return fmt.Errorf("wait before plain message update: %w", err)
+	}
+
+	err = instance.editPlainMessage(
+		tracker.responseMessages[index],
+		segment,
+		actions,
+	)
+	if err != nil {
+		return fmt.Errorf("edit plain message: %w", err)
+	}
+
+	if index == 0 {
+		tracker.progressActive = false
+	}
+
+	return nil
+}
+
+func (instance *bot) sendPlainResponseMessage(
+	tracker *responseTracker,
+	segment string,
+	actions responseActions,
+) (*discordgo.Message, pendingResponse, error) {
+	sentMessage, pending, err := instance.sendPlainMessage(
+		tracker,
+		segment,
+		actions,
+	)
+	if err != nil {
+		return nil, pendingResponse{}, fmt.Errorf("send plain message: %w", err)
+	}
+
+	return sentMessage, pending, nil
 }
 
 func (instance *bot) sendEmbedMessage(
@@ -910,7 +980,7 @@ func contextWindowFooter(usage *tokenUsage, contextWindow int) string {
 	)
 }
 
-func formatContextWindowUsagePercent(usedTokens int, contextWindow int) string {
+func formatContextWindowUsagePercent(usedTokens, contextWindow int) string {
 	if usedTokens <= 0 || contextWindow <= 0 {
 		return "0%"
 	}

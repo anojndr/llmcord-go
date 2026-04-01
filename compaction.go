@@ -13,6 +13,7 @@ const (
 	autoCompactPercentBase             = 100
 	autoCompactSingleMessageMargin     = 10
 	autoCompactWarningCapacity         = 2
+	autoCompactWarningPrefix           = "Warning: "
 	autoCompactBinarySearchDivisor     = 2
 	autoCompactMinimumMessages         = 2
 	autoCompactMaxTailMessages         = 4
@@ -59,7 +60,7 @@ func effectiveAutoCompactThresholdPercent(thresholdPercent int) int {
 	return thresholdPercent
 }
 
-func autoCompactTokenLimit(contextWindow int, thresholdPercent int) int {
+func autoCompactTokenLimit(contextWindow, thresholdPercent int) int {
 	if contextWindow <= 0 {
 		return 0
 	}
@@ -78,7 +79,7 @@ func autoCompactSingleMessageThresholdPercent(thresholdPercent int) int {
 	return singleMessagePercent
 }
 
-func autoCompactSingleMessageTokenLimit(contextWindow int, thresholdPercent int) int {
+func autoCompactSingleMessageTokenLimit(contextWindow, thresholdPercent int) int {
 	if contextWindow <= 0 {
 		return 0
 	}
@@ -338,24 +339,15 @@ func (instance *bot) reduceAutoCompactionBlocks(
 			return "", nil
 		}
 
-		summaries := make([]string, 0, len(chunks))
-		for _, chunk := range chunks {
-			summaryText, err := instance.runAutoCompactionPrompt(
-				ctx,
-				request,
-				currentPrompt,
-				currentUserPrefix+chunk,
-			)
-			if err != nil {
-				return "", err
-			}
-
-			normalizedSummary := strings.TrimSpace(summaryText)
-			if normalizedSummary == "" {
-				continue
-			}
-
-			summaries = append(summaries, normalizedSummary)
+		summaries, err := instance.summarizeAutoCompactionChunks(
+			ctx,
+			request,
+			chunks,
+			currentPrompt,
+			currentUserPrefix,
+		)
+		if err != nil {
+			return "", err
 		}
 
 		if len(summaries) == 0 {
@@ -366,17 +358,52 @@ func (instance *bot) reduceAutoCompactionBlocks(
 			return summaries[0], nil
 		}
 
-		currentBlocks = make([]string, 0, len(summaries))
-		for index, summary := range summaries {
-			currentBlocks = append(
-				currentBlocks,
-				fmt.Sprintf("PARTIAL SUMMARY %d:\n%s", index+1, summary),
-			)
-		}
-
+		currentBlocks = autoCompactionPartialSummaryBlocks(summaries)
 		currentPrompt = autoCompactMergeSystemPrompt()
 		currentUserPrefix = autoCompactMergeUserPrefix
 	}
+}
+
+func (instance *bot) summarizeAutoCompactionChunks(
+	ctx context.Context,
+	request chatCompletionRequest,
+	chunks []string,
+	systemPrompt string,
+	userPrefix string,
+) ([]string, error) {
+	summaries := make([]string, 0, len(chunks))
+	for _, chunk := range chunks {
+		summaryText, err := instance.runAutoCompactionPrompt(
+			ctx,
+			request,
+			systemPrompt,
+			userPrefix+chunk,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		normalizedSummary := strings.TrimSpace(summaryText)
+		if normalizedSummary == "" {
+			continue
+		}
+
+		summaries = append(summaries, normalizedSummary)
+	}
+
+	return summaries, nil
+}
+
+func autoCompactionPartialSummaryBlocks(summaries []string) []string {
+	currentBlocks := make([]string, 0, len(summaries))
+	for index, summary := range summaries {
+		currentBlocks = append(
+			currentBlocks,
+			fmt.Sprintf("PARTIAL SUMMARY %d:\n%s", index+1, summary),
+		)
+	}
+
+	return currentBlocks
 }
 
 func (instance *bot) runAutoCompactionPrompt(
@@ -571,7 +598,10 @@ func (result autoCompactResult) warningsForPath(path string) []string {
 	if result.TruncatedMessage {
 		warnings = append(
 			warnings,
-			"Warning: "+path+" truncated an oversized message to fit the model context window.",
+			autoCompactWarningMessage(
+				path,
+				"truncated an oversized message to fit the model context window.",
+			),
 		)
 	}
 
@@ -579,16 +609,26 @@ func (result autoCompactResult) warningsForPath(path string) []string {
 	case autoCompactStrategySummary:
 		warnings = append(
 			warnings,
-			"Warning: "+path+" auto-compacted older conversation context to fit the model context window.",
+			autoCompactWarningMessage(
+				path,
+				"auto-compacted older conversation context to fit the model context window.",
+			),
 		)
 	case autoCompactStrategyTrimmed:
 		warnings = append(
 			warnings,
-			"Warning: "+path+" trimmed older conversation context to fit the model context window.",
+			autoCompactWarningMessage(
+				path,
+				"trimmed older conversation context to fit the model context window.",
+			),
 		)
 	}
 
 	return warnings
+}
+
+func autoCompactWarningMessage(path, detail string) string {
+	return autoCompactWarningPrefix + path + " " + detail
 }
 
 func truncateTextToApproxTokens(text string, tokenLimit int) string {
@@ -813,6 +853,38 @@ func truncateContentPartsToApproxTokens(
 		tokenLimit = 0
 	}
 
+	nonTextTokens := estimateNonTextContentPartTokens(parts)
+	if nonTextTokens > tokenLimit {
+		return parts, false
+	}
+
+	remainingTextTokens := tokenLimit - nonTextTokens
+	truncatedParts := make([]contentPart, 0, len(parts))
+	truncated := false
+
+	for _, part := range parts {
+		nextPart, nextBudget, partTruncated, includePart := truncateContentPartToApproxTokens(
+			part,
+			remainingTextTokens,
+		)
+		remainingTextTokens = nextBudget
+		truncated = truncated || partTruncated
+
+		if !includePart {
+			continue
+		}
+
+		truncatedParts = append(truncatedParts, nextPart)
+	}
+
+	if !truncated {
+		return parts, false
+	}
+
+	return truncatedParts, true
+}
+
+func estimateNonTextContentPartTokens(parts []contentPart) int {
 	nonTextTokens := 0
 
 	for _, part := range parts {
@@ -824,62 +896,47 @@ func truncateContentPartsToApproxTokens(
 		nonTextTokens += estimateContentPartTokens(part)
 	}
 
-	if nonTextTokens > tokenLimit {
-		return parts, false
+	return nonTextTokens
+}
+
+func truncateContentPartToApproxTokens(
+	part contentPart,
+	remainingTextTokens int,
+) (contentPart, int, bool, bool) {
+	partType, _ := part["type"].(string)
+	if partType != contentTypeText {
+		return cloneContentPart(part), remainingTextTokens, false, true
 	}
 
-	remainingTextTokens := tokenLimit - nonTextTokens
-	truncatedParts := make([]contentPart, 0, len(parts))
-	truncated := false
+	return truncateTextContentPartToApproxTokens(part, remainingTextTokens)
+}
 
-	for _, part := range parts {
-		partType, _ := part["type"].(string)
-		if partType != contentTypeText {
-			truncatedParts = append(truncatedParts, cloneContentPart(part))
-
-			continue
-		}
-
-		textValue, _ := part["text"].(string)
-		if remainingTextTokens <= 0 {
-			if strings.TrimSpace(textValue) != "" {
-				truncated = true
-			}
-
-			continue
-		}
-
-		textTokens := estimateTextTokens(textValue)
-
-		clonedPart := cloneContentPart(part)
-		if textTokens <= remainingTextTokens {
-			truncatedParts = append(truncatedParts, clonedPart)
-			remainingTextTokens -= textTokens
-
-			continue
-		}
-
-		truncatedText := truncateTextToApproxTokens(textValue, remainingTextTokens)
-		if strings.TrimSpace(truncatedText) != strings.TrimSpace(textValue) {
-			truncated = true
-		}
-
-		if strings.TrimSpace(truncatedText) == "" {
-			remainingTextTokens = 0
-
-			continue
-		}
-
-		clonedPart["text"] = truncatedText
-		truncatedParts = append(truncatedParts, clonedPart)
-		remainingTextTokens -= estimateTextTokens(truncatedText)
+func truncateTextContentPartToApproxTokens(
+	part contentPart,
+	remainingTextTokens int,
+) (contentPart, int, bool, bool) {
+	textValue, _ := part["text"].(string)
+	if remainingTextTokens <= 0 {
+		return nil, 0, strings.TrimSpace(textValue) != "", false
 	}
 
-	if !truncated {
-		return parts, false
+	textTokens := estimateTextTokens(textValue)
+
+	clonedPart := cloneContentPart(part)
+	if textTokens <= remainingTextTokens {
+		return clonedPart, remainingTextTokens - textTokens, false, true
 	}
 
-	return truncatedParts, true
+	truncatedText := truncateTextToApproxTokens(textValue, remainingTextTokens)
+
+	textChanged := strings.TrimSpace(truncatedText) != strings.TrimSpace(textValue)
+	if strings.TrimSpace(truncatedText) == "" {
+		return nil, 0, textChanged, false
+	}
+
+	clonedPart["text"] = truncatedText
+
+	return clonedPart, remainingTextTokens - estimateTextTokens(truncatedText), textChanged, true
 }
 
 func appendChatMessages(groups ...[]chatMessage) []chatMessage {
@@ -896,7 +953,7 @@ func appendChatMessages(groups ...[]chatMessage) []chatMessage {
 	return messages
 }
 
-func chatMessagesEqual(left []chatMessage, right []chatMessage) bool {
+func chatMessagesEqual(left, right []chatMessage) bool {
 	if len(left) != len(right) {
 		return false
 	}

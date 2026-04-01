@@ -528,12 +528,14 @@ func (instance *bot) handleModelCommand(
 	return handleConfiguredModelCommand(
 		session,
 		interaction,
-		instance.currentModelForConfig(loadedConfig),
-		instance.setCurrentModel,
-		loadedConfig,
-		"Current model",
-		"Model switched to",
-		"model switched",
+		configuredModelCommandOptions{
+			currentModel:    instance.currentModelForConfig(loadedConfig),
+			setCurrentModel: instance.setCurrentModel,
+			loadedConfig:    loadedConfig,
+			currentLabel:    "Current model",
+			switchedLabel:   "Model switched to",
+			logMessage:      "model switched",
+		},
 	)
 }
 
@@ -549,38 +551,44 @@ func (instance *bot) handleSearchDeciderModelCommand(
 	return handleConfiguredModelCommand(
 		session,
 		interaction,
-		instance.currentSearchDeciderModelForConfig(loadedConfig),
-		instance.setCurrentSearchDeciderModel,
-		loadedConfig,
-		"Current search decider model",
-		"Search decider model switched to",
-		"search decider model switched",
+		configuredModelCommandOptions{
+			currentModel:    instance.currentSearchDeciderModelForConfig(loadedConfig),
+			setCurrentModel: instance.setCurrentSearchDeciderModel,
+			loadedConfig:    loadedConfig,
+			currentLabel:    "Current search decider model",
+			switchedLabel:   "Search decider model switched to",
+			logMessage:      "search decider model switched",
+		},
 	)
+}
+
+type configuredModelCommandOptions struct {
+	currentModel    string
+	setCurrentModel func(string)
+	loadedConfig    config
+	currentLabel    string
+	switchedLabel   string
+	logMessage      string
 }
 
 func handleConfiguredModelCommand(
 	session *discordgo.Session,
 	interaction *discordgo.InteractionCreate,
-	currentModel string,
-	setCurrentModel func(string),
-	loadedConfig config,
-	currentLabel string,
-	switchedLabel string,
-	logMessage string,
+	options configuredModelCommandOptions,
 ) error {
 	requestedModel := interactionOptionString(interaction.ApplicationCommandData().Options)
 
 	var responseText string
 
 	switch {
-	case requestedModel == currentModel:
-		responseText = fmt.Sprintf("%s: `%s`", currentLabel, currentModel)
-	case !loadedConfig.hasModel(requestedModel):
+	case requestedModel == options.currentModel:
+		responseText = fmt.Sprintf("%s: `%s`", options.currentLabel, options.currentModel)
+	case !options.loadedConfig.hasModel(requestedModel):
 		responseText = "Unknown model."
 	default:
-		setCurrentModel(requestedModel)
-		responseText = fmt.Sprintf("%s: `%s`", switchedLabel, requestedModel)
-		slog.Info(logMessage, "model", requestedModel)
+		options.setCurrentModel(requestedModel)
+		responseText = fmt.Sprintf("%s: `%s`", options.switchedLabel, requestedModel)
+		slog.Info(options.logMessage, "model", requestedModel)
 	}
 
 	err := respondInteractionText(session, interaction.Interaction, responseText)
@@ -741,8 +749,7 @@ func handleConfiguredModelAutocomplete(
 }
 
 func lockedModelAutocompleteChoices(
-	lockedModel string,
-	currentText string,
+	lockedModel, currentText string,
 ) []*discordgo.ApplicationCommandOptionChoice {
 	if !containsFold(lockedModel, currentText) {
 		return nil
@@ -756,8 +763,7 @@ func lockedModelAutocompleteChoices(
 }
 
 func exaSearchTypeAutocompleteChoices(
-	currentSearchType string,
-	currentText string,
+	currentSearchType, currentText string,
 ) []*discordgo.ApplicationCommandOptionChoice {
 	searchTypes := exaSearchTypes()
 	choices := make([]*discordgo.ApplicationCommandOptionChoice, 0, len(searchTypes))

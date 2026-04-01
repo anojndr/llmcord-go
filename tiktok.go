@@ -51,7 +51,7 @@ var (
 	tikTokVideoIDRegexp = regexp.MustCompile(`/video/([0-9]+)`)
 )
 
-type tiktokContentClient interface {
+type tiktokFetcher interface {
 	fetch(ctx context.Context, rawURL string) (tiktokVideoContent, error)
 }
 
@@ -156,13 +156,15 @@ func (instance *bot) prepareTikTokAugmentation(
 
 	return prepareDownloadedVideoAugmentation(
 		ctx,
-		instance,
-		loadedConfig,
-		providerSlashModel,
-		videoContents,
-		warnings,
-		tikTokWarningText,
-		"tiktok",
+		downloadedVideoAugmentationRequest[tiktokVideoContent]{
+			instance:           instance,
+			loadedConfig:       loadedConfig,
+			providerSlashModel: providerSlashModel,
+			videoContents:      videoContents,
+			warnings:           warnings,
+			warningText:        tikTokWarningText,
+			label:              "tiktok",
+		},
 	)
 }
 
@@ -283,7 +285,7 @@ func (client tiktokClient) resolveURL(
 		return "", fmt.Errorf("create tiktok resolve request: %w", err)
 	}
 
-	httpRequest.Header.Set("User-Agent", client.userAgent)
+	httpRequest.Header.Set(userAgentHeader, client.userAgent)
 
 	httpResponse, err := client.httpClient.Do(httpRequest)
 	if err != nil {
@@ -341,7 +343,7 @@ func (client tiktokClient) fetchDownloadScript(
 	}
 
 	httpRequest.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	httpRequest.Header.Set("User-Agent", client.userAgent)
+	httpRequest.Header.Set(userAgentHeader, client.userAgent)
 	httpRequest.Header.Set("X-Requested-With", "XMLHttpRequest")
 
 	httpResponse, err := client.httpClient.Do(httpRequest)
@@ -568,7 +570,7 @@ func (client tiktokClient) pollRenderTask(
 	return strings.TrimSpace(taskResponse.DownloadURL), true, nil
 }
 
-func urlWithToken(baseURL string, token string) (string, error) {
+func urlWithToken(baseURL, token string) (string, error) {
 	parsedURL, err := url.Parse(baseURL)
 	if err != nil {
 		return "", fmt.Errorf("parse url %q: %w", baseURL, err)
@@ -596,7 +598,7 @@ func (client tiktokClient) downloadVideo(
 		return nil, "", "", fmt.Errorf("create tiktok video request: %w", err)
 	}
 
-	httpRequest.Header.Set("User-Agent", client.userAgent)
+	httpRequest.Header.Set(userAgentHeader, client.userAgent)
 
 	httpResponse, err := client.httpClient.Do(httpRequest)
 	if err != nil {
@@ -652,7 +654,7 @@ func normalizedTikTokMIMEType(contentType string) string {
 	return mediaType
 }
 
-func tikTokFilename(resolvedURL string, contentDisposition string) string {
+func tikTokFilename(resolvedURL, contentDisposition string) string {
 	trimmedContentDisposition := strings.TrimSpace(contentDisposition)
 	if trimmedContentDisposition != "" {
 		_, params, err := mime.ParseMediaType(trimmedContentDisposition)
@@ -686,7 +688,7 @@ func (client tiktokClient) fetchText(
 		return "", fmt.Errorf("create request for %q: %w", requestURL, err)
 	}
 
-	httpRequest.Header.Set("User-Agent", client.userAgent)
+	httpRequest.Header.Set(userAgentHeader, client.userAgent)
 
 	httpResponse, err := client.httpClient.Do(httpRequest)
 	if err != nil {

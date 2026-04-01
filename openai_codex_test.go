@@ -468,6 +468,59 @@ func TestOpenAICodexConsumeServerSentEventsAcceptsTerminalIncompleteEventWithout
 	}
 }
 
+func TestOpenAICodexInputAndInstructionsConvertsMessages(t *testing.T) {
+	t.Parallel()
+
+	input, instructions, err := openAICodexInputAndInstructions([]chatMessage{
+		{Role: openAICodexRoleSystem, Content: "Be brief."},
+		{
+			Role: messageRoleUser,
+			Content: []contentPart{
+				{"type": contentTypeText, "text": testOpenAICodexHelloText},
+				{"type": contentTypeImageURL, "image_url": map[string]string{"url": "data:image/png;base64,abc"}},
+			},
+		},
+		{Role: messageRoleAssistant, Content: "Previous answer"},
+	})
+	if err != nil {
+		t.Fatalf("convert codex messages: %v", err)
+	}
+
+	if instructions != "Be brief." {
+		t.Fatalf("unexpected codex instructions: %q", instructions)
+	}
+
+	if len(input) != 2 {
+		t.Fatalf("unexpected codex input length: %d", len(input))
+	}
+
+	if input[0]["role"] != messageRoleUser {
+		t.Fatalf("unexpected user role payload: %#v", input[0])
+	}
+
+	userContent, ok := input[0]["content"].([]map[string]any)
+	if !ok || len(userContent) != 2 {
+		t.Fatalf("unexpected user content payload: %#v", input[0]["content"])
+	}
+
+	if userContent[1]["type"] != "input_image" || userContent[1]["detail"] != openAICodexAuto {
+		t.Fatalf("unexpected user image part payload: %#v", userContent[1])
+	}
+
+	if input[1]["role"] != messageRoleAssistant {
+		t.Fatalf("unexpected assistant role payload: %#v", input[1])
+	}
+}
+
+func TestOpenAICodexUserPartsRejectUnsupportedContentPartType(t *testing.T) {
+	t.Parallel()
+
+	_, err := openAICodexUserParts([]contentPart{{"type": "audio_data"}})
+	if err == nil {
+		t.Fatal("expected unsupported content part type to fail")
+	}
+}
+
 func TestHandleOpenAICodexStreamPayloadUsesIncompleteDetailsReason(t *testing.T) {
 	t.Parallel()
 

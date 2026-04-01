@@ -56,7 +56,7 @@ var (
 	youtubeConsentValueRegexp  = regexp.MustCompile(`name="v"\s+value="([^"]+)"`)
 )
 
-type youtubeContentClient interface {
+type youtubeFetcher interface {
 	fetch(ctx context.Context, rawURL string) (youtubeVideoContent, error)
 }
 
@@ -743,7 +743,7 @@ func (client youtubeClient) fetchCommentsPage(
 	return comments, nextToken, nil
 }
 
-func (client youtubeClient) buildAPIURL(endpoint string, apiKey string) string {
+func (client youtubeClient) buildAPIURL(endpoint, apiKey string) string {
 	return fmt.Sprintf("%s/%s?key=%s", client.apiBaseURL, endpoint, url.QueryEscape(apiKey))
 }
 
@@ -995,7 +995,7 @@ func extractYouTubeInitialData(htmlText string) (map[string]any, error) {
 	return nil, fmt.Errorf("extract youtube initial data: %w", os.ErrInvalid)
 }
 
-func extractJavaScriptObject(text string, marker string) (string, bool) {
+func extractJavaScriptObject(text, marker string) (string, bool) {
 	markerIndex := strings.Index(text, marker)
 	if markerIndex == -1 {
 		return "", false

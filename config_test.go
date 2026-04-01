@@ -1014,6 +1014,30 @@ models:
 	}
 }
 
+func TestAnyPositiveIntValueRejectsNonPositiveValues(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name  string
+		value any
+	}{
+		{name: "int zero", value: 0},
+		{name: "int64 zero", value: int64(0)},
+		{name: "uint64 zero", value: uint64(0)},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := anyPositiveIntValue(testCase.value)
+			if err == nil {
+				t.Fatalf("expected non-positive value %T to fail validation", testCase.value)
+			}
+		})
+	}
+}
+
 func TestLoadConfigAllowsOpenAICodexProviderWithoutBaseURL(t *testing.T) {
 	t.Parallel()
 

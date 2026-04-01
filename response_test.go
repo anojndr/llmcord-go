@@ -1252,10 +1252,7 @@ func newResponseHistoryTestBot(session *discordgo.Session, assistantReplyText st
 }
 
 func newPromptMessage(
-	messageID string,
-	channelID string,
-	userID string,
-	botUserID string,
+	messageID, channelID, userID, botUserID string,
 ) *discordgo.Message {
 	message := new(discordgo.Message)
 	message.ID = messageID
@@ -1268,9 +1265,7 @@ func newPromptMessage(
 }
 
 func newFollowUpReplyMessage(
-	messageID string,
-	channelID string,
-	userID string,
+	messageID, channelID, userID string,
 	assistantMessage *discordgo.Message,
 ) *discordgo.Message {
 	message := new(discordgo.Message)
@@ -1292,7 +1287,7 @@ func newDiscordUser(userID string, bot bool) *discordgo.User {
 	return user
 }
 
-func newStreamDelta(content string, finishReason string) streamDelta {
+func newStreamDelta(content, finishReason string) streamDelta {
 	var delta streamDelta
 
 	delta.Thinking = ""

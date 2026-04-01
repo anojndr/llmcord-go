@@ -65,8 +65,8 @@ func (scraper stubFacebookScraper) Post(
 }
 
 func newFacebookTestBot(
-	facebook facebookContentClient,
-	chatCompletions chatCompletionClient,
+	facebook facebookFetcher,
+	chatCompletions chatCompletionStreamer,
 ) *bot {
 	instance := new(bot)
 	instance.facebook = facebook

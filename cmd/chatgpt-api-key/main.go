@@ -210,11 +210,7 @@ func randomBase64URL(size int) (string, error) {
 }
 
 func buildAuthorizationURL(
-	baseURL string,
-	redirectURI string,
-	verifier string,
-	state string,
-	originator string,
+	baseURL, redirectURI, verifier, state, originator string,
 ) (string, error) {
 	parsedURL, err := url.Parse(baseURL)
 	if err != nil {
@@ -480,7 +476,7 @@ func parseAuthorizationInput(input string) (authorizationInput, error) {
 	}, nil
 }
 
-func validateAuthorizationState(receivedState string, expectedState string) error {
+func validateAuthorizationState(receivedState, expectedState string) error {
 	if strings.TrimSpace(receivedState) == "" {
 		return nil
 	}

@@ -83,11 +83,11 @@ func reverseChatMessages(messages []chatMessage) {
 	slices.Reverse(messages)
 }
 
-func containsFold(text string, fragment string) bool {
+func containsFold(text, fragment string) bool {
 	return strings.Contains(strings.ToLower(text), strings.ToLower(fragment))
 }
 
-func trimBotMention(text string, botID string) string {
+func trimBotMention(text, botID string) string {
 	for _, mention := range []string{
 		fmt.Sprintf("<@%s>", botID),
 		fmt.Sprintf("<@!%s>", botID),
@@ -197,7 +197,7 @@ func isVisionModel(modelName string) bool {
 	return false
 }
 
-func minInt(left int, right int) int {
+func minInt(left, right int) int {
 	if left < right {
 		return left
 	}

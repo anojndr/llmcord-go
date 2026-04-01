@@ -3,7 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
-	_ "embed"
+	_ "embed" // Needed for go:embed searchDeciderPrompt.txt.
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -57,7 +57,7 @@ func searchDeciderPrompt(now time.Time) string {
 	return systemPromptNow(rawSearchDeciderPrompt, now)
 }
 
-type chatCompletionClient interface {
+type chatCompletionStreamer interface {
 	streamChatCompletion(
 		ctx context.Context,
 		request chatCompletionRequest,
@@ -65,7 +65,7 @@ type chatCompletionClient interface {
 	) error
 }
 
-type webSearchClient interface {
+type webSearcher interface {
 	search(ctx context.Context, loadedConfig config, queries []string) ([]webSearchResult, error)
 }
 
@@ -108,8 +108,8 @@ type tavilySearchClient struct {
 }
 
 type routedWebSearchClient struct {
-	exa    webSearchClient
-	tavily webSearchClient
+	exa    webSearcher
+	tavily webSearcher
 }
 
 type exaSearchRequest struct {
@@ -350,7 +350,7 @@ func cloneVisualSearchSourceGroups(
 	return clonedGroups
 }
 
-func mergeSearchMetadata(left *searchMetadata, right *searchMetadata) *searchMetadata {
+func mergeSearchMetadata(left, right *searchMetadata) *searchMetadata {
 	switch {
 	case left == nil:
 		return cloneSearchMetadata(right)
@@ -606,87 +606,29 @@ func (instance *bot) searchDeciderImagePartsForMessage(
 		return nil, nil
 	}
 
-	imageURLSet, err := latestUserImageURLSet(conversation)
+	imageURLSet, candidateImageParts, err := searchDeciderImagePartSet(conversation, maxImageParts)
 	if err != nil {
 		return nil, err
 	}
 
-	candidateImageParts := make([]contentPart, 0, maxImageParts)
-
-	appendImagePart := func(imagePart contentPart) error {
-		imageURL, imageErr := contentPartImageURL(imagePart)
-		if imageErr != nil {
-			return imageErr
-		}
-
-		if _, exists := imageURLSet[imageURL]; exists {
-			return nil
-		}
-
-		imageURLSet[imageURL] = struct{}{}
-
-		candidateImageParts = append(candidateImageParts, cloneContentPart(imagePart))
-
-		return nil
-	}
-
-	imageParts, err := instance.imagePartsForMessage(ctx, sourceMessage)
-	if err != nil {
-		return nil, fmt.Errorf("load image parts for search decider: %w", err)
-	}
-
-	for _, imagePart := range imageParts {
-		appendErr := appendImagePart(imagePart)
-		if appendErr != nil {
-			return nil, fmt.Errorf(
-				"append image attachment for search decider: %w",
-				appendErr,
-			)
-		}
-
-		if len(candidateImageParts) == maxImageParts {
-			return candidateImageParts, nil
-		}
-	}
-
-	documentParts, err := instance.documentPartsForMessage(ctx, sourceMessage)
-	if err != nil {
-		return nil, fmt.Errorf("load document parts for search decider: %w", err)
-	}
-
-	documentResults := runTasksConcurrently(
+	candidateImageParts, complete, err := instance.appendSearchDeciderMessageImageParts(
 		ctx,
-		documentExtractionConcurrency,
-		len(documentParts),
-		func(_ context.Context, index int) (extractedPDFContent, error) {
-			return extractPDFContent(documentParts[index])
-		},
+		sourceMessage,
+		candidateImageParts,
+		imageURLSet,
+		maxImageParts,
 	)
-
-	for index, result := range documentResults {
-		if result.err != nil {
-			return nil, fmt.Errorf(
-				"extract document images for search decider file %d: %w",
-				index+1,
-				result.err,
-			)
-		}
-
-		extraction := result.value
-
-		for _, imagePart := range extraction.imageParts {
-			appendErr := appendImagePart(imagePart)
-			if appendErr != nil {
-				return nil, fmt.Errorf("append document image for search decider: %w", appendErr)
-			}
-
-			if len(candidateImageParts) == maxImageParts {
-				return candidateImageParts, nil
-			}
-		}
+	if err != nil || complete {
+		return candidateImageParts, err
 	}
 
-	return candidateImageParts, nil
+	return instance.appendSearchDeciderDocumentImageParts(
+		ctx,
+		sourceMessage,
+		candidateImageParts,
+		imageURLSet,
+		maxImageParts,
+	)
 }
 
 func searchDeciderConversation(
@@ -841,7 +783,7 @@ func formatWebSearchResults(results []webSearchResult) string {
 
 func collectChatCompletionText(
 	ctx context.Context,
-	client chatCompletionClient,
+	client chatCompletionStreamer,
 	request chatCompletionRequest,
 ) (string, error) {
 	var responseText strings.Builder
@@ -953,7 +895,7 @@ func formatWebSearchSourcesMessage(metadata *searchMetadata) string {
 		builder.WriteString("Search queries:\n")
 
 		for index, query := range metadata.Queries {
-			_, _ = fmt.Fprintf(&builder, "%d. %s\n", index+1, query)
+			_, _ = fmt.Fprintf(&builder, numberedListLineFormat, index+1, query)
 		}
 	}
 
@@ -969,7 +911,7 @@ func formatWebSearchSourcesMessage(metadata *searchMetadata) string {
 		}
 
 		for _, source := range sources[:minInt(len(sources), metadata.maxURLs())] {
-			_, _ = fmt.Fprintf(&builder, "%d. %s\n", sourceNumber, formatSearchSourceLine(source))
+			_, _ = fmt.Fprintf(&builder, numberedListLineFormat, sourceNumber, formatSearchSourceLine(source))
 			sourceNumber++
 		}
 	}
@@ -1006,7 +948,7 @@ func formatVisualSearchSourcesMessage(sourceGroups []visualSearchSourceGroup) st
 		}
 
 		for sourceIndex, source := range sourceGroup.Sources {
-			_, _ = fmt.Fprintf(&builder, "%d. %s\n", sourceIndex+1, formatSearchSourceLine(source))
+			_, _ = fmt.Fprintf(&builder, numberedListLineFormat, sourceIndex+1, formatSearchSourceLine(source))
 		}
 	}
 
@@ -1402,8 +1344,8 @@ func (client exaSearchClient) searchAPIQueryOnce(
 		return webSearchResult{}, fmt.Errorf("create Exa search request for %q: %w", query, err)
 	}
 
-	httpRequest.Header.Set("Accept", "application/json")
-	httpRequest.Header.Set("Content-Type", "application/json")
+	httpRequest.Header.Set("Accept", applicationJSONContentType)
+	httpRequest.Header.Set(contentTypeHeader, applicationJSONContentType)
 	httpRequest.Header.Set("X-Api-Key", strings.TrimSpace(apiKey))
 
 	httpResponse, err := client.httpClient.Do(httpRequest)
@@ -1519,9 +1461,9 @@ func (client tavilySearchClient) searchQueryOnce(
 		return webSearchResult{}, fmt.Errorf("create Tavily search request for %q: %w", query, err)
 	}
 
-	httpRequest.Header.Set("Accept", "application/json")
+	httpRequest.Header.Set("Accept", applicationJSONContentType)
 	httpRequest.Header.Set("Authorization", "Bearer "+strings.TrimSpace(apiKey))
-	httpRequest.Header.Set("Content-Type", "application/json")
+	httpRequest.Header.Set(contentTypeHeader, applicationJSONContentType)
 
 	httpResponse, err := client.httpClient.Do(httpRequest)
 	if err != nil {
@@ -1608,41 +1550,7 @@ func formatExaSearchResultText(results []exaSearchResponseResult) string {
 	formattedResults := make([]string, 0, len(results))
 
 	for _, result := range results {
-		lines := make([]string, 0, defaultWebSearchMaxURLs)
-
-		title := strings.TrimSpace(result.Title)
-		if title != "" {
-			lines = append(lines, "Title: "+title)
-		}
-
-		url := strings.TrimSpace(result.URL)
-		if url != "" {
-			lines = append(lines, "URL: "+url)
-		}
-
-		if publishedDate := trimmedOptionalString(result.PublishedDate); publishedDate != "" {
-			lines = append(lines, "Published Date: "+publishedDate)
-		}
-
-		if author := trimmedOptionalString(result.Author); author != "" {
-			lines = append(lines, "Author: "+author)
-		}
-
-		highlights := formatSearchListField("Highlights", result.Highlights)
-		if highlights != "" {
-			lines = append(lines, highlights)
-		}
-
-		summary := formatSearchMultilineField("Summary", trimmedOptionalString(result.Summary))
-		if summary != "" {
-			lines = append(lines, summary)
-		}
-
-		text := formatSearchMultilineField("Text", trimmedOptionalString(result.Text))
-		if text != "" {
-			lines = append(lines, text)
-		}
-
+		lines := formatExaSearchResultLines(result)
 		if len(lines) == 0 {
 			continue
 		}
@@ -1653,7 +1561,180 @@ func formatExaSearchResultText(results []exaSearchResponseResult) string {
 	return strings.Join(formattedResults, "\n\n")
 }
 
-func formatSearchMultilineField(label string, value string) string {
+func searchDeciderImagePartSet(
+	conversation []chatMessage,
+	maxImageParts int,
+) (map[string]struct{}, []contentPart, error) {
+	imageURLSet, err := latestUserImageURLSet(conversation)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return imageURLSet, make([]contentPart, 0, maxImageParts), nil
+}
+
+func (instance *bot) appendSearchDeciderMessageImageParts(
+	ctx context.Context,
+	sourceMessage *discordgo.Message,
+	candidateImageParts []contentPart,
+	imageURLSet map[string]struct{},
+	maxImageParts int,
+) ([]contentPart, bool, error) {
+	imageParts, err := instance.imagePartsForMessage(ctx, sourceMessage)
+	if err != nil {
+		return nil, false, fmt.Errorf("load image parts for search decider: %w", err)
+	}
+
+	return appendSearchDeciderImageParts(
+		candidateImageParts,
+		imageURLSet,
+		imageParts,
+		maxImageParts,
+		"append image attachment for search decider",
+	)
+}
+
+func (instance *bot) appendSearchDeciderDocumentImageParts(
+	ctx context.Context,
+	sourceMessage *discordgo.Message,
+	candidateImageParts []contentPart,
+	imageURLSet map[string]struct{},
+	maxImageParts int,
+) ([]contentPart, error) {
+	documentParts, err := instance.documentPartsForMessage(ctx, sourceMessage)
+	if err != nil {
+		return nil, fmt.Errorf("load document parts for search decider: %w", err)
+	}
+
+	documentResults := runTasksConcurrently(
+		ctx,
+		documentExtractionConcurrency,
+		len(documentParts),
+		func(_ context.Context, index int) (extractedPDFContent, error) {
+			return extractPDFContent(documentParts[index])
+		},
+	)
+
+	for index, result := range documentResults {
+		if result.err != nil {
+			return nil, fmt.Errorf(
+				"extract document images for search decider file %d: %w",
+				index+1,
+				result.err,
+			)
+		}
+
+		candidateImageParts, complete, appendErr := appendSearchDeciderImageParts(
+			candidateImageParts,
+			imageURLSet,
+			result.value.imageParts,
+			maxImageParts,
+			"append document image for search decider",
+		)
+		if appendErr != nil {
+			return nil, appendErr
+		}
+
+		if complete {
+			return candidateImageParts, nil
+		}
+	}
+
+	return candidateImageParts, nil
+}
+
+func appendSearchDeciderImageParts(
+	candidateImageParts []contentPart,
+	imageURLSet map[string]struct{},
+	imageParts []contentPart,
+	maxImageParts int,
+	errorContext string,
+) ([]contentPart, bool, error) {
+	for _, imagePart := range imageParts {
+		updatedParts, added, err := appendSearchDeciderImagePart(
+			candidateImageParts,
+			imageURLSet,
+			imagePart,
+		)
+		if err != nil {
+			return nil, false, fmt.Errorf("%s: %w", errorContext, err)
+		}
+
+		candidateImageParts = updatedParts
+
+		if !added {
+			continue
+		}
+
+		if len(candidateImageParts) == maxImageParts {
+			return candidateImageParts, true, nil
+		}
+	}
+
+	return candidateImageParts, false, nil
+}
+
+func appendSearchDeciderImagePart(
+	candidateImageParts []contentPart,
+	imageURLSet map[string]struct{},
+	imagePart contentPart,
+) ([]contentPart, bool, error) {
+	imageURL, err := contentPartImageURL(imagePart)
+	if err != nil {
+		return nil, false, err
+	}
+
+	if _, exists := imageURLSet[imageURL]; exists {
+		return candidateImageParts, false, nil
+	}
+
+	imageURLSet[imageURL] = struct{}{}
+
+	candidateImageParts = append(candidateImageParts, cloneContentPart(imagePart))
+
+	return candidateImageParts, true, nil
+}
+
+func formatExaSearchResultLines(result exaSearchResponseResult) []string {
+	lines := make([]string, 0, defaultWebSearchMaxURLs)
+
+	title := strings.TrimSpace(result.Title)
+	if title != "" {
+		lines = append(lines, "Title: "+title)
+	}
+
+	url := strings.TrimSpace(result.URL)
+	if url != "" {
+		lines = append(lines, "URL: "+url)
+	}
+
+	if publishedDate := trimmedOptionalString(result.PublishedDate); publishedDate != "" {
+		lines = append(lines, "Published Date: "+publishedDate)
+	}
+
+	if author := trimmedOptionalString(result.Author); author != "" {
+		lines = append(lines, "Author: "+author)
+	}
+
+	highlights := formatSearchListField("Highlights", result.Highlights)
+	if highlights != "" {
+		lines = append(lines, highlights)
+	}
+
+	summary := formatSearchMultilineField("Summary", trimmedOptionalString(result.Summary))
+	if summary != "" {
+		lines = append(lines, summary)
+	}
+
+	text := formatSearchMultilineField("Text", trimmedOptionalString(result.Text))
+	if text != "" {
+		lines = append(lines, text)
+	}
+
+	return lines
+}
+
+func formatSearchMultilineField(label, value string) string {
 	trimmedValue := strings.TrimSpace(value)
 	if trimmedValue == "" {
 		return ""

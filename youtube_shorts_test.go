@@ -43,8 +43,8 @@ func newStubYouTubeShortsContentClient(
 }
 
 func newYouTubeShortsTestBot(
-	youtubeShorts youtubeShortsContentClient,
-	chatCompletions chatCompletionClient,
+	youtubeShorts youtubeShortsFetcher,
+	chatCompletions chatCompletionStreamer,
 ) *bot {
 	instance := new(bot)
 	instance.youtubeShorts = youtubeShorts

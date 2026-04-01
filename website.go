@@ -39,7 +39,12 @@ var (
 	)
 )
 
-type websiteContentClient interface {
+const (
+	websiteFetchErrorFormat       = "fetch website %q: %w"
+	websiteResolveHostErrorFormat = "resolve website host %q: %w"
+)
+
+type websiteFetcher interface {
 	fetch(ctx context.Context, loadedConfig config, rawURL string) (websitePageContent, error)
 }
 
@@ -227,12 +232,12 @@ func (client websiteClient) fetch(
 	}
 
 	if len(attemptErrors) == 0 {
-		return websitePageContent{}, fmt.Errorf("fetch website %q: %w", rawURL, err)
+		return websitePageContent{}, fmt.Errorf(websiteFetchErrorFormat, rawURL, err)
 	}
 
 	attemptErrors = append(attemptErrors, fmt.Errorf("current implementation: %w", err))
 
-	return websitePageContent{}, fmt.Errorf("fetch website %q: %w", rawURL, errors.Join(attemptErrors...))
+	return websitePageContent{}, fmt.Errorf(websiteFetchErrorFormat, rawURL, errors.Join(attemptErrors...))
 }
 
 func (client websiteClient) fetchWithCurrentImplementation(
@@ -241,7 +246,7 @@ func (client websiteClient) fetchWithCurrentImplementation(
 ) (websitePageContent, error) {
 	responseBody, responseURL, contentType, err := client.doRequest(ctx, requestURL)
 	if err != nil {
-		return websitePageContent{}, fmt.Errorf("fetch website %q: %w", requestURL, err)
+		return websitePageContent{}, fmt.Errorf(websiteFetchErrorFormat, requestURL, err)
 	}
 
 	switch {
@@ -318,8 +323,8 @@ func (client websiteClient) fetchWithExaContentsOnce(
 		return websitePageContent{}, fmt.Errorf("create Exa contents request for %q: %w", requestURL, err)
 	}
 
-	httpRequest.Header.Set("Accept", "application/json")
-	httpRequest.Header.Set("Content-Type", "application/json")
+	httpRequest.Header.Set("Accept", applicationJSONContentType)
+	httpRequest.Header.Set(contentTypeHeader, applicationJSONContentType)
 	httpRequest.Header.Set("X-Api-Key", strings.TrimSpace(apiKey))
 
 	httpResponse, err := client.httpClient.Do(httpRequest)
@@ -592,9 +597,9 @@ func (client websiteClient) fetchWithTavilyExtractOnce(
 		return websitePageContent{}, fmt.Errorf("create Tavily extract request for %q: %w", requestURL, err)
 	}
 
-	httpRequest.Header.Set("Accept", "application/json")
+	httpRequest.Header.Set("Accept", applicationJSONContentType)
 	httpRequest.Header.Set("Authorization", "Bearer "+strings.TrimSpace(apiKey))
-	httpRequest.Header.Set("Content-Type", "application/json")
+	httpRequest.Header.Set(contentTypeHeader, applicationJSONContentType)
 
 	httpResponse, err := client.httpClient.Do(httpRequest)
 	if err != nil {
@@ -823,7 +828,7 @@ func mustParseNetipPrefix(rawPrefix string) netip.Prefix {
 func defaultWebsiteLookupIP(ctx context.Context, host string) ([]netip.Addr, error) {
 	resolvedAddrs, err := net.DefaultResolver.LookupIPAddr(ctx, host)
 	if err != nil {
-		return nil, fmt.Errorf("resolve website host %q: %w", host, err)
+		return nil, fmt.Errorf(websiteResolveHostErrorFormat, host, err)
 	}
 
 	addresses := make([]netip.Addr, 0, len(resolvedAddrs))
@@ -838,7 +843,7 @@ func defaultWebsiteLookupIP(ctx context.Context, host string) ([]netip.Addr, err
 	}
 
 	if len(addresses) == 0 {
-		return nil, fmt.Errorf("resolve website host %q: %w", host, os.ErrNotExist)
+		return nil, fmt.Errorf(websiteResolveHostErrorFormat, host, os.ErrNotExist)
 	}
 
 	return addresses, nil
@@ -955,11 +960,11 @@ func resolveWebsiteHostAddresses(
 
 	addresses, err := lookupIP(ctx, host)
 	if err != nil {
-		return nil, fmt.Errorf("resolve website host %q: %w", host, err)
+		return nil, fmt.Errorf(websiteResolveHostErrorFormat, host, err)
 	}
 
 	if len(addresses) == 0 {
-		return nil, fmt.Errorf("resolve website host %q: %w", host, os.ErrNotExist)
+		return nil, fmt.Errorf(websiteResolveHostErrorFormat, host, os.ErrNotExist)
 	}
 
 	return addresses, nil
@@ -1243,82 +1248,29 @@ func (client websiteClient) doRequest(
 	httpClient := client.websiteFetchHTTPClient()
 
 	for redirectHop := 0; ; redirectHop++ {
-		httpRequest, err := http.NewRequestWithContext(ctx, http.MethodGet, currentURL.String(), nil)
+		httpResponse, err := client.sendWebsiteRequest(ctx, httpClient, currentURL)
 		if err != nil {
-			return nil, "", "", fmt.Errorf("create website request %q: %w", currentURL.String(), err)
+			return nil, "", "", err
 		}
 
-		setWebsiteRequestHeaders(httpRequest, client.userAgent)
-
-		httpResponse, err := httpClient.Do(httpRequest)
+		nextURL, redirected, err := client.redirectWebsiteRequest(
+			ctx,
+			requestURL,
+			currentURL,
+			httpResponse,
+			redirectHop,
+		)
 		if err != nil {
-			return nil, "", "", fmt.Errorf("send website request %q: %w", currentURL.String(), err)
+			return nil, "", "", err
 		}
 
-		if isWebsiteRedirectStatus(httpResponse.StatusCode) {
-			_ = httpResponse.Body.Close()
-
-			if redirectHop >= websiteRedirectHopLimit {
-				return nil, "", "", fmt.Errorf(
-					"website request %q exceeded %d redirects: %w",
-					requestURL,
-					websiteRedirectHopLimit,
-					os.ErrInvalid,
-				)
-			}
-
-			nextURL, err := redirectWebsiteRequestURL(currentURL, httpResponse.Header.Get("Location"))
-			if err != nil {
-				return nil, "", "", err
-			}
-
-			err = validateWebsiteRequestURL(ctx, nextURL, client.lookupWebsiteIP())
-			if err != nil {
-				return nil, "", "", fmt.Errorf(
-					"validate website redirect %q from %q: %w",
-					nextURL.String(),
-					currentURL.String(),
-					err,
-				)
-			}
-
+		if redirected {
 			currentURL = nextURL
 
 			continue
 		}
 
-		responseBody, err := io.ReadAll(io.LimitReader(httpResponse.Body, maxWebsiteResponseBytes+1))
-		_ = httpResponse.Body.Close()
-
-		if err != nil {
-			return nil, "", "", fmt.Errorf("read website response %q: %w", currentURL.String(), err)
-		}
-
-		if len(responseBody) > maxWebsiteResponseBytes {
-			return nil, "", "", fmt.Errorf(
-				"website response %q exceeds %d bytes: %w",
-				currentURL.String(),
-				maxWebsiteResponseBytes,
-				os.ErrInvalid,
-			)
-		}
-
-		if httpResponse.StatusCode < http.StatusOK || httpResponse.StatusCode >= http.StatusMultipleChoices {
-			return nil, "", "", fmt.Errorf(
-				"website request %q failed with status %d: %s: %w",
-				currentURL.String(),
-				httpResponse.StatusCode,
-				strings.TrimSpace(string(responseBody)),
-				os.ErrInvalid,
-			)
-		}
-
-		responseURL := currentURL.String()
-		if httpResponse.Request != nil && httpResponse.Request.URL != nil {
-			responseURL = httpResponse.Request.URL.String()
-		}
-
-		return responseBody, responseURL, httpResponse.Header.Get("Content-Type"), nil
+		return websiteResponseDetails(currentURL, httpResponse)
 	}
 }
 
@@ -1472,10 +1424,7 @@ func parseWebsiteHTML(pageURL string, responseBody []byte) (websitePageContent, 
 }
 
 func newWebsitePageContent(
-	pageURL string,
-	title string,
-	description string,
-	content string,
+	pageURL, title, description, content string,
 ) (websitePageContent, error) {
 	trimmedURL := strings.TrimSpace(pageURL)
 	if trimmedURL == "" {
@@ -1642,61 +1591,171 @@ func renderWebsiteText(root *html.Node) string {
 
 	var current strings.Builder
 
-	flush := func() {
-		text := normalizeWebsiteText(current.String())
-		if text == "" {
-			current.Reset()
-
-			return
-		}
-
-		segments = append(segments, text)
-
-		current.Reset()
-	}
-
-	var walk func(*html.Node)
-
-	walk = func(node *html.Node) {
-		if node == nil {
-			return
-		}
-
-		if node.Type == html.TextNode {
-			appendWebsiteTextChunk(&current, node.Data)
-
-			return
-		}
-
-		if node.Type != html.ElementNode {
-			for child := node.FirstChild; child != nil; child = child.NextSibling {
-				walk(child)
-			}
-
-			return
-		}
-
-		if shouldSkipWebsiteNode(node) {
-			return
-		}
-
-		if node.DataAtom == atom.Br || isWebsiteBlockNode(node) {
-			flush()
-		}
-
-		for child := node.FirstChild; child != nil; child = child.NextSibling {
-			walk(child)
-		}
-
-		if isWebsiteBlockNode(node) {
-			flush()
-		}
-	}
-
-	walk(root)
-	flush()
+	renderWebsiteNode(root, &current, &segments)
+	flushWebsiteTextSegment(&current, &segments)
 
 	return truncateRunes(strings.Join(segments, "\n"), maxWebsiteContentRunes)
+}
+
+func (client websiteClient) sendWebsiteRequest(
+	ctx context.Context,
+	httpClient *http.Client,
+	currentURL *url.URL,
+) (*http.Response, error) {
+	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodGet, currentURL.String(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("create website request %q: %w", currentURL.String(), err)
+	}
+
+	setWebsiteRequestHeaders(httpRequest, client.userAgent)
+
+	httpResponse, err := httpClient.Do(httpRequest)
+	if err != nil {
+		return nil, fmt.Errorf("send website request %q: %w", currentURL.String(), err)
+	}
+
+	return httpResponse, nil
+}
+
+func (client websiteClient) redirectWebsiteRequest(
+	ctx context.Context,
+	requestURL string,
+	currentURL *url.URL,
+	httpResponse *http.Response,
+	redirectHop int,
+) (*url.URL, bool, error) {
+	if !isWebsiteRedirectStatus(httpResponse.StatusCode) {
+		return nil, false, nil
+	}
+
+	_ = httpResponse.Body.Close()
+
+	if redirectHop >= websiteRedirectHopLimit {
+		return nil, false, fmt.Errorf(
+			"website request %q exceeded %d redirects: %w",
+			requestURL,
+			websiteRedirectHopLimit,
+			os.ErrInvalid,
+		)
+	}
+
+	nextURL, err := redirectWebsiteRequestURL(currentURL, httpResponse.Header.Get("Location"))
+	if err != nil {
+		return nil, false, err
+	}
+
+	err = validateWebsiteRequestURL(ctx, nextURL, client.lookupWebsiteIP())
+	if err != nil {
+		return nil, false, fmt.Errorf(
+			"validate website redirect %q from %q: %w",
+			nextURL.String(),
+			currentURL.String(),
+			err,
+		)
+	}
+
+	return nextURL, true, nil
+}
+
+func websiteResponseDetails(
+	currentURL *url.URL,
+	httpResponse *http.Response,
+) ([]byte, string, string, error) {
+	responseBody, err := io.ReadAll(io.LimitReader(httpResponse.Body, maxWebsiteResponseBytes+1))
+	_ = httpResponse.Body.Close()
+
+	if err != nil {
+		return nil, "", "", fmt.Errorf("read website response %q: %w", currentURL.String(), err)
+	}
+
+	if len(responseBody) > maxWebsiteResponseBytes {
+		return nil, "", "", fmt.Errorf(
+			"website response %q exceeds %d bytes: %w",
+			currentURL.String(),
+			maxWebsiteResponseBytes,
+			os.ErrInvalid,
+		)
+	}
+
+	if httpResponse.StatusCode < http.StatusOK || httpResponse.StatusCode >= http.StatusMultipleChoices {
+		return nil, "", "", fmt.Errorf(
+			"website request %q failed with status %d: %s: %w",
+			currentURL.String(),
+			httpResponse.StatusCode,
+			strings.TrimSpace(string(responseBody)),
+			os.ErrInvalid,
+		)
+	}
+
+	return responseBody, websiteResponseURL(currentURL, httpResponse), httpResponse.Header.Get(contentTypeHeader), nil
+}
+
+func websiteResponseURL(currentURL *url.URL, httpResponse *http.Response) string {
+	responseURL := currentURL.String()
+	if httpResponse.Request != nil && httpResponse.Request.URL != nil {
+		responseURL = httpResponse.Request.URL.String()
+	}
+
+	return responseURL
+}
+
+func renderWebsiteNode(
+	node *html.Node,
+	current *strings.Builder,
+	segments *[]string,
+) {
+	if node == nil {
+		return
+	}
+
+	if node.Type == html.TextNode {
+		appendWebsiteTextChunk(current, node.Data)
+
+		return
+	}
+
+	if node.Type != html.ElementNode {
+		renderWebsiteChildren(node, current, segments)
+
+		return
+	}
+
+	if shouldSkipWebsiteNode(node) {
+		return
+	}
+
+	if node.DataAtom == atom.Br || isWebsiteBlockNode(node) {
+		flushWebsiteTextSegment(current, segments)
+	}
+
+	renderWebsiteChildren(node, current, segments)
+
+	if isWebsiteBlockNode(node) {
+		flushWebsiteTextSegment(current, segments)
+	}
+}
+
+func renderWebsiteChildren(
+	node *html.Node,
+	current *strings.Builder,
+	segments *[]string,
+) {
+	for child := node.FirstChild; child != nil; child = child.NextSibling {
+		renderWebsiteNode(child, current, segments)
+	}
+}
+
+func flushWebsiteTextSegment(current *strings.Builder, segments *[]string) {
+	text := normalizeWebsiteText(current.String())
+	if text == "" {
+		current.Reset()
+
+		return
+	}
+
+	*segments = append(*segments, text)
+
+	current.Reset()
 }
 
 func appendWebsiteTextChunk(builder *strings.Builder, rawText string) {

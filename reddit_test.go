@@ -37,7 +37,7 @@ func newStubRedditContentClient(
 	return client
 }
 
-func newRedditTestBot(reddit redditContentClient) *bot {
+func newRedditTestBot(reddit redditFetcher) *bot {
 	instance := new(bot)
 	instance.reddit = reddit
 

@@ -37,6 +37,35 @@ type openAICodexClient struct {
 	httpClient *http.Client
 }
 
+type openAICodexStreamUsagePayload struct {
+	InputTokens  int `json:"input_tokens"`
+	OutputTokens int `json:"output_tokens"`
+}
+
+type openAICodexStreamErrorPayload struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+type openAICodexIncompleteDetailsPayload struct {
+	Reason string `json:"reason"`
+}
+
+type openAICodexStreamResponsePayload struct {
+	Status            string                              `json:"status"`
+	Usage             *openAICodexStreamUsagePayload      `json:"usage"`
+	Error             openAICodexStreamErrorPayload       `json:"error"`
+	IncompleteDetails openAICodexIncompleteDetailsPayload `json:"incomplete_details"`
+}
+
+type openAICodexStreamEnvelope struct {
+	Type     string                           `json:"type"`
+	Delta    string                           `json:"delta"`
+	Message  string                           `json:"message"`
+	Code     string                           `json:"code"`
+	Response openAICodexStreamResponsePayload `json:"response"`
+}
+
 func newOpenAICodexClient(httpClient *http.Client) openAICodexClient {
 	return openAICodexClient{httpClient: httpClient}
 }
@@ -218,7 +247,7 @@ func openAICodexReasoningEffortAlias(model string) (string, string, bool) {
 	return "", "", false
 }
 
-func normalizeOpenAICodexReasoningEffort(model string, effort string) string {
+func normalizeOpenAICodexReasoningEffort(model, effort string) string {
 	normalizedEffort := strings.ToLower(strings.TrimSpace(effort))
 	if normalizedEffort == "" {
 		return ""
@@ -333,42 +362,59 @@ func openAICodexInputAndInstructions(messages []chatMessage) ([]map[string]any, 
 	systemPrompts := make([]string, 0, 1)
 
 	for index, message := range messages {
-		role := strings.ToLower(strings.TrimSpace(message.Role))
+		systemPrompt, convertedMessage, err := openAICodexInputMessage(message)
+		if err != nil {
+			return nil, "", fmt.Errorf("convert message %d: %w", index, err)
+		}
 
-		switch role {
-		case openAICodexRoleSystem:
-			text, err := openAICodexSystemInstruction(message.Content)
-			if err != nil {
-				return nil, "", fmt.Errorf("convert system message %d: %w", index, err)
-			}
+		if systemPrompt != "" {
+			systemPrompts = append(systemPrompts, systemPrompt)
+		}
 
-			if text != "" {
-				systemPrompts = append(systemPrompts, text)
-			}
-		case messageRoleUser:
-			convertedMessage, ok, err := openAICodexUserMessage(message.Content)
-			if err != nil {
-				return nil, "", fmt.Errorf("convert user message %d: %w", index, err)
-			}
-
-			if ok {
-				input = append(input, convertedMessage)
-			}
-		case messageRoleAssistant:
-			convertedMessage, ok, err := openAICodexAssistantMessage(message.Content)
-			if err != nil {
-				return nil, "", fmt.Errorf("convert assistant message %d: %w", index, err)
-			}
-
-			if ok {
-				input = append(input, convertedMessage)
-			}
-		default:
-			return nil, "", fmt.Errorf("unsupported codex chat role %q: %w", message.Role, os.ErrInvalid)
+		if convertedMessage != nil {
+			input = append(input, convertedMessage)
 		}
 	}
 
 	return input, strings.Join(systemPrompts, "\n\n"), nil
+}
+
+func openAICodexInputMessage(message chatMessage) (string, map[string]any, error) {
+	role := strings.ToLower(strings.TrimSpace(message.Role))
+
+	switch role {
+	case openAICodexRoleSystem:
+		systemPrompt, err := openAICodexSystemInstruction(message.Content)
+		if err != nil {
+			return "", nil, err
+		}
+
+		return systemPrompt, nil, nil
+	case messageRoleUser:
+		convertedMessage, ok, err := openAICodexUserMessage(message.Content)
+		if err != nil {
+			return "", nil, err
+		}
+
+		if !ok {
+			return "", nil, nil
+		}
+
+		return "", convertedMessage, nil
+	case messageRoleAssistant:
+		convertedMessage, ok, err := openAICodexAssistantMessage(message.Content)
+		if err != nil {
+			return "", nil, err
+		}
+
+		if !ok {
+			return "", nil, nil
+		}
+
+		return "", convertedMessage, nil
+	default:
+		return "", nil, fmt.Errorf("unsupported codex chat role %q: %w", message.Role, os.ErrInvalid)
+	}
 }
 
 func openAICodexSystemInstruction(content any) (string, error) {
@@ -406,57 +452,73 @@ func openAICodexUserParts(content any) ([]map[string]any, error) {
 	case nil:
 		return nil, nil
 	case string:
-		if strings.TrimSpace(typedContent) == "" {
-			return nil, nil
-		}
-
-		return []map[string]any{{
-			"type": "input_text",
-			"text": typedContent,
-		}}, nil
+		return openAICodexUserTextParts(typedContent), nil
 	case []contentPart:
 		parts := make([]map[string]any, 0, len(typedContent))
 		for _, part := range typedContent {
-			partType, _ := part["type"].(string)
-
-			switch partType {
-			case contentTypeText:
-				textValue, _ := part["text"].(string)
-				if strings.TrimSpace(textValue) == "" {
-					continue
-				}
-
-				parts = append(parts, map[string]any{
-					"type": "input_text",
-					"text": textValue,
-				})
-			case contentTypeImageURL:
-				imageURL, err := geminiImageURL(part)
-				if err != nil {
-					return nil, err
-				}
-
-				if imageURL == "" {
-					continue
-				}
-
-				parts = append(parts, map[string]any{
-					"type":      "input_image",
-					"image_url": imageURL,
-					"detail":    openAICodexAuto,
-				})
-			default:
-				return nil, fmt.Errorf(
-					"unsupported codex content part type %q: %w",
-					partType,
-					os.ErrInvalid,
-				)
+			convertedPart, ok, err := openAICodexUserPart(part)
+			if err != nil {
+				return nil, err
 			}
+
+			if !ok {
+				continue
+			}
+
+			parts = append(parts, convertedPart)
 		}
 
 		return parts, nil
 	default:
 		return nil, fmt.Errorf("unsupported codex user content type %T: %w", content, os.ErrInvalid)
+	}
+}
+
+func openAICodexUserTextParts(text string) []map[string]any {
+	if strings.TrimSpace(text) == "" {
+		return nil
+	}
+
+	return []map[string]any{{
+		"type": "input_text",
+		"text": text,
+	}}
+}
+
+func openAICodexUserPart(part contentPart) (map[string]any, bool, error) {
+	partType, _ := part["type"].(string)
+
+	switch partType {
+	case contentTypeText:
+		textValue, _ := part["text"].(string)
+
+		textParts := openAICodexUserTextParts(textValue)
+		if len(textParts) == 0 {
+			return nil, false, nil
+		}
+
+		return textParts[0], true, nil
+	case contentTypeImageURL:
+		imageURL, err := geminiImageURL(part)
+		if err != nil {
+			return nil, false, err
+		}
+
+		if imageURL == "" {
+			return nil, false, nil
+		}
+
+		return map[string]any{
+			"type":      "input_image",
+			"image_url": imageURL,
+			"detail":    openAICodexAuto,
+		}, true, nil
+	default:
+		return nil, false, fmt.Errorf(
+			"unsupported codex content part type %q: %w",
+			partType,
+			os.ErrInvalid,
+		)
 	}
 }
 
@@ -629,26 +691,7 @@ func openAICodexAccountID(token string) (string, error) {
 }
 
 func handleOpenAICodexStreamPayload(payload []byte, handle func(streamDelta) error) (bool, error) {
-	var envelope struct {
-		Type     string `json:"type"`
-		Delta    string `json:"delta"`
-		Message  string `json:"message"`
-		Code     string `json:"code"`
-		Response struct {
-			Status string `json:"status"`
-			Usage  *struct {
-				InputTokens  int `json:"input_tokens"`
-				OutputTokens int `json:"output_tokens"`
-			} `json:"usage"`
-			Error struct {
-				Code    string `json:"code"`
-				Message string `json:"message"`
-			} `json:"error"`
-			IncompleteDetails struct {
-				Reason string `json:"reason"`
-			} `json:"incomplete_details"`
-		} `json:"response"`
-	}
+	var envelope openAICodexStreamEnvelope
 
 	err := json.Unmarshal(payload, &envelope)
 	if err != nil {
@@ -761,10 +804,7 @@ func openAICodexHandleTerminalResponse(
 	}
 }
 
-func openAICodexStreamUsage(usage *struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
-}) *tokenUsage {
+func openAICodexStreamUsage(usage *openAICodexStreamUsagePayload) *tokenUsage {
 	if usage == nil {
 		return nil
 	}
@@ -776,9 +816,7 @@ func openAICodexStreamUsage(usage *struct {
 }
 
 func openAICodexFailedResponseError(
-	errorCode string,
-	errorMessage string,
-	incompleteReason string,
+	errorCode, errorMessage, incompleteReason string,
 ) error {
 	trimmedCode := strings.TrimSpace(errorCode)
 	errorText := strings.TrimSpace(errorMessage)
@@ -804,7 +842,7 @@ func openAICodexFailedResponseError(
 	return fmt.Errorf("%s: %w", errorText, os.ErrInvalid)
 }
 
-func openAICodexEventStreamError(message string, code string) error {
+func openAICodexEventStreamError(message, code string) error {
 	trimmedCode := strings.TrimSpace(code)
 
 	errorText := strings.TrimSpace(message)

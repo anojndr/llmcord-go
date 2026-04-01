@@ -1706,9 +1706,7 @@ func newRateLimitedRespondToMessageConfig() config {
 }
 
 func newRateLimitedRespondToMessageSourceMessage(
-	channelID string,
-	sourceMessageID string,
-	userID string,
+	channelID, sourceMessageID, userID string,
 ) *discordgo.Message {
 	sourceMessage := new(discordgo.Message)
 	sourceMessage.ID = sourceMessageID
