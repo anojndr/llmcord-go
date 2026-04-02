@@ -67,14 +67,15 @@ func newHistoryRetentionFixture(t *testing.T, sourceContent string) historyReten
 
 	const (
 		botUserID          = "bot-user"
-		channelID          = "channel-1"
 		userID             = "user-1"
 		sourceMessageID    = "source-message"
 		assistantMessageID = "assistant-message"
 		followUpMessageID  = "follow-up-message"
 	)
 
-	instance := newHistoryRetentionTestBot(t, botUserID, channelID)
+	instance := newHistoryRetentionTestBot(t)
+
+	const channelID = "channel-1"
 
 	sourceMessage := new(discordgo.Message)
 	sourceMessage.ID = sourceMessageID
@@ -353,8 +354,13 @@ func assertRetainedVideoHistory(t *testing.T, history []chatMessage) {
 	}
 }
 
-func newHistoryRetentionTestBot(t *testing.T, botUserID string, channelID string) *bot {
+func newHistoryRetentionTestBot(t *testing.T) *bot {
 	t.Helper()
+
+	const (
+		botUserID = "bot-user"
+		channelID = "channel-1"
+	)
 
 	session, err := discordgo.New("Bot discord-token")
 	if err != nil {

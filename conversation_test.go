@@ -271,7 +271,7 @@ func TestBuildConversationStopsAtDirectRepliedUserMessage(t *testing.T) {
 		replyTargetText = "test"
 	)
 
-	instance := newHistoryRetentionTestBot(t, botUserID, channelID)
+	instance := newHistoryRetentionTestBot(t)
 
 	rootMessage := new(discordgo.Message)
 	rootMessage.ID = rootMessageID

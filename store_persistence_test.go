@@ -882,7 +882,7 @@ func newPersistentHistoryTestBot(
 ) *bot {
 	t.Helper()
 
-	instance := newHistoryRetentionTestBot(t, "bot-user", "channel-1")
+	instance := newHistoryRetentionTestBot(t)
 
 	store, err := newPersistentMessageNodeStore(10, storeKey, backend)
 	if err != nil {

@@ -221,44 +221,6 @@ func appendMediaAnalysesToConversation(
 	})
 }
 
-func appendReplyTargetToConversation(
-	conversation []chatMessage,
-	replyTarget chatMessage,
-) ([]chatMessage, error) {
-	replyText, replyMediaParts, err := replyTargetTextAndMedia(replyTarget.Content)
-	if err != nil {
-		return nil, fmt.Errorf("extract reply target content: %w", err)
-	}
-
-	augmentedConversation := conversation
-
-	if replyText != "" {
-		augmentedConversation, err = appendContextToConversation(
-			augmentedConversation,
-			func(prompt *augmentedUserPrompt) {
-				prompt.RepliedMessage = replyText
-			},
-		)
-		if err != nil {
-			return nil, fmt.Errorf("append replied message text: %w", err)
-		}
-	}
-
-	if len(replyMediaParts) == 0 {
-		return augmentedConversation, nil
-	}
-
-	augmentedConversation, err = appendMediaPartsToConversation(
-		augmentedConversation,
-		replyMediaParts,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("append replied message media: %w", err)
-	}
-
-	return augmentedConversation, nil
-}
-
 func appendMediaPartsToConversation(
 	conversation []chatMessage,
 	mediaParts []contentPart,
@@ -403,30 +365,6 @@ func appendMediaPartsToMessageContent(
 		return updatedContent, nil
 	default:
 		return nil, fmt.Errorf("unsupported message content type %T: %w", content, os.ErrInvalid)
-	}
-}
-
-func replyTargetTextAndMedia(content any) (string, []contentPart, error) {
-	switch typedContent := content.(type) {
-	case nil:
-		return "", nil, nil
-	case string:
-		return strings.TrimSpace(typedContent), nil, nil
-	case []contentPart:
-		replyMediaParts := make([]contentPart, 0, len(typedContent))
-
-		for _, part := range typedContent {
-			partType, _ := part["type"].(string)
-			if partType == contentTypeText {
-				continue
-			}
-
-			replyMediaParts = append(replyMediaParts, cloneContentPart(part))
-		}
-
-		return strings.TrimSpace(contentPartsText(typedContent)), replyMediaParts, nil
-	default:
-		return "", nil, fmt.Errorf("unsupported reply target content type %T: %w", content, os.ErrInvalid)
 	}
 }
 
