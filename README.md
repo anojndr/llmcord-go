@@ -312,6 +312,7 @@ golangci-lint run --default=all
 - The bot reads `config.yaml` on each message and `/model` autocomplete request, so config changes apply without restarting. Startup also honors `LLMCORD_CONFIG_PATH` first, then `CONFIG_PATH`, before falling back to `config.yaml`.
 - When `PORT` is set, the bot also serves JSON health responses on `/` and `/healthz`.
 - Reply-chain history is stored in PostgreSQL table `message_history_snapshots` when `database.connection_string` is configured.
+- If PostgreSQL returns SQLSTATE `XX001` or `XX002` while reading or writing `message_history_snapshots`, the bot disables persisted history for that run and logs that the table needs repair or reset before persistence can be re-enabled.
 - `channel_model_locks` checks the current channel first, then parent thread/forum context when applicable.
 - Gemini providers use the official `google.golang.org/genai` SDK.
 - Streaming failures, blocked responses, and prematurely terminated streams are surfaced to users as visible errors.
