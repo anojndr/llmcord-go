@@ -42,6 +42,7 @@ func TestOpenAICodexClientStreamChatCompletion(t *testing.T) {
 		ContextWindow:               0,
 		AutoCompactThresholdPercent: 0,
 		SessionID:                   "",
+		PreviousResponseID:          "",
 		Messages: []chatMessage{
 			{Role: openAICodexRoleSystem, Content: "Be brief."},
 			{
@@ -102,6 +103,7 @@ func TestOpenAICodexClientRejectsInvalidTokenWithoutAccountHeader(t *testing.T) 
 		ContextWindow:               0,
 		AutoCompactThresholdPercent: 0,
 		SessionID:                   "",
+		PreviousResponseID:          "",
 		Messages: []chatMessage{
 			{Role: openAICodexRoleSystem, Content: "Be brief."},
 			{Role: messageRoleUser, Content: testOpenAICodexHelloText},
@@ -199,6 +201,7 @@ func TestOpenAICodexClientStreamChatCompletionIncludesCacheMetadata(t *testing.T
 		ContextWindow:               0,
 		AutoCompactThresholdPercent: 0,
 		SessionID:                   sessionID,
+		PreviousResponseID:          "",
 		Messages: []chatMessage{
 			{Role: openAICodexRoleSystem, Content: "Be brief."},
 			{
@@ -241,6 +244,7 @@ func TestBuildOpenAICodexRequestBodyPreservesNestedReasoningConfig(t *testing.T)
 		ContextWindow:               0,
 		AutoCompactThresholdPercent: 0,
 		SessionID:                   "",
+		PreviousResponseID:          "",
 		Messages: []chatMessage{
 			{Role: messageRoleUser, Content: testOpenAICodexHelloText},
 		},
@@ -285,6 +289,7 @@ func TestBuildOpenAICodexRequestBodyDefaultsReasoningSummaryWithoutEffort(t *tes
 		ContextWindow:               0,
 		AutoCompactThresholdPercent: 0,
 		SessionID:                   "",
+		PreviousResponseID:          "",
 		Messages: []chatMessage{
 			{Role: messageRoleUser, Content: testOpenAICodexHelloText},
 		},
@@ -331,6 +336,7 @@ func TestBuildOpenAICodexRequestBodyClampsNestedReasoningConfigWithoutMutatingOr
 		ContextWindow:               0,
 		AutoCompactThresholdPercent: 0,
 		SessionID:                   "",
+		PreviousResponseID:          "",
 		Messages: []chatMessage{
 			{Role: messageRoleUser, Content: testOpenAICodexHelloText},
 		},
@@ -626,6 +632,7 @@ func TestOpenAICodexClientStreamChatCompletionParsesJSONStatusErrors(t *testing.
 		ContextWindow:               0,
 		AutoCompactThresholdPercent: 0,
 		SessionID:                   "",
+		PreviousResponseID:          "",
 		Messages:                    []chatMessage{{Role: messageRoleUser, Content: testOpenAICodexHelloText}},
 	}
 
@@ -761,13 +768,14 @@ func newOpenAICodexProviderRequestConfig(
 	extraBody map[string]any,
 ) providerRequestConfig {
 	return providerRequestConfig{
-		APIKind:      providerAPIKindOpenAICodex,
-		BaseURL:      baseURL,
-		APIKey:       apiKey,
-		APIKeys:      nil,
-		ExtraHeaders: extraHeaders,
-		ExtraQuery:   extraQuery,
-		ExtraBody:    extraBody,
+		APIKind:         providerAPIKindOpenAICodex,
+		BaseURL:         baseURL,
+		APIKey:          apiKey,
+		APIKeys:         nil,
+		UseResponsesAPI: false,
+		ExtraHeaders:    extraHeaders,
+		ExtraQuery:      extraQuery,
+		ExtraBody:       extraBody,
 	}
 }
 

@@ -193,10 +193,11 @@ func processGeminiStreamResponse(
 func geminiHandleStreamUpdate(handle func(streamDelta) error, delta streamDelta) error {
 	if delta.Thinking != "" || delta.Content != "" {
 		err := handle(streamDelta{
-			Thinking:     delta.Thinking,
-			Content:      delta.Content,
-			FinishReason: "",
-			Usage:        nil,
+			Thinking:           delta.Thinking,
+			Content:            delta.Content,
+			FinishReason:       "",
+			Usage:              nil,
+			ProviderResponseID: "",
 		})
 		if err != nil {
 			return fmt.Errorf(handleStreamDeltaErrorFormat, err)
@@ -205,10 +206,11 @@ func geminiHandleStreamUpdate(handle func(streamDelta) error, delta streamDelta)
 
 	if delta.Usage != nil {
 		err := handle(streamDelta{
-			Thinking:     "",
-			Content:      "",
-			FinishReason: "",
-			Usage:        cloneTokenUsage(delta.Usage),
+			Thinking:           "",
+			Content:            "",
+			FinishReason:       "",
+			Usage:              cloneTokenUsage(delta.Usage),
+			ProviderResponseID: "",
 		})
 		if err != nil {
 			return fmt.Errorf(handleStreamDeltaErrorFormat, err)
@@ -220,10 +222,11 @@ func geminiHandleStreamUpdate(handle func(streamDelta) error, delta streamDelta)
 
 func geminiHandleFinishReason(handle func(streamDelta) error, finishReason string) error {
 	err := handle(streamDelta{
-		Thinking:     "",
-		Content:      "",
-		FinishReason: finishReason,
-		Usage:        nil,
+		Thinking:           "",
+		Content:            "",
+		FinishReason:       finishReason,
+		Usage:              nil,
+		ProviderResponseID: "",
 	})
 	if err != nil {
 		return fmt.Errorf(handleStreamDeltaErrorFormat, err)
@@ -1076,10 +1079,11 @@ func geminiStreamDelta(response *genai.GenerateContentResponse) (streamDelta, er
 		err = geminiFinishReasonError(candidate)
 		if err != nil {
 			return streamDelta{
-				Thinking:     delta.Thinking,
-				Content:      delta.Content,
-				FinishReason: "",
-				Usage:        nil,
+				Thinking:           delta.Thinking,
+				Content:            delta.Content,
+				FinishReason:       "",
+				Usage:              nil,
+				ProviderResponseID: "",
 			}, err
 		}
 	}

@@ -127,6 +127,9 @@ When a user replies to a message, attaches files, or includes supported URLs, th
 
 That enriched context is then sent to the configured provider and model.
 
+Direct `x-ai` providers use the xAI Responses API and continue matching reply chains with
+`previous_response_id` when the latest assistant turn came from the same configured xAI model.
+
 ## Quick Start
 
 ### 1) Clone the repository
@@ -318,6 +321,7 @@ golangci-lint run --default=all
 - Streaming failures, blocked responses, and prematurely terminated streams are surfaced to users as visible errors.
 - Providers pointing at `https://openrouter.ai/...` automatically send `transforms: ["middle-out"]` unless overridden.
 - OpenAI-compatible chat completions retry once without degraded tools or functions when applicable.
+- Direct `x-ai` providers keep server-side conversation state and append only new turns when a reply chain continues from a stored xAI assistant response for the same model.
 - When `context_window` is configured for a model, llmcord-go auto-compacts older conversation context before sending oversized main-model or search-decider requests. The default trigger is `90%` of the configured context window, and you can override it globally with `auto_compact_threshold_percent`. The latest oversized conversation message is truncated at 10 percentage points below that threshold before older-context compaction runs.
 - If a provider has multiple API keys, the bot tries them in order until one succeeds or all fail. Gemini, OpenAI, and OpenAI Codex rate-limit responses wait on the same key once when the provider returns a retry delay of 1 minute or less, then rotate to the next key if needed. Longer retry delays skip straight to the next key when one is configured, and rotation only happens before any response chunks have been streamed.
 

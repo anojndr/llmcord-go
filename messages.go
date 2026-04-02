@@ -262,6 +262,7 @@ func (instance *bot) prepareMessageResponse(
 	}
 
 	assignOpenAICodexSessionID(&request, message, instance.nodes, loadedConfig.MaxMessages)
+	assignXAIPreviousResponseID(&request, message, instance.nodes, loadedConfig.MaxMessages)
 
 	request, autoCompactResult := instance.autoCompactRequest(ctx, request)
 	if autoCompactResult.Applied {
@@ -967,19 +968,21 @@ func buildChatCompletionRequest(
 
 	return chatCompletionRequest{
 		Provider: providerRequestConfig{
-			APIKind:      providerAPIKind,
-			BaseURL:      provider.BaseURL,
-			APIKey:       provider.primaryAPIKey(),
-			APIKeys:      provider.apiKeys(),
-			ExtraHeaders: provider.ExtraHeaders,
-			ExtraQuery:   provider.ExtraQuery,
-			ExtraBody:    extraBody,
+			APIKind:         providerAPIKind,
+			BaseURL:         provider.BaseURL,
+			APIKey:          provider.primaryAPIKey(),
+			APIKeys:         provider.apiKeys(),
+			UseResponsesAPI: providerUsesResponsesAPI(providerName, provider),
+			ExtraHeaders:    provider.ExtraHeaders,
+			ExtraQuery:      provider.ExtraQuery,
+			ExtraBody:       extraBody,
 		},
 		Model:                       modelName,
 		ConfiguredModel:             providerSlashModel,
 		ContextWindow:               loadedConfig.modelContextWindow(providerSlashModel),
 		AutoCompactThresholdPercent: loadedConfig.AutoCompactThresholdPercent,
 		SessionID:                   "",
+		PreviousResponseID:          "",
 		Messages:                    messages,
 	}, nil
 }

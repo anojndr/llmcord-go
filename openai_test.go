@@ -140,10 +140,11 @@ func TestOpenAIClientStreamChatCompletion(t *testing.T) {
 	client := newOpenAIClient(server.Client())
 	request := chatCompletionRequest{
 		Provider: providerRequestConfig{
-			APIKind: providerAPIKindOpenAI,
-			BaseURL: server.URL + "/v1",
-			APIKey:  "test-key",
-			APIKeys: nil,
+			APIKind:         providerAPIKindOpenAI,
+			BaseURL:         server.URL + "/v1",
+			APIKey:          "test-key",
+			APIKeys:         nil,
+			UseResponsesAPI: false,
 			ExtraHeaders: map[string]any{
 				"X-Test": "present",
 			},
@@ -159,6 +160,7 @@ func TestOpenAIClientStreamChatCompletion(t *testing.T) {
 		ContextWindow:               0,
 		AutoCompactThresholdPercent: 0,
 		SessionID:                   "",
+		PreviousResponseID:          "",
 		Messages: []chatMessage{
 			{Role: "user", Content: "hello"},
 		},
@@ -187,7 +189,7 @@ func TestOpenAIClientStreamChatCompletion(t *testing.T) {
 		t.Fatalf("stream chat completion: %v", err)
 	}
 
-	if joinedContent.String() != "Hello" {
+	if joinedContent.String() != testStreamedHelloText {
 		t.Fatalf("unexpected streamed content: %q", joinedContent.String())
 	}
 
@@ -211,19 +213,21 @@ func TestOpenAIClientRetriesWithoutStreamingUsageWhenProviderRejectsIt(t *testin
 	client := newOpenAIClient(server.Client())
 	request := chatCompletionRequest{
 		Provider: providerRequestConfig{
-			APIKind:      providerAPIKindOpenAI,
-			BaseURL:      server.URL,
-			APIKey:       "test-key",
-			APIKeys:      nil,
-			ExtraHeaders: nil,
-			ExtraQuery:   nil,
-			ExtraBody:    nil,
+			APIKind:         providerAPIKindOpenAI,
+			BaseURL:         server.URL,
+			APIKey:          "test-key",
+			APIKeys:         nil,
+			UseResponsesAPI: false,
+			ExtraHeaders:    nil,
+			ExtraQuery:      nil,
+			ExtraBody:       nil,
 		},
 		Model:                       "gpt-test",
 		ConfiguredModel:             "",
 		ContextWindow:               0,
 		AutoCompactThresholdPercent: 0,
 		SessionID:                   "",
+		PreviousResponseID:          "",
 		Messages:                    []chatMessage{{Role: "user", Content: "hello"}},
 	}
 
@@ -349,19 +353,21 @@ func TestOpenAIClientStreamChatCompletionReturnsStatusErrors(t *testing.T) {
 	client := newOpenAIClient(server.Client())
 	request := chatCompletionRequest{
 		Provider: providerRequestConfig{
-			APIKind:      providerAPIKindOpenAI,
-			BaseURL:      server.URL,
-			APIKey:       "test-key",
-			APIKeys:      nil,
-			ExtraHeaders: nil,
-			ExtraQuery:   nil,
-			ExtraBody:    nil,
+			APIKind:         providerAPIKindOpenAI,
+			BaseURL:         server.URL,
+			APIKey:          "test-key",
+			APIKeys:         nil,
+			UseResponsesAPI: false,
+			ExtraHeaders:    nil,
+			ExtraQuery:      nil,
+			ExtraBody:       nil,
 		},
 		Model:                       "gpt-test",
 		ConfiguredModel:             "",
 		ContextWindow:               0,
 		AutoCompactThresholdPercent: 0,
 		SessionID:                   "",
+		PreviousResponseID:          "",
 		Messages:                    []chatMessage{{Role: "user", Content: "hello"}},
 	}
 
@@ -398,19 +404,21 @@ func TestOpenAIClientStreamChatCompletionParsesJSONStatusErrors(t *testing.T) {
 	client := newOpenAIClient(server.Client())
 	request := chatCompletionRequest{
 		Provider: providerRequestConfig{
-			APIKind:      providerAPIKindOpenAI,
-			BaseURL:      server.URL,
-			APIKey:       "test-key",
-			APIKeys:      nil,
-			ExtraHeaders: nil,
-			ExtraQuery:   nil,
-			ExtraBody:    nil,
+			APIKind:         providerAPIKindOpenAI,
+			BaseURL:         server.URL,
+			APIKey:          "test-key",
+			APIKeys:         nil,
+			UseResponsesAPI: false,
+			ExtraHeaders:    nil,
+			ExtraQuery:      nil,
+			ExtraBody:       nil,
 		},
 		Model:                       "gpt-test",
 		ConfiguredModel:             "",
 		ContextWindow:               0,
 		AutoCompactThresholdPercent: 0,
 		SessionID:                   "",
+		PreviousResponseID:          "",
 		Messages:                    []chatMessage{{Role: "user", Content: "hello"}},
 	}
 
@@ -453,19 +461,21 @@ func TestOpenAIClientStreamChatCompletionReturnsStreamEventErrors(t *testing.T) 
 	client := newOpenAIClient(server.Client())
 	request := chatCompletionRequest{
 		Provider: providerRequestConfig{
-			APIKind:      providerAPIKindOpenAI,
-			BaseURL:      server.URL,
-			APIKey:       "test-key",
-			APIKeys:      nil,
-			ExtraHeaders: nil,
-			ExtraQuery:   nil,
-			ExtraBody:    nil,
+			APIKind:         providerAPIKindOpenAI,
+			BaseURL:         server.URL,
+			APIKey:          "test-key",
+			APIKeys:         nil,
+			UseResponsesAPI: false,
+			ExtraHeaders:    nil,
+			ExtraQuery:      nil,
+			ExtraBody:       nil,
 		},
 		Model:                       "gpt-test",
 		ConfiguredModel:             "",
 		ContextWindow:               0,
 		AutoCompactThresholdPercent: 0,
 		SessionID:                   "",
+		PreviousResponseID:          "",
 		Messages:                    []chatMessage{{Role: "user", Content: "hello"}},
 	}
 
@@ -502,19 +512,21 @@ func TestOpenAIClientStreamChatCompletionReturnsBlockedFinishReasonErrors(t *tes
 	client := newOpenAIClient(server.Client())
 	request := chatCompletionRequest{
 		Provider: providerRequestConfig{
-			APIKind:      providerAPIKindOpenAI,
-			BaseURL:      server.URL,
-			APIKey:       "test-key",
-			APIKeys:      nil,
-			ExtraHeaders: nil,
-			ExtraQuery:   nil,
-			ExtraBody:    nil,
+			APIKind:         providerAPIKindOpenAI,
+			BaseURL:         server.URL,
+			APIKey:          "test-key",
+			APIKeys:         nil,
+			UseResponsesAPI: false,
+			ExtraHeaders:    nil,
+			ExtraQuery:      nil,
+			ExtraBody:       nil,
 		},
 		Model:                       "gpt-test",
 		ConfiguredModel:             "",
 		ContextWindow:               0,
 		AutoCompactThresholdPercent: 0,
 		SessionID:                   "",
+		PreviousResponseID:          "",
 		Messages:                    []chatMessage{{Role: "user", Content: "hello"}},
 	}
 
@@ -538,26 +550,32 @@ func TestOpenAIClientStreamChatCompletionReturnsErrorWithoutDoneMarker(t *testin
 		_ *http.Request,
 	) {
 		responseWriter.Header().Set("Content-Type", "text/event-stream")
-		writeStreamChunk(t, responseWriter, "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n")
+		writeStreamChunk(
+			t,
+			responseWriter,
+			"data: {\"choices\":[{\"delta\":{\"content\":\""+testStreamedHelloText+"\"}}]}\n\n",
+		)
 	}))
 	defer server.Close()
 
 	client := newOpenAIClient(server.Client())
 	request := chatCompletionRequest{
 		Provider: providerRequestConfig{
-			APIKind:      providerAPIKindOpenAI,
-			BaseURL:      server.URL,
-			APIKey:       "test-key",
-			APIKeys:      nil,
-			ExtraHeaders: nil,
-			ExtraQuery:   nil,
-			ExtraBody:    nil,
+			APIKind:         providerAPIKindOpenAI,
+			BaseURL:         server.URL,
+			APIKey:          "test-key",
+			APIKeys:         nil,
+			UseResponsesAPI: false,
+			ExtraHeaders:    nil,
+			ExtraQuery:      nil,
+			ExtraBody:       nil,
 		},
 		Model:                       "gpt-test",
 		ConfiguredModel:             "",
 		ContextWindow:               0,
 		AutoCompactThresholdPercent: 0,
 		SessionID:                   "",
+		PreviousResponseID:          "",
 		Messages:                    []chatMessage{{Role: "user", Content: "hello"}},
 	}
 
@@ -595,7 +613,7 @@ func TestOpenAIClientStreamChatCompletionRetriesWithoutDegradedFunctions(t *test
 
 	assertOpenAIDegradedFunctionRetryRequests(t, capture.snapshot())
 
-	if joinedContent != "Hello" {
+	if joinedContent != testStreamedHelloText {
 		t.Fatalf("unexpected streamed content: %q", joinedContent)
 	}
 
@@ -637,12 +655,13 @@ func newOpenAIDegradedFunctionRetryServer(
 func newOpenAIDegradedFunctionRetryRequest(baseURL string) chatCompletionRequest {
 	return chatCompletionRequest{
 		Provider: providerRequestConfig{
-			APIKind:      providerAPIKindOpenAI,
-			BaseURL:      baseURL,
-			APIKey:       "test-key",
-			APIKeys:      nil,
-			ExtraHeaders: nil,
-			ExtraQuery:   nil,
+			APIKind:         providerAPIKindOpenAI,
+			BaseURL:         baseURL,
+			APIKey:          "test-key",
+			APIKeys:         nil,
+			UseResponsesAPI: false,
+			ExtraHeaders:    nil,
+			ExtraQuery:      nil,
 			ExtraBody: map[string]any{
 				"tools": []map[string]any{
 					{
@@ -673,6 +692,7 @@ func newOpenAIDegradedFunctionRetryRequest(baseURL string) chatCompletionRequest
 		ContextWindow:               0,
 		AutoCompactThresholdPercent: 0,
 		SessionID:                   "",
+		PreviousResponseID:          "",
 		Messages:                    []chatMessage{{Role: messageRoleUser, Content: "hello"}},
 	}
 }

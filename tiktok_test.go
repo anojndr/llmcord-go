@@ -378,10 +378,11 @@ func newGeminiVideoAnalysisChatClient(
 		callCount++
 
 		return handle(streamDelta{
-			Thinking:     "",
-			Content:      expectedAnalysis,
-			FinishReason: finishReasonStop,
-			Usage:        nil,
+			Thinking:           "",
+			Content:            expectedAnalysis,
+			FinishReason:       finishReasonStop,
+			Usage:              nil,
+			ProviderResponseID: "",
 		})
 	})
 
@@ -598,10 +599,11 @@ func TestMaybeAugmentConversationWithTikTokPreprocessesForNonGeminiModels(t *tes
 		callCount++
 
 		return handle(streamDelta{
-			Thinking:     "",
-			Content:      expectedAnalysis[0],
-			FinishReason: finishReasonStop,
-			Usage:        nil,
+			Thinking:           "",
+			Content:            expectedAnalysis[0],
+			FinishReason:       finishReasonStop,
+			Usage:              nil,
+			ProviderResponseID: "",
 		})
 	})
 

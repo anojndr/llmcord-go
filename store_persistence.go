@@ -57,6 +57,8 @@ type messageNodeSnapshot struct {
 	ThinkingText             string                  `json:"thinking_text"`
 	URLScanText              string                  `json:"url_scan_text"`
 	RentryURL                string                  `json:"rentry_url"`
+	ProviderResponseID       string                  `json:"provider_response_id"`
+	ProviderResponseModel    string                  `json:"provider_response_model"`
 	Media                    []contentPartSnapshot   `json:"media"`
 	SearchMetadata           *searchMetadata         `json:"search_metadata"`
 	HasBadAttachments        bool                    `json:"has_bad_attachments"`
@@ -333,6 +335,8 @@ func sanitizeMessageNodeSnapshot(snapshot messageNodeSnapshot) messageNodeSnapsh
 	snapshot.ThinkingText = sanitizePostgresJSONString(snapshot.ThinkingText)
 	snapshot.URLScanText = sanitizePostgresJSONString(snapshot.URLScanText)
 	snapshot.RentryURL = sanitizePostgresJSONString(snapshot.RentryURL)
+	snapshot.ProviderResponseID = sanitizePostgresJSONString(snapshot.ProviderResponseID)
+	snapshot.ProviderResponseModel = sanitizePostgresJSONString(snapshot.ProviderResponseModel)
 	snapshot.Media = sanitizeContentPartSnapshots(snapshot.Media)
 	snapshot.SearchMetadata = sanitizeSearchMetadata(snapshot.SearchMetadata)
 	snapshot.ParentMessage = sanitizeDiscordMessageSnapshot(snapshot.ParentMessage)
@@ -981,6 +985,8 @@ func messageNodeSnapshotFromLockedNode(node *messageNode) (messageNodeSnapshot, 
 		ThinkingText:             node.thinkingText,
 		URLScanText:              node.urlScanText,
 		RentryURL:                node.rentryURL,
+		ProviderResponseID:       node.providerResponseID,
+		ProviderResponseModel:    node.providerResponseModel,
 		Media:                    mediaSnapshots,
 		SearchMetadata:           cloneSearchMetadata(node.searchMetadata),
 		HasBadAttachments:        node.hasBadAttachments,
@@ -1000,6 +1006,8 @@ func (snapshot messageNodeSnapshot) messageNode() *messageNode {
 	node.thinkingText = snapshot.ThinkingText
 	node.urlScanText = snapshot.URLScanText
 	node.rentryURL = snapshot.RentryURL
+	node.providerResponseID = snapshot.ProviderResponseID
+	node.providerResponseModel = snapshot.ProviderResponseModel
 	node.media = make([]contentPart, 0, len(snapshot.Media))
 
 	for _, mediaSnapshot := range snapshot.Media {

@@ -38,24 +38,27 @@ type chatCompletionRequest struct {
 	ContextWindow               int
 	AutoCompactThresholdPercent int
 	SessionID                   string
+	PreviousResponseID          string
 	Messages                    []chatMessage
 }
 
 type providerRequestConfig struct {
-	APIKind      providerAPIKind
-	BaseURL      string
-	APIKey       string
-	APIKeys      []string
-	ExtraHeaders map[string]any
-	ExtraQuery   map[string]any
-	ExtraBody    map[string]any
+	APIKind         providerAPIKind
+	BaseURL         string
+	APIKey          string
+	APIKeys         []string
+	UseResponsesAPI bool
+	ExtraHeaders    map[string]any
+	ExtraQuery      map[string]any
+	ExtraBody       map[string]any
 }
 
 type streamDelta struct {
-	Thinking     string
-	Content      string
-	FinishReason string
-	Usage        *tokenUsage
+	Thinking           string
+	Content            string
+	FinishReason       string
+	Usage              *tokenUsage
+	ProviderResponseID string
 }
 
 type tokenUsage struct {
@@ -80,6 +83,10 @@ func (client openAIClient) streamChatCompletion(
 	request chatCompletionRequest,
 	handle func(streamDelta) error,
 ) error {
+	if request.Provider.UseResponsesAPI {
+		return client.streamResponses(ctx, request, handle)
+	}
+
 	requestURL, err := buildChatCompletionURL(request.Provider.BaseURL, request.Provider.ExtraQuery)
 	if err != nil {
 		return fmt.Errorf("build chat completion url: %w", err)
@@ -708,10 +715,11 @@ func handleStreamPayload(payload []byte, handle func(streamDelta) error) error {
 
 	if delta.Content != "" {
 		err = handle(streamDelta{
-			Thinking:     "",
-			Content:      delta.Content,
-			FinishReason: "",
-			Usage:        nil,
+			Thinking:           "",
+			Content:            delta.Content,
+			FinishReason:       "",
+			Usage:              nil,
+			ProviderResponseID: "",
 		})
 		if err != nil {
 			return fmt.Errorf(handleStreamDeltaErrorFormat, err)
@@ -720,10 +728,11 @@ func handleStreamPayload(payload []byte, handle func(streamDelta) error) error {
 
 	if delta.Usage != nil {
 		err = handle(streamDelta{
-			Thinking:     "",
-			Content:      "",
-			FinishReason: "",
-			Usage:        cloneTokenUsage(delta.Usage),
+			Thinking:           "",
+			Content:            "",
+			FinishReason:       "",
+			Usage:              cloneTokenUsage(delta.Usage),
+			ProviderResponseID: "",
 		})
 		if err != nil {
 			return fmt.Errorf(handleStreamDeltaErrorFormat, err)
@@ -737,10 +746,11 @@ func handleStreamPayload(payload []byte, handle func(streamDelta) error) error {
 		}
 
 		err = handle(streamDelta{
-			Thinking:     "",
-			Content:      "",
-			FinishReason: delta.FinishReason,
-			Usage:        nil,
+			Thinking:           "",
+			Content:            "",
+			FinishReason:       delta.FinishReason,
+			Usage:              nil,
+			ProviderResponseID: "",
 		})
 		if err != nil {
 			return fmt.Errorf(handleStreamDeltaErrorFormat, err)
@@ -780,19 +790,21 @@ func openAIStreamPayloadDelta(payload []byte) (streamDelta, error) {
 	err := json.Unmarshal(payload, &envelope)
 	if err != nil {
 		return streamDelta{
-			Thinking:     "",
-			Content:      "",
-			FinishReason: "",
-			Usage:        nil,
+			Thinking:           "",
+			Content:            "",
+			FinishReason:       "",
+			Usage:              nil,
+			ProviderResponseID: "",
 		}, fmt.Errorf("decode stream payload: %w", err)
 	}
 
 	if envelope.Error != nil {
 		return streamDelta{
-				Thinking:     "",
-				Content:      "",
-				FinishReason: "",
-				Usage:        nil,
+				Thinking:           "",
+				Content:            "",
+				FinishReason:       "",
+				Usage:              nil,
+				ProviderResponseID: "",
 			}, openAIStreamEventError(
 				envelope.Error.Message,
 				envelope.Error.Type,
@@ -801,10 +813,11 @@ func openAIStreamPayloadDelta(payload []byte) (streamDelta, error) {
 	}
 
 	delta := streamDelta{
-		Thinking:     "",
-		Content:      "",
-		FinishReason: "",
-		Usage:        openAIStreamUsage(envelope.Usage),
+		Thinking:           "",
+		Content:            "",
+		FinishReason:       "",
+		Usage:              openAIStreamUsage(envelope.Usage),
+		ProviderResponseID: "",
 	}
 
 	if len(envelope.Choices) == 0 {

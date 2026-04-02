@@ -633,10 +633,11 @@ func newGeminiMediaAnalysisChatClient(
 		}
 
 		err := handle(streamDelta{
-			Thinking:     "",
-			Content:      partAnalyses[analysisIndex],
-			FinishReason: finishReasonStop,
-			Usage:        nil,
+			Thinking:           "",
+			Content:            partAnalyses[analysisIndex],
+			FinishReason:       finishReasonStop,
+			Usage:              nil,
+			ProviderResponseID: "",
 		})
 		if err != nil {
 			return err
@@ -702,10 +703,11 @@ func newConcurrentGeminiMediaAnalysisChatClient(
 		}
 
 		return handle(streamDelta{
-			Thinking:     "",
-			Content:      analysis,
-			FinishReason: finishReasonStop,
-			Usage:        nil,
+			Thinking:           "",
+			Content:            analysis,
+			FinishReason:       finishReasonStop,
+			Usage:              nil,
+			ProviderResponseID: "",
 		})
 	})
 

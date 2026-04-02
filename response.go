@@ -36,16 +36,17 @@ type pendingResponse struct {
 }
 
 type responseTracker struct {
-	sourceMessage    *discordgo.Message
-	searchMetadata   *searchMetadata
-	modelName        string
-	contextWindow    int
-	usage            *tokenUsage
-	responseMessages []*discordgo.Message
-	pendingResponses []pendingResponse
-	renderedSpecs    []renderSpec
-	progressActive   bool
-	responseVisible  bool
+	sourceMessage      *discordgo.Message
+	searchMetadata     *searchMetadata
+	modelName          string
+	contextWindow      int
+	usage              *tokenUsage
+	providerResponseID string
+	responseMessages   []*discordgo.Message
+	pendingResponses   []pendingResponse
+	renderedSpecs      []renderSpec
+	progressActive     bool
+	responseVisible    bool
 }
 
 func newSegmentAccumulator(maxLength int) segmentAccumulator {
@@ -179,6 +180,8 @@ func (tracker *responseTracker) release(store *messageNodeStore, fullText string
 		pending.node.thinkingText = thinkingText
 		pending.node.urlScanText = ""
 		pending.node.searchMetadata = cloneSearchMetadata(tracker.searchMetadata)
+		pending.node.providerResponseID = strings.TrimSpace(tracker.providerResponseID)
+		pending.node.providerResponseModel = strings.TrimSpace(tracker.modelName)
 		pending.node.parentMessage = tracker.sourceMessage
 		pending.node.initialized = true
 
@@ -290,6 +293,10 @@ func (instance *bot) handleGeneratedStreamDelta(
 
 	if delta.Usage != nil {
 		tracker.usage = cloneTokenUsage(delta.Usage)
+	}
+
+	if strings.TrimSpace(delta.ProviderResponseID) != "" {
+		tracker.providerResponseID = strings.TrimSpace(delta.ProviderResponseID)
 	}
 
 	if state.usePlainResponses {
