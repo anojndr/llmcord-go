@@ -786,6 +786,7 @@ func newGeminiMediaUploadRequest() chatCompletionRequest {
 		ContextWindow:               0,
 		AutoCompactThresholdPercent: 0,
 		SessionID:                   "",
+		PreviousResponseID:          "",
 		Messages: []chatMessage{
 			{
 				Role: messageRoleUser,
@@ -876,10 +877,11 @@ func assertGeminiUploadedMediaParts(t *testing.T, contents []*genai.Content) {
 func newGeminiBuildTestRequest() chatCompletionRequest {
 	return chatCompletionRequest{
 		Provider: providerRequestConfig{
-			APIKind: providerAPIKindGemini,
-			BaseURL: "https://generativelanguage.googleapis.com/v1beta/openai",
-			APIKey:  "",
-			APIKeys: nil,
+			APIKind:         providerAPIKindGemini,
+			BaseURL:         "https://generativelanguage.googleapis.com/v1beta/openai",
+			APIKey:          "",
+			APIKeys:         nil,
+			UseResponsesAPI: false,
 			ExtraHeaders: map[string]any{
 				"X-Test": testHeaderPresent,
 			},
@@ -893,6 +895,7 @@ func newGeminiBuildTestRequest() chatCompletionRequest {
 		ContextWindow:               0,
 		AutoCompactThresholdPercent: 0,
 		SessionID:                   "",
+		PreviousResponseID:          "",
 		Messages: []chatMessage{
 			{Role: "system", Content: "Be concise."},
 			{
@@ -913,19 +916,21 @@ func newGeminiBuildTestRequest() chatCompletionRequest {
 func newSimpleGeminiStreamRequest() chatCompletionRequest {
 	return chatCompletionRequest{
 		Provider: providerRequestConfig{
-			APIKind:      providerAPIKindGemini,
-			BaseURL:      "",
-			APIKey:       "gemini-key",
-			APIKeys:      nil,
-			ExtraHeaders: nil,
-			ExtraQuery:   nil,
-			ExtraBody:    nil,
+			APIKind:         providerAPIKindGemini,
+			BaseURL:         "",
+			APIKey:          "gemini-key",
+			APIKeys:         nil,
+			UseResponsesAPI: false,
+			ExtraHeaders:    nil,
+			ExtraQuery:      nil,
+			ExtraBody:       nil,
 		},
 		Model:                       "gemini-3-flash-preview",
 		ConfiguredModel:             "",
 		ContextWindow:               0,
 		AutoCompactThresholdPercent: 0,
 		SessionID:                   "",
+		PreviousResponseID:          "",
 		Messages:                    []chatMessage{{Role: messageRoleUser, Content: "hello"}},
 	}
 }

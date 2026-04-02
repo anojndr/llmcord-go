@@ -827,19 +827,21 @@ func newPartialFailureResponseBot(session *discordgo.Session, partialText string
 func emptyChatCompletionRequest() chatCompletionRequest {
 	return chatCompletionRequest{
 		Provider: providerRequestConfig{
-			APIKind:      "",
-			BaseURL:      "",
-			APIKey:       "",
-			APIKeys:      nil,
-			ExtraHeaders: nil,
-			ExtraQuery:   nil,
-			ExtraBody:    nil,
+			APIKind:         "",
+			BaseURL:         "",
+			APIKey:          "",
+			APIKeys:         nil,
+			UseResponsesAPI: false,
+			ExtraHeaders:    nil,
+			ExtraQuery:      nil,
+			ExtraBody:       nil,
 		},
 		Model:                       "",
 		ConfiguredModel:             "",
 		ContextWindow:               0,
 		AutoCompactThresholdPercent: 0,
 		SessionID:                   "",
+		PreviousResponseID:          "",
 		Messages:                    nil,
 	}
 }
@@ -949,9 +951,9 @@ func TestGenerateAndSendResponseShowsThinkingDuringStreamButNotFinalResponse(t *
 	instance.nodes = newMessageNodeStore(10)
 	instance.chatCompletions = fakeChatCompletionClient{
 		deltas: []streamDelta{
-			{Thinking: thoughtText, Content: "", FinishReason: "", Usage: nil},
-			{Thinking: "", Content: answerText, FinishReason: "", Usage: nil},
-			{Thinking: "", Content: "", FinishReason: finishReasonStop, Usage: nil},
+			{Thinking: thoughtText, Content: "", FinishReason: "", Usage: nil, ProviderResponseID: ""},
+			{Thinking: "", Content: answerText, FinishReason: "", Usage: nil, ProviderResponseID: ""},
+			{Thinking: "", Content: "", FinishReason: finishReasonStop, Usage: nil, ProviderResponseID: ""},
 		},
 	}
 
@@ -1029,9 +1031,9 @@ func TestGenerateAndSendResponsePersistsThinkingInConversationHistory(t *testing
 	instance.nodes = newMessageNodeStore(10)
 	instance.chatCompletions = fakeChatCompletionClient{
 		deltas: []streamDelta{
-			{Thinking: thoughtText, Content: "", FinishReason: "", Usage: nil},
-			{Thinking: "", Content: answerText, FinishReason: "", Usage: nil},
-			{Thinking: "", Content: "", FinishReason: finishReasonStop, Usage: nil},
+			{Thinking: thoughtText, Content: "", FinishReason: "", Usage: nil, ProviderResponseID: ""},
+			{Thinking: "", Content: answerText, FinishReason: "", Usage: nil, ProviderResponseID: ""},
+			{Thinking: "", Content: "", FinishReason: finishReasonStop, Usage: nil, ProviderResponseID: ""},
 		},
 	}
 

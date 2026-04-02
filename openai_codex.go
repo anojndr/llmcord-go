@@ -703,10 +703,11 @@ func handleOpenAICodexStreamPayload(payload []byte, handle func(streamDelta) err
 		return false, openAICodexHandleThinkingDelta(envelope.Delta, handle)
 	case "response.reasoning_summary_part.done":
 		return false, handle(streamDelta{
-			Thinking:     "\n\n",
-			Content:      "",
-			FinishReason: "",
-			Usage:        nil,
+			Thinking:           "\n\n",
+			Content:            "",
+			FinishReason:       "",
+			Usage:              nil,
+			ProviderResponseID: "",
 		})
 	case "response.output_text.delta", "response.refusal.delta":
 		return false, openAICodexHandleContentDelta(envelope.Delta, handle)
@@ -739,10 +740,11 @@ func openAICodexHandleThinkingDelta(delta string, handle func(streamDelta) error
 	}
 
 	return handle(streamDelta{
-		Thinking:     delta,
-		Content:      "",
-		FinishReason: "",
-		Usage:        nil,
+		Thinking:           delta,
+		Content:            "",
+		FinishReason:       "",
+		Usage:              nil,
+		ProviderResponseID: "",
 	})
 }
 
@@ -752,10 +754,11 @@ func openAICodexHandleContentDelta(delta string, handle func(streamDelta) error)
 	}
 
 	return handle(streamDelta{
-		Thinking:     "",
-		Content:      delta,
-		FinishReason: "",
-		Usage:        nil,
+		Thinking:           "",
+		Content:            delta,
+		FinishReason:       "",
+		Usage:              nil,
+		ProviderResponseID: "",
 	})
 }
 
@@ -781,10 +784,11 @@ func openAICodexHandleTerminalResponse(
 	switch normalizedStatus {
 	case "", "completed", "queued", "in_progress":
 		return handle(streamDelta{
-			Thinking:     "",
-			Content:      "",
-			FinishReason: finishReasonStop,
-			Usage:        cloneTokenUsage(usage),
+			Thinking:           "",
+			Content:            "",
+			FinishReason:       finishReasonStop,
+			Usage:              cloneTokenUsage(usage),
+			ProviderResponseID: "",
 		})
 	case "incomplete":
 		if strings.EqualFold(strings.TrimSpace(incompleteReason), openAIContentFilterFinishReason) {
@@ -792,10 +796,11 @@ func openAICodexHandleTerminalResponse(
 		}
 
 		return handle(streamDelta{
-			Thinking:     "",
-			Content:      "",
-			FinishReason: finishReasonLength,
-			Usage:        cloneTokenUsage(usage),
+			Thinking:           "",
+			Content:            "",
+			FinishReason:       finishReasonLength,
+			Usage:              cloneTokenUsage(usage),
+			ProviderResponseID: "",
 		})
 	case "failed", "cancelled":
 		return openAICodexFailedResponseError(errorCode, errorMessage, incompleteReason)

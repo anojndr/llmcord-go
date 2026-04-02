@@ -505,10 +505,11 @@ func assertYouTubeShortsAugmentationForProvider(
 		callCount++
 
 		return handle(streamDelta{
-			Thinking:     "",
-			Content:      expectedAnalysis,
-			FinishReason: finishReasonStop,
-			Usage:        nil,
+			Thinking:           "",
+			Content:            expectedAnalysis,
+			FinishReason:       finishReasonStop,
+			Usage:              nil,
+			ProviderResponseID: "",
 		})
 	})
 

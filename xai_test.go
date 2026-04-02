@@ -1,0 +1,550 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/bwmarrin/discordgo"
+)
+
+const testXAIProviderResponseID = "resp_123"
+
+func TestBuildChatCompletionRequestEnablesResponsesAPIForXAIProvider(t *testing.T) {
+	t.Parallel()
+
+	provider := new(providerConfig)
+	provider.BaseURL = "https://api.x.ai/v1"
+
+	var loadedConfig config
+
+	loadedConfig.Providers = map[string]providerConfig{
+		xAIProviderName: *provider,
+	}
+	loadedConfig.Models = map[string]map[string]any{
+		"x-ai/grok-4": nil,
+	}
+
+	request, err := buildChatCompletionRequest(
+		loadedConfig,
+		"x-ai/grok-4",
+		[]chatMessage{{Role: messageRoleUser, Content: "hello"}},
+	)
+	if err != nil {
+		t.Fatalf("build chat completion request: %v", err)
+	}
+
+	if !request.Provider.UseResponsesAPI {
+		t.Fatal("expected xAI request to use the Responses API")
+	}
+}
+
+func TestOpenAIClientStreamChatCompletionUsesXAIResponsesAPI(t *testing.T) {
+	t.Parallel()
+
+	server := newXAIResponsesStreamingTestServer(t)
+	defer server.Close()
+
+	client := newOpenAIClient(server.Client())
+	request := newXAIResponsesStreamingRequest(server.URL + "/v1")
+
+	var (
+		joinedContent  strings.Builder
+		finishReason   string
+		usage          *tokenUsage
+		providerRespID string
+	)
+
+	err := client.streamChatCompletion(context.Background(), request, func(delta streamDelta) error {
+		joinedContent.WriteString(delta.Content)
+
+		if delta.Usage != nil {
+			usage = cloneTokenUsage(delta.Usage)
+		}
+
+		if delta.FinishReason != "" {
+			finishReason = delta.FinishReason
+		}
+
+		if delta.ProviderResponseID != "" {
+			providerRespID = delta.ProviderResponseID
+		}
+
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("stream xAI responses chat completion: %v", err)
+	}
+
+	if joinedContent.String() != testStreamedHelloText {
+		t.Fatalf("unexpected streamed content: %q", joinedContent.String())
+	}
+
+	if finishReason != finishReasonStop {
+		t.Fatalf("unexpected finish reason: %q", finishReason)
+	}
+
+	if usage == nil || usage.Input != 12 || usage.Output != 34 {
+		t.Fatalf("unexpected usage: %#v", usage)
+	}
+
+	if providerRespID != testXAIProviderResponseID {
+		t.Fatalf("unexpected provider response id: %q", providerRespID)
+	}
+}
+
+func TestAssignXAIPreviousResponseIDUsesAssistantAnchorAndTrimsHistory(t *testing.T) {
+	t.Parallel()
+
+	store := newMessageNodeStore(8)
+
+	rootUser := newTestDiscordMessage("100")
+	assistant := newTestDiscordMessage("200")
+	firstFollowUp := newTestDiscordMessage("300")
+	secondFollowUp := newTestDiscordMessage("400")
+
+	setConversationNode(store, rootUser.ID, messageRoleUser, "", "", nil)
+	setConversationNode(
+		store,
+		assistant.ID,
+		messageRoleAssistant,
+		testXAIProviderResponseID,
+		"x-ai/grok-4",
+		rootUser,
+	)
+	setConversationNode(store, firstFollowUp.ID, messageRoleUser, "", "", assistant)
+	setConversationNode(store, secondFollowUp.ID, messageRoleUser, "", "", firstFollowUp)
+
+	request := chatCompletionRequest{
+		Provider: providerRequestConfig{
+			APIKind:         providerAPIKindOpenAI,
+			BaseURL:         "",
+			APIKey:          "",
+			APIKeys:         nil,
+			UseResponsesAPI: true,
+			ExtraHeaders:    nil,
+			ExtraQuery:      nil,
+			ExtraBody:       nil,
+		},
+		Model:                       "",
+		ConfiguredModel:             "x-ai/grok-4",
+		ContextWindow:               0,
+		AutoCompactThresholdPercent: 0,
+		SessionID:                   "",
+		PreviousResponseID:          "",
+		Messages: []chatMessage{
+			{Role: openAICodexRoleSystem, Content: "You are concise."},
+			{Role: messageRoleUser, Content: "first question"},
+			{Role: messageRoleAssistant, Content: "first answer"},
+			{Role: messageRoleUser, Content: "follow-up one"},
+			{Role: messageRoleUser, Content: "follow-up two"},
+		},
+	}
+
+	assignXAIPreviousResponseID(&request, secondFollowUp, store, defaultMaxMessages)
+
+	if request.PreviousResponseID != testXAIProviderResponseID {
+		t.Fatalf("unexpected previous response id: %q", request.PreviousResponseID)
+	}
+
+	if len(request.Messages) != 2 {
+		t.Fatalf("unexpected continuation message count: %d", len(request.Messages))
+	}
+
+	if request.Messages[0].Content != "follow-up one" || request.Messages[1].Content != "follow-up two" {
+		t.Fatalf("unexpected continuation messages: %#v", request.Messages)
+	}
+}
+
+func TestGenerateAndSendResponseStoresProviderResponseIDForXAIContinuation(t *testing.T) {
+	t.Parallel()
+
+	const (
+		botUserID          = "bot-user"
+		channelID          = "channel-1"
+		userID             = "user-1"
+		sourceMessageID    = "user-message-1"
+		assistantMessageID = "assistant-message-1"
+		assistantReplyText = "The number is 8294051736."
+	)
+
+	sourceMessage := newPromptMessage(sourceMessageID, channelID, userID, botUserID)
+	assistantMessage := newAssistantReplyMessage(
+		assistantMessageID,
+		channelID,
+		newDiscordUser(botUserID, true),
+		sourceMessage,
+	)
+
+	session := newResponseHistoryTestSession(t, channelID, botUserID, assistantMessage)
+	instance := new(bot)
+	instance.session = session
+	instance.nodes = newMessageNodeStore(10)
+	instance.chatCompletions = fakeChatCompletionClient{
+		deltas: []streamDelta{
+			newStreamDelta(assistantReplyText, ""),
+			{
+				Thinking:           "",
+				Content:            "",
+				FinishReason:       finishReasonStop,
+				Usage:              nil,
+				ProviderResponseID: testXAIProviderResponseID,
+			},
+		},
+	}
+
+	request := emptyChatCompletionRequest()
+	request.ConfiguredModel = "x-ai/grok-4"
+
+	tracker := newResponseTracker(sourceMessage, "")
+
+	err := instance.generateAndSendResponse(
+		context.Background(),
+		request,
+		tracker,
+		nil,
+		true,
+	)
+	if err != nil {
+		t.Fatalf("generate and send response: %v", err)
+	}
+
+	followUpMessage := newFollowUpReplyMessage("user-message-2", channelID, userID, assistantMessage)
+	setCachedUserNode(instance, followUpMessage, assistantMessage, followUpMessage.Content)
+
+	gotResponseID := xAIConversationPreviousResponseID(
+		request.ConfiguredModel,
+		followUpMessage,
+		instance.nodes,
+		defaultMaxMessages,
+	)
+	if gotResponseID != testXAIProviderResponseID {
+		t.Fatalf("unexpected stored provider response id: %q", gotResponseID)
+	}
+
+	assistantNode, found := instance.nodes.get(assistantMessageID)
+	if !found {
+		t.Fatalf("assistant node %q not found", assistantMessageID)
+	}
+
+	assistantNode.mu.Lock()
+	defer assistantNode.mu.Unlock()
+
+	if assistantNode.providerResponseID != testXAIProviderResponseID {
+		t.Fatalf("unexpected assistant provider response id: %q", assistantNode.providerResponseID)
+	}
+
+	if assistantNode.providerResponseModel != request.ConfiguredModel {
+		t.Fatalf("unexpected assistant provider response model: %q", assistantNode.providerResponseModel)
+	}
+}
+
+func TestPersistentMessageNodeStoreRestoresXAIResponseIDAfterRestart(t *testing.T) {
+	t.Parallel()
+
+	const (
+		botUserID          = "bot-user"
+		channelID          = "channel-1"
+		userID             = "user-1"
+		sourceMessageID    = "source-message"
+		assistantMessageID = "assistant-message"
+		followUpMessageID  = "follow-up-message"
+	)
+
+	backend := newTestMessageNodeStoreBackend()
+
+	const storeKey = "message-history-xai-response-id-restart"
+
+	initialInstance := newPersistentHistoryTestBot(t, backend, storeKey)
+
+	sourceMessage := new(discordgo.Message)
+	sourceMessage.ID = sourceMessageID
+	sourceMessage.ChannelID = channelID
+	sourceMessage.Author = newDiscordUser(userID, false)
+	sourceMessage.Content = "at ai hello"
+
+	assistantMessage := newAssistantReplyMessage(
+		assistantMessageID,
+		channelID,
+		newDiscordUser(botUserID, true),
+		sourceMessage,
+	)
+
+	setCachedAssistantNode(initialInstance, assistantMessage, sourceMessage)
+	setProviderResponseOnNode(
+		t,
+		initialInstance,
+		assistantMessage.ID,
+		testXAIProviderResponseID,
+		"x-ai/grok-4",
+	)
+
+	err := initialInstance.nodes.persist()
+	if err != nil {
+		t.Fatalf("persist message history: %v", err)
+	}
+
+	restartedInstance := newPersistentHistoryTestBot(t, backend, storeKey)
+	followUpMessage := newRestartFollowUpMessage(
+		followUpMessageID,
+		channelID,
+		userID,
+		assistantMessage,
+		"follow-up question",
+	)
+	setCachedUserNode(restartedInstance, followUpMessage, assistantMessage, followUpMessage.Content)
+
+	gotResponseID := xAIConversationPreviousResponseID(
+		"x-ai/grok-4",
+		followUpMessage,
+		restartedInstance.nodes,
+		defaultMaxMessages,
+	)
+	if gotResponseID != testXAIProviderResponseID {
+		t.Fatalf("unexpected restored provider response id: %q", gotResponseID)
+	}
+}
+
+func newXAIResponsesStreamingTestServer(t *testing.T) *httptest.Server {
+	t.Helper()
+
+	return httptest.NewServer(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		request *http.Request,
+	) {
+		t.Helper()
+
+		assertXAIResponsesRequest(t, request)
+
+		responseWriter.Header().Set("Content-Type", "text/event-stream")
+
+		flusher, responseOK := responseWriter.(http.Flusher)
+		if !responseOK {
+			t.Fatal("expected response writer to support flushing")
+		}
+
+		writeStreamChunk(
+			t,
+			responseWriter,
+			"data: {\"type\":\"response.output_text.delta\",\"delta\":\"Hel\"}\n\n",
+		)
+		flusher.Flush()
+
+		writeStreamChunk(
+			t,
+			responseWriter,
+			"data: {\"type\":\"response.output_text.delta\",\"delta\":\"lo\"}\n\n",
+		)
+		flusher.Flush()
+
+		writeStreamChunk(t, responseWriter, xAIResponseCompletedChunk())
+		flusher.Flush()
+
+		writeStreamChunk(t, responseWriter, "data: [DONE]\n\n")
+		flusher.Flush()
+	}))
+}
+
+func assertXAIResponsesRequest(t *testing.T, request *http.Request) {
+	t.Helper()
+
+	if request.URL.Path != "/v1/responses" {
+		t.Fatalf("unexpected path: %s", request.URL.Path)
+	}
+
+	if request.URL.Query().Get("api-version") != "2024-12-01-preview" {
+		t.Fatalf("unexpected query string: %s", request.URL.RawQuery)
+	}
+
+	if request.Header.Get("Authorization") != "Bearer test-key" {
+		t.Fatalf("unexpected authorization header: %q", request.Header.Get("Authorization"))
+	}
+
+	if request.Header.Get("X-Test") != "present" {
+		t.Fatalf("unexpected extra header: %q", request.Header.Get("X-Test"))
+	}
+
+	var payload map[string]any
+
+	err := json.NewDecoder(request.Body).Decode(&payload)
+	if err != nil {
+		t.Fatalf("decode request body: %v", err)
+	}
+
+	if payload["model"] != "grok-4" {
+		t.Fatalf("unexpected model: %#v", payload["model"])
+	}
+
+	if payload["stream"] != true {
+		t.Fatalf("unexpected stream flag: %#v", payload["stream"])
+	}
+
+	inputPayload, inputOK := payload["input"].([]any)
+	if !inputOK || len(inputPayload) != 2 {
+		t.Fatalf("unexpected input payload: %#v", payload["input"])
+	}
+
+	assertXAIResponsesSystemMessage(t, inputPayload[0])
+	assertXAIResponsesUserMessage(t, inputPayload[1])
+}
+
+func assertXAIResponsesSystemMessage(t *testing.T, rawMessage any) {
+	t.Helper()
+
+	systemMessage, messageOK := rawMessage.(map[string]any)
+	if !messageOK {
+		t.Fatalf("unexpected system message payload: %#v", rawMessage)
+	}
+
+	if systemMessage["role"] != openAICodexRoleSystem || systemMessage["content"] != "You are concise." {
+		t.Fatalf("unexpected system message: %#v", systemMessage)
+	}
+}
+
+func assertXAIResponsesUserMessage(t *testing.T, rawMessage any) {
+	t.Helper()
+
+	userMessage, messageOK := rawMessage.(map[string]any)
+	if !messageOK {
+		t.Fatalf("unexpected user message payload: %#v", rawMessage)
+	}
+
+	userContent, contentOK := userMessage["content"].([]any)
+	if !contentOK || len(userContent) != 2 {
+		t.Fatalf("unexpected user content payload: %#v", userMessage["content"])
+	}
+
+	firstPart, firstPartOK := userContent[0].(map[string]any)
+	if !firstPartOK {
+		t.Fatalf("unexpected first user content part: %#v", userContent[0])
+	}
+
+	if firstPart["type"] != xAIResponsesInputTextType || firstPart["text"] != "What is in this image?" {
+		t.Fatalf("unexpected first user content part: %#v", firstPart)
+	}
+
+	secondPart, secondPartOK := userContent[1].(map[string]any)
+	if !secondPartOK {
+		t.Fatalf("unexpected second user content part: %#v", userContent[1])
+	}
+
+	if secondPart["type"] != xAIResponsesInputImageType {
+		t.Fatalf("unexpected second user content part: %#v", secondPart)
+	}
+
+	if secondPart["image_url"] != "data:image/png;base64,abc" {
+		t.Fatalf("unexpected image_url: %#v", secondPart["image_url"])
+	}
+}
+
+func xAIResponseCompletedChunk() string {
+	return "data: {\"type\":\"response.completed\",\"response\":{" +
+		"\"id\":\"" + testXAIProviderResponseID + "\"," +
+		"\"status\":\"completed\"," +
+		"\"usage\":{\"input_tokens\":12,\"output_tokens\":34}}}\n\n"
+}
+
+func newXAIResponsesStreamingRequest(baseURL string) chatCompletionRequest {
+	return chatCompletionRequest{
+		Provider: providerRequestConfig{
+			APIKind:         providerAPIKindOpenAI,
+			BaseURL:         baseURL,
+			APIKey:          "test-key",
+			APIKeys:         nil,
+			UseResponsesAPI: true,
+			ExtraHeaders: map[string]any{
+				"X-Test": "present",
+			},
+			ExtraQuery: map[string]any{
+				"api-version": "2024-12-01-preview",
+			},
+			ExtraBody: nil,
+		},
+		Model:                       "grok-4",
+		ConfiguredModel:             "x-ai/grok-4",
+		ContextWindow:               0,
+		AutoCompactThresholdPercent: 0,
+		SessionID:                   "",
+		PreviousResponseID:          "",
+		Messages: []chatMessage{
+			{Role: openAICodexRoleSystem, Content: "You are concise."},
+			{
+				Role: messageRoleUser,
+				Content: []contentPart{
+					{"type": contentTypeText, "text": "What is in this image?"},
+					{
+						"type":      contentTypeImageURL,
+						"image_url": map[string]string{"url": "data:image/png;base64,abc"},
+					},
+				},
+			},
+		},
+	}
+}
+
+func newTestDiscordMessage(messageID string) *discordgo.Message {
+	message := new(discordgo.Message)
+	message.ID = messageID
+	message.ChannelID = "channel-1"
+
+	return message
+}
+
+func newAssistantReplyMessage(
+	messageID string,
+	channelID string,
+	author *discordgo.User,
+	sourceMessage *discordgo.Message,
+) *discordgo.Message {
+	message := new(discordgo.Message)
+	message.ID = messageID
+	message.ChannelID = channelID
+	message.Author = author
+	message.MessageReference = sourceMessage.Reference()
+	message.Type = discordgo.MessageTypeReply
+
+	return message
+}
+
+func setConversationNode(
+	store *messageNodeStore,
+	messageID string,
+	role string,
+	providerResponseID string,
+	providerResponseModel string,
+	parentMessage *discordgo.Message,
+) {
+	node := store.getOrCreate(messageID)
+
+	node.mu.Lock()
+	node.role = role
+	node.providerResponseID = providerResponseID
+	node.providerResponseModel = providerResponseModel
+	node.parentMessage = parentMessage
+	node.initialized = true
+	node.mu.Unlock()
+}
+
+func setProviderResponseOnNode(
+	t *testing.T,
+	instance *bot,
+	messageID string,
+	providerResponseID string,
+	providerResponseModel string,
+) {
+	t.Helper()
+
+	node, found := instance.nodes.get(messageID)
+	if !found {
+		t.Fatalf("message node %q not found", messageID)
+	}
+
+	node.mu.Lock()
+	node.providerResponseID = providerResponseID
+	node.providerResponseModel = providerResponseModel
+	instance.nodes.cacheLockedNode(messageID, node)
+	node.mu.Unlock()
+}

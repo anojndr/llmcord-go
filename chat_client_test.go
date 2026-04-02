@@ -1039,19 +1039,21 @@ func newOpenAIRetryTestServer(
 func newOpenAIRetryRequest(baseURL string) chatCompletionRequest {
 	return chatCompletionRequest{
 		Provider: providerRequestConfig{
-			APIKind:      providerAPIKindOpenAI,
-			BaseURL:      baseURL,
-			APIKey:       "",
-			APIKeys:      []string{testRetryPrimaryAPIKey, testRetryBackupAPIKey},
-			ExtraHeaders: nil,
-			ExtraQuery:   nil,
-			ExtraBody:    nil,
+			APIKind:         providerAPIKindOpenAI,
+			BaseURL:         baseURL,
+			APIKey:          "",
+			APIKeys:         []string{testRetryPrimaryAPIKey, testRetryBackupAPIKey},
+			UseResponsesAPI: false,
+			ExtraHeaders:    nil,
+			ExtraQuery:      nil,
+			ExtraBody:       nil,
 		},
 		Model:                       "gpt-test",
 		ConfiguredModel:             "",
 		ContextWindow:               0,
 		AutoCompactThresholdPercent: 0,
 		SessionID:                   "",
+		PreviousResponseID:          "",
 		Messages:                    []chatMessage{{Role: messageRoleUser, Content: "hello"}},
 	}
 }
@@ -1112,19 +1114,21 @@ func newOpenAICodexRetryTestServer(
 func newOpenAICodexRetryRequest(baseURL, validAPIKey string) chatCompletionRequest {
 	return chatCompletionRequest{
 		Provider: providerRequestConfig{
-			APIKind:      providerAPIKindOpenAICodex,
-			BaseURL:      baseURL,
-			APIKey:       "",
-			APIKeys:      []string{"not-a-jwt", validAPIKey},
-			ExtraHeaders: map[string]any{"X-Test": testOpenAICodexHeaderValue},
-			ExtraQuery:   map[string]any{"feature": "enabled"},
-			ExtraBody:    map[string]any{"verbosity": "high", "reasoning_effort": "medium"},
+			APIKind:         providerAPIKindOpenAICodex,
+			BaseURL:         baseURL,
+			APIKey:          "",
+			APIKeys:         []string{"not-a-jwt", validAPIKey},
+			UseResponsesAPI: false,
+			ExtraHeaders:    map[string]any{"X-Test": testOpenAICodexHeaderValue},
+			ExtraQuery:      map[string]any{"feature": "enabled"},
+			ExtraBody:       map[string]any{"verbosity": "high", "reasoning_effort": "medium"},
 		},
 		Model:                       testOpenAICodexModel,
 		ConfiguredModel:             "",
 		ContextWindow:               0,
 		AutoCompactThresholdPercent: 0,
 		SessionID:                   "",
+		PreviousResponseID:          "",
 		Messages: []chatMessage{
 			{Role: openAICodexRoleSystem, Content: "Be brief."},
 			{
@@ -1242,19 +1246,21 @@ func newGeminiRetryRouterWithFactory(
 func newGeminiRetryRequest() chatCompletionRequest {
 	return chatCompletionRequest{
 		Provider: providerRequestConfig{
-			APIKind:      providerAPIKindGemini,
-			BaseURL:      "",
-			APIKey:       "",
-			APIKeys:      []string{testRetryPrimaryAPIKey, testRetryBackupAPIKey},
-			ExtraHeaders: nil,
-			ExtraQuery:   nil,
-			ExtraBody:    nil,
+			APIKind:         providerAPIKindGemini,
+			BaseURL:         "",
+			APIKey:          "",
+			APIKeys:         []string{testRetryPrimaryAPIKey, testRetryBackupAPIKey},
+			UseResponsesAPI: false,
+			ExtraHeaders:    nil,
+			ExtraQuery:      nil,
+			ExtraBody:       nil,
 		},
 		Model:                       "gemini-3-flash-preview",
 		ConfiguredModel:             "",
 		ContextWindow:               0,
 		AutoCompactThresholdPercent: 0,
 		SessionID:                   "",
+		PreviousResponseID:          "",
 		Messages:                    []chatMessage{{Role: messageRoleUser, Content: "hello"}},
 	}
 }

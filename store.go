@@ -18,6 +18,8 @@ type messageNode struct {
 	thinkingText             string
 	urlScanText              string
 	rentryURL                string
+	providerResponseID       string
+	providerResponseModel    string
 	media                    []contentPart
 	searchMetadata           *searchMetadata
 	hasBadAttachments        bool

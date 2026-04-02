@@ -612,10 +612,11 @@ func newNoSearchDecisionChatClient(
 		}
 
 		return handle(streamDelta{
-			Thinking:     "",
-			Content:      `{"needs_search":false,"queries":[]}`,
-			FinishReason: finishReasonStop,
-			Usage:        nil,
+			Thinking:           "",
+			Content:            `{"needs_search":false,"queries":[]}`,
+			FinishReason:       finishReasonStop,
+			Usage:              nil,
+			ProviderResponseID: "",
 		})
 	})
 }
