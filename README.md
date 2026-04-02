@@ -106,7 +106,7 @@ The goal is to make Discord feel like a practical, stateful frontend for LLM wor
 ### Search and visual search
 
 - Search-decider flow to choose whether current web search is needed
-- `exa/exa-research-pro` skips the separate search-decider and web-search augmentation path
+- `exa/exa-research-pro` and `x-ai/<model>` skip the separate search-decider and web-search augmentation path
 - Exa Search API or Exa MCP, plus Tavily, with configurable primary/fallback order
 - Host date/time injected into the search-decider prompt for relative queries like `today`
 - `vsearch` reverse-image lookup using Yandex Images
