@@ -496,6 +496,10 @@ func searchDeciderDisabledForModel(configuredModel string) bool {
 		return false
 	}
 
+	if strings.EqualFold(providerName, "x-ai") {
+		return true
+	}
+
 	return strings.EqualFold(providerName, "exa") && strings.EqualFold(modelName, "exa-research-pro")
 }
 
