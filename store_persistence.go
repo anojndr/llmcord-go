@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
-	_ "github.com/lib/pq" // Register the PostgreSQL driver for database/sql.
+	"github.com/lib/pq"
 )
 
 const (
@@ -23,6 +23,8 @@ const (
 	messageNodeStoreTableName           = "message_history_snapshots"
 	defaultMessageNodeStorePersistDelay = 250 * time.Millisecond
 	postgresJSONTextReplacement         = "\uFFFD"
+	postgresDataCorruptedSQLState       = "XX001"
+	postgresIndexCorruptedSQLState      = "XX002"
 )
 
 var errMessageNodeStorePersistenceDisabled = errors.New("message history persistence disabled")
@@ -563,7 +565,11 @@ func newPersistentMessageNodeStore(
 			return store, nil
 		}
 
-		return nil, err
+		return nil, annotateMessageHistoryPersistenceError(
+			"load persisted message history",
+			trimmedStoreKey,
+			err,
+		)
 	}
 
 	store.nodes = snapshotNodesToStoreNodes(snapshot.Nodes)
@@ -624,7 +630,11 @@ func (store *messageNodeStore) persist() error {
 
 	err := store.backend.saveSnapshot(store.storeKey, snapshot)
 	if err != nil {
-		return err
+		return annotateMessageHistoryPersistenceError(
+			"persist message history",
+			store.storeKey,
+			err,
+		)
 	}
 
 	store.setSnapshotCache(snapshot.Nodes)
@@ -853,6 +863,63 @@ func stopTimer(timer *time.Timer) {
 func resetTimer(timer *time.Timer, delay time.Duration) {
 	stopTimer(timer)
 	timer.Reset(delay)
+}
+
+func annotateMessageHistoryPersistenceError(
+	operation string,
+	storeKey string,
+	err error,
+) error {
+	trimmedOperation := strings.TrimSpace(operation)
+	if trimmedOperation == "" || err == nil {
+		return err
+	}
+
+	trimmedStoreKey := strings.TrimSpace(storeKey)
+
+	sqlState, corrupted := postgresMessageHistoryCorruptionSQLState(err)
+	if !corrupted {
+		if trimmedStoreKey == "" {
+			return fmt.Errorf("%s: %w", trimmedOperation, err)
+		}
+
+		return fmt.Errorf("%s for store key %q: %w", trimmedOperation, trimmedStoreKey, err)
+	}
+
+	if trimmedStoreKey == "" {
+		return fmt.Errorf(
+			"%s: postgres message history storage appears corrupted "+
+				"(SQLSTATE %s); repair or reset table %q before re-enabling persistence: %w",
+			trimmedOperation,
+			sqlState,
+			messageNodeStoreTableName,
+			err,
+		)
+	}
+
+	return fmt.Errorf(
+		"%s for store key %q: postgres message history storage appears corrupted "+
+			"(SQLSTATE %s); repair or reset table %q before re-enabling persistence: %w",
+		trimmedOperation,
+		trimmedStoreKey,
+		sqlState,
+		messageNodeStoreTableName,
+		err,
+	)
+}
+
+func postgresMessageHistoryCorruptionSQLState(err error) (string, bool) {
+	var pqErr *pq.Error
+	if !errors.As(err, &pqErr) {
+		return "", false
+	}
+
+	switch string(pqErr.Code) {
+	case postgresDataCorruptedSQLState, postgresIndexCorruptedSQLState:
+		return string(pqErr.Code), true
+	default:
+		return "", false
+	}
 }
 
 func trimSnapshotNodes(

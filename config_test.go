@@ -175,7 +175,7 @@ providers:
 models:
   openai/first-model:
 database:
-  store_key: shared-home-bots
+  store_key: ` + testSharedHomeBotsStoreKey + `
 `
 
 	err := os.WriteFile(configPath, []byte(configText), 0o600)
@@ -188,7 +188,7 @@ database:
 		t.Fatalf("load config: %v", err)
 	}
 
-	if loadedConfig.Database.StoreKey != "shared-home-bots" {
+	if loadedConfig.Database.StoreKey != testSharedHomeBotsStoreKey {
 		t.Fatalf("unexpected database store key: %q", loadedConfig.Database.StoreKey)
 	}
 }

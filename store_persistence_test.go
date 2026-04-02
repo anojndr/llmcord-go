@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"maps"
 	"os"
 	"slices"
@@ -12,7 +13,12 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/lib/pq"
 )
+
+const testSharedHomeBotsStoreKey = "shared-home-bots"
+
+var errTestBackendUnavailable = errors.New("backend unavailable")
 
 type testMessageNodeStoreBackend struct {
 	mu        sync.Mutex
@@ -25,6 +31,11 @@ type blockingSaveMessageNodeStoreBackend struct {
 	saveStarted chan struct{}
 	releaseSave chan struct{}
 	snapshot    messageNodeStoreSnapshot
+}
+
+type failingMessageNodeStoreBackend struct {
+	loadErr error
+	saveErr error
 }
 
 func newTestMessageNodeStoreBackend() *testMessageNodeStoreBackend {
@@ -45,6 +56,21 @@ func newBlockingSaveMessageNodeStoreBackend() *blockingSaveMessageNodeStoreBacke
 			Nodes:   nil,
 		},
 	}
+}
+
+func newFailingMessageNodeStoreBackend() *failingMessageNodeStoreBackend {
+	return &failingMessageNodeStoreBackend{
+		loadErr: nil,
+		saveErr: nil,
+	}
+}
+
+func newTestPQError(code string, message string) *pq.Error {
+	pqErr := new(pq.Error)
+	pqErr.Code = pq.ErrorCode(code)
+	pqErr.Message = message
+
+	return pqErr
 }
 
 func (backend *testMessageNodeStoreBackend) loadSnapshot(
@@ -116,6 +142,24 @@ func (backend *blockingSaveMessageNodeStoreBackend) close() error {
 	return nil
 }
 
+func (backend *failingMessageNodeStoreBackend) loadSnapshot(
+	_ string,
+	_ int,
+) (messageNodeStoreSnapshot, error) {
+	return messageNodeStoreSnapshot{}, backend.loadErr
+}
+
+func (backend *failingMessageNodeStoreBackend) saveSnapshot(
+	_ string,
+	_ messageNodeStoreSnapshot,
+) error {
+	return backend.saveErr
+}
+
+func (backend *failingMessageNodeStoreBackend) close() error {
+	return nil
+}
+
 func (backend *testMessageNodeStoreBackend) setSnapshot(
 	storeKey string,
 	snapshot messageNodeStoreSnapshot,
@@ -175,9 +219,9 @@ func TestDefaultMessageNodeStoreKeyUsesExpectedPrefix(t *testing.T) {
 func TestMessageNodeStoreKeyUsesConfiguredValue(t *testing.T) {
 	t.Parallel()
 
-	storeKey := messageNodeStoreKey("config.yaml", "shared-home-bots")
+	storeKey := messageNodeStoreKey("config.yaml", testSharedHomeBotsStoreKey)
 
-	if storeKey != "shared-home-bots" {
+	if storeKey != testSharedHomeBotsStoreKey {
 		t.Fatalf("unexpected configured store key: %q", storeKey)
 	}
 }
@@ -246,6 +290,169 @@ func TestEncodeMessageNodeSnapshotJSONSanitizesPostgresUnsupportedUnicodeEscapes
 
 	if decodedSnapshot.ParentMessage.Content != "parent"+postgresJSONTextReplacement+"content" {
 		t.Fatalf("unexpected sanitized parent message content: %q", decodedSnapshot.ParentMessage.Content)
+	}
+}
+
+func TestPersistentMessageNodeStoreAnnotatesPostgresCorruptionOnLoad(t *testing.T) {
+	t.Parallel()
+
+	backend := newFailingMessageNodeStoreBackend()
+	backend.loadErr = newTestPQError(
+		postgresDataCorruptedSQLState,
+		"invalid page in block 31535 of relation \"base/16387/16396\"",
+	)
+
+	_, err := newPersistentMessageNodeStore(10, testSharedHomeBotsStoreKey, backend)
+	if err == nil {
+		t.Fatal("expected load error")
+	}
+
+	errorText := err.Error()
+	if !strings.Contains(errorText, "postgres message history storage appears corrupted") {
+		t.Fatalf("expected corruption annotation, got %q", errorText)
+	}
+
+	if !strings.Contains(errorText, postgresDataCorruptedSQLState) {
+		t.Fatalf("expected SQLSTATE in error, got %q", errorText)
+	}
+
+	if !strings.Contains(errorText, messageNodeStoreTableName) {
+		t.Fatalf("expected table name in error, got %q", errorText)
+	}
+}
+
+func TestMessageNodeStorePersistAnnotatesPostgresCorruption(t *testing.T) {
+	t.Parallel()
+
+	store := newMessageNodeStore(10)
+	store.storeKey = testSharedHomeBotsStoreKey
+	backend := newFailingMessageNodeStoreBackend()
+	backend.saveErr = newTestPQError(postgresIndexCorruptedSQLState, "index is corrupted")
+	store.backend = backend
+
+	cacheInitializedStoreNode(store, "message-1", "cached text")
+
+	err := store.persist()
+	if err == nil {
+		t.Fatal("expected persist error")
+	}
+
+	errorText := err.Error()
+	if !strings.Contains(errorText, "postgres message history storage appears corrupted") {
+		t.Fatalf("expected corruption annotation, got %q", errorText)
+	}
+
+	if !strings.Contains(errorText, postgresIndexCorruptedSQLState) {
+		t.Fatalf("expected SQLSTATE in error, got %q", errorText)
+	}
+
+	if !strings.Contains(errorText, testSharedHomeBotsStoreKey) {
+		t.Fatalf("expected store key in error, got %q", errorText)
+	}
+}
+
+func TestAnnotateMessageHistoryPersistenceErrorWithGenericErrorAndStoreKey(t *testing.T) {
+	t.Parallel()
+
+	err := annotateMessageHistoryPersistenceError(
+		"load persisted message history",
+		testSharedHomeBotsStoreKey,
+		errTestBackendUnavailable,
+	)
+	if err == nil {
+		t.Fatal("expected wrapped error")
+	}
+
+	if !strings.Contains(err.Error(), testSharedHomeBotsStoreKey) {
+		t.Fatalf("expected store key in wrapped error, got %q", err)
+	}
+
+	if !errors.Is(err, errTestBackendUnavailable) {
+		t.Fatalf("expected wrapped source error, got %v", err)
+	}
+}
+
+func TestAnnotateMessageHistoryPersistenceErrorWithGenericErrorAndEmptyStoreKey(t *testing.T) {
+	t.Parallel()
+
+	err := annotateMessageHistoryPersistenceError(
+		"persist message history",
+		"   ",
+		errTestBackendUnavailable,
+	)
+	if err == nil {
+		t.Fatal("expected wrapped error")
+	}
+
+	errorText := err.Error()
+	if strings.Contains(errorText, "store key") {
+		t.Fatalf("did not expect store key text in wrapped error, got %q", errorText)
+	}
+
+	if !strings.Contains(errorText, "persist message history") {
+		t.Fatalf("expected operation in wrapped error, got %q", errorText)
+	}
+}
+
+func TestAnnotateMessageHistoryPersistenceErrorWithCorruptionAndEmptyStoreKey(t *testing.T) {
+	t.Parallel()
+
+	sourceErr := newTestPQError(
+		postgresDataCorruptedSQLState,
+		"invalid page in block 31535 of relation \"base/16387/16396\"",
+	)
+
+	err := annotateMessageHistoryPersistenceError(
+		"load persisted message history",
+		"",
+		sourceErr,
+	)
+	if err == nil {
+		t.Fatal("expected wrapped error")
+	}
+
+	errorText := err.Error()
+	if strings.Contains(errorText, "store key") {
+		t.Fatalf("did not expect store key text in wrapped error, got %q", errorText)
+	}
+
+	if !strings.Contains(errorText, messageNodeStoreTableName) {
+		t.Fatalf("expected table name in wrapped error, got %q", errorText)
+	}
+}
+
+func TestAnnotateMessageHistoryPersistenceErrorReturnsOriginalForBlankOperation(t *testing.T) {
+	t.Parallel()
+
+	err := annotateMessageHistoryPersistenceError(
+		"   ",
+		testSharedHomeBotsStoreKey,
+		errTestBackendUnavailable,
+	)
+	if !errors.Is(err, errTestBackendUnavailable) {
+		t.Fatalf("expected original error for blank operation, got %v", err)
+	}
+}
+
+func TestAnnotateMessageHistoryPersistenceErrorReturnsNilForNilError(t *testing.T) {
+	t.Parallel()
+
+	err := annotateMessageHistoryPersistenceError("persist message history", testSharedHomeBotsStoreKey, nil)
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+}
+
+func TestPostgresMessageHistoryCorruptionSQLStateReturnsFalseForGenericError(t *testing.T) {
+	t.Parallel()
+
+	sqlState, corrupted := postgresMessageHistoryCorruptionSQLState(errTestBackendUnavailable)
+	if corrupted {
+		t.Fatalf("expected generic error to not be treated as corruption, got SQLSTATE %q", sqlState)
+	}
+
+	if sqlState != "" {
+		t.Fatalf("expected empty SQLSTATE for generic error, got %q", sqlState)
 	}
 }
 
