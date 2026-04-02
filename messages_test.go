@@ -19,7 +19,10 @@ import (
 	"google.golang.org/genai"
 )
 
-const testSearchDeciderModel = "openai/decider-model"
+const (
+	testSearchDeciderModel    = "openai/decider-model"
+	testAssistantNameReminder = "Understood. Your name is Jandron."
+)
 
 var errSendProgressMessageFailed = errors.New("send progress message failed")
 var errProgressMessageEditedTooQuickly = errors.New("progress message edited too quickly")
@@ -1327,7 +1330,7 @@ func newRespondToMessageAttachmentFailureChatClient(t *testing.T) *stubChatCompl
 	})
 }
 
-func TestBuildMessageConversationAddsReplyTargetForRepliedTextAttachment(t *testing.T) {
+func TestBuildMessageConversationKeepsFollowUpQueryPlainForRepliedTextAttachment(t *testing.T) {
 	t.Parallel()
 
 	const (
@@ -1407,16 +1410,100 @@ func TestBuildMessageConversationAddsReplyTargetForRepliedTextAttachment(t *test
 		t.Fatalf("unexpected latest message content type: %T", messages[1].Content)
 	}
 
-	if !containsFold(latestContent, replyTargetSectionName+":") {
-		t.Fatalf("expected replied message section in latest content: %q", latestContent)
+	expectedLatestContent := "<@" + userID + ">: what is the text inside this file"
+	if latestContent != expectedLatestContent {
+		t.Fatalf("unexpected latest message content: got %q want %q", latestContent, expectedLatestContent)
 	}
 
-	if !containsFold(latestContent, "jandron") {
-		t.Fatalf("expected replied attachment text in latest content: %q", latestContent)
+	if containsFold(latestContent, replyTargetSectionName+":") {
+		t.Fatalf("unexpected replied message section in latest content: %q", latestContent)
+	}
+}
+
+func TestBuildMessageConversationKeepsFollowUpQueryPlainWhenReplyingToAssistant(t *testing.T) {
+	t.Parallel()
+
+	const (
+		botUserID          = "bot-user"
+		channelID          = "channel-1"
+		userID             = "676735636656357396"
+		sourceMessageID    = "source-message"
+		assistantMessageID = "assistant-message"
+		followUpMessageID  = "follow-up-message"
+	)
+
+	instance := newHistoryRetentionTestBot(t)
+
+	sourceMessage := new(discordgo.Message)
+	sourceMessage.ID = sourceMessageID
+	sourceMessage.ChannelID = channelID
+	sourceMessage.Author = newDiscordUser(userID, false)
+	sourceMessage.Content = "at ai my name is Jandron"
+	setCachedUserNode(instance, sourceMessage, nil, "<@"+userID+">: my name is Jandron")
+
+	assistantMessage := new(discordgo.Message)
+	assistantMessage.ID = assistantMessageID
+	assistantMessage.ChannelID = channelID
+	assistantMessage.Author = newDiscordUser(botUserID, true)
+	assistantMessage.MessageReference = sourceMessage.Reference()
+	assistantMessage.Type = discordgo.MessageTypeReply
+
+	assistantNode := instance.nodes.getOrCreate(assistantMessage.ID)
+	assistantNode.mu.Lock()
+	assistantNode.role = messageRoleAssistant
+	assistantNode.text = testAssistantNameReminder
+	assistantNode.thinkingText = ""
+	assistantNode.urlScanText = testAssistantNameReminder
+	assistantNode.parentMessage = sourceMessage
+	assistantNode.initialized = true
+	instance.nodes.cacheLockedNode(assistantMessage.ID, assistantNode)
+	assistantNode.mu.Unlock()
+
+	followUpMessage := new(discordgo.Message)
+	followUpMessage.ID = followUpMessageID
+	followUpMessage.ChannelID = channelID
+	followUpMessage.Author = newDiscordUser(userID, false)
+	followUpMessage.Content = "at ai what is my name again"
+	followUpMessage.MessageReference = assistantMessage.Reference()
+	followUpMessage.ReferencedMessage = assistantMessage
+	setCachedUserNode(instance, followUpMessage, assistantMessage, "<@"+userID+">: what is my name again")
+
+	loadedConfig := testSearchConfig()
+	loadedConfig.MaxText = defaultMaxText
+	loadedConfig.MaxImages = defaultMaxImages
+	loadedConfig.MaxMessages = defaultMaxMessages
+
+	messages, _, err := instance.buildMessageConversation(
+		context.Background(),
+		loadedConfig,
+		followUpMessage,
+		"openai/main-model",
+	)
+	if err != nil {
+		t.Fatalf("build message conversation: %v", err)
 	}
 
-	if !containsFold(latestContent, "what is the text inside this file") {
-		t.Fatalf("expected user question in latest content: %q", latestContent)
+	if len(messages) != 3 {
+		t.Fatalf("unexpected conversation length: %d", len(messages))
+	}
+
+	if messages[1].Role != messageRoleAssistant ||
+		messages[1].Content != testAssistantNameReminder {
+		t.Fatalf("unexpected assistant reply content: %#v", messages[1])
+	}
+
+	latestContent, ok := messages[2].Content.(string)
+	if !ok {
+		t.Fatalf("unexpected latest message content type: %T", messages[2].Content)
+	}
+
+	expectedLatestContent := "<@" + userID + ">: what is my name again"
+	if latestContent != expectedLatestContent {
+		t.Fatalf("unexpected latest message content: got %q want %q", latestContent, expectedLatestContent)
+	}
+
+	if containsFold(latestContent, replyTargetSectionName+":") {
+		t.Fatalf("unexpected replied message section in latest content: %q", latestContent)
 	}
 }
 
