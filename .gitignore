@@ -6,7 +6,6 @@
 !.golangci.yml
 
 !*.md
-openai_codex_provider_docs.md
 !*.go
 !searchDeciderPrompt.txt
 !cmd/
