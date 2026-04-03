@@ -111,6 +111,8 @@ const (
 	compactTokenCountMediumCutoff = 100
 )
 
+var errStreamedAnswerVisibilityRegressed = errors.New("streamed answer visibility regressed")
+
 func extractThinkingText(fullText string) string {
 	trimmedText := strings.TrimSpace(fullText)
 	if !strings.HasPrefix(trimmedText, thinkingResponsePrefix) {
@@ -214,6 +216,7 @@ func (instance *bot) generateAndSendResponse(
 
 	lastRenderTime := time.Time{}
 	streamState := generatedStreamState{
+		request:             request,
 		warnings:            warnings,
 		answerAccumulator:   &accumulator,
 		thinkingAccumulator: &thinkingAccumulator,
@@ -221,16 +224,18 @@ func (instance *bot) generateAndSendResponse(
 		lastRenderTime:      &lastRenderTime,
 		maxLength:           maxLength,
 		usePlainResponses:   usePlainResponses,
+		rawAnswerText:       "",
+		renderedAnswerText:  "",
 	}
 
 	streamErr := instance.chatCompletions.streamChatCompletion(ctx, request, func(delta streamDelta) error {
-		return instance.handleGeneratedStreamDelta(ctx, tracker, streamState, delta)
+		return instance.handleGeneratedStreamDelta(ctx, tracker, &streamState, delta)
 	})
 	if streamErr != nil && finishReason == "" {
 		finishReason = "error"
 	}
 
-	finalAnswerText := accumulator.joined()
+	finalAnswerText := streamState.rawAnswerText
 
 	cleanedAnswerText, parsedSearchMetadata := finalizeXAIResponseAnswer(
 		request,
@@ -280,6 +285,7 @@ func (instance *bot) generateAndSendResponse(
 }
 
 type generatedStreamState struct {
+	request             chatCompletionRequest
 	warnings            []string
 	answerAccumulator   *segmentAccumulator
 	thinkingAccumulator *segmentAccumulator
@@ -287,12 +293,14 @@ type generatedStreamState struct {
 	lastRenderTime      *time.Time
 	maxLength           int
 	usePlainResponses   bool
+	rawAnswerText       string
+	renderedAnswerText  string
 }
 
 func (instance *bot) handleGeneratedStreamDelta(
 	ctx context.Context,
 	tracker *responseTracker,
-	state generatedStreamState,
+	state *generatedStreamState,
 	delta streamDelta,
 ) error {
 	splitOccurred := false
@@ -301,7 +309,12 @@ func (instance *bot) handleGeneratedStreamDelta(
 	}
 
 	if delta.Content != "" {
-		splitOccurred = state.answerAccumulator.appendText(delta.Content) || splitOccurred
+		answerSplitOccurred, err := state.appendAnswerText(delta.Content)
+		if err != nil {
+			return err
+		}
+
+		splitOccurred = answerSplitOccurred || splitOccurred
 	}
 
 	if delta.FinishReason != "" {
@@ -349,6 +362,24 @@ func (instance *bot) handleGeneratedStreamDelta(
 	*state.lastRenderTime = time.Now()
 
 	return nil
+}
+
+func (state *generatedStreamState) appendAnswerText(answerDelta string) (bool, error) {
+	state.rawAnswerText += answerDelta
+
+	visibleAnswerText := xAIStreamingVisibleAnswerText(state.request, state.rawAnswerText)
+	if !strings.HasPrefix(visibleAnswerText, state.renderedAnswerText) {
+		return false, errStreamedAnswerVisibilityRegressed
+	}
+
+	renderedDelta := strings.TrimPrefix(visibleAnswerText, state.renderedAnswerText)
+	state.renderedAnswerText = visibleAnswerText
+
+	if renderedDelta == "" {
+		return false, nil
+	}
+
+	return state.answerAccumulator.appendText(renderedDelta), nil
 }
 
 func responseTextWithError(responseText, errorText string) string {

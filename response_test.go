@@ -256,6 +256,7 @@ func TestHandleGeneratedStreamDeltaMergesSearchMetadataFromStream(t *testing.T) 
 	finishReason := ""
 	lastRenderTime := time.Time{}
 	state := generatedStreamState{
+		request:             emptyChatCompletionRequest(),
 		warnings:            nil,
 		answerAccumulator:   &segmentAccumulator{maxLength: embedResponseMaxLength, segments: []string{""}},
 		thinkingAccumulator: &segmentAccumulator{maxLength: embedResponseMaxLength, segments: []string{""}},
@@ -263,12 +264,14 @@ func TestHandleGeneratedStreamDeltaMergesSearchMetadataFromStream(t *testing.T) 
 		lastRenderTime:      &lastRenderTime,
 		maxLength:           embedResponseMaxLength,
 		usePlainResponses:   true,
+		rawAnswerText:       "",
+		renderedAnswerText:  "",
 	}
 
 	err := instance.handleGeneratedStreamDelta(
 		context.Background(),
 		tracker,
-		state,
+		&state,
 		streamDelta{
 			Thinking:           "",
 			Content:            "",
@@ -791,12 +794,11 @@ func testGenerateAndSendResponseAppendsErrorWhenStreamFailsAfterPartialOutput(t 
 	)
 
 	sourceMessage := newPromptMessage(sourceMessageID, channelID, userID, botUserID)
-	assistantMessage := new(discordgo.Message)
-	assistantMessage.ID = assistantMessageID
-	assistantMessage.ChannelID = channelID
-	assistantMessage.Author = newDiscordUser(botUserID, true)
-	assistantMessage.MessageReference = sourceMessage.Reference()
-	assistantMessage.Type = discordgo.MessageTypeReply
+	assistantMessage := newAssistantReplyMessage(
+		assistantMessageID,
+		newDiscordUser(botUserID, true),
+		sourceMessage,
+	)
 
 	messageDescriptions := make([]string, 0, 3)
 	patchDescriptions := make([]string, 0, 2)
@@ -1001,13 +1003,11 @@ func TestGenerateAndSendResponseShowsThinkingDuringStreamButNotFinalResponse(t *
 	)
 
 	sourceMessage := newPromptMessage(sourceMessageID, channelID, userID, botUserID)
-	assistantMessage := new(discordgo.Message)
-	assistantMessage.ID = assistantMessageID
-	assistantMessage.ChannelID = channelID
-	assistantMessage.Author = newDiscordUser(botUserID, true)
-	assistantMessage.MessageReference = sourceMessage.Reference()
-	assistantMessage.Type = discordgo.MessageTypeReply
-
+	assistantMessage := newAssistantReplyMessage(
+		assistantMessageID,
+		newDiscordUser(botUserID, true),
+		sourceMessage,
+	)
 	messageDescriptions := make([]string, 0, 2)
 	patchDescriptions := make([]string, 0, 2)
 	messageSendCount := 0
@@ -1076,6 +1076,165 @@ func TestGenerateAndSendResponseShowsThinkingDuringStreamButNotFinalResponse(t *
 	expectedStoredText := visibleResponseText(thoughtText, answerText)
 	if tracker.pendingResponses[0].node.text != expectedStoredText {
 		t.Fatalf("unexpected stored assistant text: %q", tracker.pendingResponses[0].node.text)
+	}
+}
+
+func TestGenerateAndSendResponseDoesNotStreamXAISourceAppendix(t *testing.T) {
+	t.Parallel()
+
+	const (
+		botUserID          = "bot-user"
+		channelID          = "channel-1"
+		userID             = "user-1"
+		sourceMessageID    = "user-message-1"
+		assistantMessageID = "assistant-message-1"
+		answerText         = "Answer paragraph."
+		sourceURL          = "https://example.com/source"
+	)
+
+	sourceMessage := newPromptMessage(sourceMessageID, channelID, userID, botUserID)
+	assistantMessage := newAssistantReplyMessage(
+		assistantMessageID,
+		newDiscordUser(botUserID, true),
+		sourceMessage,
+	)
+
+	messageDescriptions := make([]string, 0, 2)
+	patchDescriptions := make([]string, 0, 2)
+	messageSendCount := 0
+	instance := newXAISourceAppendixStreamingTestBot(
+		t,
+		channelID,
+		botUserID,
+		assistantMessage,
+		&messageDescriptions,
+		&patchDescriptions,
+		&messageSendCount,
+		answerText,
+		sourceURL,
+	)
+
+	request := newXAIResponsesStreamingRequest("http://127.0.0.1:8787/v1")
+	tracker := newResponseTracker(sourceMessage, "")
+
+	err := instance.generateAndSendResponse(
+		context.Background(),
+		request,
+		tracker,
+		nil,
+		false,
+	)
+	if err != nil {
+		t.Fatalf("generate and send response: %v", err)
+	}
+
+	if messageSendCount != 1 {
+		t.Fatalf("unexpected streamed message send count: %d", messageSendCount)
+	}
+
+	if len(messageDescriptions) != 1 {
+		t.Fatalf("unexpected streamed message descriptions: %#v", messageDescriptions)
+	}
+
+	if !containsFold(messageDescriptions[0], answerText) {
+		t.Fatalf("unexpected streamed response body: %q", messageDescriptions[0])
+	}
+
+	if len(patchDescriptions) != 1 {
+		t.Fatalf("unexpected final patch descriptions: %#v", patchDescriptions)
+	}
+
+	if patchDescriptions[0] != answerText {
+		t.Fatalf("unexpected final response body: %q", patchDescriptions[0])
+	}
+
+	assertRenderedDescriptionsHideSources(
+		t,
+		sourceURL,
+		append(messageDescriptions, patchDescriptions...),
+	)
+	assertStoredXAISourceAppendixResponse(t, tracker, answerText, sourceURL)
+}
+
+func newXAISourceAppendixStreamingTestBot(
+	t *testing.T,
+	channelID string,
+	botUserID string,
+	assistantMessage *discordgo.Message,
+	messageDescriptions *[]string,
+	patchDescriptions *[]string,
+	messageSendCount *int,
+	answerText string,
+	sourceURL string,
+) *bot {
+	t.Helper()
+
+	session := newPartialFailureResponseSession(
+		t,
+		channelID,
+		botUserID,
+		assistantMessage,
+		messageDescriptions,
+		patchDescriptions,
+		messageSendCount,
+	)
+
+	instance := new(bot)
+	instance.session = session
+	instance.nodes = newMessageNodeStore(10)
+	instance.chatCompletions = fakeChatCompletionClient{
+		deltas: []streamDelta{
+			newStreamDelta(answerText, ""),
+			newStreamDelta("\n\nSources\n1. [Example Source]("+sourceURL+")", ""),
+			newStreamDelta(
+				" (example.com/source) via `latest ai news`\n\nSearch Queries\n1. `latest ai news`\n",
+				"",
+			),
+			newStreamDelta("", finishReasonStop),
+		},
+	}
+
+	return instance
+}
+
+func assertRenderedDescriptionsHideSources(
+	t *testing.T,
+	sourceURL string,
+	descriptions []string,
+) {
+	t.Helper()
+
+	for _, description := range descriptions {
+		if containsFold(description, "Sources") || containsFold(description, sourceURL) {
+			t.Fatalf("expected sources to stay hidden during response rendering: %q", description)
+		}
+	}
+}
+
+func assertStoredXAISourceAppendixResponse(
+	t *testing.T,
+	tracker *responseTracker,
+	answerText string,
+	sourceURL string,
+) {
+	t.Helper()
+
+	if len(tracker.pendingResponses) != 1 {
+		t.Fatalf("unexpected pending response count: %d", len(tracker.pendingResponses))
+	}
+
+	storedNode := tracker.pendingResponses[0].node
+	if storedNode.text != answerText {
+		t.Fatalf("unexpected stored assistant text: %q", storedNode.text)
+	}
+
+	if storedNode.searchMetadata == nil || len(storedNode.searchMetadata.Results) != 1 {
+		t.Fatalf("expected parsed source metadata on stored node: %#v", storedNode.searchMetadata)
+	}
+
+	storedSources := extractSearchSources(storedNode.searchMetadata.Results[0].Text)
+	if len(storedSources) != 1 || storedSources[0].URL != sourceURL {
+		t.Fatalf("unexpected stored source metadata: %#v", storedSources)
 	}
 }
 
