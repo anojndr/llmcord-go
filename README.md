@@ -79,7 +79,7 @@ The goal is to make Discord feel like a practical, stateful frontend for LLM wor
 - Automatic context compaction with a configurable global threshold when history approaches the context window, plus truncation of a single oversized latest message 10 percentage points below that threshold
 - User-facing error text when upstream streaming fails instead of silently stopping
 - `Show Thinking` button for replies that streamed reasoning
-- `Show Sources` button for web-search and visual-search replies
+- `Show Sources` button for web-search, visual-search, and xAI-compatible source-attribution replies
 - `View on Rentry` button for easier reading of long final replies
 
 ### Attachments and multimodal support
@@ -322,6 +322,7 @@ golangci-lint run --default=all
 - Providers pointing at `https://openrouter.ai/...` automatically send `transforms: ["middle-out"]` unless overridden.
 - OpenAI-compatible chat completions retry once without degraded tools or functions when applicable.
 - Direct `x-ai` providers keep server-side conversation state and append only new turns when a reply chain continues from a stored xAI assistant response for the same model.
+- Non-official `x-ai` bridge endpoints automatically request `source_attribution` so `Show Sources` can be populated. If you need custom settings, override them with `providers.<name>.extra_body.source_attribution`.
 - When `context_window` is configured for a model, llmcord-go auto-compacts older conversation context before sending oversized main-model or search-decider requests. The default trigger is `90%` of the configured context window, and you can override it globally with `auto_compact_threshold_percent`. The latest oversized conversation message is truncated at 10 percentage points below that threshold before older-context compaction runs.
 - If a provider has multiple API keys, the bot tries them in order until one succeeds or all fail. Gemini, OpenAI, and OpenAI Codex rate-limit responses wait on the same key once when the provider returns a retry delay of 1 minute or less, then rotate to the next key if needed. Longer retry delays skip straight to the next key when one is configured, and rotation only happens before any response chunks have been streamed.
 

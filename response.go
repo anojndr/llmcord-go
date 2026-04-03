@@ -230,11 +230,28 @@ func (instance *bot) generateAndSendResponse(
 		finishReason = "error"
 	}
 
+	finalAnswerText := accumulator.joined()
+
+	cleanedAnswerText, parsedSearchMetadata := finalizeXAIResponseAnswer(
+		request,
+		finalAnswerText,
+		tracker.searchMetadata,
+	)
+	if parsedSearchMetadata != nil {
+		tracker.searchMetadata = mergeSearchMetadata(tracker.searchMetadata, parsedSearchMetadata)
+	}
+
+	finalAccumulator := accumulator
+	if cleanedAnswerText != finalAnswerText {
+		finalAccumulator = newSegmentAccumulator(maxLength)
+		_ = finalAccumulator.appendText(cleanedAnswerText)
+	}
+
 	responseErr := instance.renderFinalResponse(
 		ctx,
 		tracker,
 		warnings,
-		&accumulator,
+		&finalAccumulator,
 		thinkingAccumulator.joined(),
 		finishReason,
 		usePlainResponses,
@@ -243,7 +260,7 @@ func (instance *bot) generateAndSendResponse(
 		responseErr = fmt.Errorf("stream response: %w", streamErr)
 	}
 
-	finalText := visibleResponseText(thinkingAccumulator.joined(), accumulator.joined())
+	finalText := visibleResponseText(thinkingAccumulator.joined(), cleanedAnswerText)
 
 	if responseErr != nil {
 		errorText := userFacingResponseError(responseErr)
@@ -297,6 +314,10 @@ func (instance *bot) handleGeneratedStreamDelta(
 
 	if strings.TrimSpace(delta.ProviderResponseID) != "" {
 		tracker.providerResponseID = strings.TrimSpace(delta.ProviderResponseID)
+	}
+
+	if delta.SearchMetadata != nil {
+		tracker.searchMetadata = mergeSearchMetadata(tracker.searchMetadata, delta.SearchMetadata)
 	}
 
 	if state.usePlainResponses {

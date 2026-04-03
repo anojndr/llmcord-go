@@ -59,6 +59,7 @@ type streamDelta struct {
 	FinishReason       string
 	Usage              *tokenUsage
 	ProviderResponseID string
+	SearchMetadata     *searchMetadata
 }
 
 type tokenUsage struct {
@@ -720,6 +721,7 @@ func handleStreamPayload(payload []byte, handle func(streamDelta) error) error {
 			FinishReason:       "",
 			Usage:              nil,
 			ProviderResponseID: "",
+			SearchMetadata:     nil,
 		})
 		if err != nil {
 			return fmt.Errorf(handleStreamDeltaErrorFormat, err)
@@ -733,6 +735,7 @@ func handleStreamPayload(payload []byte, handle func(streamDelta) error) error {
 			FinishReason:       "",
 			Usage:              cloneTokenUsage(delta.Usage),
 			ProviderResponseID: "",
+			SearchMetadata:     nil,
 		})
 		if err != nil {
 			return fmt.Errorf(handleStreamDeltaErrorFormat, err)
@@ -751,6 +754,7 @@ func handleStreamPayload(payload []byte, handle func(streamDelta) error) error {
 			FinishReason:       delta.FinishReason,
 			Usage:              nil,
 			ProviderResponseID: "",
+			SearchMetadata:     nil,
 		})
 		if err != nil {
 			return fmt.Errorf(handleStreamDeltaErrorFormat, err)
@@ -795,6 +799,7 @@ func openAIStreamPayloadDelta(payload []byte) (streamDelta, error) {
 			FinishReason:       "",
 			Usage:              nil,
 			ProviderResponseID: "",
+			SearchMetadata:     nil,
 		}, fmt.Errorf("decode stream payload: %w", err)
 	}
 
@@ -805,6 +810,7 @@ func openAIStreamPayloadDelta(payload []byte) (streamDelta, error) {
 				FinishReason:       "",
 				Usage:              nil,
 				ProviderResponseID: "",
+				SearchMetadata:     nil,
 			}, openAIStreamEventError(
 				envelope.Error.Message,
 				envelope.Error.Type,
@@ -818,6 +824,7 @@ func openAIStreamPayloadDelta(payload []byte) (streamDelta, error) {
 		FinishReason:       "",
 		Usage:              openAIStreamUsage(envelope.Usage),
 		ProviderResponseID: "",
+		SearchMetadata:     nil,
 	}
 
 	if len(envelope.Choices) == 0 {
