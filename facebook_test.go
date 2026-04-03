@@ -870,6 +870,7 @@ func TestMaybeAugmentConversationWithFacebookPreprocessesForNonGeminiModels(t *t
 			Usage:              nil,
 			ProviderResponseID: "",
 			SearchMetadata:     nil,
+			ResponseImages:     nil,
 		})
 	})
 

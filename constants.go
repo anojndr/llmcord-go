@@ -31,6 +31,13 @@ const (
 	unknownText                          = "Unknown"
 	applicationJSONContentType           = "application/json"
 	contentTypeHeader                    = "Content-Type"
+	httpStatusOKText                     = "200 OK"
+	fileExtensionAVIF                    = ".avif"
+	fileExtensionGIF                     = ".gif"
+	fileExtensionJPEG                    = ".jpeg"
+	fileExtensionJPG                     = ".jpg"
+	fileExtensionPNG                     = ".png"
+	fileExtensionWEBP                    = ".webp"
 	embedResponseMaxLength               = 4096 - len(streamingIndicator)
 	embedColorComplete                   = 0x006400
 	embedColorIncomplete                 = 0xffa500

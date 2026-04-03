@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -30,10 +31,12 @@ const (
 	xAIResponsesStreamEventError       = "error"
 	xAIResponsesStreamEventFailed      = "response.failed"
 	xAIResponsesStreamEventIncomplete  = "response.incomplete"
+	xAIResponsesStreamEventOutputDone  = "response.output_item.done"
 	xAIResponsesStreamEventOutputDelta = "response.output_text.delta"
 	xAIResponsesImageDetailAuto        = "auto"
 	xAIResponsesInputImageType         = "input_image"
 	xAIResponsesInputTextType          = "input_text"
+	xAIResponsesOutputTypeImage        = "image_generation_call"
 	xAIResponsesStatusCompleted        = "completed"
 	xAIMarkdownLinkMatchParts          = 4
 	xAINumberedLineMatchParts          = 2
@@ -59,6 +62,18 @@ type xAIResponsesIncompleteDetails struct {
 	Reason string `json:"reason"`
 }
 
+type xAIResponsesOutputItem struct {
+	ID            string `json:"id"`
+	Type          string `json:"type"`
+	Status        string `json:"status"`
+	Result        string `json:"result"`
+	ResultURL     string `json:"result_url"`
+	MIMEType      string `json:"mime_type"`
+	Action        string `json:"action"`
+	Prompt        string `json:"prompt"`
+	RevisedPrompt string `json:"revised_prompt"`
+}
+
 type xAISourceAttribution struct {
 	Sources       []xAISourceAttributionSource `json:"sources"`
 	SearchQueries []string                     `json:"search_queries"`
@@ -73,6 +88,7 @@ type xAISourceAttributionSource struct {
 type xAIResponsesStreamResponse struct {
 	ID                string                         `json:"id"`
 	Status            string                         `json:"status"`
+	Output            []xAIResponsesOutputItem       `json:"output"`
 	Usage             *xAIResponsesUsage             `json:"usage"`
 	Error             *xAIResponsesError             `json:"error"`
 	IncompleteDetails *xAIResponsesIncompleteDetails `json:"incomplete_details"`
@@ -84,9 +100,16 @@ type xAIResponsesStreamEvent struct {
 	Delta             string                      `json:"delta"`
 	Message           string                      `json:"message"`
 	Code              any                         `json:"code"`
+	Item              *xAIResponsesOutputItem     `json:"item"`
 	Error             *xAIResponsesError          `json:"error"`
 	Response          *xAIResponsesStreamResponse `json:"response"`
 	SourceAttribution *xAISourceAttribution       `json:"source_attribution"`
+}
+
+type xAIResponsesStreamState struct {
+	seenOutputItemIDs  map[string]struct{}
+	seenOutputItemURLs map[string]struct{}
+	hasVisibleContent  bool
 }
 
 func providerUsesResponsesAPI(providerName string, provider providerConfig) bool {
@@ -272,9 +295,10 @@ func (client openAIClient) streamResponses(
 	}
 
 	terminalEventSeen := false
+	streamState := newXAIResponsesStreamState()
 
 	_, err = consumeServerSentEvents(httpResponse.Body, func(payload []byte) error {
-		terminal, payloadErr := handleXAIResponsesStreamPayload(payload, handle)
+		terminal, payloadErr := handleXAIResponsesStreamPayload(payload, handle, streamState)
 		if terminal {
 			terminalEventSeen = true
 		}
@@ -559,8 +583,9 @@ func defaultXAIBridgeSourceAttributionRequest() map[string]any {
 func handleXAIResponsesStreamPayload(
 	payload []byte,
 	handle func(streamDelta) error,
+	state *xAIResponsesStreamState,
 ) (bool, error) {
-	delta, terminal, err := xAIResponsesStreamPayloadDelta(payload)
+	delta, terminal, err := xAIResponsesStreamPayloadDelta(payload, state)
 	if err != nil {
 		return terminal, err
 	}
@@ -568,7 +593,8 @@ func handleXAIResponsesStreamPayload(
 	if delta.Content == "" &&
 		delta.FinishReason == "" &&
 		delta.Usage == nil &&
-		delta.ProviderResponseID == "" {
+		delta.ProviderResponseID == "" &&
+		len(delta.ResponseImages) == 0 {
 		return terminal, nil
 	}
 
@@ -580,88 +606,86 @@ func handleXAIResponsesStreamPayload(
 	return terminal, nil
 }
 
-func xAIResponsesStreamPayloadDelta(payload []byte) (streamDelta, bool, error) {
+func newXAIResponsesStreamState() *xAIResponsesStreamState {
+	return &xAIResponsesStreamState{
+		seenOutputItemIDs:  make(map[string]struct{}),
+		seenOutputItemURLs: make(map[string]struct{}),
+		hasVisibleContent:  false,
+	}
+}
+
+func xAIResponsesStreamPayloadDelta(
+	payload []byte,
+	state *xAIResponsesStreamState,
+) (streamDelta, bool, error) {
 	var event xAIResponsesStreamEvent
+
+	emptyDelta := emptyStreamDelta()
 
 	err := json.Unmarshal(payload, &event)
 	if err != nil {
-		return streamDelta{
-			Thinking:           "",
-			Content:            "",
-			FinishReason:       "",
-			Usage:              nil,
-			ProviderResponseID: "",
-			SearchMetadata:     nil,
-		}, false, fmt.Errorf("decode xAI responses stream payload: %w", err)
+		return emptyDelta, false, fmt.Errorf("decode xAI responses stream payload: %w", err)
 	}
 
 	eventType := strings.TrimSpace(event.Type)
 
 	switch eventType {
 	case xAIResponsesStreamEventOutputDelta:
-		return streamDelta{
-			Thinking:           "",
-			Content:            event.Delta,
-			FinishReason:       "",
-			Usage:              nil,
-			ProviderResponseID: "",
-			SearchMetadata:     nil,
-		}, false, nil
+		if state != nil && event.Delta != "" {
+			state.hasVisibleContent = true
+		}
+
+		delta := emptyDelta
+		delta.Content = event.Delta
+
+		return delta, false, nil
+	case xAIResponsesStreamEventOutputDone:
+		delta := emptyDelta
+		delta.Content = xAIResponsesOutputItemText(event.Item, state, false)
+		delta.ResponseImages = xAIResponsesOutputImageAssets(event.Item)
+
+		return delta, false, nil
 	case xAIResponsesStreamEventCompleted:
 		delta, completedErr := xAIResponsesCompletedDelta(
 			event.Response,
 			event.SourceAttribution,
+			state,
 		)
 
 		return delta, true, completedErr
 	case xAIResponsesStreamEventFailed, xAIResponsesStreamEventIncomplete:
-		return streamDelta{
-			Thinking:           "",
-			Content:            "",
-			FinishReason:       "",
-			Usage:              nil,
-			ProviderResponseID: "",
-			SearchMetadata:     nil,
-		}, true, xAIResponsesTerminalError(eventType, event)
+		return emptyDelta, true, xAIResponsesTerminalError(eventType, event)
 	case xAIResponsesStreamEventError:
 		if event.Error != nil {
-			return streamDelta{
-					Thinking:           "",
-					Content:            "",
-					FinishReason:       "",
-					Usage:              nil,
-					ProviderResponseID: "",
-					SearchMetadata:     nil,
-				}, true, openAIStreamEventError(
-					event.Error.Message,
-					event.Error.Type,
-					event.Error.Code,
-				)
+			return emptyDelta, true, openAIStreamEventError(
+				event.Error.Message,
+				event.Error.Type,
+				event.Error.Code,
+			)
 		}
 
-		return streamDelta{
-			Thinking:           "",
-			Content:            "",
-			FinishReason:       "",
-			Usage:              nil,
-			ProviderResponseID: "",
-			SearchMetadata:     nil,
-		}, true, openAIStreamEventError(event.Message, eventType, event.Code)
+		return emptyDelta, true, openAIStreamEventError(event.Message, eventType, event.Code)
 	default:
-		return streamDelta{
-			Thinking:           "",
-			Content:            "",
-			FinishReason:       "",
-			Usage:              nil,
-			ProviderResponseID: "",
-			SearchMetadata:     nil,
-		}, false, nil
+		return emptyDelta, false, nil
+	}
+}
+
+func emptyStreamDelta() streamDelta {
+	return streamDelta{
+		Thinking:           "",
+		Content:            "",
+		FinishReason:       "",
+		Usage:              nil,
+		ProviderResponseID: "",
+		SearchMetadata:     nil,
+		ResponseImages:     nil,
 	}
 }
 
 func xAIResponsesCompletedDelta(
 	response *xAIResponsesStreamResponse,
 	eventSourceAttribution *xAISourceAttribution,
+	state *xAIResponsesStreamState,
 ) (streamDelta, error) {
 	if response == nil {
 		return streamDelta{
@@ -671,6 +695,7 @@ func xAIResponsesCompletedDelta(
 			Usage:              nil,
 			ProviderResponseID: "",
 			SearchMetadata:     xAISourceAttributionSearchMetadata(eventSourceAttribution),
+			ResponseImages:     nil,
 		}, nil
 	}
 
@@ -682,6 +707,7 @@ func xAIResponsesCompletedDelta(
 				Usage:              nil,
 				ProviderResponseID: "",
 				SearchMetadata:     nil,
+				ResponseImages:     nil,
 			}, openAIStreamEventError(
 				response.Error.Message,
 				response.Error.Type,
@@ -703,12 +729,15 @@ func xAIResponsesCompletedDelta(
 			Usage:              nil,
 			ProviderResponseID: "",
 			SearchMetadata:     nil,
+			ResponseImages:     nil,
 		}, xAIResponsesStatusError(status, reason)
 	}
 
+	content := xAIResponsesOutputItemsText(response.Output, state, true)
+
 	return streamDelta{
 		Thinking:           "",
-		Content:            "",
+		Content:            content,
 		FinishReason:       finishReasonStop,
 		Usage:              xAIResponsesTokenUsage(response.Usage),
 		ProviderResponseID: strings.TrimSpace(response.ID),
@@ -718,7 +747,196 @@ func xAIResponsesCompletedDelta(
 				eventSourceAttribution,
 			),
 		),
+		ResponseImages: xAIResponsesOutputImages(response.Output),
 	}, nil
+}
+
+func xAIResponsesOutputItemsText(
+	items []xAIResponsesOutputItem,
+	state *xAIResponsesStreamState,
+	final bool,
+) string {
+	if len(items) == 0 {
+		return ""
+	}
+
+	var builder strings.Builder
+
+	for index := range items {
+		builder.WriteString(xAIResponsesOutputItemText(&items[index], state, final))
+	}
+
+	return builder.String()
+}
+
+func xAIResponsesOutputItemText(
+	item *xAIResponsesOutputItem,
+	state *xAIResponsesStreamState,
+	final bool,
+) string {
+	if item == nil {
+		return ""
+	}
+
+	normalizedItem, ok := normalizeXAIResponsesOutputItem(*item)
+	if !ok || xAIResponsesOutputItemSeen(state, normalizedItem) {
+		return ""
+	}
+
+	content := xAIResponsesOutputItemContent(normalizedItem, final)
+	if content == "" {
+		return ""
+	}
+
+	xAIResponsesMarkOutputItemSeen(state, normalizedItem)
+
+	if state != nil {
+		if state.hasVisibleContent {
+			content = "\n\n" + content
+		}
+
+		state.hasVisibleContent = true
+	}
+
+	return content
+}
+
+func normalizeXAIResponsesOutputItem(item xAIResponsesOutputItem) (xAIResponsesOutputItem, bool) {
+	var emptyItem xAIResponsesOutputItem
+
+	item.ID = strings.TrimSpace(item.ID)
+	item.Type = strings.TrimSpace(item.Type)
+	item.Result = strings.TrimSpace(item.Result)
+	item.ResultURL = strings.TrimSpace(item.ResultURL)
+	item.MIMEType = strings.TrimSpace(item.MIMEType)
+	item.Action = strings.ToLower(strings.TrimSpace(item.Action))
+
+	if !strings.EqualFold(item.Type, xAIResponsesOutputTypeImage) {
+		return emptyItem, false
+	}
+
+	if item.ResultURL == "" && item.Result == "" {
+		return emptyItem, false
+	}
+
+	return item, true
+}
+
+func xAIResponsesOutputItemContent(item xAIResponsesOutputItem, final bool) string {
+	label := xAIResponsesOutputItemLabel(item.Action)
+
+	if item.ResultURL != "" {
+		return label + ":\n" + item.ResultURL
+	}
+
+	if !final || item.Result == "" {
+		return ""
+	}
+
+	if item.MIMEType != "" {
+		return label + " returned as " + item.MIMEType + ", but the provider did not expose a result URL."
+	}
+
+	return label + " returned, but the provider did not expose a result URL."
+}
+
+func xAIResponsesOutputImages(items []xAIResponsesOutputItem) []responseImageAsset {
+	if len(items) == 0 {
+		return nil
+	}
+
+	images := make([]responseImageAsset, 0, len(items))
+
+	for index := range items {
+		images = append(images, xAIResponsesOutputImageAssets(&items[index])...)
+	}
+
+	return images
+}
+
+func xAIResponsesOutputImageAssets(item *xAIResponsesOutputItem) []responseImageAsset {
+	if item == nil {
+		return nil
+	}
+
+	normalizedItem, ok := normalizeXAIResponsesOutputItem(*item)
+	if !ok {
+		return nil
+	}
+
+	return []responseImageAsset{xAIResponsesOutputImageAsset(normalizedItem)}
+}
+
+func xAIResponsesOutputImageAsset(item xAIResponsesOutputItem) responseImageAsset {
+	return responseImageAsset{
+		ID:          item.ID,
+		URL:         item.ResultURL,
+		ContentType: item.MIMEType,
+		Data:        xAIResponsesOutputImageBytes(item.Result),
+	}
+}
+
+func xAIResponsesOutputImageBytes(encoded string) []byte {
+	trimmed := strings.TrimSpace(encoded)
+	if trimmed == "" {
+		return nil
+	}
+
+	imageBytes, err := base64.StdEncoding.DecodeString(trimmed)
+	if err != nil {
+		return nil
+	}
+
+	return imageBytes
+}
+
+func xAIResponsesOutputItemLabel(action string) string {
+	switch strings.ToLower(strings.TrimSpace(action)) {
+	case "edit":
+		return "Edited image"
+	case "generate":
+		return "Generated image"
+	default:
+		return "Image output"
+	}
+}
+
+func xAIResponsesOutputItemSeen(state *xAIResponsesStreamState, item xAIResponsesOutputItem) bool {
+	if state == nil {
+		return false
+	}
+
+	itemID := strings.TrimSpace(item.ID)
+	if itemID != "" {
+		if _, ok := state.seenOutputItemIDs[itemID]; ok {
+			return true
+		}
+	}
+
+	resultURL := strings.ToLower(strings.TrimSpace(item.ResultURL))
+	if resultURL != "" {
+		if _, ok := state.seenOutputItemURLs[resultURL]; ok {
+			return true
+		}
+	}
+
+	return false
+}
+
+func xAIResponsesMarkOutputItemSeen(state *xAIResponsesStreamState, item xAIResponsesOutputItem) {
+	if state == nil {
+		return
+	}
+
+	itemID := strings.TrimSpace(item.ID)
+	if itemID != "" {
+		state.seenOutputItemIDs[itemID] = struct{}{}
+	}
+
+	resultURL := strings.ToLower(strings.TrimSpace(item.ResultURL))
+	if resultURL != "" {
+		state.seenOutputItemURLs[resultURL] = struct{}{}
+	}
 }
 
 func xAIResponsesTerminalError(eventType string, event xAIResponsesStreamEvent) error {

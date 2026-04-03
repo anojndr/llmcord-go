@@ -709,6 +709,7 @@ func handleOpenAICodexStreamPayload(payload []byte, handle func(streamDelta) err
 			Usage:              nil,
 			ProviderResponseID: "",
 			SearchMetadata:     nil,
+			ResponseImages:     nil,
 		})
 	case "response.output_text.delta", "response.refusal.delta":
 		return false, openAICodexHandleContentDelta(envelope.Delta, handle)
@@ -747,6 +748,7 @@ func openAICodexHandleThinkingDelta(delta string, handle func(streamDelta) error
 		Usage:              nil,
 		ProviderResponseID: "",
 		SearchMetadata:     nil,
+		ResponseImages:     nil,
 	})
 }
 
@@ -762,6 +764,7 @@ func openAICodexHandleContentDelta(delta string, handle func(streamDelta) error)
 		Usage:              nil,
 		ProviderResponseID: "",
 		SearchMetadata:     nil,
+		ResponseImages:     nil,
 	})
 }
 
@@ -793,6 +796,7 @@ func openAICodexHandleTerminalResponse(
 			Usage:              cloneTokenUsage(usage),
 			ProviderResponseID: "",
 			SearchMetadata:     nil,
+			ResponseImages:     nil,
 		})
 	case "incomplete":
 		if strings.EqualFold(strings.TrimSpace(incompleteReason), openAIContentFilterFinishReason) {
@@ -806,6 +810,7 @@ func openAICodexHandleTerminalResponse(
 			Usage:              cloneTokenUsage(usage),
 			ProviderResponseID: "",
 			SearchMetadata:     nil,
+			ResponseImages:     nil,
 		})
 	case "failed", "cancelled":
 		return openAICodexFailedResponseError(errorCode, errorMessage, incompleteReason)

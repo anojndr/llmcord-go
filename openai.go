@@ -60,6 +60,14 @@ type streamDelta struct {
 	Usage              *tokenUsage
 	ProviderResponseID string
 	SearchMetadata     *searchMetadata
+	ResponseImages     []responseImageAsset
+}
+
+type responseImageAsset struct {
+	ID          string
+	URL         string
+	ContentType string
+	Data        []byte
 }
 
 type tokenUsage struct {
@@ -722,6 +730,7 @@ func handleStreamPayload(payload []byte, handle func(streamDelta) error) error {
 			Usage:              nil,
 			ProviderResponseID: "",
 			SearchMetadata:     nil,
+			ResponseImages:     nil,
 		})
 		if err != nil {
 			return fmt.Errorf(handleStreamDeltaErrorFormat, err)
@@ -736,6 +745,7 @@ func handleStreamPayload(payload []byte, handle func(streamDelta) error) error {
 			Usage:              cloneTokenUsage(delta.Usage),
 			ProviderResponseID: "",
 			SearchMetadata:     nil,
+			ResponseImages:     nil,
 		})
 		if err != nil {
 			return fmt.Errorf(handleStreamDeltaErrorFormat, err)
@@ -755,6 +765,7 @@ func handleStreamPayload(payload []byte, handle func(streamDelta) error) error {
 			Usage:              nil,
 			ProviderResponseID: "",
 			SearchMetadata:     nil,
+			ResponseImages:     nil,
 		})
 		if err != nil {
 			return fmt.Errorf(handleStreamDeltaErrorFormat, err)
@@ -800,6 +811,7 @@ func openAIStreamPayloadDelta(payload []byte) (streamDelta, error) {
 			Usage:              nil,
 			ProviderResponseID: "",
 			SearchMetadata:     nil,
+			ResponseImages:     nil,
 		}, fmt.Errorf("decode stream payload: %w", err)
 	}
 
@@ -811,6 +823,7 @@ func openAIStreamPayloadDelta(payload []byte) (streamDelta, error) {
 				Usage:              nil,
 				ProviderResponseID: "",
 				SearchMetadata:     nil,
+				ResponseImages:     nil,
 			}, openAIStreamEventError(
 				envelope.Error.Message,
 				envelope.Error.Type,
@@ -825,6 +838,7 @@ func openAIStreamPayloadDelta(payload []byte) (streamDelta, error) {
 		Usage:              openAIStreamUsage(envelope.Usage),
 		ProviderResponseID: "",
 		SearchMetadata:     nil,
+		ResponseImages:     nil,
 	}
 
 	if len(envelope.Choices) == 0 {

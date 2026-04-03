@@ -511,6 +511,7 @@ func assertYouTubeShortsAugmentationForProvider(
 			Usage:              nil,
 			ProviderResponseID: "",
 			SearchMetadata:     nil,
+			ResponseImages:     nil,
 		})
 	})
 

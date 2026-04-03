@@ -56,9 +56,11 @@ func (instance *bot) startRequestProgress(
 	)
 
 	sentMessage, pending, err := instance.sendEmbedMessage(
+		ctx,
 		progress.tracker,
 		progressEmbed,
 		actions,
+		false,
 	)
 	if err != nil {
 		slog.Warn(
@@ -161,9 +163,12 @@ func (progress *requestProgress) run(ctx context.Context) {
 			}
 
 			editErr := progress.instance.editEmbedMessage(
+				ctx,
 				progress.message,
 				buildRequestProgressEmbed(currentStage, tracker.modelName),
 				nil,
+				nil,
+				false,
 			)
 			if editErr != nil {
 				slog.Warn(
