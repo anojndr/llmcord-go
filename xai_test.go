@@ -11,7 +11,12 @@ import (
 	"github.com/bwmarrin/discordgo"
 )
 
-const testXAIProviderResponseID = "resp_123"
+const (
+	testXAIProviderResponseID = "resp_123"
+	testXAIImageOutputID      = "ig_123"
+	testXAIImageURL           = "https://assets.grok.com/generated/image.jpg"
+	testXAIImageResultBase64  = "aW1hZ2UtYnl0ZXM="
+)
 
 func TestBuildChatCompletionRequestEnablesResponsesAPIForXAIProvider(t *testing.T) {
 	t.Parallel()
@@ -161,6 +166,89 @@ func TestOpenAIClientStreamChatCompletionUsesXAIResponsesAPI(t *testing.T) {
 	}
 }
 
+func TestOpenAIClientStreamChatCompletionStreamsXAIImageOutputOnce(t *testing.T) {
+	t.Parallel()
+
+	server := newXAIResponsesStreamingImageTestServer(t, true)
+	defer server.Close()
+
+	client := newOpenAIClient(server.Client())
+	request := newXAIResponsesStreamingRequest(server.URL + "/v1")
+
+	var joinedContent strings.Builder
+
+	err := client.streamChatCompletion(context.Background(), request, func(delta streamDelta) error {
+		joinedContent.WriteString(delta.Content)
+
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("stream xAI responses image output: %v", err)
+	}
+
+	expected := testStreamedHelloText + "\n\nGenerated image:\n" + testXAIImageURL
+	if joinedContent.String() != expected {
+		t.Fatalf("unexpected streamed image content: got %q want %q", joinedContent.String(), expected)
+	}
+}
+
+func TestOpenAIClientStreamChatCompletionFallsBackToCompletedXAIImageOutput(t *testing.T) {
+	t.Parallel()
+
+	server := newXAIResponsesStreamingImageTestServer(t, false)
+	defer server.Close()
+
+	client := newOpenAIClient(server.Client())
+	request := newXAIResponsesStreamingRequest(server.URL + "/v1")
+
+	var joinedContent strings.Builder
+
+	err := client.streamChatCompletion(context.Background(), request, func(delta streamDelta) error {
+		joinedContent.WriteString(delta.Content)
+
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("stream xAI completed image output: %v", err)
+	}
+
+	expected := testStreamedHelloText + "\n\nGenerated image:\n" + testXAIImageURL
+	if joinedContent.String() != expected {
+		t.Fatalf("unexpected completed image content: got %q want %q", joinedContent.String(), expected)
+	}
+}
+
+func TestOpenAIClientStreamChatCompletionCarriesCompletedXAIImageBytes(t *testing.T) {
+	t.Parallel()
+
+	server := newXAIResponsesStreamingImageTestServer(t, true)
+	defer server.Close()
+
+	client := newOpenAIClient(server.Client())
+	request := newXAIResponsesStreamingRequest(server.URL + "/v1")
+
+	var responseImages []responseImageAsset
+
+	err := client.streamChatCompletion(context.Background(), request, func(delta streamDelta) error {
+		if len(delta.ResponseImages) > 0 {
+			responseImages = mergeResponseImageAssets(responseImages, delta.ResponseImages)
+		}
+
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("stream xAI image bytes: %v", err)
+	}
+
+	if len(responseImages) != 1 {
+		t.Fatalf("unexpected response images: %#v", responseImages)
+	}
+
+	if string(responseImages[0].Data) != "image-bytes" {
+		t.Fatalf("unexpected response image bytes: %#v", responseImages[0])
+	}
+}
+
 func TestAssignXAIPreviousResponseIDUsesAssistantAnchorAndTrimsHistory(t *testing.T) {
 	t.Parallel()
 
@@ -257,6 +345,7 @@ func TestGenerateAndSendResponseStoresProviderResponseIDForXAIContinuation(t *te
 				Usage:              nil,
 				ProviderResponseID: testXAIProviderResponseID,
 				SearchMetadata:     nil,
+				ResponseImages:     nil,
 			},
 		},
 	}
@@ -501,6 +590,54 @@ func newXAIResponsesStreamingTestServer(t *testing.T) *httptest.Server {
 	}))
 }
 
+func newXAIResponsesStreamingImageTestServer(
+	t *testing.T,
+	includeOutputItemDone bool,
+) *httptest.Server {
+	t.Helper()
+
+	return httptest.NewServer(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		request *http.Request,
+	) {
+		t.Helper()
+
+		assertXAIResponsesRequest(t, request)
+
+		responseWriter.Header().Set("Content-Type", "text/event-stream")
+
+		flusher, responseOK := responseWriter.(http.Flusher)
+		if !responseOK {
+			t.Fatal("expected response writer to support flushing")
+		}
+
+		writeStreamChunk(
+			t,
+			responseWriter,
+			"data: {\"type\":\"response.output_text.delta\",\"delta\":\"Hel\"}\n\n",
+		)
+		flusher.Flush()
+
+		writeStreamChunk(
+			t,
+			responseWriter,
+			"data: {\"type\":\"response.output_text.delta\",\"delta\":\"lo\"}\n\n",
+		)
+		flusher.Flush()
+
+		if includeOutputItemDone {
+			writeStreamChunk(t, responseWriter, xAIResponseOutputItemDoneChunk())
+			flusher.Flush()
+		}
+
+		writeStreamChunk(t, responseWriter, xAIResponseCompletedChunkWithImageOutput())
+		flusher.Flush()
+
+		writeStreamChunk(t, responseWriter, "data: [DONE]\n\n")
+		flusher.Flush()
+	}))
+}
+
 func assertXAIResponsesRequest(t *testing.T, request *http.Request) {
 	t.Helper()
 
@@ -607,6 +744,40 @@ func xAIResponseCompletedChunk() string {
 		"\"id\":\"" + testXAIProviderResponseID + "\"," +
 		"\"status\":\"completed\"," +
 		"\"usage\":{\"input_tokens\":12,\"output_tokens\":34}," +
+		"\"source_attribution\":{" +
+		"\"search_queries\":[\"latest ai news\"]," +
+		"\"sources\":[{" +
+		"\"title\":\"Example Source\"," +
+		"\"url\":\"https://example.com/source\"," +
+		"\"search_queries\":[\"latest ai news\"]" +
+		"}]}}}\n\n"
+}
+
+func xAIResponseOutputItemDoneChunk() string {
+	return "data: {\"type\":\"response.output_item.done\",\"item\":{" +
+		"\"id\":\"" + testXAIImageOutputID + "\"," +
+		"\"type\":\"image_generation_call\"," +
+		"\"status\":\"completed\"," +
+		"\"result_url\":\"" + testXAIImageURL + "\"," +
+		"\"mime_type\":\"image/jpeg\"," +
+		"\"action\":\"generate\"," +
+		"\"prompt\":\"Generate an image of a cat.\"}}\n\n"
+}
+
+func xAIResponseCompletedChunkWithImageOutput() string {
+	return "data: {\"type\":\"response.completed\",\"response\":{" +
+		"\"id\":\"" + testXAIProviderResponseID + "\"," +
+		"\"status\":\"completed\"," +
+		"\"usage\":{\"input_tokens\":12,\"output_tokens\":34}," +
+		"\"output\":[{" +
+		"\"id\":\"" + testXAIImageOutputID + "\"," +
+		"\"type\":\"image_generation_call\"," +
+		"\"status\":\"completed\"," +
+		"\"result\":\"" + testXAIImageResultBase64 + "\"," +
+		"\"result_url\":\"" + testXAIImageURL + "\"," +
+		"\"mime_type\":\"image/jpeg\"," +
+		"\"action\":\"generate\"," +
+		"\"prompt\":\"Generate an image of a cat.\"}]," +
 		"\"source_attribution\":{" +
 		"\"search_queries\":[\"latest ai news\"]," +
 		"\"sources\":[{" +

@@ -330,24 +330,24 @@ func ooxmlImageMIMEType(fileName string, imageBytes []byte) (string, bool) {
 
 func ooxmlImageExtensionMIMEType(fileExtension string) (string, bool) {
 	switch fileExtension {
-	case ".avif":
+	case fileExtensionAVIF:
 		return "image/avif", true
 	case ".bmp":
 		return "image/bmp", true
-	case ".gif":
+	case fileExtensionGIF:
 		return "image/gif", true
 	case ".heic":
 		return "image/heic", true
-	case ".jpeg", ".jpg":
-		return "image/jpeg", true
-	case ".png":
+	case fileExtensionJPEG, fileExtensionJPG:
+		return mimeTypeJPEG, true
+	case fileExtensionPNG:
 		return mimeTypePNG, true
 	case ".svg":
 		return "image/svg+xml", true
 	case ".tif", ".tiff":
 		return "image/tiff", true
-	case ".webp":
-		return "image/webp", true
+	case fileExtensionWEBP:
+		return mimeTypeWEBP, true
 	default:
 		return "", false
 	}

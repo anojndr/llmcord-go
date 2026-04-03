@@ -1,10 +1,18 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"math"
+	"mime"
+	"net/http"
+	"net/url"
+	"os"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -38,6 +46,7 @@ type pendingResponse struct {
 type responseTracker struct {
 	sourceMessage      *discordgo.Message
 	searchMetadata     *searchMetadata
+	responseImages     []responseImageAsset
 	modelName          string
 	contextWindow      int
 	usage              *tokenUsage
@@ -112,6 +121,7 @@ const (
 )
 
 var errStreamedAnswerVisibilityRegressed = errors.New("streamed answer visibility regressed")
+var errResponseEmbedImageUnavailable = errors.New("response embed image unavailable")
 
 func extractThinkingText(fullText string) string {
 	trimmedText := strings.TrimSpace(fullText)
@@ -333,6 +343,10 @@ func (instance *bot) handleGeneratedStreamDelta(
 		tracker.searchMetadata = mergeSearchMetadata(tracker.searchMetadata, delta.SearchMetadata)
 	}
 
+	if len(delta.ResponseImages) > 0 {
+		tracker.responseImages = mergeResponseImageAssets(tracker.responseImages, delta.ResponseImages)
+	}
+
 	if state.usePlainResponses {
 		return nil
 	}
@@ -474,6 +488,7 @@ func (instance *bot) renderFailureResponse(
 	}
 
 	return instance.sendFallbackFailureResponse(
+		ctx,
 		tracker,
 		errorText,
 		failureEmbed,
@@ -581,7 +596,7 @@ func (instance *bot) renderEmbedResponse(
 			spec.footerText,
 		)
 
-		err := instance.renderEmbedSpec(ctx, tracker, index, embed, spec.actions)
+		err := instance.renderEmbedSpec(ctx, tracker, index, embed, spec.actions, final)
 		if err != nil {
 			return err
 		}
@@ -609,9 +624,16 @@ func (instance *bot) renderEmbedSpec(
 	index int,
 	embed *discordgo.MessageEmbed,
 	actions responseActions,
+	final bool,
 ) error {
 	if index >= len(tracker.responseMessages) {
-		sentMessage, pending, err := instance.sendEmbedMessage(tracker, embed, actions)
+		sentMessage, pending, err := instance.sendEmbedMessage(
+			ctx,
+			tracker,
+			embed,
+			actions,
+			final,
+		)
 		if err != nil {
 			return fmt.Errorf("send embed message: %w", err)
 		}
@@ -631,9 +653,12 @@ func (instance *bot) renderEmbedSpec(
 	}
 
 	err = instance.editEmbedMessage(
+		ctx,
 		tracker.responseMessages[index],
 		embed,
 		buildEmbedComponents(actions),
+		tracker.responseImages,
+		final,
 	)
 	if err != nil {
 		return fmt.Errorf("edit embed message: %w", err)
@@ -749,9 +774,12 @@ func (instance *bot) renderFailureOnProgressMessage(
 	}
 
 	err = instance.editEmbedMessage(
+		ctx,
 		tracker.responseMessages[0],
 		failureEmbed,
 		nil,
+		nil,
+		false,
 	)
 	if err != nil {
 		return false, fmt.Errorf("edit progress message: %w", err)
@@ -763,6 +791,7 @@ func (instance *bot) renderFailureOnProgressMessage(
 }
 
 func (instance *bot) sendFallbackFailureResponse(
+	ctx context.Context,
 	tracker *responseTracker,
 	errorText string,
 	failureEmbed *discordgo.MessageEmbed,
@@ -774,6 +803,7 @@ func (instance *bot) sendFallbackFailureResponse(
 	fallbackTracker.responseMessages = append(fallbackTracker.responseMessages, tracker.responseMessages...)
 
 	sentMessage, pending, err := instance.sendFailureResponseMessage(
+		ctx,
 		fallbackTracker,
 		errorText,
 		failureEmbed,
@@ -796,6 +826,7 @@ func (instance *bot) sendFallbackFailureResponse(
 }
 
 func (instance *bot) sendFailureResponseMessage(
+	ctx context.Context,
 	fallbackTracker *responseTracker,
 	errorText string,
 	failureEmbed *discordgo.MessageEmbed,
@@ -810,9 +841,11 @@ func (instance *bot) sendFailureResponseMessage(
 	}
 
 	return instance.sendEmbedMessage(
+		ctx,
 		fallbackTracker,
 		failureEmbed,
 		responseActions{showSources: false, showThinking: false, showRentry: false},
+		false,
 	)
 }
 
@@ -878,12 +911,16 @@ func (instance *bot) sendPlainResponseMessage(
 }
 
 func (instance *bot) sendEmbedMessage(
+	ctx context.Context,
 	tracker *responseTracker,
 	embed *discordgo.MessageEmbed,
 	actions responseActions,
+	final bool,
 ) (*discordgo.Message, pendingResponse, error) {
 	send := newReplyMessage(referenceTarget(tracker))
+	files := instance.prepareResponseEmbedFiles(ctx, embed, tracker.responseImages, final)
 	send.Embeds = append(send.Embeds, embed)
+	send.Files = files
 	send.Components = buildEmbedComponents(actions)
 
 	return instance.sendReplyMessage(tracker, send)
@@ -948,13 +985,23 @@ func (instance *bot) sendReplyMessage(
 }
 
 func (instance *bot) editEmbedMessage(
+	ctx context.Context,
 	message *discordgo.Message,
 	embed *discordgo.MessageEmbed,
 	components []discordgo.MessageComponent,
+	responseImages []responseImageAsset,
+	final bool,
 ) error {
 	edit := discordgo.NewMessageEdit(message.ChannelID, message.ID)
+	files := instance.prepareResponseEmbedFiles(ctx, embed, responseImages, final)
 	edit.SetEmbeds([]*discordgo.MessageEmbed{embed})
 	edit.Components = &components
+	edit.Files = files
+
+	if len(files) > 0 {
+		attachments := []*discordgo.MessageAttachment{}
+		edit.Attachments = &attachments
+	}
 
 	_, err := instance.session.ChannelMessageEditComplex(edit)
 	if err != nil {
@@ -1019,6 +1066,382 @@ func buildResponseEmbed(
 	}
 
 	return embed
+}
+
+func (instance *bot) prepareResponseEmbedFiles(
+	ctx context.Context,
+	embed *discordgo.MessageEmbed,
+	responseImages []responseImageAsset,
+	final bool,
+) []*discordgo.File {
+	if !final || embed == nil {
+		return nil
+	}
+
+	sanitizedDescription, imageURL := responseEmbedContent(embed.Description)
+	if imageURL == "" {
+		if imageFile := responseEmbedFileFromAssets(responseImages); imageFile != nil {
+			embed.Image = &discordgo.MessageEmbedImage{
+				URL:      "attachment://" + imageFile.Name,
+				ProxyURL: "",
+				Width:    0,
+				Height:   0,
+			}
+
+			return []*discordgo.File{imageFile}
+		}
+
+		return nil
+	}
+
+	file := responseEmbedFileFromAssets(responseImages)
+	if file == nil {
+		var err error
+
+		file, err = instance.responseEmbedFile(ctx, imageURL)
+		if err != nil {
+			if errors.Is(err, errResponseEmbedImageUnavailable) {
+				return nil
+			}
+
+			slog.Warn("fetch response embed image", "url", imageURL, "error", err)
+
+			return nil
+		}
+	}
+
+	if file == nil {
+		return nil
+	}
+
+	embed.Description = sanitizedDescription
+	embed.Image = &discordgo.MessageEmbedImage{
+		URL:      "attachment://" + file.Name,
+		ProxyURL: "",
+		Width:    0,
+		Height:   0,
+	}
+
+	return []*discordgo.File{file}
+}
+
+func responseEmbedFileFromAssets(responseImages []responseImageAsset) *discordgo.File {
+	for _, responseImage := range responseImages {
+		if len(responseImage.Data) == 0 {
+			continue
+		}
+
+		fileName := responseEmbedFilename(responseImage.URL, responseImage.ContentType)
+		if fileName == "response-image" {
+			fileName += defaultResponseImageExtension(responseImage.ContentType)
+		}
+
+		return &discordgo.File{
+			Name:        fileName,
+			ContentType: responseImage.ContentType,
+			Reader:      bytes.NewReader(responseImage.Data),
+		}
+	}
+
+	return nil
+}
+
+func defaultResponseImageExtension(contentType string) string {
+	switch strings.ToLower(strings.TrimSpace(contentType)) {
+	case mimeTypeJPEG:
+		return fileExtensionJPG
+	case "image/png":
+		return fileExtensionPNG
+	case mimeTypeWEBP:
+		return fileExtensionWEBP
+	case "image/gif":
+		return fileExtensionGIF
+	case "image/avif":
+		return fileExtensionAVIF
+	default:
+		return ""
+	}
+}
+
+func mergeResponseImageAssets(
+	existing []responseImageAsset,
+	incoming []responseImageAsset,
+) []responseImageAsset {
+	if len(incoming) == 0 {
+		return existing
+	}
+
+	if len(existing) == 0 {
+		return cloneResponseImageAssets(incoming)
+	}
+
+	merged := cloneResponseImageAssets(existing)
+	indexByKey := make(map[string]int, len(merged))
+
+	for index, image := range merged {
+		if key := responseImageAssetKey(image); key != "" {
+			indexByKey[key] = index
+		}
+	}
+
+	for _, image := range incoming {
+		if key := responseImageAssetKey(image); key != "" {
+			if existingIndex, ok := indexByKey[key]; ok {
+				merged[existingIndex] = mergeResponseImageAsset(merged[existingIndex], image)
+
+				continue
+			}
+
+			indexByKey[key] = len(merged)
+		}
+
+		merged = append(merged, cloneResponseImageAsset(image))
+	}
+
+	return merged
+}
+
+func responseImageAssetKey(image responseImageAsset) string {
+	if id := strings.TrimSpace(image.ID); id != "" {
+		return "id:" + id
+	}
+
+	if imageURL := strings.TrimSpace(image.URL); imageURL != "" {
+		return "url:" + strings.ToLower(imageURL)
+	}
+
+	return ""
+}
+
+func mergeResponseImageAsset(
+	existing responseImageAsset,
+	incoming responseImageAsset,
+) responseImageAsset {
+	if strings.TrimSpace(existing.ID) == "" {
+		existing.ID = strings.TrimSpace(incoming.ID)
+	}
+
+	if strings.TrimSpace(existing.URL) == "" {
+		existing.URL = strings.TrimSpace(incoming.URL)
+	}
+
+	if strings.TrimSpace(existing.ContentType) == "" {
+		existing.ContentType = strings.TrimSpace(incoming.ContentType)
+	}
+
+	if len(existing.Data) == 0 && len(incoming.Data) > 0 {
+		existing.Data = append([]byte(nil), incoming.Data...)
+	}
+
+	return existing
+}
+
+func cloneResponseImageAssets(images []responseImageAsset) []responseImageAsset {
+	if len(images) == 0 {
+		return nil
+	}
+
+	cloned := make([]responseImageAsset, 0, len(images))
+	for _, image := range images {
+		cloned = append(cloned, cloneResponseImageAsset(image))
+	}
+
+	return cloned
+}
+
+func cloneResponseImageAsset(image responseImageAsset) responseImageAsset {
+	return responseImageAsset{
+		ID:          image.ID,
+		URL:         image.URL,
+		ContentType: image.ContentType,
+		Data:        append([]byte(nil), image.Data...),
+	}
+}
+
+func (instance *bot) responseEmbedFile(
+	ctx context.Context,
+	imageURL string,
+) (*discordgo.File, error) {
+	const responseEmbedImageMaxBytes = 20 * 1024 * 1024
+
+	if instance == nil || instance.httpClient == nil {
+		return nil, errResponseEmbedImageUnavailable
+	}
+
+	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodGet, imageURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create response embed image request: %w", err)
+	}
+
+	httpResponse, err := instance.httpClient.Do(httpRequest)
+	if err != nil {
+		return nil, fmt.Errorf("fetch response embed image: %w", err)
+	}
+
+	defer func() {
+		_ = httpResponse.Body.Close()
+	}()
+
+	if httpResponse.StatusCode < http.StatusOK || httpResponse.StatusCode >= http.StatusMultipleChoices {
+		return nil, fmt.Errorf(
+			"fetch response embed image status %d: %w",
+			httpResponse.StatusCode,
+			os.ErrInvalid,
+		)
+	}
+
+	body, err := io.ReadAll(io.LimitReader(httpResponse.Body, responseEmbedImageMaxBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("read response embed image: %w", err)
+	}
+
+	if len(body) > responseEmbedImageMaxBytes {
+		return nil, fmt.Errorf("response embed image exceeds %d bytes: %w", responseEmbedImageMaxBytes, os.ErrInvalid)
+	}
+
+	contentType := strings.TrimSpace(httpResponse.Header.Get(contentTypeHeader))
+	if contentType == "" {
+		contentType = http.DetectContentType(body)
+	}
+
+	return &discordgo.File{
+		Name:        responseEmbedFilename(imageURL, contentType),
+		ContentType: contentType,
+		Reader:      bytes.NewReader(body),
+	}, nil
+}
+
+func responseEmbedFilename(imageURL string, contentType string) string {
+	const responseEmbedFilenameBase = "response-image"
+
+	if ext := responseEmbedImageExtension(imageURL, contentType); ext != "" {
+		return responseEmbedFilenameBase + ext
+	}
+
+	return responseEmbedFilenameBase
+}
+
+func responseEmbedImageExtension(imageURL string, contentType string) string {
+	parsedURL, err := url.Parse(strings.TrimSpace(imageURL))
+	if err == nil {
+		switch ext := strings.ToLower(path.Ext(parsedURL.Path)); ext {
+		case fileExtensionPNG,
+			fileExtensionJPG,
+			fileExtensionJPEG,
+			fileExtensionWEBP,
+			fileExtensionGIF,
+			fileExtensionAVIF:
+			return ext
+		}
+	}
+
+	mediaType, _, err := mime.ParseMediaType(strings.TrimSpace(contentType))
+	if err != nil {
+		return ""
+	}
+
+	extensions, err := mime.ExtensionsByType(mediaType)
+	if err != nil {
+		return ""
+	}
+
+	for _, ext := range extensions {
+		switch strings.ToLower(strings.TrimSpace(ext)) {
+		case fileExtensionPNG,
+			fileExtensionJPG,
+			fileExtensionJPEG,
+			fileExtensionWEBP,
+			fileExtensionGIF,
+			fileExtensionAVIF:
+			return ext
+		}
+	}
+
+	return ""
+}
+
+func responseEmbedContent(content string) (string, string) {
+	const responseEmbedImageBlockLineCount = 2
+
+	if strings.TrimSpace(content) == "" {
+		return content, ""
+	}
+
+	lines := strings.Split(strings.ReplaceAll(content, "\r\n", "\n"), "\n")
+	if len(lines) < responseEmbedImageBlockLineCount {
+		return content, ""
+	}
+
+	filteredLines := make([]string, 0, len(lines))
+	imageURL := ""
+
+	for index := range len(lines) - 1 {
+		line := lines[index]
+		if !responseImageLabelLine(line) {
+			filteredLines = append(filteredLines, line)
+
+			continue
+		}
+
+		candidateURL := strings.TrimSpace(lines[index+1])
+		if !isResponseImageURL(candidateURL) {
+			filteredLines = append(filteredLines, line)
+
+			continue
+		}
+
+		if imageURL == "" {
+			imageURL = candidateURL
+		}
+
+		filteredLines = append(filteredLines, line)
+		lines[index+1] = ""
+	}
+
+	if imageURL == "" {
+		return content, ""
+	}
+
+	lastLine := lines[len(lines)-1]
+	if strings.TrimSpace(lastLine) != "" {
+		filteredLines = append(filteredLines, lastLine)
+	}
+
+	return strings.TrimSpace(strings.Join(filteredLines, "\n")), imageURL
+}
+
+func responseImageLabelLine(line string) bool {
+	switch strings.TrimSpace(line) {
+	case "Generated image:", "Edited image:", "Image output:":
+		return true
+	default:
+		return false
+	}
+}
+
+func isResponseImageURL(rawURL string) bool {
+	parsedURL, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return false
+	}
+
+	switch strings.ToLower(strings.TrimSpace(parsedURL.Scheme)) {
+	case "http", "https":
+	default:
+		return false
+	}
+
+	switch strings.ToLower(path.Ext(parsedURL.Path)) {
+	case fileExtensionPNG,
+		fileExtensionJPG,
+		fileExtensionJPEG,
+		fileExtensionWEBP,
+		fileExtensionGIF,
+		fileExtensionAVIF:
+		return true
+	default:
+		return false
+	}
 }
 
 func contextWindowFooter(usage *tokenUsage, contextWindow int) string {

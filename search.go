@@ -36,7 +36,9 @@ const (
 	mimeTypeDOCX                     = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 	mimeTypePDF                      = "application/pdf"
 	mimeTypePPTX                     = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+	mimeTypeJPEG                     = "image/jpeg"
 	mimeTypePNG                      = "image/png"
+	mimeTypeWEBP                     = "image/webp"
 	searchDeciderDecisionInstruction = "Based on the conversation above, analyze the last user query " +
 		"and respond with your JSON decision."
 	searchAnswerTemplate = `Answer the user's query based on the web search results.

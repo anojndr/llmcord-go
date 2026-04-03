@@ -639,6 +639,7 @@ func newGeminiMediaAnalysisChatClient(
 			Usage:              nil,
 			ProviderResponseID: "",
 			SearchMetadata:     nil,
+			ResponseImages:     nil,
 		})
 		if err != nil {
 			return err
@@ -710,6 +711,7 @@ func newConcurrentGeminiMediaAnalysisChatClient(
 			Usage:              nil,
 			ProviderResponseID: "",
 			SearchMetadata:     nil,
+			ResponseImages:     nil,
 		})
 	})
 

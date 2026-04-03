@@ -618,6 +618,7 @@ func newNoSearchDecisionChatClient(
 			Usage:              nil,
 			ProviderResponseID: "",
 			SearchMetadata:     nil,
+			ResponseImages:     nil,
 		})
 	})
 }
@@ -2073,7 +2074,7 @@ func newRespondToMessageAttachmentClient(
 
 func newTextResponse(request *http.Request, body string) *http.Response {
 	response := new(http.Response)
-	response.Status = "200 OK"
+	response.Status = httpStatusOKText
 	response.StatusCode = http.StatusOK
 	response.Body = io.NopCloser(strings.NewReader(body))
 	response.ContentLength = int64(len(body))

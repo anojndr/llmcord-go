@@ -384,6 +384,7 @@ func newGeminiVideoAnalysisChatClient(
 			Usage:              nil,
 			ProviderResponseID: "",
 			SearchMetadata:     nil,
+			ResponseImages:     nil,
 		})
 	})
 
@@ -606,6 +607,7 @@ func TestMaybeAugmentConversationWithTikTokPreprocessesForNonGeminiModels(t *tes
 			Usage:              nil,
 			ProviderResponseID: "",
 			SearchMetadata:     nil,
+			ResponseImages:     nil,
 		})
 	})
 
