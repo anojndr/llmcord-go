@@ -239,7 +239,6 @@ func TestGenerateAndSendResponseStoresProviderResponseIDForXAIContinuation(t *te
 	sourceMessage := newPromptMessage(sourceMessageID, channelID, userID, botUserID)
 	assistantMessage := newAssistantReplyMessage(
 		assistantMessageID,
-		channelID,
 		newDiscordUser(botUserID, true),
 		sourceMessage,
 	)
@@ -347,6 +346,56 @@ func TestFinalizeXAIResponseAnswerParsesBridgeSourcesAndStripsAppendix(t *testin
 	}
 }
 
+func TestXAIStreamingVisibleAnswerTextHidesBridgeSourceAppendix(t *testing.T) {
+	t.Parallel()
+
+	request := newXAIResponsesStreamingRequest("http://127.0.0.1:8787/v1")
+
+	tests := []struct {
+		name     string
+		answer   string
+		expected string
+	}{
+		{
+			name:     "complete appendix heading is hidden",
+			answer:   "Answer paragraph.\n\nSources\n1. [Example Source](https://example.com/source)",
+			expected: "Answer paragraph.",
+		},
+		{
+			name:     "partial appendix heading is hidden",
+			answer:   "Answer paragraph.\n\nSo",
+			expected: "Answer paragraph.",
+		},
+		{
+			name:     "non appendix text stays visible",
+			answer:   "Answer paragraph.\n\nSummary",
+			expected: "Answer paragraph.\n\nSummary",
+		},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := xAIStreamingVisibleAnswerText(request, testCase.answer)
+			if got != testCase.expected {
+				t.Fatalf("unexpected visible answer text: got %q want %q", got, testCase.expected)
+			}
+		})
+	}
+}
+
+func TestXAIStreamingVisibleAnswerTextLeavesOfficialAPIUntouched(t *testing.T) {
+	t.Parallel()
+
+	request := newXAIResponsesStreamingRequest("https://api.x.ai/v1")
+	answerText := "Answer paragraph.\n\nSources\n1. [Example Source](https://example.com/source)"
+
+	if got := xAIStreamingVisibleAnswerText(request, answerText); got != answerText {
+		t.Fatalf("unexpected official xAI streaming answer text: %q", got)
+	}
+}
+
 func TestPersistentMessageNodeStoreRestoresXAIResponseIDAfterRestart(t *testing.T) {
 	t.Parallel()
 
@@ -373,7 +422,6 @@ func TestPersistentMessageNodeStoreRestoresXAIResponseIDAfterRestart(t *testing.
 
 	assistantMessage := newAssistantReplyMessage(
 		assistantMessageID,
-		channelID,
 		newDiscordUser(botUserID, true),
 		sourceMessage,
 	)
@@ -616,13 +664,12 @@ func newTestDiscordMessage(messageID string) *discordgo.Message {
 
 func newAssistantReplyMessage(
 	messageID string,
-	channelID string,
 	author *discordgo.User,
 	sourceMessage *discordgo.Message,
 ) *discordgo.Message {
 	message := new(discordgo.Message)
 	message.ID = messageID
-	message.ChannelID = channelID
+	message.ChannelID = sourceMessage.ChannelID
 	message.Author = author
 	message.MessageReference = sourceMessage.Reference()
 	message.Type = discordgo.MessageTypeReply

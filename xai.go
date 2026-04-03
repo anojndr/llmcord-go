@@ -37,6 +37,9 @@ const (
 	xAIResponsesStatusCompleted        = "completed"
 	xAIMarkdownLinkMatchParts          = 4
 	xAINumberedLineMatchParts          = 2
+	xAISourceAppendixHeader            = "Sources\n"
+	xAISourceAppendixParagraphHeader   = "\n\nSources\n"
+	xAISourceQueriesAppendixSeparator  = "\n\nSearch Queries\n"
 )
 
 type xAIResponsesUsage struct {
@@ -889,6 +892,75 @@ func finalizeXAIResponseAnswer(
 	return cleanedAnswerText, xAISourceAttributionSearchMetadata(attribution)
 }
 
+func xAIStreamingVisibleAnswerText(request chatCompletionRequest, answerText string) string {
+	if !xAIConfiguredModel(request.ConfiguredModel) || xAIBaseURLUsesOfficialAPI(request.Provider.BaseURL) {
+		return answerText
+	}
+
+	appendixStart, ok := xAIStreamingSourceAppendixStart(answerText)
+	if !ok {
+		return answerText
+	}
+
+	return strings.TrimRight(answerText[:appendixStart], "\n")
+}
+
+func xAIStreamingSourceAppendixStart(answerText string) (int, bool) {
+	if answerText == "" {
+		return 0, false
+	}
+
+	if appendixStart, ok := xAIStreamingSourceAppendixMarkerStart(
+		answerText,
+		xAISourceAppendixParagraphHeader,
+		false,
+	); ok {
+		return appendixStart, true
+	}
+
+	if appendixStart, ok := xAIStreamingSourceAppendixMarkerStart(
+		answerText,
+		xAISourceAppendixHeader,
+		true,
+	); ok {
+		return appendixStart, true
+	}
+
+	return 0, false
+}
+
+func xAIStreamingSourceAppendixMarkerStart(
+	answerText string,
+	marker string,
+	atStartOnly bool,
+) (int, bool) {
+	if strings.HasPrefix(answerText, marker) {
+		return 0, true
+	}
+
+	if atStartOnly {
+		if len(answerText) < len(marker) && strings.HasPrefix(marker, answerText) {
+			return 0, true
+		}
+
+		return 0, false
+	}
+
+	if appendixStart := strings.LastIndex(answerText, marker); appendixStart >= 0 {
+		return appendixStart, true
+	}
+
+	maxPrefixLength := minInt(len(marker)-1, len(answerText))
+	for prefixLength := maxPrefixLength; prefixLength > 0; prefixLength-- {
+		suffixStart := len(answerText) - prefixLength
+		if strings.HasPrefix(marker, answerText[suffixStart:]) {
+			return suffixStart, true
+		}
+	}
+
+	return 0, false
+}
+
 func mergeXAISourceAttribution(
 	left *xAISourceAttribution,
 	right *xAISourceAttribution,
@@ -1032,9 +1104,9 @@ func parseXAIBridgeSourceAttributionAppendix(
 ) (string, *xAISourceAttribution, bool) {
 	normalizedAnswerText := strings.ReplaceAll(answerText, "\r\n", "\n")
 
-	appendixStart := strings.LastIndex(normalizedAnswerText, "\n\nSources\n")
+	appendixStart := strings.LastIndex(normalizedAnswerText, xAISourceAppendixParagraphHeader)
 	if appendixStart < 0 {
-		if strings.HasPrefix(normalizedAnswerText, "Sources\n") {
+		if strings.HasPrefix(normalizedAnswerText, xAISourceAppendixHeader) {
 			appendixStart = 0
 		} else {
 			return answerText, nil, false
@@ -1044,14 +1116,14 @@ func parseXAIBridgeSourceAttributionAppendix(
 	cleanedAnswerText := strings.TrimSpace(normalizedAnswerText[:appendixStart])
 
 	appendix := strings.TrimLeft(normalizedAnswerText[appendixStart:], "\n")
-	if !strings.HasPrefix(appendix, "Sources\n") {
+	if !strings.HasPrefix(appendix, xAISourceAppendixHeader) {
 		return answerText, nil, false
 	}
 
-	sourcesSection := strings.TrimPrefix(appendix, "Sources\n")
+	sourcesSection := strings.TrimPrefix(appendix, xAISourceAppendixHeader)
 	queriesSection := ""
 
-	if sourcePart, queryPart, found := strings.Cut(sourcesSection, "\n\nSearch Queries\n"); found {
+	if sourcePart, queryPart, found := strings.Cut(sourcesSection, xAISourceQueriesAppendixSeparator); found {
 		sourcesSection = sourcePart
 		queriesSection = queryPart
 	}
