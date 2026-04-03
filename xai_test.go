@@ -42,6 +42,45 @@ func TestBuildChatCompletionRequestEnablesResponsesAPIForXAIProvider(t *testing.
 	}
 }
 
+func TestBuildXAIResponsesRequestBodyDefaultsBridgeSourceAttribution(t *testing.T) {
+	t.Parallel()
+
+	request := newXAIResponsesStreamingRequest("http://127.0.0.1:8787/v1")
+
+	requestBody, err := buildXAIResponsesRequestBody(request)
+	if err != nil {
+		t.Fatalf("build xAI responses request body: %v", err)
+	}
+
+	sourceAttribution, ok := requestBody["source_attribution"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected source attribution request body, got %#v", requestBody["source_attribution"])
+	}
+
+	if sourceAttribution["include_sources"] != true {
+		t.Fatalf("expected include_sources=true, got %#v", sourceAttribution)
+	}
+
+	if sourceAttribution["include_search_queries"] != true {
+		t.Fatalf("expected include_search_queries=true, got %#v", sourceAttribution)
+	}
+}
+
+func TestBuildXAIResponsesRequestBodySkipsBridgeSourceAttributionForOfficialAPI(t *testing.T) {
+	t.Parallel()
+
+	request := newXAIResponsesStreamingRequest("https://api.x.ai/v1")
+
+	requestBody, err := buildXAIResponsesRequestBody(request)
+	if err != nil {
+		t.Fatalf("build xAI responses request body: %v", err)
+	}
+
+	if _, ok := requestBody["source_attribution"]; ok {
+		t.Fatalf("expected official xAI API request to omit source_attribution: %#v", requestBody)
+	}
+}
+
 func TestOpenAIClientStreamChatCompletionUsesXAIResponsesAPI(t *testing.T) {
 	t.Parallel()
 
@@ -56,6 +95,7 @@ func TestOpenAIClientStreamChatCompletionUsesXAIResponsesAPI(t *testing.T) {
 		finishReason   string
 		usage          *tokenUsage
 		providerRespID string
+		searchMetadata *searchMetadata
 	)
 
 	err := client.streamChatCompletion(context.Background(), request, func(delta streamDelta) error {
@@ -71,6 +111,10 @@ func TestOpenAIClientStreamChatCompletionUsesXAIResponsesAPI(t *testing.T) {
 
 		if delta.ProviderResponseID != "" {
 			providerRespID = delta.ProviderResponseID
+		}
+
+		if delta.SearchMetadata != nil {
+			searchMetadata = cloneSearchMetadata(delta.SearchMetadata)
 		}
 
 		return nil
@@ -93,6 +137,27 @@ func TestOpenAIClientStreamChatCompletionUsesXAIResponsesAPI(t *testing.T) {
 
 	if providerRespID != testXAIProviderResponseID {
 		t.Fatalf("unexpected provider response id: %q", providerRespID)
+	}
+
+	if searchMetadata == nil {
+		t.Fatal("expected xAI source attribution metadata from completed response")
+	}
+
+	if len(searchMetadata.Queries) != 1 || searchMetadata.Queries[0] != "latest ai news" {
+		t.Fatalf("unexpected search queries: %#v", searchMetadata.Queries)
+	}
+
+	if len(searchMetadata.Results) != 1 {
+		t.Fatalf("unexpected source result count: %#v", searchMetadata.Results)
+	}
+
+	sources := extractSearchSources(searchMetadata.Results[0].Text)
+	if len(sources) != 1 {
+		t.Fatalf("unexpected parsed source count: %#v", sources)
+	}
+
+	if sources[0].Title != "Example Source" || sources[0].URL != "https://example.com/source" {
+		t.Fatalf("unexpected parsed source: %#v", sources[0])
 	}
 }
 
@@ -192,6 +257,7 @@ func TestGenerateAndSendResponseStoresProviderResponseIDForXAIContinuation(t *te
 				FinishReason:       finishReasonStop,
 				Usage:              nil,
 				ProviderResponseID: testXAIProviderResponseID,
+				SearchMetadata:     nil,
 			},
 		},
 	}
@@ -239,6 +305,45 @@ func TestGenerateAndSendResponseStoresProviderResponseIDForXAIContinuation(t *te
 
 	if assistantNode.providerResponseModel != request.ConfiguredModel {
 		t.Fatalf("unexpected assistant provider response model: %q", assistantNode.providerResponseModel)
+	}
+}
+
+func TestFinalizeXAIResponseAnswerParsesBridgeSourcesAndStripsAppendix(t *testing.T) {
+	t.Parallel()
+
+	request := newXAIResponsesStreamingRequest("http://127.0.0.1:8787/v1")
+	answerText := "Answer paragraph.\n\nSources\n" +
+		"1. [Example Source](https://example.com/source) (example.com/source) via `latest ai news`\n" +
+		"2. [Another Source](https://example.com/other) (example.com/other)\n\n" +
+		"Search Queries\n" +
+		"1. `latest ai news`\n"
+
+	cleanedText, metadata := finalizeXAIResponseAnswer(request, answerText, nil)
+
+	if cleanedText != "Answer paragraph." {
+		t.Fatalf("unexpected cleaned answer text: %q", cleanedText)
+	}
+
+	if metadata == nil {
+		t.Fatal("expected parsed xAI bridge search metadata")
+	}
+
+	if len(metadata.Queries) != 1 || metadata.Queries[0] != "latest ai news" {
+		t.Fatalf("unexpected parsed queries: %#v", metadata.Queries)
+	}
+
+	if len(metadata.Results) != 2 {
+		t.Fatalf("unexpected parsed result groups: %#v", metadata.Results)
+	}
+
+	firstResultSources := extractSearchSources(metadata.Results[0].Text)
+	if len(firstResultSources) != 1 || firstResultSources[0].URL != "https://example.com/source" {
+		t.Fatalf("unexpected scoped source parsing: %#v", firstResultSources)
+	}
+
+	secondResultSources := extractSearchSources(metadata.Results[1].Text)
+	if len(secondResultSources) != 1 || secondResultSources[0].URL != "https://example.com/other" {
+		t.Fatalf("unexpected unscoped source parsing: %#v", secondResultSources)
 	}
 }
 
@@ -382,6 +487,15 @@ func assertXAIResponsesRequest(t *testing.T, request *http.Request) {
 		t.Fatalf("unexpected stream flag: %#v", payload["stream"])
 	}
 
+	sourceAttribution, sourceAttributionOK := payload["source_attribution"].(map[string]any)
+	if !sourceAttributionOK {
+		t.Fatalf("unexpected source_attribution payload: %#v", payload["source_attribution"])
+	}
+
+	if sourceAttribution["include_sources"] != true || sourceAttribution["include_search_queries"] != true {
+		t.Fatalf("unexpected source_attribution settings: %#v", sourceAttribution)
+	}
+
 	inputPayload, inputOK := payload["input"].([]any)
 	if !inputOK || len(inputPayload) != 2 {
 		t.Fatalf("unexpected input payload: %#v", payload["input"])
@@ -444,7 +558,14 @@ func xAIResponseCompletedChunk() string {
 	return "data: {\"type\":\"response.completed\",\"response\":{" +
 		"\"id\":\"" + testXAIProviderResponseID + "\"," +
 		"\"status\":\"completed\"," +
-		"\"usage\":{\"input_tokens\":12,\"output_tokens\":34}}}\n\n"
+		"\"usage\":{\"input_tokens\":12,\"output_tokens\":34}," +
+		"\"source_attribution\":{" +
+		"\"search_queries\":[\"latest ai news\"]," +
+		"\"sources\":[{" +
+		"\"title\":\"Example Source\"," +
+		"\"url\":\"https://example.com/source\"," +
+		"\"search_queries\":[\"latest ai news\"]" +
+		"}]}}}\n\n"
 }
 
 func newXAIResponsesStreamingRequest(baseURL string) chatCompletionRequest {

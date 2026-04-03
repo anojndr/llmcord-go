@@ -617,6 +617,7 @@ func newNoSearchDecisionChatClient(
 			FinishReason:       finishReasonStop,
 			Usage:              nil,
 			ProviderResponseID: "",
+			SearchMetadata:     nil,
 		})
 	})
 }

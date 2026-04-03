@@ -296,7 +296,9 @@ func assertSearchResultHasSingleSource(
 		t.Fatalf("unexpected source count parsed from text: %d", len(sources))
 	}
 
-	if sources[0].URL != "https://example.com/source" {
+	const sourceURL = "https://example.com/source"
+
+	if sources[0].URL != sourceURL {
 		t.Fatalf("unexpected source parsed from text: %#v", sources[0])
 	}
 }
@@ -1492,7 +1494,9 @@ func TestRoutedWebSearchClientFallsBackToTavilyWhenMCPFails(t *testing.T) {
 		tavily: tavilyClient,
 	}
 
-	results, err := client.search(context.Background(), testSearchConfig(), []string{"latest ai news"})
+	const query = "latest ai news"
+
+	results, err := client.search(context.Background(), testSearchConfig(), []string{query})
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
@@ -1505,7 +1509,7 @@ func TestRoutedWebSearchClientFallsBackToTavilyWhenMCPFails(t *testing.T) {
 		t.Fatalf("unexpected Tavily call count: %d", len(tavilyClient.calls))
 	}
 
-	if len(results) != 1 || results[0].Query != "latest ai news" {
+	if len(results) != 1 || results[0].Query != query {
 		t.Fatalf("unexpected fallback results: %#v", results)
 	}
 }
@@ -1849,6 +1853,31 @@ func TestFormatSearchSourcesMessageUsesAngleBracketURLWithoutDuplicateTitle(t *t
 
 	if strings.Contains(message, "https://example.com/source <https://example.com/source>") {
 		t.Fatalf("expected source URL to be shown once when title is unavailable: %q", message)
+	}
+}
+
+func TestFormatSearchSourcesMessageUsesGenericSourcesLabelWithoutQuery(t *testing.T) {
+	t.Parallel()
+
+	metadata := &searchMetadata{
+		Queries: nil,
+		Results: []webSearchResult{{
+			Query: "",
+			Text: "Title: Example Source\n" +
+				"URL: https://example.com/source\n",
+		}},
+		MaxURLs:             defaultWebSearchMaxURLs,
+		VisualSearchSources: nil,
+	}
+
+	message := formatSearchSourcesMessage(metadata)
+
+	if !strings.Contains(message, "Sources:\n1. Example Source <https://example.com/source>") {
+		t.Fatalf("unexpected generic sources section: %q", message)
+	}
+
+	if strings.Contains(message, "Sources for \"\"") {
+		t.Fatalf("expected generic sources label without empty query quoting: %q", message)
 	}
 }
 

@@ -11,9 +11,16 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"regexp"
 	"strings"
 
 	"github.com/bwmarrin/discordgo"
+)
+
+var (
+	xAISourceAppendixNumberedLinePattern = regexp.MustCompile(`^\d+\.\s+(.*)$`)
+	xAISourceAppendixMarkdownLinkPattern = regexp.MustCompile(`^\[(.+?)\]\((https?://[^)]+)\)(.*)$`)
+	xAISourceAppendixInlineQueryPattern  = regexp.MustCompile("`([^`]+)`")
 )
 
 const (
@@ -28,6 +35,8 @@ const (
 	xAIResponsesInputImageType         = "input_image"
 	xAIResponsesInputTextType          = "input_text"
 	xAIResponsesStatusCompleted        = "completed"
+	xAIMarkdownLinkMatchParts          = 4
+	xAINumberedLineMatchParts          = 2
 )
 
 type xAIResponsesUsage struct {
@@ -47,21 +56,34 @@ type xAIResponsesIncompleteDetails struct {
 	Reason string `json:"reason"`
 }
 
+type xAISourceAttribution struct {
+	Sources       []xAISourceAttributionSource `json:"sources"`
+	SearchQueries []string                     `json:"search_queries"`
+}
+
+type xAISourceAttributionSource struct {
+	Title         string   `json:"title"`
+	URL           string   `json:"url"`
+	SearchQueries []string `json:"search_queries"`
+}
+
 type xAIResponsesStreamResponse struct {
 	ID                string                         `json:"id"`
 	Status            string                         `json:"status"`
 	Usage             *xAIResponsesUsage             `json:"usage"`
 	Error             *xAIResponsesError             `json:"error"`
 	IncompleteDetails *xAIResponsesIncompleteDetails `json:"incomplete_details"`
+	SourceAttribution *xAISourceAttribution          `json:"source_attribution"`
 }
 
 type xAIResponsesStreamEvent struct {
-	Type     string                      `json:"type"`
-	Delta    string                      `json:"delta"`
-	Message  string                      `json:"message"`
-	Code     any                         `json:"code"`
-	Error    *xAIResponsesError          `json:"error"`
-	Response *xAIResponsesStreamResponse `json:"response"`
+	Type              string                      `json:"type"`
+	Delta             string                      `json:"delta"`
+	Message           string                      `json:"message"`
+	Code              any                         `json:"code"`
+	Error             *xAIResponsesError          `json:"error"`
+	Response          *xAIResponsesStreamResponse `json:"response"`
+	SourceAttribution *xAISourceAttribution       `json:"source_attribution"`
 }
 
 func providerUsesResponsesAPI(providerName string, provider providerConfig) bool {
@@ -73,14 +95,7 @@ func providerUsesResponsesAPI(providerName string, provider providerConfig) bool
 		return true
 	}
 
-	parsedURL, err := url.Parse(strings.TrimSpace(provider.BaseURL))
-	if err != nil {
-		return false
-	}
-
-	host := strings.ToLower(strings.TrimSpace(parsedURL.Hostname()))
-
-	return host == "api.x.ai" || strings.HasSuffix(host, ".x.ai")
+	return xAIBaseURLUsesOfficialAPI(provider.BaseURL)
 }
 
 func assignXAIPreviousResponseID(
@@ -294,6 +309,10 @@ func buildXAIResponsesRequestBody(request chatCompletionRequest) (map[string]any
 
 	maps.Copy(requestBody, request.Provider.ExtraBody)
 
+	if shouldDefaultXAIBridgeSourceAttribution(request) {
+		requestBody["source_attribution"] = defaultXAIBridgeSourceAttributionRequest()
+	}
+
 	return requestBody, nil
 }
 
@@ -492,6 +511,48 @@ func buildXAIResponsesURL(baseURL string, extraQuery map[string]any) (string, er
 	return parsedURL.String(), nil
 }
 
+func xAIBaseURLUsesOfficialAPI(baseURL string) bool {
+	parsedURL, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil {
+		return false
+	}
+
+	host := strings.ToLower(strings.TrimSpace(parsedURL.Hostname()))
+
+	return host == "api.x.ai" || strings.HasSuffix(host, ".x.ai")
+}
+
+func xAIConfiguredModel(configuredModel string) bool {
+	providerName, _, err := splitConfiguredModel(strings.TrimSpace(configuredModel))
+	if err != nil {
+		return false
+	}
+
+	return strings.EqualFold(providerName, xAIProviderName)
+}
+
+func shouldDefaultXAIBridgeSourceAttribution(request chatCompletionRequest) bool {
+	if !xAIConfiguredModel(request.ConfiguredModel) || xAIBaseURLUsesOfficialAPI(request.Provider.BaseURL) {
+		return false
+	}
+
+	if len(request.Provider.ExtraBody) == 0 {
+		return true
+	}
+
+	_, exists := request.Provider.ExtraBody["source_attribution"]
+
+	return !exists
+}
+
+func defaultXAIBridgeSourceAttributionRequest() map[string]any {
+	return map[string]any{
+		"inline_citations":       true,
+		"include_sources":        true,
+		"include_search_queries": true,
+	}
+}
+
 func handleXAIResponsesStreamPayload(
 	payload []byte,
 	handle func(streamDelta) error,
@@ -527,6 +588,7 @@ func xAIResponsesStreamPayloadDelta(payload []byte) (streamDelta, bool, error) {
 			FinishReason:       "",
 			Usage:              nil,
 			ProviderResponseID: "",
+			SearchMetadata:     nil,
 		}, false, fmt.Errorf("decode xAI responses stream payload: %w", err)
 	}
 
@@ -540,9 +602,13 @@ func xAIResponsesStreamPayloadDelta(payload []byte) (streamDelta, bool, error) {
 			FinishReason:       "",
 			Usage:              nil,
 			ProviderResponseID: "",
+			SearchMetadata:     nil,
 		}, false, nil
 	case xAIResponsesStreamEventCompleted:
-		delta, completedErr := xAIResponsesCompletedDelta(event.Response)
+		delta, completedErr := xAIResponsesCompletedDelta(
+			event.Response,
+			event.SourceAttribution,
+		)
 
 		return delta, true, completedErr
 	case xAIResponsesStreamEventFailed, xAIResponsesStreamEventIncomplete:
@@ -552,6 +618,7 @@ func xAIResponsesStreamPayloadDelta(payload []byte) (streamDelta, bool, error) {
 			FinishReason:       "",
 			Usage:              nil,
 			ProviderResponseID: "",
+			SearchMetadata:     nil,
 		}, true, xAIResponsesTerminalError(eventType, event)
 	case xAIResponsesStreamEventError:
 		if event.Error != nil {
@@ -561,6 +628,7 @@ func xAIResponsesStreamPayloadDelta(payload []byte) (streamDelta, bool, error) {
 					FinishReason:       "",
 					Usage:              nil,
 					ProviderResponseID: "",
+					SearchMetadata:     nil,
 				}, true, openAIStreamEventError(
 					event.Error.Message,
 					event.Error.Type,
@@ -574,6 +642,7 @@ func xAIResponsesStreamPayloadDelta(payload []byte) (streamDelta, bool, error) {
 			FinishReason:       "",
 			Usage:              nil,
 			ProviderResponseID: "",
+			SearchMetadata:     nil,
 		}, true, openAIStreamEventError(event.Message, eventType, event.Code)
 	default:
 		return streamDelta{
@@ -582,11 +651,15 @@ func xAIResponsesStreamPayloadDelta(payload []byte) (streamDelta, bool, error) {
 			FinishReason:       "",
 			Usage:              nil,
 			ProviderResponseID: "",
+			SearchMetadata:     nil,
 		}, false, nil
 	}
 }
 
-func xAIResponsesCompletedDelta(response *xAIResponsesStreamResponse) (streamDelta, error) {
+func xAIResponsesCompletedDelta(
+	response *xAIResponsesStreamResponse,
+	eventSourceAttribution *xAISourceAttribution,
+) (streamDelta, error) {
 	if response == nil {
 		return streamDelta{
 			Thinking:           "",
@@ -594,6 +667,7 @@ func xAIResponsesCompletedDelta(response *xAIResponsesStreamResponse) (streamDel
 			FinishReason:       finishReasonStop,
 			Usage:              nil,
 			ProviderResponseID: "",
+			SearchMetadata:     xAISourceAttributionSearchMetadata(eventSourceAttribution),
 		}, nil
 	}
 
@@ -604,6 +678,7 @@ func xAIResponsesCompletedDelta(response *xAIResponsesStreamResponse) (streamDel
 				FinishReason:       "",
 				Usage:              nil,
 				ProviderResponseID: "",
+				SearchMetadata:     nil,
 			}, openAIStreamEventError(
 				response.Error.Message,
 				response.Error.Type,
@@ -624,6 +699,7 @@ func xAIResponsesCompletedDelta(response *xAIResponsesStreamResponse) (streamDel
 			FinishReason:       "",
 			Usage:              nil,
 			ProviderResponseID: "",
+			SearchMetadata:     nil,
 		}, xAIResponsesStatusError(status, reason)
 	}
 
@@ -633,6 +709,12 @@ func xAIResponsesCompletedDelta(response *xAIResponsesStreamResponse) (streamDel
 		FinishReason:       finishReasonStop,
 		Usage:              xAIResponsesTokenUsage(response.Usage),
 		ProviderResponseID: strings.TrimSpace(response.ID),
+		SearchMetadata: xAISourceAttributionSearchMetadata(
+			mergeXAISourceAttribution(
+				response.SourceAttribution,
+				eventSourceAttribution,
+			),
+		),
 	}, nil
 }
 
@@ -694,4 +776,400 @@ func xAIResponsesTokenUsage(usage *xAIResponsesUsage) *tokenUsage {
 		Input:  inputTokens,
 		Output: outputTokens,
 	}
+}
+
+func xAISourceAttributionSearchMetadata(attribution *xAISourceAttribution) *searchMetadata {
+	if attribution == nil {
+		return nil
+	}
+
+	queries := normalizeSearchQueries(attribution.SearchQueries)
+	querySources := make(map[string][]searchSource, len(queries))
+	seenURLsByQuery := make(map[string]map[string]struct{}, len(queries))
+
+	for _, query := range queries {
+		querySources[query] = nil
+		seenURLsByQuery[query] = make(map[string]struct{})
+	}
+
+	unscopedSources := make([]searchSource, 0, len(attribution.Sources))
+	seenUnscopedURLs := make(map[string]struct{}, len(attribution.Sources))
+
+	for _, rawSource := range attribution.Sources {
+		normalizedSource, ok := normalizeXAISourceAttributionSource(rawSource)
+		if !ok {
+			continue
+		}
+
+		source := xAISourceAttributionSearchSource(normalizedSource)
+
+		sourceQueries := normalizedSource.SearchQueries
+		if len(sourceQueries) == 0 {
+			unscopedSources = appendXAISourceIfUnique(unscopedSources, seenUnscopedURLs, source)
+
+			continue
+		}
+
+		for _, query := range sourceQueries {
+			if _, ok := querySources[query]; !ok {
+				queries = append(queries, query)
+				querySources[query] = nil
+				seenURLsByQuery[query] = make(map[string]struct{})
+			}
+
+			querySources[query] = appendXAISourceIfUnique(
+				querySources[query],
+				seenURLsByQuery[query],
+				source,
+			)
+		}
+	}
+
+	results := make([]webSearchResult, 0, len(queries)+1)
+
+	for _, query := range queries {
+		sources := querySources[query]
+		if len(sources) == 0 {
+			continue
+		}
+
+		results = append(results, webSearchResult{
+			Query: query,
+			Text:  xAISearchSourcesResultText(sources),
+		})
+	}
+
+	if len(unscopedSources) > 0 {
+		results = append(results, webSearchResult{
+			Query: "",
+			Text:  xAISearchSourcesResultText(unscopedSources),
+		})
+	}
+
+	if len(queries) == 0 && len(results) == 0 {
+		return nil
+	}
+
+	maxURLs := len(attribution.Sources)
+	if maxURLs == 0 {
+		for _, result := range results {
+			sourceCount := len(extractSearchSources(result.Text))
+			if sourceCount > maxURLs {
+				maxURLs = sourceCount
+			}
+		}
+	}
+
+	return &searchMetadata{
+		Queries:             queries,
+		Results:             results,
+		MaxURLs:             maxURLs,
+		VisualSearchSources: nil,
+	}
+}
+
+func finalizeXAIResponseAnswer(
+	request chatCompletionRequest,
+	answerText string,
+	existingMetadata *searchMetadata,
+) (string, *searchMetadata) {
+	if !xAIConfiguredModel(request.ConfiguredModel) || xAIBaseURLUsesOfficialAPI(request.Provider.BaseURL) {
+		return answerText, nil
+	}
+
+	cleanedAnswerText, attribution, ok := parseXAIBridgeSourceAttributionAppendix(answerText)
+	if !ok {
+		return answerText, nil
+	}
+
+	if searchMetadataHasWebSources(existingMetadata) {
+		return cleanedAnswerText, nil
+	}
+
+	return cleanedAnswerText, xAISourceAttributionSearchMetadata(attribution)
+}
+
+func mergeXAISourceAttribution(
+	left *xAISourceAttribution,
+	right *xAISourceAttribution,
+) *xAISourceAttribution {
+	switch {
+	case left == nil:
+		return cloneXAISourceAttribution(right)
+	case right == nil:
+		return cloneXAISourceAttribution(left)
+	}
+
+	merged := cloneXAISourceAttribution(left)
+	merged.SearchQueries = normalizeSearchQueries(append(merged.SearchQueries, right.SearchQueries...))
+
+	seenURLs := make(map[string]int, len(merged.Sources))
+	for index, source := range merged.Sources {
+		foldedURL := strings.ToLower(strings.TrimSpace(source.URL))
+		if foldedURL == "" {
+			continue
+		}
+
+		seenURLs[foldedURL] = index
+	}
+
+	for _, source := range right.Sources {
+		normalizedSource, ok := normalizeXAISourceAttributionSource(source)
+		if !ok {
+			continue
+		}
+
+		foldedURL := strings.ToLower(normalizedSource.URL)
+		if existingIndex, ok := seenURLs[foldedURL]; ok {
+			existingSource := merged.Sources[existingIndex]
+			if strings.TrimSpace(existingSource.Title) == "" {
+				existingSource.Title = normalizedSource.Title
+			}
+
+			existingSource.SearchQueries = normalizeSearchQueries(
+				append(existingSource.SearchQueries, normalizedSource.SearchQueries...),
+			)
+			merged.Sources[existingIndex] = existingSource
+
+			continue
+		}
+
+		seenURLs[foldedURL] = len(merged.Sources)
+		merged.Sources = append(merged.Sources, normalizedSource)
+	}
+
+	return merged
+}
+
+func cloneXAISourceAttribution(attribution *xAISourceAttribution) *xAISourceAttribution {
+	if attribution == nil {
+		return nil
+	}
+
+	cloned := new(xAISourceAttribution)
+
+	cloned.SearchQueries = append([]string(nil), attribution.SearchQueries...)
+	cloned.Sources = make([]xAISourceAttributionSource, 0, len(attribution.Sources))
+
+	for _, source := range attribution.Sources {
+		cloned.Sources = append(cloned.Sources, xAISourceAttributionSource{
+			Title:         source.Title,
+			URL:           source.URL,
+			SearchQueries: append([]string(nil), source.SearchQueries...),
+		})
+	}
+
+	return cloned
+}
+
+func normalizeXAISourceAttributionSource(
+	source xAISourceAttributionSource,
+) (xAISourceAttributionSource, bool) {
+	var emptySource xAISourceAttributionSource
+
+	source.URL = strings.TrimSpace(source.URL)
+	source.Title = strings.TrimSpace(source.Title)
+	source.SearchQueries = normalizeSearchQueries(source.SearchQueries)
+
+	if source.URL == "" {
+		return emptySource, false
+	}
+
+	return source, true
+}
+
+func xAISourceAttributionSearchSource(source xAISourceAttributionSource) searchSource {
+	return searchSource{
+		Title: source.Title,
+		URL:   source.URL,
+	}
+}
+
+func appendXAISourceIfUnique(
+	sources []searchSource,
+	seenURLs map[string]struct{},
+	source searchSource,
+) []searchSource {
+	foldedURL := strings.ToLower(strings.TrimSpace(source.URL))
+	if foldedURL == "" {
+		return sources
+	}
+
+	if _, ok := seenURLs[foldedURL]; ok {
+		return sources
+	}
+
+	seenURLs[foldedURL] = struct{}{}
+
+	return append(sources, source)
+}
+
+func xAISearchSourcesResultText(sources []searchSource) string {
+	var builder strings.Builder
+
+	for index, source := range sources {
+		if index > 0 {
+			builder.WriteString("\n\n")
+		}
+
+		title := strings.TrimSpace(source.Title)
+		if title != "" {
+			builder.WriteString("Title: ")
+			builder.WriteString(title)
+			builder.WriteString("\n")
+		}
+
+		builder.WriteString("URL: ")
+		builder.WriteString(strings.TrimSpace(source.URL))
+		builder.WriteString("\n")
+	}
+
+	return builder.String()
+}
+
+func parseXAIBridgeSourceAttributionAppendix(
+	answerText string,
+) (string, *xAISourceAttribution, bool) {
+	normalizedAnswerText := strings.ReplaceAll(answerText, "\r\n", "\n")
+
+	appendixStart := strings.LastIndex(normalizedAnswerText, "\n\nSources\n")
+	if appendixStart < 0 {
+		if strings.HasPrefix(normalizedAnswerText, "Sources\n") {
+			appendixStart = 0
+		} else {
+			return answerText, nil, false
+		}
+	}
+
+	cleanedAnswerText := strings.TrimSpace(normalizedAnswerText[:appendixStart])
+
+	appendix := strings.TrimLeft(normalizedAnswerText[appendixStart:], "\n")
+	if !strings.HasPrefix(appendix, "Sources\n") {
+		return answerText, nil, false
+	}
+
+	sourcesSection := strings.TrimPrefix(appendix, "Sources\n")
+	queriesSection := ""
+
+	if sourcePart, queryPart, found := strings.Cut(sourcesSection, "\n\nSearch Queries\n"); found {
+		sourcesSection = sourcePart
+		queriesSection = queryPart
+	}
+
+	attribution := &xAISourceAttribution{
+		Sources:       parseXAIBridgeSourcesSection(sourcesSection),
+		SearchQueries: parseXAIBridgeQueriesSection(queriesSection),
+	}
+
+	if len(attribution.Sources) == 0 && len(attribution.SearchQueries) == 0 {
+		return answerText, nil, false
+	}
+
+	if cleanedAnswerText == "" {
+		return answerText, attribution, true
+	}
+
+	return cleanedAnswerText, attribution, true
+}
+
+func parseXAIBridgeSourcesSection(section string) []xAISourceAttributionSource {
+	lines := strings.Split(strings.TrimSpace(section), "\n")
+	sources := make([]xAISourceAttributionSource, 0, len(lines))
+
+	for _, line := range lines {
+		lineText, parsed := parseXAIBridgeNumberedLine(line)
+		if !parsed {
+			continue
+		}
+
+		source, parsed := parseXAIBridgeSourceLine(lineText)
+		if !parsed {
+			continue
+		}
+
+		sources = append(sources, source)
+	}
+
+	return sources
+}
+
+func parseXAIBridgeQueriesSection(section string) []string {
+	if strings.TrimSpace(section) == "" {
+		return nil
+	}
+
+	lines := strings.Split(strings.TrimSpace(section), "\n")
+	queries := make([]string, 0, len(lines))
+
+	for _, line := range lines {
+		lineText, parsed := parseXAIBridgeNumberedLine(line)
+		if !parsed {
+			continue
+		}
+
+		queries = append(queries, parseXAIBridgeQueryList(lineText)...)
+	}
+
+	return normalizeSearchQueries(queries)
+}
+
+func parseXAIBridgeNumberedLine(line string) (string, bool) {
+	match := xAISourceAppendixNumberedLinePattern.FindStringSubmatch(strings.TrimSpace(line))
+	if len(match) != xAINumberedLineMatchParts {
+		return "", false
+	}
+
+	return strings.TrimSpace(match[1]), true
+}
+
+func parseXAIBridgeSourceLine(line string) (xAISourceAttributionSource, bool) {
+	var emptySource xAISourceAttributionSource
+
+	match := xAISourceAppendixMarkdownLinkPattern.FindStringSubmatch(strings.TrimSpace(line))
+	if len(match) != xAIMarkdownLinkMatchParts {
+		return emptySource, false
+	}
+
+	source, ok := normalizeXAISourceAttributionSource(xAISourceAttributionSource{
+		Title:         strings.TrimSpace(match[1]),
+		URL:           strings.TrimSpace(match[2]),
+		SearchQueries: parseXAIBridgeSourceQueries(match[3]),
+	})
+	if !ok {
+		return emptySource, false
+	}
+
+	return source, true
+}
+
+func parseXAIBridgeSourceQueries(remainder string) []string {
+	_, queryText, found := strings.Cut(remainder, " via ")
+	if !found {
+		return nil
+	}
+
+	return parseXAIBridgeQueryList(queryText)
+}
+
+func parseXAIBridgeQueryList(text string) []string {
+	queryMatches := xAISourceAppendixInlineQueryPattern.FindAllStringSubmatch(text, -1)
+	if len(queryMatches) > 0 {
+		queries := make([]string, 0, len(queryMatches))
+		for _, match := range queryMatches {
+			if len(match) != xAINumberedLineMatchParts {
+				continue
+			}
+
+			queries = append(queries, match[1])
+		}
+
+		return normalizeSearchQueries(queries)
+	}
+
+	trimmedText := strings.Trim(strings.TrimSpace(text), "`")
+	if trimmedText == "" {
+		return nil
+	}
+
+	return normalizeSearchQueries(strings.Split(trimmedText, ";"))
 }

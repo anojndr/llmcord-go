@@ -373,6 +373,10 @@ func mergeSearchMetadata(left, right *searchMetadata) *searchMetadata {
 	return merged
 }
 
+func searchMetadataHasWebSources(metadata *searchMetadata) bool {
+	return metadata != nil && (len(metadata.Queries) > 0 || len(metadata.Results) > 0)
+}
+
 func (client routedWebSearchClient) search(
 	ctx context.Context,
 	loadedConfig config,
@@ -905,7 +909,12 @@ func formatWebSearchSourcesMessage(metadata *searchMetadata) string {
 
 	for _, result := range metadata.Results {
 		builder.WriteString("\n")
-		_, _ = fmt.Fprintf(&builder, "Sources for %q:\n", result.Query)
+
+		if strings.TrimSpace(result.Query) == "" {
+			builder.WriteString("Sources:\n")
+		} else {
+			_, _ = fmt.Fprintf(&builder, "Sources for %q:\n", result.Query)
+		}
 
 		sources := extractSearchSources(result.Text)
 		if len(sources) == 0 {

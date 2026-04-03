@@ -510,6 +510,7 @@ func assertYouTubeShortsAugmentationForProvider(
 			FinishReason:       finishReasonStop,
 			Usage:              nil,
 			ProviderResponseID: "",
+			SearchMetadata:     nil,
 		})
 	})
 

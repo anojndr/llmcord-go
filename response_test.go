@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 	"google.golang.org/genai"
@@ -229,6 +230,80 @@ func TestBuildRenderSpecsAddsThinkingButtonOnlyToFinalSegment(t *testing.T) {
 
 	if !specs[1].actions.showThinking {
 		t.Fatalf("expected thinking button on final segment: %#v", specs[1])
+	}
+}
+
+func TestHandleGeneratedStreamDeltaMergesSearchMetadataFromStream(t *testing.T) {
+	t.Parallel()
+
+	const query = "latest ai news"
+
+	instance := new(bot)
+	tracker := newResponseTracker(newTestDiscordMessage("source-message"), "")
+	tracker.searchMetadata = &searchMetadata{
+		Queries: nil,
+		Results: nil,
+		MaxURLs: 0,
+		VisualSearchSources: []visualSearchSourceGroup{{
+			Label: "Visual search",
+			Sources: []searchSource{{
+				Title: "Visual Source",
+				URL:   "https://example.com/visual",
+			}},
+		}},
+	}
+
+	finishReason := ""
+	lastRenderTime := time.Time{}
+	state := generatedStreamState{
+		warnings:            nil,
+		answerAccumulator:   &segmentAccumulator{maxLength: embedResponseMaxLength, segments: []string{""}},
+		thinkingAccumulator: &segmentAccumulator{maxLength: embedResponseMaxLength, segments: []string{""}},
+		finishReason:        &finishReason,
+		lastRenderTime:      &lastRenderTime,
+		maxLength:           embedResponseMaxLength,
+		usePlainResponses:   true,
+	}
+
+	err := instance.handleGeneratedStreamDelta(
+		context.Background(),
+		tracker,
+		state,
+		streamDelta{
+			Thinking:           "",
+			Content:            "",
+			FinishReason:       "",
+			Usage:              nil,
+			ProviderResponseID: "",
+			SearchMetadata: &searchMetadata{
+				Queries: []string{query},
+				Results: []webSearchResult{{
+					Query: query,
+					Text:  "Title: Example Source\nURL: https://example.com/source\n",
+				}},
+				MaxURLs:             1,
+				VisualSearchSources: nil,
+			},
+		},
+	)
+	if err != nil {
+		t.Fatalf("handle generated stream delta: %v", err)
+	}
+
+	if tracker.searchMetadata == nil {
+		t.Fatal("expected merged search metadata on tracker")
+	}
+
+	if len(tracker.searchMetadata.Queries) != 1 || tracker.searchMetadata.Queries[0] != query {
+		t.Fatalf("unexpected merged search queries: %#v", tracker.searchMetadata.Queries)
+	}
+
+	if len(tracker.searchMetadata.Results) != 1 {
+		t.Fatalf("unexpected merged search results: %#v", tracker.searchMetadata.Results)
+	}
+
+	if len(tracker.searchMetadata.VisualSearchSources) != 1 {
+		t.Fatalf("expected existing visual search metadata to be preserved: %#v", tracker.searchMetadata.VisualSearchSources)
 	}
 }
 
@@ -951,9 +1026,9 @@ func TestGenerateAndSendResponseShowsThinkingDuringStreamButNotFinalResponse(t *
 	instance.nodes = newMessageNodeStore(10)
 	instance.chatCompletions = fakeChatCompletionClient{
 		deltas: []streamDelta{
-			{Thinking: thoughtText, Content: "", FinishReason: "", Usage: nil, ProviderResponseID: ""},
-			{Thinking: "", Content: answerText, FinishReason: "", Usage: nil, ProviderResponseID: ""},
-			{Thinking: "", Content: "", FinishReason: finishReasonStop, Usage: nil, ProviderResponseID: ""},
+			{Thinking: thoughtText, Content: "", FinishReason: "", Usage: nil, ProviderResponseID: "", SearchMetadata: nil},
+			{Thinking: "", Content: answerText, FinishReason: "", Usage: nil, ProviderResponseID: "", SearchMetadata: nil},
+			{Thinking: "", Content: "", FinishReason: finishReasonStop, Usage: nil, ProviderResponseID: "", SearchMetadata: nil},
 		},
 	}
 
@@ -1031,9 +1106,9 @@ func TestGenerateAndSendResponsePersistsThinkingInConversationHistory(t *testing
 	instance.nodes = newMessageNodeStore(10)
 	instance.chatCompletions = fakeChatCompletionClient{
 		deltas: []streamDelta{
-			{Thinking: thoughtText, Content: "", FinishReason: "", Usage: nil, ProviderResponseID: ""},
-			{Thinking: "", Content: answerText, FinishReason: "", Usage: nil, ProviderResponseID: ""},
-			{Thinking: "", Content: "", FinishReason: finishReasonStop, Usage: nil, ProviderResponseID: ""},
+			{Thinking: thoughtText, Content: "", FinishReason: "", Usage: nil, ProviderResponseID: "", SearchMetadata: nil},
+			{Thinking: "", Content: answerText, FinishReason: "", Usage: nil, ProviderResponseID: "", SearchMetadata: nil},
+			{Thinking: "", Content: "", FinishReason: finishReasonStop, Usage: nil, ProviderResponseID: "", SearchMetadata: nil},
 		},
 	}
 

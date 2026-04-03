@@ -127,6 +127,7 @@ func newConcurrentDownloadedVideoAnalysisChatClient(
 			FinishReason:       finishReasonStop,
 			Usage:              nil,
 			ProviderResponseID: "",
+			SearchMetadata:     nil,
 		})
 	})
 }
