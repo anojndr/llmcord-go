@@ -34,6 +34,7 @@ const (
 	xAIResponsesStreamEventOutputDone  = "response.output_item.done"
 	xAIResponsesStreamEventOutputDelta = "response.output_text.delta"
 	xAIResponsesImageDetailAuto        = "auto"
+	xAIResponsesInputFileType          = "input_file"
 	xAIResponsesInputImageType         = "input_image"
 	xAIResponsesInputTextType          = "input_text"
 	xAIResponsesOutputTypeImage        = "image_generation_call"
@@ -515,6 +516,30 @@ func xAIResponsesUserPart(part contentPart) (map[string]any, bool, error) {
 			"image_url": imageURL,
 			"detail":    xAIResponsesImageDetailAuto,
 		}, true, nil
+	case contentTypeDocument:
+		documentBytes, mimeType, filename, err := attachmentBinaryData(part)
+		if err != nil {
+			return nil, false, err
+		}
+
+		if len(documentBytes) == 0 {
+			return nil, false, nil
+		}
+
+		filePart := map[string]any{
+			"type": xAIResponsesInputFileType,
+			"file_data": fmt.Sprintf(
+				"data:%s;base64,%s",
+				mimeType,
+				base64.StdEncoding.EncodeToString(documentBytes),
+			),
+		}
+
+		if strings.TrimSpace(filename) != "" {
+			filePart["filename"] = filename
+		}
+
+		return filePart, true, nil
 	default:
 		return nil, false, fmt.Errorf("unsupported xAI content part type %q: %w", partType, os.ErrInvalid)
 	}

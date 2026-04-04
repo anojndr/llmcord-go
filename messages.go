@@ -639,6 +639,11 @@ func messageContentOptionsForModel(
 		options.allowVideo = true
 	}
 
+	if xAIConfiguredModel(providerSlashModel) {
+		options.allowDocuments = true
+		options.allowedDocumentMIMETypes = nil
+	}
+
 	return options, nil
 }
 

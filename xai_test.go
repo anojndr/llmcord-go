@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -83,6 +84,124 @@ func TestBuildXAIResponsesRequestBodySkipsBridgeSourceAttributionForOfficialAPI(
 
 	if _, ok := requestBody["source_attribution"]; ok {
 		t.Fatalf("expected official xAI API request to omit source_attribution: %#v", requestBody)
+	}
+}
+
+func TestBuildXAIResponsesRequestBodyEncodesDocumentPartsAsInputFiles(t *testing.T) {
+	t.Parallel()
+
+	request := newXAIResponsesStreamingRequest("https://api.x.ai/v1")
+	request.Messages[1].Content = []contentPart{
+		{"type": contentTypeText, "text": "Summarize this file."},
+		{
+			"type":               contentTypeDocument,
+			contentFieldBytes:    []byte("document-bytes"),
+			contentFieldMIMEType: mimeTypePDF,
+			contentFieldFilename: testPDFFilename,
+		},
+	}
+
+	requestBody, err := buildXAIResponsesRequestBody(request)
+	if err != nil {
+		t.Fatalf("build xAI responses request body: %v", err)
+	}
+
+	inputPayload, inputOK := requestBody["input"].([]map[string]any)
+	if !inputOK || len(inputPayload) != 2 {
+		t.Fatalf("unexpected input payload: %#v", requestBody["input"])
+	}
+
+	userContent, contentOK := inputPayload[1]["content"].([]map[string]any)
+	if !contentOK || len(userContent) != 2 {
+		t.Fatalf("unexpected user content payload: %#v", inputPayload[1]["content"])
+	}
+
+	if userContent[0]["type"] != xAIResponsesInputTextType || userContent[0]["text"] != "Summarize this file." {
+		t.Fatalf("unexpected first user content part: %#v", userContent[0])
+	}
+
+	if userContent[1]["type"] != xAIResponsesInputFileType {
+		t.Fatalf("unexpected second user content part: %#v", userContent[1])
+	}
+
+	if userContent[1]["filename"] != testPDFFilename {
+		t.Fatalf("unexpected xAI file part filename: %#v", userContent[1]["filename"])
+	}
+
+	expectedFileData := "data:" + mimeTypePDF + ";base64," +
+		base64.StdEncoding.EncodeToString([]byte("document-bytes"))
+	if userContent[1]["file_data"] != expectedFileData {
+		t.Fatalf("unexpected xAI file data: %#v", userContent[1]["file_data"])
+	}
+}
+
+func TestBuildXAIResponsesRequestBodyEncodesTextAttachmentsAsInputFiles(t *testing.T) {
+	t.Parallel()
+
+	request := newXAIResponsesStreamingRequest("https://api.x.ai/v1")
+	request.Messages[1].Content = []contentPart{
+		{"type": contentTypeText, "text": "Summarize this file."},
+		{
+			"type":               contentTypeDocument,
+			contentFieldBytes:    []byte("plain-text file contents"),
+			contentFieldMIMEType: "text/plain",
+			contentFieldFilename: "context.txt",
+		},
+	}
+
+	requestBody, err := buildXAIResponsesRequestBody(request)
+	if err != nil {
+		t.Fatalf("build xAI responses request body: %v", err)
+	}
+
+	inputPayload, inputOK := requestBody["input"].([]map[string]any)
+	if !inputOK || len(inputPayload) != 2 {
+		t.Fatalf("unexpected input payload: %#v", requestBody["input"])
+	}
+
+	userContent, contentOK := inputPayload[1]["content"].([]map[string]any)
+	if !contentOK || len(userContent) != 2 {
+		t.Fatalf("unexpected user content payload: %#v", inputPayload[1]["content"])
+	}
+
+	if userContent[1]["type"] != xAIResponsesInputFileType {
+		t.Fatalf("unexpected text attachment content part: %#v", userContent[1])
+	}
+
+	expectedFileData := "data:text/plain;base64," +
+		base64.StdEncoding.EncodeToString([]byte("plain-text file contents"))
+	if userContent[1]["file_data"] != expectedFileData {
+		t.Fatalf("unexpected text attachment file data: %#v", userContent[1]["file_data"])
+	}
+}
+
+func TestCanExtractPDFContentsDisablesLocalExtractionForXAI(t *testing.T) {
+	t.Parallel()
+
+	var loadedConfig config
+
+	loadedConfig.Providers = map[string]providerConfig{
+		xAIProviderName: {
+			Type:         "",
+			BaseURL:      "https://api.x.ai/v1",
+			APIKey:       "",
+			APIKeys:      nil,
+			ExtraHeaders: nil,
+			ExtraQuery:   nil,
+			ExtraBody:    nil,
+		},
+	}
+	loadedConfig.Models = map[string]map[string]any{
+		"x-ai/grok-4": nil,
+	}
+
+	canExtract, err := canExtractPDFContents(loadedConfig, "x-ai/grok-4")
+	if err != nil {
+		t.Fatalf("check xAI document extraction support: %v", err)
+	}
+
+	if canExtract {
+		t.Fatal("expected xAI document extraction to be disabled")
 	}
 }
 

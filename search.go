@@ -682,13 +682,37 @@ func sanitizeMessageContentForModel(
 	case string:
 		return typedContent, nil
 	case []contentPart:
+		inlineAttachmentText := inlineTextAttachmentContent(typedContent, options)
+
 		filteredContent := filterContentPartsForOptions(typedContent, options)
 		if !contentPartsContainNonText(filteredContent) {
-			return contentPartsText(filteredContent), nil
+			return appendInlineAttachmentText(
+				contentPartsText(filteredContent),
+				inlineAttachmentText,
+			), nil
 		}
 
-		clonedContent := make([]contentPart, len(filteredContent))
-		copy(clonedContent, filteredContent)
+		clonedContent := make([]contentPart, 0, len(filteredContent)+1)
+		textContent := appendInlineAttachmentText(
+			contentPartsText(filteredContent),
+			inlineAttachmentText,
+		)
+
+		if strings.TrimSpace(textContent) != "" {
+			clonedContent = append(clonedContent, contentPart{
+				"type": contentTypeText,
+				"text": textContent,
+			})
+		}
+
+		for _, part := range filteredContent {
+			partType, _ := part["type"].(string)
+			if partType == contentTypeText {
+				continue
+			}
+
+			clonedContent = append(clonedContent, cloneContentPart(part))
+		}
 
 		return clonedContent, nil
 	default:

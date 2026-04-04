@@ -401,6 +401,48 @@ func TestMessageContentOptionsForModelRestrictsGeminiDocumentsToPDF(t *testing.T
 	}
 }
 
+func TestMessageContentOptionsForModelAllowsXAIManagedDocuments(t *testing.T) {
+	t.Parallel()
+
+	var loadedConfig config
+
+	loadedConfig.Providers = map[string]providerConfig{
+		xAIProviderName: {
+			Type:         "",
+			BaseURL:      "https://api.x.ai/v1",
+			APIKey:       "",
+			APIKeys:      nil,
+			ExtraHeaders: nil,
+			ExtraQuery:   nil,
+			ExtraBody:    nil,
+		},
+	}
+	loadedConfig.Models = map[string]map[string]any{
+		"x-ai/grok-4": nil,
+	}
+
+	options, err := messageContentOptionsForModel(loadedConfig, "x-ai/grok-4")
+	if err != nil {
+		t.Fatalf("build message content options: %v", err)
+	}
+
+	if !options.allowDocuments {
+		t.Fatal("expected xAI documents to be enabled")
+	}
+
+	if options.allowedDocumentMIMETypes != nil {
+		t.Fatalf("expected xAI documents to allow all supported MIME types: %#v", options.allowedDocumentMIMETypes)
+	}
+
+	if options.allowAudio {
+		t.Fatalf("expected xAI audio to remain disabled: %#v", options)
+	}
+
+	if options.allowVideo {
+		t.Fatalf("expected xAI video to remain disabled: %#v", options)
+	}
+}
+
 type concurrentFetchGate struct {
 	expected     int32
 	startedCount int32
