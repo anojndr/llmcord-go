@@ -172,6 +172,10 @@ func canExtractPDFContents(
 		return false, err
 	}
 
+	if xAIConfiguredModel(providerSlashModel) {
+		return false, nil
+	}
+
 	return true, nil
 }
 

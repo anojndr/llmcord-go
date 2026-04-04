@@ -330,8 +330,9 @@ golangci-lint run --default=all
 ### Attachment and enrichment behavior
 
 - Gemini models can directly inspect Discord PDFs, audio, and video attachments through the Files API.
-- DOCX and PPTX are extracted locally and appended as text plus extracted images.
-- Non-Gemini models use Gemini sidecar analysis for audio/video attachments.
+- Direct `x-ai` providers send Discord text, PDF, DOCX, and PPTX attachments to the Responses API as `input_file` parts.
+- Other non-Gemini providers still extract PDF, DOCX, and PPTX content locally and append the extracted text plus extracted images.
+- Non-Gemini models still use Gemini sidecar analysis for audio/video attachments.
 - Supported user-supplied URLs can trigger automatic content enrichment:
   - TikTok
   - Facebook

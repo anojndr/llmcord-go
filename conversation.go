@@ -188,19 +188,26 @@ func buildMessageContent(
 	options messageContentOptions,
 ) (any, messageContentSummary) {
 	selectedMedia, summary := selectMessageMedia(node.media, options)
+	truncatedText := truncateRunes(
+		appendInlineAttachmentText(
+			node.text,
+			inlineTextAttachmentContent(node.media, options),
+		),
+		maxText,
+	)
+
 	if len(selectedMedia) > 0 {
 		parts := make([]contentPart, 0, len(selectedMedia)+1)
 
 		textPart := make(contentPart)
 		textPart["type"] = contentTypeText
-		textPart["text"] = truncateRunes(node.text, maxText)
+		textPart["text"] = truncatedText
 		parts = append(parts, textPart)
 		parts = append(parts, selectedMedia...)
 
 		return parts, summary
 	}
 
-	truncatedText := truncateRunes(node.text, maxText)
 	if truncatedText == "" {
 		return nil, summary
 	}
@@ -239,6 +246,10 @@ func selectMessageMedia(
 
 			selectedMedia = append(selectedMedia, part)
 		case contentTypeDocument:
+			if documentPartShouldInlineAsText(part, options) {
+				continue
+			}
+
 			if !messageContentOptionsAllowsDocumentPart(options, part) {
 				summary.unsupportedAttachmentCnt++
 
@@ -359,9 +370,9 @@ func supportedAttachmentCount(attachments []*discordgo.MessageAttachment) int {
 func buildMessageText(
 	message *discordgo.Message,
 	cleanedContent string,
-	payloads []attachmentPayload,
+	_ []attachmentPayload,
 ) string {
-	textParts := make([]string, 0, 1+len(message.Embeds)+len(message.Components)+len(payloads))
+	textParts := make([]string, 0, 1+len(message.Embeds)+len(message.Components))
 	if cleanedContent != "" {
 		textParts = append(textParts, cleanedContent)
 	}
@@ -388,12 +399,6 @@ func buildMessageText(
 
 	for _, component := range message.Components {
 		textParts = append(textParts, messageComponentTextParts(component)...)
-	}
-
-	for _, payload := range payloads {
-		if attachmentIsText(attachmentContentType(payload.attachment)) {
-			textParts = append(textParts, string(payload.body))
-		}
 	}
 
 	return joinNonEmpty(textParts)
@@ -477,6 +482,8 @@ func attachmentPayloadToContentPart(payload attachmentPayload) (contentPart, boo
 		}
 
 		return part, true
+	case attachmentIsText(contentType):
+		return binaryAttachmentContentPart(contentTypeDocument, payload, contentType), true
 	case strings.HasPrefix(contentType, "audio/"):
 		return binaryAttachmentContentPart(contentTypeAudioData, payload, contentType), true
 	case attachmentIsDocument(contentType):
@@ -904,6 +911,10 @@ func filterContentPartsForOptions(
 				filteredParts = append(filteredParts, part)
 			}
 		case contentTypeDocument:
+			if documentPartShouldInlineAsText(part, options) {
+				continue
+			}
+
 			if messageContentOptionsAllowsDocumentPart(options, part) {
 				filteredParts = append(filteredParts, part)
 			}
@@ -915,6 +926,62 @@ func filterContentPartsForOptions(
 	}
 
 	return filteredParts
+}
+
+func inlineTextAttachmentContent(parts []contentPart, options messageContentOptions) string {
+	textParts := make([]string, 0, len(parts))
+
+	for _, part := range parts {
+		if !documentPartShouldInlineAsText(part, options) {
+			continue
+		}
+
+		attachmentBytes, _, _, err := attachmentBinaryData(part)
+		if err != nil {
+			continue
+		}
+
+		textValue := strings.TrimSpace(string(attachmentBytes))
+		if textValue == "" {
+			continue
+		}
+
+		textParts = append(textParts, textValue)
+	}
+
+	return joinNonEmpty(textParts)
+}
+
+func appendInlineAttachmentText(messageText, attachmentText string) string {
+	trimmedAttachmentText := strings.TrimSpace(attachmentText)
+	if trimmedAttachmentText == "" {
+		return messageText
+	}
+
+	trimmedMessageText := strings.TrimSpace(messageText)
+	if trimmedMessageText == "" {
+		return trimmedAttachmentText
+	}
+
+	if strings.HasSuffix(messageText, ": ") {
+		return messageText + trimmedAttachmentText
+	}
+
+	return joinNonEmpty([]string{messageText, trimmedAttachmentText})
+}
+
+func documentPartShouldInlineAsText(
+	part contentPart,
+	options messageContentOptions,
+) bool {
+	partType, _ := part["type"].(string)
+	if partType != contentTypeDocument || messageContentOptionsAllowsDocumentPart(options, part) {
+		return false
+	}
+
+	mimeType, _ := part[contentFieldMIMEType].(string)
+
+	return attachmentIsText(mimeType)
 }
 
 func unsupportedPreprocessedPartCount(
