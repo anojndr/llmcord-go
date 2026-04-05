@@ -574,6 +574,33 @@ func newBlockedWebsiteClient(gate *concurrentFetchGate) *stubWebsiteContentClien
 	})
 }
 
+func newStaticWebsiteClient() *stubWebsiteContentClient {
+	return newStubWebsiteContentClient(func(
+		_ context.Context,
+		_ config,
+		rawURL string,
+	) (websitePageContent, error) {
+		return websitePageContent{
+			URL:         rawURL,
+			Title:       "Example website",
+			Description: "",
+			Content:     "Website body",
+		}, nil
+	})
+}
+
+func testXAIProviderConfig() providerConfig {
+	return providerConfig{
+		Type:         "",
+		BaseURL:      "https://api.x.ai/v1",
+		APIKey:       "",
+		APIKeys:      nil,
+		ExtraHeaders: nil,
+		ExtraQuery:   nil,
+		ExtraBody:    nil,
+	}
+}
+
 func newBlockedYouTubeClient(gate *concurrentFetchGate) *stubYouTubeContentClient {
 	return newStubYouTubeContentClient(func(
 		ctx context.Context,
@@ -785,6 +812,81 @@ func TestAugmentConversationFetchesIndependentContextBeforeWebSearchDecision(t *
 		if strings.TrimSpace(value) == "" {
 			t.Fatalf("expected non-empty %s content in prompt: %#v", field, prompt)
 		}
+	}
+}
+
+func TestAugmentConversationForXAILeavesXURLsForProviderHandling(t *testing.T) {
+	t.Parallel()
+
+	website := newStaticWebsiteClient()
+
+	instance := new(bot)
+	instance.website = website
+
+	loadedConfig := testSearchConfig()
+	loadedConfig.Providers[xAIProviderName] = testXAIProviderConfig()
+	loadedConfig.Models["x-ai/grok-4"] = nil
+	loadedConfig.ModelOrder = append([]string{"x-ai/grok-4"}, loadedConfig.ModelOrder...)
+
+	conversation := []chatMessage{
+		{
+			Role: messageRoleUser,
+			Content: strings.Join([]string{
+				"<@123>: summarize these posts",
+				"https://x.com/example/status/123",
+				"https://example.com/article",
+			}, " "),
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	augmentedConversation, metadata, warnings, err := instance.augmentConversation(
+		ctx,
+		loadedConfig,
+		"x-ai/grok-4",
+		nil,
+		conversation,
+		nil,
+		messageContentText(conversation[0].Content),
+	)
+	if err != nil {
+		t.Fatalf("augment conversation: %v", err)
+	}
+
+	if len(warnings) != 0 {
+		t.Fatalf("unexpected warnings: %#v", warnings)
+	}
+
+	if metadata != nil {
+		t.Fatalf("expected no search metadata: %#v", metadata)
+	}
+
+	if len(website.calls) != 1 {
+		t.Fatalf("unexpected website fetch count: %d", len(website.calls))
+	}
+
+	if website.calls[0] != "https://example.com/article" {
+		t.Fatalf("unexpected website fetch url: %#v", website.calls)
+	}
+
+	content, ok := augmentedConversation[0].Content.(string)
+	if !ok {
+		t.Fatalf("unexpected content type: %T", augmentedConversation[0].Content)
+	}
+
+	prompt := parseAugmentedUserPrompt(content)
+	if !strings.Contains(prompt.UserQuery, "https://x.com/example/status/123") {
+		t.Fatalf("expected x url to remain in user query: %#v", prompt)
+	}
+
+	if strings.Contains(prompt.WebsiteContent, "https://x.com/example/status/123") {
+		t.Fatalf("expected x url to be excluded from website augmentation: %#v", prompt)
+	}
+
+	if !strings.Contains(prompt.WebsiteContent, "https://example.com/article") {
+		t.Fatalf("expected non-x website content to be preserved: %#v", prompt)
 	}
 }
 

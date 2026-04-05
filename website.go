@@ -84,6 +84,7 @@ func (instance *bot) maybeAugmentConversationWithWebsite(
 	preparedAugmentation, err := instance.prepareWebsiteAugmentation(
 		ctx,
 		loadedConfig,
+		"",
 		urlExtractionText,
 	)
 	if err != nil {
@@ -104,13 +105,14 @@ func (instance *bot) maybeAugmentConversationWithWebsite(
 func (instance *bot) prepareWebsiteAugmentation(
 	ctx context.Context,
 	loadedConfig config,
+	providerSlashModel string,
 	urlExtractionText string,
 ) (preparedConversationAugmentation, error) {
 	if instance.website == nil {
 		return emptyPreparedConversationAugmentation(), nil
 	}
 
-	websiteURLs := extractWebsiteURLs(urlExtractionText)
+	websiteURLs := extractWebsiteURLsForProvider(urlExtractionText, providerSlashModel)
 	if len(websiteURLs) == 0 {
 		return emptyPreparedConversationAugmentation(), nil
 	}
@@ -1300,6 +1302,24 @@ func extractWebsiteURLs(text string) []string {
 	return normalizedURLs
 }
 
+func extractWebsiteURLsForProvider(text string, providerSlashModel string) []string {
+	websiteURLs := extractWebsiteURLs(text)
+	if !xAIConfiguredModel(providerSlashModel) {
+		return websiteURLs
+	}
+
+	filteredURLs := websiteURLs[:0]
+	for _, websiteURL := range websiteURLs {
+		if isXWebsiteURL(websiteURL) {
+			continue
+		}
+
+		filteredURLs = append(filteredURLs, websiteURL)
+	}
+
+	return filteredURLs
+}
+
 func normalizeWebsiteURL(rawURL string) (string, error) {
 	cleanedURL := cleanWebsiteURL(rawURL)
 
@@ -1358,6 +1378,27 @@ func isExcludedWebsiteHost(host string) bool {
 		isYouTubeHost(host) ||
 		isRedditHost(host) ||
 		isFacebookHost(host)
+}
+
+func isXWebsiteURL(rawURL string) bool {
+	parsedURL, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+
+	return isXHost(parsedURL.Hostname())
+}
+
+func isXHost(host string) bool {
+	normalizedHost := normalizeWebsiteHost(host)
+	normalizedHost = strings.TrimPrefix(normalizedHost, "www.")
+
+	return normalizedHost == "x.com" ||
+		normalizedHost == "twitter.com" ||
+		normalizedHost == "t.co" ||
+		strings.HasSuffix(normalizedHost, ".x.com") ||
+		strings.HasSuffix(normalizedHost, ".twitter.com") ||
+		strings.HasSuffix(normalizedHost, ".t.co")
 }
 
 func isTikTokHost(host string) bool {
