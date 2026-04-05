@@ -296,6 +296,61 @@ func TestExtractWebsiteURLsIgnoresNonURLLogIdentifiers(t *testing.T) {
 	}
 }
 
+func TestExtractWebsiteURLsForProviderSkipsXHostsForXAIModels(t *testing.T) {
+	t.Parallel()
+
+	text := strings.Join([]string{
+		"https://x.com/example/status/123",
+		"https://twitter.com/example/status/456",
+		"https://t.co/example",
+		"https://example.com/article",
+	}, " ")
+
+	urls := extractWebsiteURLsForProvider(text, "x-ai/grok-4")
+
+	expected := []string{
+		"https://example.com/article",
+	}
+
+	if len(urls) != len(expected) {
+		t.Fatalf("unexpected url count: got %d want %d (%#v)", len(urls), len(expected), urls)
+	}
+
+	for index, expectedURL := range expected {
+		if urls[index] != expectedURL {
+			t.Fatalf("unexpected url at index %d: got %q want %q", index, urls[index], expectedURL)
+		}
+	}
+}
+
+func TestExtractWebsiteURLsForProviderKeepsXHostsForNonXAIModels(t *testing.T) {
+	t.Parallel()
+
+	text := strings.Join([]string{
+		"https://x.com/example/status/123",
+		"https://twitter.com/example/status/456",
+		"https://t.co/example",
+	}, " ")
+
+	urls := extractWebsiteURLsForProvider(text, "openai/gpt-5")
+
+	expected := []string{
+		"https://x.com/example/status/123",
+		"https://twitter.com/example/status/456",
+		"https://t.co/example",
+	}
+
+	if len(urls) != len(expected) {
+		t.Fatalf("unexpected url count: got %d want %d (%#v)", len(urls), len(expected), urls)
+	}
+
+	for index, expectedURL := range expected {
+		if urls[index] != expectedURL {
+			t.Fatalf("unexpected url at index %d: got %q want %q", index, urls[index], expectedURL)
+		}
+	}
+}
+
 func TestAppendWebsiteContentToConversationPreservesImages(t *testing.T) {
 	t.Parallel()
 

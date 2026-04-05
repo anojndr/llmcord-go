@@ -724,6 +724,7 @@ func (instance *bot) augmentConversation(
 				return instance.prepareWebsiteAugmentation(
 					taskContext,
 					loadedConfig,
+					providerSlashModel,
 					urlExtractionText,
 				)
 			},
