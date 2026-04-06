@@ -17,6 +17,7 @@ const (
 	testOpenAICodexAccountID   = "account-123"
 	testOpenAICodexHeaderValue = "present"
 	testOpenAICodexHelloText   = "Hello"
+	testOpenAICodexImageURL    = "data:image/png;base64,abc"
 	testOpenAICodexModel       = "gpt-5.2-codex"
 )
 
@@ -49,7 +50,7 @@ func TestOpenAICodexClientStreamChatCompletion(t *testing.T) {
 				Role: messageRoleUser,
 				Content: []contentPart{
 					{"type": contentTypeText, "text": testOpenAICodexHelloText},
-					{"type": contentTypeImageURL, "image_url": map[string]string{"url": "data:image/png;base64,abc"}},
+					{"type": contentTypeImageURL, "image_url": map[string]string{"url": testOpenAICodexImageURL}},
 				},
 			},
 			{Role: messageRoleAssistant, Content: "Previous answer"},
@@ -208,7 +209,7 @@ func TestOpenAICodexClientStreamChatCompletionIncludesCacheMetadata(t *testing.T
 				Role: messageRoleUser,
 				Content: []contentPart{
 					{"type": contentTypeText, "text": testOpenAICodexHelloText},
-					{"type": contentTypeImageURL, "image_url": map[string]string{"url": "data:image/png;base64,abc"}},
+					{"type": contentTypeImageURL, "image_url": map[string]string{"url": testOpenAICodexImageURL}},
 				},
 			},
 			{Role: messageRoleAssistant, Content: "Previous answer"},
@@ -483,7 +484,7 @@ func TestOpenAICodexInputAndInstructionsConvertsMessages(t *testing.T) {
 			Role: messageRoleUser,
 			Content: []contentPart{
 				{"type": contentTypeText, "text": testOpenAICodexHelloText},
-				{"type": contentTypeImageURL, "image_url": map[string]string{"url": "data:image/png;base64,abc"}},
+				{"type": contentTypeImageURL, "image_url": map[string]string{"url": testOpenAICodexImageURL}},
 			},
 		},
 		{Role: messageRoleAssistant, Content: "Previous answer"},
@@ -1014,7 +1015,7 @@ func assertOpenAICodexUserMessage(t *testing.T, rawMessage any) {
 		t.Fatalf("unexpected second user part type: %#v", secondPart["type"])
 	}
 
-	if secondPart["image_url"] != "data:image/png;base64,abc" {
+	if secondPart["image_url"] != testOpenAICodexImageURL {
 		t.Fatalf("unexpected image_url: %#v", secondPart["image_url"])
 	}
 }

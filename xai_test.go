@@ -175,6 +175,38 @@ func TestBuildXAIResponsesRequestBodyEncodesTextAttachmentsAsInputFiles(t *testi
 	}
 }
 
+func TestBuildXAIResponsesRequestBodyAppendsReplyTargetImageToLatestUserTurn(t *testing.T) {
+	t.Parallel()
+
+	const userID = "676735636656357396"
+
+	requestBody := newXAIReplyTargetImageRequestBody(t, "data:image/png;base64,abc")
+
+	inputPayload, inputOK := requestBody["input"].([]map[string]any)
+	if !inputOK || len(inputPayload) != 2 {
+		t.Fatalf("unexpected input payload: %#v", requestBody["input"])
+	}
+
+	latestUserContent, contentOK := inputPayload[1]["content"].([]map[string]any)
+	if !contentOK {
+		t.Fatalf("expected multimodal latest user content, got %#v", inputPayload[1]["content"])
+	}
+
+	if len(latestUserContent) != 2 {
+		t.Fatalf("unexpected latest user content part count: %#v", latestUserContent)
+	}
+
+	if latestUserContent[0]["type"] != xAIResponsesInputTextType ||
+		latestUserContent[0]["text"] != "<@"+userID+">: describe this" {
+		t.Fatalf("unexpected latest user text part: %#v", latestUserContent[0])
+	}
+
+	if latestUserContent[1]["type"] != xAIResponsesInputImageType ||
+		latestUserContent[1]["image_url"] != "data:image/png;base64,abc" {
+		t.Fatalf("unexpected latest user image part: %#v", latestUserContent[1])
+	}
+}
+
 func TestCanExtractPDFContentsDisablesLocalExtractionForXAI(t *testing.T) {
 	t.Parallel()
 
@@ -942,6 +974,91 @@ func newXAIResponsesStreamingRequest(baseURL string) chatCompletionRequest {
 			},
 		},
 	}
+}
+
+func newXAIReplyTargetImageRequestBody(
+	t *testing.T,
+	replyTargetImage string,
+) map[string]any {
+	t.Helper()
+
+	const (
+		channelID       = "channel-1"
+		userID          = "676735636656357396"
+		replyTargetID   = "reply-target-message"
+		sourceMessageID = "source-message"
+		xAIVisionModel  = "x-ai/grok-4:vision"
+	)
+
+	instance := newHistoryRetentionTestBot(t)
+	replyTargetMessage := new(discordgo.Message)
+	replyTargetMessage.ID = replyTargetID
+	replyTargetMessage.ChannelID = channelID
+	replyTargetMessage.Author = newDiscordUser(userID, false)
+
+	setCachedImageOnlyUserNode(instance, replyTargetMessage, userID, replyTargetImage)
+
+	sourceMessage := new(discordgo.Message)
+	sourceMessage.ID = sourceMessageID
+	sourceMessage.ChannelID = channelID
+	sourceMessage.Author = newDiscordUser(userID, false)
+	sourceMessage.Content = "at ai describe this"
+	sourceMessage.MessageReference = replyTargetMessage.Reference()
+	sourceMessage.ReferencedMessage = replyTargetMessage
+	setCachedUserNode(instance, sourceMessage, replyTargetMessage, "<@"+userID+">: describe this")
+
+	loadedConfig := testSearchConfig()
+	loadedConfig.MaxText = defaultMaxText
+	loadedConfig.MaxImages = defaultMaxImages
+	loadedConfig.MaxMessages = defaultMaxMessages
+	loadedConfig.Providers = map[string]providerConfig{xAIProviderName: testXAIProviderConfig()}
+	loadedConfig.Models = map[string]map[string]any{xAIVisionModel: nil}
+	loadedConfig.ModelOrder = []string{xAIVisionModel}
+	loadedConfig.SearchDeciderModel = ""
+
+	messages, _, err := instance.buildMessageConversation(
+		context.Background(),
+		loadedConfig,
+		sourceMessage,
+		xAIVisionModel,
+	)
+	if err != nil {
+		t.Fatalf("build xAI message conversation: %v", err)
+	}
+
+	request, err := buildChatCompletionRequest(loadedConfig, xAIVisionModel, messages)
+	if err != nil {
+		t.Fatalf("build xAI chat completion request: %v", err)
+	}
+
+	requestBody, err := buildXAIResponsesRequestBody(request)
+	if err != nil {
+		t.Fatalf("build xAI responses request body: %v", err)
+	}
+
+	return requestBody
+}
+
+func setCachedImageOnlyUserNode(
+	instance *bot,
+	userMessage *discordgo.Message,
+	userID string,
+	imageURL string,
+) {
+	node := instance.nodes.getOrCreate(userMessage.ID)
+
+	node.mu.Lock()
+	node.role = messageRoleUser
+	node.text = "<@" + userID + ">: "
+	node.urlScanText = ""
+	node.media = []contentPart{{
+		"type":      contentTypeImageURL,
+		"image_url": map[string]string{"url": imageURL},
+	}}
+	node.parentMessage = nil
+	node.initialized = true
+	instance.nodes.cacheLockedNode(userMessage.ID, node)
+	node.mu.Unlock()
 }
 
 func newTestDiscordMessage(messageID string) *discordgo.Message {
