@@ -603,6 +603,17 @@ func (instance *bot) buildMessageConversation(
 		usePDFExtraction,
 	)
 
+	messages, err = instance.maybeAugmentConversationWithXAIImageContext(
+		ctx,
+		loadedConfig,
+		providerSlashModel,
+		message,
+		messages,
+	)
+	if err != nil {
+		return nil, nil, fmt.Errorf("augment conversation with xAI image context: %w", err)
+	}
+
 	slog.Info(
 		"message received",
 		"user_id",
@@ -616,6 +627,85 @@ func (instance *bot) buildMessageConversation(
 	)
 
 	return messages, warnings, nil
+}
+
+func (instance *bot) maybeAugmentConversationWithXAIImageContext(
+	ctx context.Context,
+	loadedConfig config,
+	providerSlashModel string,
+	sourceMessage *discordgo.Message,
+	conversation []chatMessage,
+) ([]chatMessage, error) {
+	if !xAIConfiguredModel(providerSlashModel) {
+		return conversation, nil
+	}
+
+	contentOptions, err := messageContentOptionsForModel(loadedConfig, providerSlashModel)
+	if err != nil {
+		return nil, fmt.Errorf("build xAI image content options: %w", err)
+	}
+
+	if contentOptions.maxImages <= 0 {
+		return conversation, nil
+	}
+
+	remainingImageSlots, err := remainingImageSlotsForConversation(
+		conversation,
+		contentOptions.maxImages,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("calculate remaining xAI image slots: %w", err)
+	}
+
+	if remainingImageSlots == 0 {
+		return conversation, nil
+	}
+
+	imageURLSet, candidateImageParts, err := searchDeciderImagePartSet(
+		conversation,
+		remainingImageSlots,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("collect existing xAI image parts: %w", err)
+	}
+
+	for _, attachmentMessage := range instance.attachmentAugmentationMessages(ctx, sourceMessage) {
+		imageParts, loadErr := instance.imagePartsForMessage(ctx, attachmentMessage)
+		if loadErr != nil {
+			return nil, fmt.Errorf("load xAI attachment image parts: %w", loadErr)
+		}
+
+		var (
+			complete  bool
+			appendErr error
+		)
+
+		candidateImageParts, complete, appendErr = appendSearchDeciderImageParts(
+			candidateImageParts,
+			imageURLSet,
+			imageParts,
+			remainingImageSlots,
+			"append xAI attachment image",
+		)
+		if appendErr != nil {
+			return nil, appendErr
+		}
+
+		if complete {
+			break
+		}
+	}
+
+	if len(candidateImageParts) == 0 {
+		return conversation, nil
+	}
+
+	augmentedConversation, err := appendMediaPartsToConversation(conversation, candidateImageParts)
+	if err != nil {
+		return nil, fmt.Errorf("append xAI image context to latest user message: %w", err)
+	}
+
+	return augmentedConversation, nil
 }
 
 func messageContentOptionsForModel(
