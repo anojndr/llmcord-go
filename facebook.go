@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -15,27 +14,19 @@ import (
 	"strconv"
 	"strings"
 
-	cloudscraper "github.com/Advik-B/cloudscraper/lib"
-	useragent "github.com/Advik-B/cloudscraper/lib/user_agent"
 	"golang.org/x/net/html"
 	"golang.org/x/net/html/atom"
 )
 
 const (
-	defaultFacebookPageURL            = "https://fdownloader.net/en"
-	defaultFacebookSearchURL          = "https://v3.fdownloader.net/api/ajaxSearch"
 	defaultFacebookGetMyFBProcessURL  = "https://getmyfb.com/process"
-	defaultFacebookConversionName     = "FDownloader.Net"
 	facebookDefaultFilename           = "facebook.mp4"
 	facebookDefaultMIMEType           = "video/mp4"
 	facebookFilenamePrefix            = "facebook_"
-	facebookSearchLanguage            = "en"
-	facebookSearchVersion             = "v2"
 	facebookGetMyFBLocale             = "en"
 	facebookDefaultHDQualityScore     = 720
 	facebookDefaultSDQualityScore     = 360
 	facebookDownloadCandidateCapacity = 4
-	facebookRegexpMatchGroupCount     = 2
 	facebookWarningText               = "Warning: Facebook content unavailable"
 )
 
@@ -43,10 +34,8 @@ var (
 	facebookURLRegexp = regexp.MustCompile(
 		`(?i)\b(?:https?://)?(?:[\w-]+\.)?(?:facebook\.com|fb\.watch)/[^\s<>()]+`,
 	)
-	facebookFilenameRegexp    = regexp.MustCompile(`[^a-zA-Z0-9_-]+`)
-	facebookSearchExpRegexp   = regexp.MustCompile(`(?m)\bk_exp\s*=\s*["']([^"']+)["']`)
-	facebookSearchTokenRegexp = regexp.MustCompile(`(?m)\bk_token\s*=\s*["']([^"']+)["']`)
-	facebookQualityRegexp     = regexp.MustCompile(`(\d{3,4})`)
+	facebookFilenameRegexp = regexp.MustCompile(`[^a-zA-Z0-9_-]+`)
+	facebookQualityRegexp  = regexp.MustCompile(`(\d{3,4})`)
 )
 
 const facebookRequestContextErrorFormat = "facebook request context: %w"
@@ -55,20 +44,16 @@ type facebookFetcher interface {
 	fetch(
 		ctx context.Context,
 		rawURL string,
-		extractorConfig facebookExtractorConfig,
 	) (facebookVideoContent, error)
 }
 
 type facebookScraper interface {
-	Get(url string) (*http.Response, error)
 	Post(url string, contentType string, body io.Reader) (*http.Response, error)
 }
 
 type facebookClient struct {
 	httpClient        *http.Client
 	scraper           facebookScraper
-	pageURL           string
-	searchURL         string
 	getMyFBProcessURL string
 }
 
@@ -76,17 +61,6 @@ type facebookVideoContent struct {
 	ResolvedURL string
 	DownloadURL string
 	MediaPart   contentPart
-}
-
-type facebookSearchTokens struct {
-	Exp   string
-	Token string
-}
-
-type facebookSearchResponse struct {
-	Status       string `json:"status"`
-	Data         string `json:"data"`
-	ErrorMessage string `json:"mess"`
 }
 
 type facebookDownloadCandidate struct {
@@ -103,25 +77,12 @@ func (content facebookVideoContent) mediaPart() contentPart {
 	return content.MediaPart
 }
 
-func newFacebookClient(httpClient *http.Client) (facebookClient, error) {
-	scraper, err := cloudscraper.New(cloudscraper.WithBrowser(useragent.Config{
-		Browser:  "firefox",
-		Custom:   "",
-		Desktop:  true,
-		Mobile:   false,
-		Platform: "linux",
-	}))
-	if err != nil {
-		return facebookClient{}, fmt.Errorf("create facebook scraper: %w", err)
-	}
-
+func newFacebookClient(httpClient *http.Client) facebookClient {
 	return facebookClient{
 		httpClient:        httpClient,
-		scraper:           scraper,
-		pageURL:           defaultFacebookPageURL,
-		searchURL:         defaultFacebookSearchURL,
+		scraper:           httpClient,
 		getMyFBProcessURL: defaultFacebookGetMyFBProcessURL,
-	}, nil
+	}
 }
 
 func (instance *bot) maybeAugmentConversationWithFacebook(
@@ -171,7 +132,7 @@ func (instance *bot) prepareFacebookAugmentation(
 		ctx,
 		facebookURLs,
 		func(fetchCtx context.Context, rawURL string) (facebookVideoContent, error) {
-			return instance.facebook.fetch(fetchCtx, rawURL, loadedConfig.Facebook)
+			return instance.facebook.fetch(fetchCtx, rawURL)
 		},
 		"fetch facebook content",
 		facebookWarningText,
@@ -251,7 +212,6 @@ func normalizeFacebookURL(rawURL string) (string, error) {
 func (client facebookClient) fetch(
 	ctx context.Context,
 	rawURL string,
-	extractorConfig facebookExtractorConfig,
 ) (facebookVideoContent, error) {
 	requestContext, cancel := context.WithTimeout(ctx, facebookRequestTimeout)
 	defer cancel()
@@ -261,71 +221,12 @@ func (client facebookClient) fetch(
 		return facebookVideoContent{}, err
 	}
 
-	extractorConfig = normalizeFacebookConfig(rawFacebookConfig{
-		PrimaryProvider:  scalarString(extractorConfig.PrimaryProvider),
-		FallbackProvider: scalarString(extractorConfig.FallbackProvider),
-	})
-
-	providers := extractorConfig.providersInOrder()
-	errs := make([]error, 0, len(providers))
-
-	for _, provider := range providers {
-		videoContent, fetchErr := client.fetchWithProvider(
-			requestContext,
-			normalizedURL,
-			provider,
-		)
-		if fetchErr == nil {
-			return videoContent, nil
-		}
-
-		errs = append(errs, fmt.Errorf("%s: %w", provider, fetchErr))
-	}
-
-	return facebookVideoContent{}, fmt.Errorf(
-		"fetch facebook content: %w",
-		errors.Join(errs...),
-	)
-}
-
-func (client facebookClient) fetchWithProvider(
-	ctx context.Context,
-	normalizedURL string,
-	provider facebookExtractorProviderKind,
-) (facebookVideoContent, error) {
-	switch provider {
-	case facebookExtractorProviderKindFDownloader:
-		return client.fetchWithFDownloader(ctx, normalizedURL)
-	case facebookExtractorProviderKindGetMyFB:
-		return client.fetchWithGetMyFB(ctx, normalizedURL)
-	default:
-		return facebookVideoContent{}, fmt.Errorf(
-			"unsupported facebook extractor provider %q: %w",
-			provider,
-			os.ErrInvalid,
-		)
-	}
-}
-
-func (client facebookClient) fetchWithFDownloader(
-	ctx context.Context,
-	normalizedURL string,
-) (facebookVideoContent, error) {
-	searchTokens, err := client.fetchSearchTokens(ctx)
+	videoContent, err := client.fetchWithGetMyFB(requestContext, normalizedURL)
 	if err != nil {
-		return facebookVideoContent{}, fmt.Errorf("fetch facebook search page: %w", err)
+		return facebookVideoContent{}, fmt.Errorf("fetch facebook content: %w", err)
 	}
 
-	downloadCandidates, err := client.fetchDownloadCandidates(
-		ctx,
-		normalizedURL,
-		searchTokens,
-	)
-	if err != nil {
-		return facebookVideoContent{}, fmt.Errorf("parse facebook search results: %w", err)
-	}
-
-	return client.downloadFacebookVideo(ctx, normalizedURL, downloadCandidates)
+	return videoContent, nil
 }
 
 func (client facebookClient) fetchWithGetMyFB(
@@ -433,148 +334,6 @@ func (client facebookClient) fetchGetMyFBDownloadCandidates(
 	)
 }
 
-func (client facebookClient) fetchSearchTokens(
-	ctx context.Context,
-) (facebookSearchTokens, error) {
-	err := ctx.Err()
-	if err != nil {
-		return facebookSearchTokens{}, fmt.Errorf(facebookRequestContextErrorFormat, err)
-	}
-
-	httpResponse, err := client.scraper.Get(client.pageURL)
-	if err != nil {
-		return facebookSearchTokens{}, fmt.Errorf("send facebook search page request: %w", err)
-	}
-
-	defer func() {
-		_ = httpResponse.Body.Close()
-	}()
-
-	responseBody, err := io.ReadAll(httpResponse.Body)
-	if err != nil {
-		return facebookSearchTokens{}, fmt.Errorf("read facebook search page response: %w", err)
-	}
-
-	if httpResponse.StatusCode < http.StatusOK || httpResponse.StatusCode >= http.StatusMultipleChoices {
-		return facebookSearchTokens{}, fmt.Errorf(
-			"facebook search page request failed with status %d: %s: %w",
-			httpResponse.StatusCode,
-			strings.TrimSpace(string(responseBody)),
-			os.ErrInvalid,
-		)
-	}
-
-	err = ctx.Err()
-	if err != nil {
-		return facebookSearchTokens{}, fmt.Errorf(facebookRequestContextErrorFormat, err)
-	}
-
-	return parseFacebookSearchTokens(responseBody)
-}
-
-func (client facebookClient) fetchDownloadCandidates(
-	ctx context.Context,
-	facebookURL string,
-	searchTokens facebookSearchTokens,
-) ([]facebookDownloadCandidate, error) {
-	err := ctx.Err()
-	if err != nil {
-		return nil, fmt.Errorf(facebookRequestContextErrorFormat, err)
-	}
-
-	formValues := url.Values{
-		"k_exp":   {searchTokens.Exp},
-		"k_token": {searchTokens.Token},
-		"q":       {facebookURL},
-		"lang":    {facebookSearchLanguage},
-		"web":     {facebookSearchWebHost(client.pageURL)},
-		"v":       {facebookSearchVersion},
-		"w":       {""},
-		"cftoken": {""},
-	}
-
-	httpResponse, err := client.scraper.Post(
-		client.searchURL,
-		"application/x-www-form-urlencoded; charset=UTF-8",
-		strings.NewReader(formValues.Encode()),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("send facebook search request: %w", err)
-	}
-
-	defer func() {
-		_ = httpResponse.Body.Close()
-	}()
-
-	responseBody, err := io.ReadAll(httpResponse.Body)
-	if err != nil {
-		return nil, fmt.Errorf("read facebook search response: %w", err)
-	}
-
-	if httpResponse.StatusCode < http.StatusOK || httpResponse.StatusCode >= http.StatusMultipleChoices {
-		return nil, fmt.Errorf(
-			"facebook search request failed with status %d: %s: %w",
-			httpResponse.StatusCode,
-			strings.TrimSpace(string(responseBody)),
-			os.ErrInvalid,
-		)
-	}
-
-	err = ctx.Err()
-	if err != nil {
-		return nil, fmt.Errorf(facebookRequestContextErrorFormat, err)
-	}
-
-	return parseFacebookDownloadCandidates(client.searchURL, responseBody)
-}
-
-func parseFacebookSearchTokens(responseBody []byte) (facebookSearchTokens, error) {
-	responseText := string(responseBody)
-	searchTokens := facebookSearchTokens{
-		Exp:   strings.TrimSpace(firstRegexpGroup(responseText, facebookSearchExpRegexp)),
-		Token: strings.TrimSpace(firstRegexpGroup(responseText, facebookSearchTokenRegexp)),
-	}
-
-	if searchTokens.Exp == "" || searchTokens.Token == "" {
-		return facebookSearchTokens{}, fmt.Errorf("find facebook search tokens: %w", os.ErrInvalid)
-	}
-
-	return searchTokens, nil
-}
-
-func parseFacebookDownloadCandidates(
-	baseURL string,
-	responseBody []byte,
-) ([]facebookDownloadCandidate, error) {
-	responseFragment, err := facebookSearchResponseFragment(responseBody)
-	if err != nil {
-		return nil, err
-	}
-
-	document, err := parseFacebookDownloadDocument(responseFragment, "parse facebook result html")
-	if err != nil {
-		return nil, err
-	}
-
-	downloadCandidates := collectFacebookDownloadCandidates(
-		document,
-		func(node *html.Node) (facebookDownloadCandidate, bool) {
-			if node.Type != html.ElementNode || node.DataAtom != atom.Tr {
-				return emptyFacebookDownloadCandidate(), false
-			}
-
-			return extractFacebookDownloadCandidate(baseURL, node)
-		},
-	)
-	if len(downloadCandidates) == 0 {
-		return nil, fmt.Errorf("find facebook download url: %w", os.ErrInvalid)
-	}
-
-	sortFacebookDownloadCandidates(downloadCandidates)
-
-	return downloadCandidates, nil
-}
-
 func parseGetMyFBDownloadCandidates(
 	baseURL, responseTrigger string,
 	responseBody []byte,
@@ -610,55 +369,6 @@ func parseGetMyFBDownloadCandidates(
 	return downloadCandidates, nil
 }
 
-func extractFacebookDownloadCandidate(
-	baseURL string,
-	row *html.Node,
-) (facebookDownloadCandidate, bool) {
-	qualityLabel := ""
-	directURL := ""
-
-	var walk func(*html.Node)
-
-	walk = func(node *html.Node) {
-		if node == nil {
-			return
-		}
-
-		if node.Type == html.ElementNode && node.DataAtom == atom.Td &&
-			strings.EqualFold(strings.TrimSpace(htmlAttribute(node, "class")), "video-quality") {
-			qualityLabel = strings.TrimSpace(nodeTextContent(node))
-		}
-
-		if node.Type == html.ElementNode && node.DataAtom == atom.A {
-			href := strings.TrimSpace(htmlAttribute(node, "href"))
-			if href != "" && strings.EqualFold(strings.TrimSpace(nodeTextContent(node)), "Download") && directURL == "" {
-				directURL = resolveFacebookDownloadURL(baseURL, html.UnescapeString(href))
-			}
-		}
-
-		for child := node.FirstChild; child != nil; child = child.NextSibling {
-			walk(child)
-		}
-	}
-
-	walk(row)
-
-	qualityLabel = strings.TrimSpace(qualityLabel)
-	if strings.TrimSpace(directURL) == "" {
-		return facebookDownloadCandidate{
-			QualityLabel: "",
-			Score:        0,
-			DirectURL:    "",
-		}, false
-	}
-
-	return facebookDownloadCandidate{
-		QualityLabel: qualityLabel,
-		Score:        facebookDownloadQualityScore(qualityLabel),
-		DirectURL:    strings.TrimSpace(directURL),
-	}, true
-}
-
 func extractGetMyFBDownloadCandidate(
 	baseURL string,
 	row *html.Node,
@@ -679,31 +389,6 @@ func extractGetMyFBDownloadCandidate(
 		Score:        facebookDownloadQualityScore(qualityLabel),
 		DirectURL:    strings.TrimSpace(directURL),
 	}, true
-}
-
-func facebookSearchResponseFragment(responseBody []byte) (string, error) {
-	var response facebookSearchResponse
-
-	err := json.Unmarshal(responseBody, &response)
-	if err != nil {
-		return "", fmt.Errorf("decode facebook search response: %w", err)
-	}
-
-	if !strings.EqualFold(strings.TrimSpace(response.Status), "ok") {
-		message := strings.TrimSpace(response.ErrorMessage)
-		if message == "" {
-			message = strings.TrimSpace(string(responseBody))
-		}
-
-		return "", fmt.Errorf("facebook search response not ok: %s: %w", message, os.ErrInvalid)
-	}
-
-	responseFragment := strings.TrimSpace(response.Data)
-	if responseFragment == "" {
-		return "", fmt.Errorf("empty facebook search response: %w", os.ErrInvalid)
-	}
-
-	return responseFragment, nil
 }
 
 func normalizedGetMyFBResponseBody(responseBody []byte) (string, error) {
@@ -898,7 +583,7 @@ func facebookDownloadQualityScore(qualityLabel string) int {
 	}
 
 	qualityMatch := facebookQualityRegexp.FindStringSubmatch(normalizedQuality)
-	if len(qualityMatch) >= facebookRegexpMatchGroupCount {
+	if len(qualityMatch) > 1 {
 		qualityScore, err := strconv.Atoi(strings.TrimSpace(qualityMatch[1]))
 		if err == nil {
 			return qualityScore
@@ -913,20 +598,6 @@ func facebookDownloadQualityScore(qualityLabel string) int {
 	default:
 		return 0
 	}
-}
-
-func facebookSearchWebHost(pageURL string) string {
-	parsedURL, err := url.Parse(pageURL)
-	if err != nil {
-		return "fdownloader.net"
-	}
-
-	host := strings.TrimSpace(parsedURL.Hostname())
-	if host == "" {
-		return "fdownloader.net"
-	}
-
-	return host
 }
 
 func resolveFacebookDownloadURL(pageURL, rawURL string) string {
@@ -946,15 +617,6 @@ func resolveFacebookDownloadURL(pageURL, rawURL string) string {
 	}
 
 	return baseURL.ResolveReference(relativeURL).String()
-}
-
-func firstRegexpGroup(text string, pattern *regexp.Regexp) string {
-	matches := pattern.FindStringSubmatch(text)
-	if len(matches) < facebookRegexpMatchGroupCount {
-		return ""
-	}
-
-	return strings.TrimSpace(matches[1])
 }
 
 func (client facebookClient) downloadVideo(
