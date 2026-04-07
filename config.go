@@ -100,11 +100,6 @@ type rawVisualSearchConfig struct {
 	SerpAPI rawSerpAPIVisualSearchConfig `yaml:"serpapi"`
 }
 
-type rawFacebookConfig struct {
-	PrimaryProvider  scalarString `yaml:"primary_provider"`
-	FallbackProvider scalarString `yaml:"fallback_provider"`
-}
-
 type rawWebSearchConfig struct {
 	PrimaryProvider scalarString          `yaml:"primary_provider"`
 	MaxURLs         *int                  `yaml:"max_urls"`
@@ -148,19 +143,6 @@ type visualSearchConfig struct {
 	SerpAPI serpAPIVisualSearchConfig
 }
 
-type facebookExtractorProviderKind string
-
-const (
-	facebookExtractorProviderKindFDownloader facebookExtractorProviderKind = "fdownloader"
-	facebookExtractorProviderKindGetMyFB     facebookExtractorProviderKind = "getmyfb"
-	facebookExtractorProviderCount                                         = 2
-)
-
-type facebookExtractorConfig struct {
-	PrimaryProvider  facebookExtractorProviderKind
-	FallbackProvider facebookExtractorProviderKind
-}
-
 type webSearchProviderKind string
 
 const (
@@ -202,7 +184,6 @@ type rawConfig struct {
 	AllowDMs                    *bool                        `yaml:"allow_dms"`
 	Permissions                 permissionsConfig            `yaml:"permissions"`
 	Providers                   map[string]rawProviderConfig `yaml:"providers"`
-	Facebook                    rawFacebookConfig            `yaml:"facebook"`
 	WebSearch                   rawWebSearchConfig           `yaml:"web_search"`
 	VisualSearch                rawVisualSearchConfig        `yaml:"visual_search"`
 	Database                    rawDatabaseConfig            `yaml:"database"`
@@ -225,7 +206,6 @@ type config struct {
 	AllowDMs                    bool
 	Permissions                 permissionsConfig
 	Providers                   map[string]providerConfig
-	Facebook                    facebookExtractorConfig
 	WebSearch                   webSearchConfig
 	VisualSearch                visualSearchConfig
 	Database                    databaseConfig
@@ -272,22 +252,19 @@ func buildLoadedConfig(
 		return config{}, fmt.Errorf("read model order from %q: %w", filename, err)
 	}
 
+	err = validateNoDeprecatedConfigSections(&rootNode)
+	if err != nil {
+		return config{}, fmt.Errorf("validate config %q: %w", filename, err)
+	}
+
 	loadedProviders := make(map[string]providerConfig, len(rawLoadedConfig.Providers))
 	for providerName, rawProvider := range rawLoadedConfig.Providers {
 		loadedProviders[providerName] = normalizeProviderConfig(rawProvider)
 	}
 
 	serpAPIVisualSearchKeys := normalizeAPIKeys([]string(rawLoadedConfig.VisualSearch.SerpAPI.APIKey))
-
-	allowDMs := true
-	if rawLoadedConfig.AllowDMs != nil {
-		allowDMs = *rawLoadedConfig.AllowDMs
-	}
-
-	searchDeciderModel := strings.TrimSpace(string(rawLoadedConfig.SearchDeciderModel))
-	if searchDeciderModel == "" && len(modelOrder) > 0 {
-		searchDeciderModel = modelOrder[0]
-	}
+	allowDMs := boolValueOrDefault(rawLoadedConfig.AllowDMs, true)
+	searchDeciderModel := normalizedSearchDeciderModel(rawLoadedConfig.SearchDeciderModel, modelOrder)
 
 	mediaAnalysisModel := strings.TrimSpace(string(rawLoadedConfig.MediaAnalysisModel))
 	channelModelLocks := normalizeStringScalarMap(rawLoadedConfig.ChannelModelLocks)
@@ -317,7 +294,6 @@ func buildLoadedConfig(
 		AllowDMs:          allowDMs,
 		Permissions:       rawLoadedConfig.Permissions,
 		Providers:         loadedProviders,
-		Facebook:          normalizeFacebookConfig(rawLoadedConfig.Facebook),
 		WebSearch:         normalizeWebSearchConfig(rawLoadedConfig.WebSearch),
 		VisualSearch: visualSearchConfig{
 			SerpAPI: serpAPIVisualSearchConfig{
@@ -380,12 +356,64 @@ func orderedMappingKeys(rootNode *yaml.Node, fieldName string) ([]string, error)
 	return nil, fmt.Errorf("find mapping field %q: %w", fieldName, os.ErrNotExist)
 }
 
+func validateNoDeprecatedConfigSections(rootNode *yaml.Node) error {
+	hasFacebookSection, err := topLevelConfigFieldExists(rootNode, "facebook")
+	if err != nil {
+		return err
+	}
+
+	if hasFacebookSection {
+		return fmt.Errorf(
+			"facebook settings are no longer supported; remove the facebook section: %w",
+			os.ErrInvalid,
+		)
+	}
+
+	return nil
+}
+
+func topLevelConfigFieldExists(rootNode *yaml.Node, fieldName string) (bool, error) {
+	if len(rootNode.Content) == 0 {
+		return false, fmt.Errorf("decode document root: %w", os.ErrInvalid)
+	}
+
+	mappingNode := rootNode.Content[0]
+	if mappingNode.Kind != yaml.MappingNode {
+		return false, fmt.Errorf("decode mapping root: %w", os.ErrInvalid)
+	}
+
+	for index := 0; index < len(mappingNode.Content)-1; index += mappingNodePairSize {
+		if mappingNode.Content[index].Value == fieldName {
+			return true, nil
+		}
+	}
+
+	return false, nil
+}
+
 func intValueOrDefault(value *int, fallback int) int {
 	if value == nil {
 		return fallback
 	}
 
 	return *value
+}
+
+func boolValueOrDefault(value *bool, fallback bool) bool {
+	if value == nil {
+		return fallback
+	}
+
+	return *value
+}
+
+func normalizedSearchDeciderModel(rawValue scalarString, modelOrder []string) string {
+	searchDeciderModel := strings.TrimSpace(string(rawValue))
+	if searchDeciderModel == "" && len(modelOrder) > 0 {
+		return modelOrder[0]
+	}
+
+	return searchDeciderModel
 }
 
 func normalizeProviderConfig(rawProvider rawProviderConfig) providerConfig {
@@ -734,40 +762,6 @@ func normalizeDatabaseConfig(rawLoadedConfig rawDatabaseConfig) databaseConfig {
 	}
 }
 
-func normalizeFacebookConfig(rawLoadedConfig rawFacebookConfig) facebookExtractorConfig {
-	primaryProvider := normalizeFacebookExtractorProvider(rawLoadedConfig.PrimaryProvider)
-	if primaryProvider == "" {
-		primaryProvider = facebookExtractorProviderKindFDownloader
-	}
-
-	fallbackProvider := normalizeFacebookExtractorProvider(rawLoadedConfig.FallbackProvider)
-	if fallbackProvider == "" {
-		fallbackProvider = defaultFacebookFallbackProvider(primaryProvider)
-	}
-
-	return facebookExtractorConfig{
-		PrimaryProvider:  primaryProvider,
-		FallbackProvider: fallbackProvider,
-	}
-}
-
-func normalizeFacebookExtractorProvider(rawValue scalarString) facebookExtractorProviderKind {
-	return facebookExtractorProviderKind(strings.ToLower(strings.TrimSpace(string(rawValue))))
-}
-
-func defaultFacebookFallbackProvider(
-	primaryProvider facebookExtractorProviderKind,
-) facebookExtractorProviderKind {
-	switch primaryProvider {
-	case facebookExtractorProviderKindFDownloader:
-		return facebookExtractorProviderKindGetMyFB
-	case facebookExtractorProviderKindGetMyFB:
-		return facebookExtractorProviderKindFDownloader
-	default:
-		return facebookExtractorProviderKindGetMyFB
-	}
-}
-
 func normalizeWebSearchConfig(rawLoadedConfig rawWebSearchConfig) webSearchConfig {
 	exaAPIKeys := normalizeAPIKeys([]string(rawLoadedConfig.Exa.APIKey))
 	tavilyAPIKeys := normalizeAPIKeys([]string(rawLoadedConfig.Tavily.APIKey))
@@ -817,24 +811,8 @@ func (settings exaSearchConfig) textMaxCharacters() int {
 	return settings.TextMaxCharacters
 }
 
-func (loadedConfig facebookExtractorConfig) providersInOrder() []facebookExtractorProviderKind {
-	providers := make([]facebookExtractorProviderKind, 0, facebookExtractorProviderCount)
-	providers = append(providers, loadedConfig.PrimaryProvider)
-
-	if loadedConfig.FallbackProvider != loadedConfig.PrimaryProvider {
-		providers = append(providers, loadedConfig.FallbackProvider)
-	}
-
-	return providers
-}
-
 func validateConfig(loadedConfig config) error {
 	err := validateConfigBasics(loadedConfig)
-	if err != nil {
-		return err
-	}
-
-	err = validateFacebookConfig(loadedConfig.Facebook)
 	if err != nil {
 		return err
 	}
@@ -907,37 +885,6 @@ func validateConfiguredModels(loadedConfig config) error {
 			"search_decider_model %q is not defined in models: %w",
 			loadedConfig.SearchDeciderModel,
 			os.ErrNotExist,
-		)
-	}
-
-	return nil
-}
-
-func validateFacebookConfig(loadedConfig facebookExtractorConfig) error {
-	switch loadedConfig.PrimaryProvider {
-	case facebookExtractorProviderKindFDownloader, facebookExtractorProviderKindGetMyFB:
-	default:
-		return fmt.Errorf(
-			"facebook.primary_provider %q is unsupported: %w",
-			loadedConfig.PrimaryProvider,
-			os.ErrInvalid,
-		)
-	}
-
-	switch loadedConfig.FallbackProvider {
-	case facebookExtractorProviderKindFDownloader, facebookExtractorProviderKindGetMyFB:
-	default:
-		return fmt.Errorf(
-			"facebook.fallback_provider %q is unsupported: %w",
-			loadedConfig.FallbackProvider,
-			os.ErrInvalid,
-		)
-	}
-
-	if loadedConfig.PrimaryProvider == loadedConfig.FallbackProvider {
-		return fmt.Errorf(
-			"facebook.primary_provider and facebook.fallback_provider must differ: %w",
-			os.ErrInvalid,
 		)
 	}
 

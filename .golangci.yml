@@ -13,8 +13,6 @@ linters:
         main:
           allow:
             - $gostd
-            - github.com/Advik-B/cloudscraper/lib
-            - github.com/Advik-B/cloudscraper/lib/user_agent
             - github.com/bwmarrin/discordgo
             - github.com/ledongthuc/pdf
             - github.com/lib/pq
