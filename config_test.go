@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -59,14 +60,6 @@ models:
 
 	if loadedConfig.WebSearch.PrimaryProvider != webSearchProviderKindMCP {
 		t.Fatalf("unexpected default web search primary provider: %q", loadedConfig.WebSearch.PrimaryProvider)
-	}
-
-	if loadedConfig.Facebook.PrimaryProvider != facebookExtractorProviderKindFDownloader {
-		t.Fatalf("unexpected default facebook primary provider: %q", loadedConfig.Facebook.PrimaryProvider)
-	}
-
-	if loadedConfig.Facebook.FallbackProvider != facebookExtractorProviderKindGetMyFB {
-		t.Fatalf("unexpected default facebook fallback provider: %q", loadedConfig.Facebook.FallbackProvider)
 	}
 
 	if loadedConfig.WebSearch.MaxURLs != defaultWebSearchMaxURLs {
@@ -1121,7 +1114,7 @@ web_search:
 	}
 }
 
-func TestLoadConfigUsesConfiguredFacebookExtractorProviders(t *testing.T) {
+func TestLoadConfigRejectsDeprecatedFacebookSettingsSection(t *testing.T) {
 	t.Parallel()
 
 	tempDir := t.TempDir()
@@ -1134,43 +1127,7 @@ providers:
 models:
   openai/first-model:
 facebook:
-  primary_provider: getmyfb
-  fallback_provider: fdownloader
-`
-
-	err := os.WriteFile(configPath, []byte(configText), 0o600)
-	if err != nil {
-		t.Fatalf("write config file: %v", err)
-	}
-
-	loadedConfig, err := loadConfig(configPath)
-	if err != nil {
-		t.Fatalf("load config: %v", err)
-	}
-
-	if loadedConfig.Facebook.PrimaryProvider != facebookExtractorProviderKindGetMyFB {
-		t.Fatalf("unexpected facebook primary provider: %q", loadedConfig.Facebook.PrimaryProvider)
-	}
-
-	if loadedConfig.Facebook.FallbackProvider != facebookExtractorProviderKindFDownloader {
-		t.Fatalf("unexpected facebook fallback provider: %q", loadedConfig.Facebook.FallbackProvider)
-	}
-}
-
-func TestLoadConfigRejectsUnsupportedFacebookPrimaryProvider(t *testing.T) {
-	t.Parallel()
-
-	tempDir := t.TempDir()
-	configPath := filepath.Join(tempDir, "config.yaml")
-	configText := `
-bot_token: discord-token
-providers:
-  openai:
-    base_url: https://api.example.com/v1
-models:
-  openai/first-model:
-facebook:
-  primary_provider: unsupported
+  deprecated: true
 `
 
 	err := os.WriteFile(configPath, []byte(configText), 0o600)
@@ -1180,35 +1137,11 @@ facebook:
 
 	_, err = loadConfig(configPath)
 	if err == nil {
-		t.Fatal("expected unsupported facebook primary provider to fail validation")
-	}
-}
-
-func TestLoadConfigRejectsMatchingFacebookProviders(t *testing.T) {
-	t.Parallel()
-
-	tempDir := t.TempDir()
-	configPath := filepath.Join(tempDir, "config.yaml")
-	configText := `
-bot_token: discord-token
-providers:
-  openai:
-    base_url: https://api.example.com/v1
-models:
-  openai/first-model:
-facebook:
-  primary_provider: getmyfb
-  fallback_provider: getmyfb
-`
-
-	err := os.WriteFile(configPath, []byte(configText), 0o600)
-	if err != nil {
-		t.Fatalf("write config file: %v", err)
+		t.Fatal("expected deprecated facebook settings section to fail validation")
 	}
 
-	_, err = loadConfig(configPath)
-	if err == nil {
-		t.Fatal("expected matching facebook providers to fail validation")
+	if !strings.Contains(err.Error(), "facebook settings are no longer supported") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

@@ -24,7 +24,6 @@ Credit for the original design, behavior, and workflow goes to the original Pyth
 - [Configuration](#configuration)
   - [Discord Settings](#discord-settings)
   - [LLM Settings](#llm-settings)
-  - [Facebook Settings](#facebook-settings)
   - [Search Settings](#search-settings)
 - [Usage](#usage)
 - [Development](#development)
@@ -95,7 +94,7 @@ The goal is to make Discord feel like a practical, stateful frontend for LLM wor
 ### URL and content enrichment
 
 - Automatic TikTok URL handling
-- Automatic Facebook URL handling with configurable FDownloader/GetMyFB provider order
+- Automatic Facebook URL handling via GetMyFB extraction
 - Automatic YouTube Shorts MP4 handling for Gemini and Gemini media preprocessing
 - Automatic YouTube transcript, title, channel, and comment extraction
 - Automatic Reddit thread and comment extraction
@@ -236,13 +235,6 @@ The config schema stays close to the original Python project.
 | `database.connection_string` | Optional PostgreSQL connection string for persisted reply-chain history and augmentation metadata. Must use `postgres://` or `postgresql://`. |
 | `database.store_key` | Optional logical key for selecting the persisted history row. Use the same value across machines to share one history stream. |
 | `system_prompt` | Optional prompt prepended to every request. `{date}` and `{time}` are expanded using the host time zone. |
-
-### Facebook Settings
-
-| Setting | Description |
-| --- | --- |
-| `facebook.primary_provider` | Which Facebook extractor to try first. Supported values: `fdownloader` and `getmyfb`. Default: `fdownloader`. |
-| `facebook.fallback_provider` | Which Facebook extractor to try second when the primary provider fails. Supported values: `fdownloader` and `getmyfb`. Default: the provider not selected as primary. |
 
 ### Search Settings
 

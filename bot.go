@@ -62,11 +62,7 @@ func newBot(ctx context.Context, configPath string, loadedConfig config) (*bot, 
 	instance.rentry = newRentryClient(httpClient, defaultRentryEndpoint)
 	instance.tiktok = newTikTokClient(httpClient)
 
-	instance.facebook, err = newFacebookClient(httpClient)
-	if err != nil {
-		return nil, fmt.Errorf("create facebook client: %w", err)
-	}
-
+	instance.facebook = newFacebookClient(httpClient)
 	instance.youtubeShorts = newYouTubeShortsClient(httpClient)
 	instance.youtube = newYouTubeClient(httpClient)
 	instance.reddit = newRedditClient(httpClient)
