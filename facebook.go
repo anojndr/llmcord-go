@@ -24,6 +24,7 @@ const (
 	facebookDefaultMIMEType           = "video/mp4"
 	facebookFilenamePrefix            = "facebook_"
 	facebookGetMyFBLocale             = "en"
+	facebookGetMyFBDownloadUserAgent  = "Mozilla/5.0"
 	facebookDefaultHDQualityScore     = 720
 	facebookDefaultSDQualityScore     = 360
 	facebookDownloadCandidateCapacity = 4
@@ -619,6 +620,17 @@ func resolveFacebookDownloadURL(pageURL, rawURL string) string {
 	return baseURL.ResolveReference(relativeURL).String()
 }
 
+func facebookGetMyFBDownloadHeaders(processURL string) (string, string) {
+	parsedURL, err := url.Parse(strings.TrimSpace(processURL))
+	if err != nil || parsedURL.Scheme == "" || parsedURL.Host == "" {
+		return "", ""
+	}
+
+	originURL := parsedURL.Scheme + "://" + parsedURL.Host
+
+	return originURL + "/", originURL
+}
+
 func (client facebookClient) downloadVideo(
 	ctx context.Context,
 	downloadURL string,
@@ -632,6 +644,17 @@ func (client facebookClient) downloadVideo(
 	)
 	if err != nil {
 		return nil, "", "", fmt.Errorf("create facebook video request: %w", err)
+	}
+
+	httpRequest.Header.Set("User-Agent", facebookGetMyFBDownloadUserAgent)
+
+	referer, origin := facebookGetMyFBDownloadHeaders(client.getMyFBProcessURL)
+	if referer != "" {
+		httpRequest.Header.Set("Referer", referer)
+	}
+
+	if origin != "" {
+		httpRequest.Header.Set("Origin", origin)
 	}
 
 	httpResponse, err := client.httpClient.Do(httpRequest)
@@ -655,6 +678,10 @@ func (client facebookClient) downloadVideo(
 			strings.TrimSpace(string(videoBytes)),
 			os.ErrInvalid,
 		)
+	}
+
+	if len(videoBytes) == 0 {
+		return nil, "", "", fmt.Errorf("empty facebook video response: %w", os.ErrInvalid)
 	}
 
 	mimeType := normalizedFacebookMIMEType(httpResponse.Header.Get("Content-Type"))
