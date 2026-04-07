@@ -67,6 +67,8 @@ type facebookTestDownloadResponse struct {
 	body               string
 	contentType        string
 	contentDisposition string
+	statusCode         int
+	headers            http.Header
 }
 
 type facebookTestServerConfig struct {
@@ -74,6 +76,7 @@ type facebookTestServerConfig struct {
 	getMyFBResponseHeader http.Header
 	downloads             map[string]facebookTestDownloadResponse
 	assertGetMyFB         func(url.Values)
+	assertDownloadRequest func(*http.Request)
 }
 
 func newFacebookTestServer(
@@ -92,7 +95,7 @@ func newFacebookTestServer(
 		case "/process":
 			serveFacebookGetMyFBProcess(t, writer, request, server.URL, config)
 		default:
-			serveFacebookDownload(t, writer, request, config.downloads)
+			serveFacebookDownload(t, writer, request, config)
 		}
 	}))
 
@@ -143,16 +146,28 @@ func serveFacebookDownload(
 	t *testing.T,
 	writer http.ResponseWriter,
 	request *http.Request,
-	downloads map[string]facebookTestDownloadResponse,
+	config facebookTestServerConfig,
 ) {
 	t.Helper()
 
-	downloadResponse, ok := downloads[request.URL.Path]
+	downloadResponse, ok := config.downloads[request.URL.Path]
 	if !ok {
 		t.Fatalf("unexpected path: %s", request.URL.Path)
 	}
 
-	writer.Header().Set("Content-Type", downloadResponse.contentType)
+	if config.assertDownloadRequest != nil {
+		config.assertDownloadRequest(request)
+	}
+
+	for key, values := range downloadResponse.headers {
+		for _, value := range values {
+			writer.Header().Add(key, value)
+		}
+	}
+
+	if downloadResponse.contentType != "" {
+		writer.Header().Set("Content-Type", downloadResponse.contentType)
+	}
 
 	if downloadResponse.contentDisposition != "" {
 		writer.Header().Set(
@@ -160,6 +175,13 @@ func serveFacebookDownload(
 			downloadResponse.contentDisposition,
 		)
 	}
+
+	statusCode := downloadResponse.statusCode
+	if statusCode == 0 {
+		statusCode = http.StatusOK
+	}
+
+	writer.WriteHeader(statusCode)
 
 	_, _ = writer.Write([]byte(downloadResponse.body))
 }
@@ -192,11 +214,11 @@ func newTestFacebookClient(server *httptest.Server) facebookClient {
 	}
 }
 
-func facebookGetMyFBSearchFragment(serverURL string) string {
+func facebookGetMyFBSearchFragment() string {
 	return strings.Join([]string{
 		`<section class="results"><div class="container">`,
 		`<figure class="results-item"><div class="results-item-image-wrapper">`,
-		`<img class="results-item-image" src="` + serverURL + `/thumbnail.jpg" alt="Video thumbnail">`,
+		`<img class="results-item-image" src="SERVER_URL/thumbnail.jpg" alt="Video thumbnail">`,
 		`</div><figcaption class="results-item-text">Preview</figcaption></figure>`,
 		`<div class="results-download"><ul class="results-list">`,
 		`<li class="results-list-item">720p(HD)`,
@@ -288,7 +310,7 @@ func TestFacebookClientFetchDownloadsBestGetMyFBVideo(t *testing.T) {
 	submittedLocale := ""
 
 	server := newFacebookTestServer(t, facebookTestServerConfig{
-		getMyFBProcessBody: facebookGetMyFBSearchFragment("SERVER_URL"),
+		getMyFBProcessBody: facebookGetMyFBSearchFragment(),
 		getMyFBResponseHeader: http.Header{
 			"Hx-Trigger": []string{"resultsuccess"},
 		},
@@ -297,22 +319,29 @@ func TestFacebookClientFetchDownloadsBestGetMyFBVideo(t *testing.T) {
 				body:               testVideoBody,
 				contentType:        "video/mp4; charset=utf-8",
 				contentDisposition: `attachment; filename="resolved.mp4"`,
+				statusCode:         0,
+				headers:            nil,
 			},
 			"/downloads/video-sd.mp4": {
 				body:               "sd-video",
 				contentType:        "video/mp4",
 				contentDisposition: "",
+				statusCode:         0,
+				headers:            nil,
 			},
 			"/thumbnail.jpg": {
 				body:               "ignored",
 				contentType:        "image/jpeg",
 				contentDisposition: "",
+				statusCode:         0,
+				headers:            nil,
 			},
 		},
 		assertGetMyFB: func(formValues url.Values) {
 			submittedURL = formValues.Get("id")
 			submittedLocale = formValues.Get("locale")
 		},
+		assertDownloadRequest: nil,
 	})
 	defer server.Close()
 
@@ -360,7 +389,7 @@ func TestFacebookClientFetchUsesSourceURLWhenContentDispositionIsMissing(t *test
 	t.Parallel()
 
 	server := newFacebookTestServer(t, facebookTestServerConfig{
-		getMyFBProcessBody: facebookGetMyFBSearchFragment("SERVER_URL"),
+		getMyFBProcessBody: facebookGetMyFBSearchFragment(),
 		getMyFBResponseHeader: http.Header{
 			"Hx-Trigger": []string{"resultsuccess"},
 		},
@@ -369,19 +398,26 @@ func TestFacebookClientFetchUsesSourceURLWhenContentDispositionIsMissing(t *test
 				body:               testVideoBody,
 				contentType:        "application/octet-stream",
 				contentDisposition: "",
+				statusCode:         0,
+				headers:            nil,
 			},
 			"/downloads/video-sd.mp4": {
 				body:               "sd-video",
 				contentType:        "video/mp4",
 				contentDisposition: "",
+				statusCode:         0,
+				headers:            nil,
 			},
 			"/thumbnail.jpg": {
 				body:               "ignored",
 				contentType:        "image/jpeg",
 				contentDisposition: "",
+				statusCode:         0,
+				headers:            nil,
 			},
 		},
-		assertGetMyFB: nil,
+		assertGetMyFB:         nil,
+		assertDownloadRequest: nil,
 	})
 	defer server.Close()
 
@@ -412,8 +448,9 @@ func TestFacebookClientFetchReturnsGetMyFBErrorWithoutDownloads(t *testing.T) {
 		getMyFBResponseHeader: http.Header{
 			"Hx-Trigger": []string{"resulterror"},
 		},
-		downloads:     map[string]facebookTestDownloadResponse{},
-		assertGetMyFB: nil,
+		downloads:             map[string]facebookTestDownloadResponse{},
+		assertGetMyFB:         nil,
+		assertDownloadRequest: nil,
 	})
 	defer server.Close()
 
@@ -425,6 +462,124 @@ func TestFacebookClientFetchReturnsGetMyFBErrorWithoutDownloads(t *testing.T) {
 	}
 
 	if !strings.Contains(err.Error(), "Private video") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestFacebookClientFetchSendsBrowserHeadersForGetMyFBDownloads(t *testing.T) {
+	t.Parallel()
+
+	var server *httptest.Server
+
+	server = newFacebookTestServer(t, facebookTestServerConfig{
+		getMyFBProcessBody: facebookGetMyFBSearchFragment(),
+		getMyFBResponseHeader: http.Header{
+			"Hx-Trigger": []string{"resultsuccess"},
+		},
+		downloads: map[string]facebookTestDownloadResponse{
+			"/downloads/video-hd.mp4": {
+				body:               testVideoBody,
+				contentType:        "video/mp4",
+				contentDisposition: `attachment; filename="resolved.mp4"`,
+				statusCode:         0,
+				headers:            nil,
+			},
+			"/downloads/video-sd.mp4": {
+				body:               "sd-video",
+				contentType:        "video/mp4",
+				contentDisposition: `attachment; filename="fallback.mp4"`,
+				statusCode:         0,
+				headers:            nil,
+			},
+			"/thumbnail.jpg": {
+				body:               "ignored",
+				contentType:        "image/jpeg",
+				contentDisposition: "",
+				statusCode:         0,
+				headers:            nil,
+			},
+		},
+		assertGetMyFB: nil,
+		assertDownloadRequest: func(request *http.Request) {
+			if request.URL.Path == "/thumbnail.jpg" {
+				return
+			}
+
+			if request.Header.Get("Referer") != server.URL+"/" {
+				t.Fatalf("unexpected referer header: %q", request.Header.Get("Referer"))
+			}
+
+			if request.Header.Get("Origin") != server.URL {
+				t.Fatalf("unexpected origin header: %q", request.Header.Get("Origin"))
+			}
+
+			if request.Header.Get("User-Agent") != facebookGetMyFBDownloadUserAgent {
+				t.Fatalf("unexpected user agent header: %q", request.Header.Get("User-Agent"))
+			}
+		},
+	})
+	defer server.Close()
+
+	client := newTestFacebookClient(server)
+
+	result, err := client.fetch(context.Background(), testFacebookURL)
+	if err != nil {
+		t.Fatalf("fetch facebook content: %v", err)
+	}
+
+	if string(mediaPartBytes(t, result.MediaPart)) != testVideoBody {
+		t.Fatalf("unexpected video bytes: %#v", result.MediaPart[contentFieldBytes])
+	}
+}
+
+func TestFacebookClientFetchRejectsEmptyGetMyFBDownloadResponses(t *testing.T) {
+	t.Parallel()
+
+	server := newFacebookTestServer(t, facebookTestServerConfig{
+		getMyFBProcessBody: facebookGetMyFBSearchFragment(),
+		getMyFBResponseHeader: http.Header{
+			"Hx-Trigger": []string{"resultsuccess"},
+		},
+		downloads: map[string]facebookTestDownloadResponse{
+			"/downloads/video-hd.mp4": {
+				body:               "",
+				contentType:        "",
+				contentDisposition: "",
+				statusCode:         http.StatusNoContent,
+				headers: http.Header{
+					"Hx-Trigger": []string{`{"cdn-error":"093"}`},
+				},
+			},
+			"/downloads/video-sd.mp4": {
+				body:               "",
+				contentType:        "",
+				contentDisposition: "",
+				statusCode:         http.StatusNoContent,
+				headers: http.Header{
+					"Hx-Trigger": []string{`{"cdn-error":"093"}`},
+				},
+			},
+			"/thumbnail.jpg": {
+				body:               "ignored",
+				contentType:        "image/jpeg",
+				contentDisposition: "",
+				statusCode:         0,
+				headers:            nil,
+			},
+		},
+		assertGetMyFB:         nil,
+		assertDownloadRequest: nil,
+	})
+	defer server.Close()
+
+	client := newTestFacebookClient(server)
+
+	_, err := client.fetch(context.Background(), testFacebookURL)
+	if err == nil {
+		t.Fatal("expected empty facebook download response to fail")
+	}
+
+	if !strings.Contains(err.Error(), "empty facebook video response") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
