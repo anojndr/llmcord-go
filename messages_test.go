@@ -22,10 +22,74 @@ import (
 const (
 	testSearchDeciderModel    = "openai/decider-model"
 	testAssistantNameReminder = "Understood. Your name is Jandron."
+	testEmptyAIMention        = "at ai"
+	testAIMentionQuery        = "at ai hello"
 )
 
 var errSendProgressMessageFailed = errors.New("send progress message failed")
 var errProgressMessageEditedTooQuickly = errors.New("progress message edited too quickly")
+
+func TestStandaloneEmptyBotQuery(t *testing.T) {
+	t.Parallel()
+
+	bareMessage := new(discordgo.Message)
+	bareMessage.Content = testEmptyAIMention
+
+	queryMessage := new(discordgo.Message)
+	queryMessage.Content = testAIMentionQuery
+
+	attachmentMessage := new(discordgo.Message)
+	attachmentMessage.Content = testEmptyAIMention
+
+	attachment := new(discordgo.MessageAttachment)
+	attachment.URL = "https://cdn.discordapp.com/attachments/test/image.png"
+	attachmentMessage.Attachments = []*discordgo.MessageAttachment{attachment}
+
+	parentMessage := new(discordgo.Message)
+	parentMessage.ID = "parent"
+
+	replyMessage := new(discordgo.Message)
+	replyMessage.Content = testEmptyAIMention
+	replyMessage.MessageReference = parentMessage.Reference()
+
+	testCases := []struct {
+		name    string
+		message *discordgo.Message
+		want    bool
+	}{
+		{
+			name:    "bare at ai",
+			message: bareMessage,
+			want:    true,
+		},
+		{
+			name:    "query text after mention",
+			message: queryMessage,
+			want:    false,
+		},
+		{
+			name:    "attachment keeps query non-empty check off",
+			message: attachmentMessage,
+			want:    false,
+		},
+		{
+			name:    "reply follow up is not standalone",
+			message: replyMessage,
+			want:    false,
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := standaloneEmptyBotQuery(testCase.message, "bot-user")
+			if got != testCase.want {
+				t.Fatalf("unexpected standalone empty query result: got %t want %t", got, testCase.want)
+			}
+		})
+	}
+}
 
 func TestBuildChatCompletionRequestPreservesConfiguredModelForDisplay(t *testing.T) {
 	t.Parallel()
@@ -1031,36 +1095,13 @@ func TestRespondToMessageEditsProgressMessageWithRateLimitError(t *testing.T) {
 	progressMessage.Author = newDiscordUser(botUserID, true)
 
 	patchDescriptions := make([]string, 0, 3)
-	progressSent := false
-	session := newDirectMessageTestSession(t, channelID, botUserID, roundTripFunc(func(
-		request *http.Request,
-	) (*http.Response, error) {
-		t.Helper()
-
-		switch {
-		case request.Method == http.MethodPost &&
-			request.URL.Path == "/api/v9/channels/"+channelID+"/typing":
-			return newNoContentResponse(request), nil
-		case request.Method == http.MethodPost &&
-			request.URL.Path == "/api/v9/channels/"+channelID+"/messages":
-			if progressSent {
-				t.Fatalf("unexpected additional message send: %s %s", request.Method, request.URL.Path)
-			}
-
-			progressSent = true
-
-			return newJSONResponse(t, request, progressMessage), nil
-		case request.Method == http.MethodPatch &&
-			request.URL.Path == "/api/v9/channels/"+channelID+"/messages/"+progressID:
-			patchDescriptions = append(patchDescriptions, requestEmbedDescription(t, request))
-
-			return newJSONResponse(t, request, progressMessage), nil
-		default:
-			t.Fatalf("unexpected request: %s %s", request.Method, request.URL.Path)
-
-			return nil, errUnexpectedTestRequest
-		}
-	}))
+	session := newProgressEditCaptureSession(
+		t,
+		channelID,
+		botUserID,
+		progressMessage,
+		&patchDescriptions,
+	)
 
 	instance := newRateLimitedRespondToMessageBot(session)
 
@@ -1079,6 +1120,54 @@ func TestRespondToMessageEditsProgressMessageWithRateLimitError(t *testing.T) {
 	}
 
 	if patchDescriptions[len(patchDescriptions)-1] != expectedError {
+		t.Fatalf("unexpected final progress error: %#v", patchDescriptions)
+	}
+}
+
+func TestRespondToMessageEditsProgressMessageWithEmptyStandaloneMentionError(t *testing.T) {
+	t.Parallel()
+
+	const (
+		botUserID       = "bot-user"
+		channelID       = "channel-1"
+		userID          = "user-1"
+		sourceMessageID = "user-message-1"
+		progressID      = "progress-message"
+	)
+
+	progressMessage := new(discordgo.Message)
+	progressMessage.ID = progressID
+	progressMessage.ChannelID = channelID
+	progressMessage.Author = newDiscordUser(botUserID, true)
+
+	patchDescriptions := make([]string, 0, 2)
+	session := newProgressEditCaptureSession(
+		t,
+		channelID,
+		botUserID,
+		progressMessage,
+		&patchDescriptions,
+	)
+
+	instance := newRateLimitedRespondToMessageBot(session)
+	sourceMessage := newRateLimitedRespondToMessageSourceMessage(channelID, sourceMessageID, userID)
+	sourceMessage.Content = testEmptyAIMention
+
+	err := instance.respondToMessage(
+		context.Background(),
+		newRateLimitedRespondToMessageConfig(),
+		sourceMessage,
+		"openai/main-model",
+	)
+	if err == nil {
+		t.Fatal("expected respond to message error")
+	}
+
+	if len(patchDescriptions) == 0 {
+		t.Fatal("expected progress message edits")
+	}
+
+	if patchDescriptions[len(patchDescriptions)-1] != errEmptyBotQuery.Error() {
 		t.Fatalf("unexpected final progress error: %#v", patchDescriptions)
 	}
 }
@@ -1918,6 +2007,48 @@ func newDirectMessageTestSession(
 	session.Client = client
 
 	return session
+}
+
+func newProgressEditCaptureSession(
+	t *testing.T,
+	channelID string,
+	botUserID string,
+	progressMessage *discordgo.Message,
+	patchDescriptions *[]string,
+) *discordgo.Session {
+	t.Helper()
+
+	progressSent := false
+
+	return newDirectMessageTestSession(t, channelID, botUserID, roundTripFunc(func(
+		request *http.Request,
+	) (*http.Response, error) {
+		t.Helper()
+
+		switch {
+		case request.Method == http.MethodPost &&
+			request.URL.Path == "/api/v9/channels/"+channelID+"/typing":
+			return newNoContentResponse(request), nil
+		case request.Method == http.MethodPost &&
+			request.URL.Path == "/api/v9/channels/"+channelID+"/messages":
+			if progressSent {
+				t.Fatalf("unexpected additional message send: %s %s", request.Method, request.URL.Path)
+			}
+
+			progressSent = true
+
+			return newJSONResponse(t, request, progressMessage), nil
+		case request.Method == http.MethodPatch &&
+			request.URL.Path == "/api/v9/channels/"+channelID+"/messages/"+progressMessage.ID:
+			*patchDescriptions = append(*patchDescriptions, requestEmbedDescription(t, request))
+
+			return newJSONResponse(t, request, progressMessage), nil
+		default:
+			t.Fatalf("unexpected request: %s %s", request.Method, request.URL.Path)
+
+			return nil, errUnexpectedTestRequest
+		}
+	}))
 }
 
 func newRateLimitedRespondToMessageBot(session *discordgo.Session) *bot {
