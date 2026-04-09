@@ -2045,6 +2045,78 @@ func TestFormatSearchSourcesPagesSplitsLongMessagesWithoutTruncation(t *testing.
 	}
 }
 
+func TestCountSearchSourcesUsesDisplayedSourceTotal(t *testing.T) {
+	t.Parallel()
+
+	metadata := &searchMetadata{
+		Queries: []string{"latest ai news"},
+		Results: []webSearchResult{{
+			Query: "latest ai news",
+			Text: "Title: Source 1\nURL: https://example.com/source-1\n\n" +
+				"Title: Source 2\nURL: https://example.com/source-2\n\n" +
+				"Title: Source 3\nURL: https://example.com/source-3\n",
+		}},
+		MaxURLs: 2,
+		VisualSearchSources: []visualSearchSourceGroup{{
+			Label: "Visual search",
+			Sources: []searchSource{{
+				Title: "Visual Source 1",
+				URL:   "https://example.com/visual-1",
+			}, {
+				Title: "Visual Source 2",
+				URL:   "https://example.com/visual-2",
+			}},
+		}},
+	}
+
+	if totalSources := countSearchSources(metadata); totalSources != 4 {
+		t.Fatalf("unexpected total displayed source count: %d", totalSources)
+	}
+}
+
+func TestFormatSearchSourcesPageContentIncludesTotalSourcesOnSinglePage(t *testing.T) {
+	t.Parallel()
+
+	metadata := &searchMetadata{
+		Queries: []string{"latest ai news"},
+		Results: []webSearchResult{{
+			Query: "latest ai news",
+			Text: "Title: Example Source\nURL: https://example.com/source\n\n" +
+				"Title: Second Source\nURL: https://example.com/second\n",
+		}},
+		MaxURLs:             defaultWebSearchMaxURLs,
+		VisualSearchSources: nil,
+	}
+
+	content := formatSearchSourcesPageContent(formatSearchSourcesPages(metadata), 0, countSearchSources(metadata))
+
+	if !strings.Contains(content, "Sources (2 total)\n\n") {
+		t.Fatalf("expected total source count in page header: %q", content)
+	}
+
+	if !strings.Contains(content, "1. Example Source <https://example.com/source>") {
+		t.Fatalf("expected source details in single-page content: %q", content)
+	}
+}
+
+func TestFormatSearchSourcesPageContentIncludesTotalSourcesOnPaginatedContent(t *testing.T) {
+	t.Parallel()
+
+	metadata := testPaginatedSearchMetadata()
+	pages := formatSearchSourcesPages(metadata)
+
+	if len(pages) < 2 {
+		t.Fatalf("expected paginated sources, got %d page(s)", len(pages))
+	}
+
+	content := formatSearchSourcesPageContent(pages, 0, countSearchSources(metadata))
+
+	expectedHeader := fmt.Sprintf("Sources (%d total, page 1/%d)", countSearchSources(metadata), len(pages))
+	if !strings.Contains(content, expectedHeader) {
+		t.Fatalf("expected paginated header %q in content: %q", expectedHeader, content)
+	}
+}
+
 func testPaginatedSearchMetadata() *searchMetadata {
 	searchQueries := []struct {
 		query string

@@ -171,6 +171,7 @@ Model notes:
 - Use `/searchtype` to switch the Exa Search API mode when `web_search.exa.api_key` is configured
 - Attach files or images for multimodal context
 - Start a prompt with `vsearch` to run reverse-image lookup
+- Use `Show Sources` on searched replies to inspect the cited URLs, including the total source count and pagination when needed
 
 ## Operational Notes
 

@@ -1003,6 +1003,24 @@ func formatSearchSourcesPages(metadata *searchMetadata) []string {
 	return splitMessagePages(message, showSourcesPageBodyMaxLength)
 }
 
+func countSearchSources(metadata *searchMetadata) int {
+	if metadata == nil {
+		return 0
+	}
+
+	totalSources := 0
+
+	for _, result := range metadata.Results {
+		totalSources += minInt(len(extractSearchSources(result.Text)), metadata.maxURLs())
+	}
+
+	for _, sourceGroup := range metadata.VisualSearchSources {
+		totalSources += len(sourceGroup.Sources)
+	}
+
+	return totalSources
+}
+
 func splitMessagePages(text string, limit int) []string {
 	trimmedText := strings.TrimSpace(text)
 	if trimmedText == "" || limit <= 0 {
@@ -1064,7 +1082,7 @@ func splitMessagePages(text string, limit int) []string {
 	return pages
 }
 
-func formatSearchSourcesPageContent(pages []string, pageIndex int) string {
+func formatSearchSourcesPageContent(pages []string, pageIndex int, totalSources int) string {
 	if len(pages) == 0 {
 		return searchSourcesUnavailableText
 	}
@@ -1075,11 +1093,23 @@ func formatSearchSourcesPageContent(pages []string, pageIndex int) string {
 		pageIndex = len(pages) - 1
 	}
 
-	if len(pages) == 1 {
-		return pages[pageIndex]
+	if totalSources < 0 {
+		totalSources = 0
 	}
 
-	return fmt.Sprintf("Sources (page %d/%d)\n\n%s", pageIndex+1, len(pages), pages[pageIndex])
+	pageHeader := fmt.Sprintf("Sources (%d total)", totalSources)
+
+	if len(pages) == 1 {
+		return fmt.Sprintf("%s\n\n%s", pageHeader, pages[pageIndex])
+	}
+
+	return fmt.Sprintf(
+		"Sources (%d total, page %d/%d)\n\n%s",
+		totalSources,
+		pageIndex+1,
+		len(pages),
+		pages[pageIndex],
+	)
 }
 
 func (metadata *searchMetadata) maxURLs() int {
