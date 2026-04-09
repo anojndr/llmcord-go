@@ -201,6 +201,7 @@ func (instance *bot) handleShowThinkingPageButton(
 func (instance *bot) showSourcesPageResponse(messageID string, pageIndex int) (string, []discordgo.MessageComponent) {
 	searchMetadata := instance.searchMetadataForMessage(messageID)
 	pages := formatSearchSourcesPages(searchMetadata)
+	totalSources := countSearchSources(searchMetadata)
 
 	if pageIndex < 0 {
 		pageIndex = 0
@@ -208,7 +209,7 @@ func (instance *bot) showSourcesPageResponse(messageID string, pageIndex int) (s
 		pageIndex = len(pages) - 1
 	}
 
-	return formatSearchSourcesPageContent(pages, pageIndex),
+	return formatSearchSourcesPageContent(pages, pageIndex, totalSources),
 		buildShowSourcesPaginationComponents(messageID, pageIndex, len(pages))
 }
 

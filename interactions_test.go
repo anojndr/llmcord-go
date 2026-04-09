@@ -376,6 +376,10 @@ func TestHandleInteractionCreateRespondsToShowSourcesButton(t *testing.T) {
 		t.Fatalf("expected query in response content: %q", response.Data.Content)
 	}
 
+	if !containsFold(response.Data.Content, "sources (1 total)") {
+		t.Fatalf("expected total source count in response content: %q", response.Data.Content)
+	}
+
 	if !containsFold(response.Data.Content, "https://example.com/source") {
 		t.Fatalf("expected source URL in response content: %q", response.Data.Content)
 	}
@@ -466,6 +470,10 @@ func TestHandleInteractionCreateRespondsToShowSourcesButtonAfterPendingRelease(t
 		t.Fatalf("expected query in response content: %q", response.Data.Content)
 	}
 
+	if !containsFold(response.Data.Content, "sources (1 total)") {
+		t.Fatalf("expected total source count in response content: %q", response.Data.Content)
+	}
+
 	if !containsFold(response.Data.Content, "https://example.com/source") {
 		t.Fatalf("expected source URL in response content: %q", response.Data.Content)
 	}
@@ -503,6 +511,10 @@ func TestHandleInteractionCreateRespondsToPaginatedShowSourcesButton(t *testing.
 
 	if !containsFold(response.Data.Content, "page 1/") {
 		t.Fatalf("expected first page indicator in response content: %q", response.Data.Content)
+	}
+
+	if !containsFold(response.Data.Content, "sources (15 total, page 1/") {
+		t.Fatalf("expected total source count in paginated response content: %q", response.Data.Content)
 	}
 
 	if containsFold(response.Data.Content, "... truncated") {
@@ -797,6 +809,16 @@ func TestHandleInteractionCreateUpdatesShowSourcesPaginationPage(t *testing.T) {
 	expectedPageIndicator := fmt.Sprintf("page %d/%d", targetPageIndex+1, pageCount)
 	if !containsFold(response.Data.Content, expectedPageIndicator) {
 		t.Fatalf("expected page indicator %q in response content: %q", expectedPageIndicator, response.Data.Content)
+	}
+
+	expectedTotalSources := fmt.Sprintf(
+		"sources (%d total, page %d/%d)",
+		countSearchSources(metadata),
+		targetPageIndex+1,
+		pageCount,
+	)
+	if !containsFold(response.Data.Content, expectedTotalSources) {
+		t.Fatalf("expected total source count %q in response content: %q", expectedTotalSources, response.Data.Content)
 	}
 
 	if !containsFold(response.Data.Content, "https://example.com/agent-frameworks/5") {
