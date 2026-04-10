@@ -210,9 +210,16 @@ func TestBuildXAIResponsesRequestBodyAppendsReplyTargetImageToLatestUserTurn(t *
 func TestBuildXAIResponsesRequestBodySkipsReplyChainImageWhenFollowUpHasOwnImage(t *testing.T) {
 	t.Parallel()
 
-	const yellowImageURL = "data:image/png;base64,yellow"
+	const (
+		userID         = "676735636656357396"
+		yellowImageURL = "data:image/png;base64,yellow"
+	)
 
-	requestBody := newXAIFollowUpOwnImageRequestBody(t, yellowImageURL)
+	requestBody := newXAIFollowUpRequestBody(
+		t,
+		"<@"+userID+">: how bout",
+		yellowImageURL,
+	)
 
 	if requestBody["previous_response_id"] != testXAIProviderResponseID {
 		t.Fatalf("unexpected previous response id: %#v", requestBody["previous_response_id"])
@@ -235,6 +242,27 @@ func TestBuildXAIResponsesRequestBodySkipsReplyChainImageWhenFollowUpHasOwnImage
 	if latestUserContent[1]["type"] != xAIResponsesInputImageType ||
 		latestUserContent[1]["image_url"] != yellowImageURL {
 		t.Fatalf("unexpected latest user image part: %#v", latestUserContent[1])
+	}
+}
+
+func TestBuildXAIResponsesRequestBodySkipsReplyChainImageWhenFollowUpHasNoOwnImage(t *testing.T) {
+	t.Parallel()
+
+	const userID = "676735636656357396"
+
+	requestBody := newXAIFollowUpRequestBody(t, "<@"+userID+">: ty", "")
+
+	if requestBody["previous_response_id"] != testXAIProviderResponseID {
+		t.Fatalf("unexpected previous response id: %#v", requestBody["previous_response_id"])
+	}
+
+	inputPayload, inputOK := requestBody["input"].([]map[string]any)
+	if !inputOK || len(inputPayload) != 1 {
+		t.Fatalf("unexpected trimmed input payload: %#v", requestBody["input"])
+	}
+
+	if inputPayload[0]["content"] != "<@"+userID+">: ty" {
+		t.Fatalf("unexpected text-only follow-up content: %#v", inputPayload[0]["content"])
 	}
 }
 
@@ -1063,10 +1091,58 @@ func newXAIReplyTargetImageRequestBody(
 	return requestBody
 }
 
-func newXAIFollowUpOwnImageRequestBody(
+type xAIFollowUpRequestFixture struct {
+	instance        *bot
+	followUpMessage *discordgo.Message
+	xAIVisionModel  string
+}
+
+func newXAIFollowUpRequestBody(
 	t *testing.T,
+	followUpText string,
 	followUpImage string,
 ) map[string]any {
+	t.Helper()
+
+	fixture := newXAIFollowUpRequestFixtureForTest(t, followUpText, followUpImage)
+
+	loadedConfig := newXAIVisionConversationConfig(fixture.xAIVisionModel)
+
+	messages, _, err := fixture.instance.buildMessageConversation(
+		context.Background(),
+		loadedConfig,
+		fixture.followUpMessage,
+		fixture.xAIVisionModel,
+	)
+	if err != nil {
+		t.Fatalf("build xAI message conversation: %v", err)
+	}
+
+	request, err := buildChatCompletionRequest(loadedConfig, fixture.xAIVisionModel, messages)
+	if err != nil {
+		t.Fatalf("build xAI chat completion request: %v", err)
+	}
+
+	assignXAIPreviousResponseID(
+		&request,
+		fixture.followUpMessage,
+		fixture.instance.nodes,
+		loadedConfig.MaxMessages,
+	)
+
+	requestBody, err := buildXAIResponsesRequestBody(request)
+	if err != nil {
+		t.Fatalf("build xAI responses request body: %v", err)
+	}
+
+	return requestBody
+}
+
+func newXAIFollowUpRequestFixtureForTest(
+	t *testing.T,
+	followUpText string,
+	followUpImage string,
+) xAIFollowUpRequestFixture {
 	t.Helper()
 
 	const (
@@ -1114,42 +1190,22 @@ func newXAIFollowUpOwnImageRequestBody(
 	followUpMessage.ID = followUpMessageID
 	followUpMessage.ChannelID = channelID
 	followUpMessage.Author = newDiscordUser(userID, false)
-	followUpMessage.Content = "at ai how bout"
+	followUpMessage.Content = "at ai follow up"
 	followUpMessage.MessageReference = assistantMessage.Reference()
 	followUpMessage.ReferencedMessage = assistantMessage
-	setCachedImageUserNode(
+	setXAIFollowUpNodeForTest(
 		instance,
 		followUpMessage,
-		"<@"+userID+">: how bout",
+		followUpText,
 		followUpImage,
 		assistantMessage,
 	)
 
-	loadedConfig := newXAIVisionConversationConfig(xAIVisionModel)
-
-	messages, _, err := instance.buildMessageConversation(
-		context.Background(),
-		loadedConfig,
-		followUpMessage,
-		xAIVisionModel,
-	)
-	if err != nil {
-		t.Fatalf("build xAI message conversation: %v", err)
+	return xAIFollowUpRequestFixture{
+		instance:        instance,
+		followUpMessage: followUpMessage,
+		xAIVisionModel:  xAIVisionModel,
 	}
-
-	request, err := buildChatCompletionRequest(loadedConfig, xAIVisionModel, messages)
-	if err != nil {
-		t.Fatalf("build xAI chat completion request: %v", err)
-	}
-
-	assignXAIPreviousResponseID(&request, followUpMessage, instance.nodes, loadedConfig.MaxMessages)
-
-	requestBody, err := buildXAIResponsesRequestBody(request)
-	if err != nil {
-		t.Fatalf("build xAI responses request body: %v", err)
-	}
-
-	return requestBody
 }
 
 func newXAIVisionConversationConfig(xAIVisionModel string) config {
@@ -1172,6 +1228,22 @@ func setCachedImageOnlyUserNode(
 	imageURL string,
 ) {
 	setCachedImageUserNode(instance, userMessage, "<@"+userID+">: ", imageURL, nil)
+}
+
+func setXAIFollowUpNodeForTest(
+	instance *bot,
+	userMessage *discordgo.Message,
+	text string,
+	imageURL string,
+	parentMessage *discordgo.Message,
+) {
+	if imageURL == "" {
+		setCachedUserNode(instance, userMessage, parentMessage, text)
+
+		return
+	}
+
+	setCachedImageUserNode(instance, userMessage, text, imageURL, parentMessage)
 }
 
 func setCachedImageUserNode(

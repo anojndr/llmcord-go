@@ -671,6 +671,15 @@ func (instance *bot) maybeAugmentConversationWithXAIImageContext(
 		return conversation, nil
 	}
 
+	if xAIConversationPreviousResponseID(
+		providerSlashModel,
+		sourceMessage,
+		instance.nodes,
+		loadedConfig.MaxMessages,
+	) != "" {
+		return conversation, nil
+	}
+
 	contentOptions, err := messageContentOptionsForModel(loadedConfig, providerSlashModel)
 	if err != nil {
 		return nil, fmt.Errorf("build xAI image content options: %w", err)
