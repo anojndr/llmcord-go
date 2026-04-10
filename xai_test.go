@@ -207,6 +207,37 @@ func TestBuildXAIResponsesRequestBodyAppendsReplyTargetImageToLatestUserTurn(t *
 	}
 }
 
+func TestBuildXAIResponsesRequestBodySkipsReplyChainImageWhenFollowUpHasOwnImage(t *testing.T) {
+	t.Parallel()
+
+	const yellowImageURL = "data:image/png;base64,yellow"
+
+	requestBody := newXAIFollowUpOwnImageRequestBody(t, yellowImageURL)
+
+	if requestBody["previous_response_id"] != testXAIProviderResponseID {
+		t.Fatalf("unexpected previous response id: %#v", requestBody["previous_response_id"])
+	}
+
+	inputPayload, inputOK := requestBody["input"].([]map[string]any)
+	if !inputOK || len(inputPayload) != 1 {
+		t.Fatalf("unexpected trimmed input payload: %#v", requestBody["input"])
+	}
+
+	latestUserContent, contentOK := inputPayload[0]["content"].([]map[string]any)
+	if !contentOK {
+		t.Fatalf("expected multimodal latest user content, got %#v", inputPayload[0]["content"])
+	}
+
+	if len(latestUserContent) != 2 {
+		t.Fatalf("unexpected latest user content part count: %#v", latestUserContent)
+	}
+
+	if latestUserContent[1]["type"] != xAIResponsesInputImageType ||
+		latestUserContent[1]["image_url"] != yellowImageURL {
+		t.Fatalf("unexpected latest user image part: %#v", latestUserContent[1])
+	}
+}
+
 func TestCanExtractPDFContentsDisablesLocalExtractionForXAI(t *testing.T) {
 	t.Parallel()
 
@@ -1007,14 +1038,7 @@ func newXAIReplyTargetImageRequestBody(
 	sourceMessage.ReferencedMessage = replyTargetMessage
 	setCachedUserNode(instance, sourceMessage, replyTargetMessage, "<@"+userID+">: describe this")
 
-	loadedConfig := testSearchConfig()
-	loadedConfig.MaxText = defaultMaxText
-	loadedConfig.MaxImages = defaultMaxImages
-	loadedConfig.MaxMessages = defaultMaxMessages
-	loadedConfig.Providers = map[string]providerConfig{xAIProviderName: testXAIProviderConfig()}
-	loadedConfig.Models = map[string]map[string]any{xAIVisionModel: nil}
-	loadedConfig.ModelOrder = []string{xAIVisionModel}
-	loadedConfig.SearchDeciderModel = ""
+	loadedConfig := newXAIVisionConversationConfig(xAIVisionModel)
 
 	messages, _, err := instance.buildMessageConversation(
 		context.Background(),
@@ -1039,23 +1063,135 @@ func newXAIReplyTargetImageRequestBody(
 	return requestBody
 }
 
+func newXAIFollowUpOwnImageRequestBody(
+	t *testing.T,
+	followUpImage string,
+) map[string]any {
+	t.Helper()
+
+	const (
+		botUserID          = "bot-user"
+		channelID          = "channel-1"
+		userID             = "676735636656357396"
+		sourceMessageID    = "source-message"
+		assistantMessageID = "assistant-message"
+		followUpMessageID  = "follow-up-message"
+		xAIVisionModel     = "x-ai/grok-4:vision"
+		redImageURL        = "data:image/png;base64,red"
+	)
+
+	instance := newHistoryRetentionTestBot(t)
+
+	sourceMessage := new(discordgo.Message)
+	sourceMessage.ID = sourceMessageID
+	sourceMessage.ChannelID = channelID
+	sourceMessage.Author = newDiscordUser(userID, false)
+	sourceMessage.Content = "at ai tell me what colors are this"
+	setCachedImageUserNode(
+		instance,
+		sourceMessage,
+		"<@"+userID+">: tell me what colors are this",
+		redImageURL,
+		nil,
+	)
+
+	assistantMessage := new(discordgo.Message)
+	assistantMessage.ID = assistantMessageID
+	assistantMessage.ChannelID = channelID
+	assistantMessage.Author = newDiscordUser(botUserID, true)
+	assistantMessage.MessageReference = sourceMessage.Reference()
+	assistantMessage.Type = discordgo.MessageTypeReply
+	setCachedAssistantNode(instance, assistantMessage, sourceMessage)
+	setProviderResponseOnNode(
+		t,
+		instance,
+		assistantMessage.ID,
+		testXAIProviderResponseID,
+		xAIVisionModel,
+	)
+
+	followUpMessage := new(discordgo.Message)
+	followUpMessage.ID = followUpMessageID
+	followUpMessage.ChannelID = channelID
+	followUpMessage.Author = newDiscordUser(userID, false)
+	followUpMessage.Content = "at ai how bout"
+	followUpMessage.MessageReference = assistantMessage.Reference()
+	followUpMessage.ReferencedMessage = assistantMessage
+	setCachedImageUserNode(
+		instance,
+		followUpMessage,
+		"<@"+userID+">: how bout",
+		followUpImage,
+		assistantMessage,
+	)
+
+	loadedConfig := newXAIVisionConversationConfig(xAIVisionModel)
+
+	messages, _, err := instance.buildMessageConversation(
+		context.Background(),
+		loadedConfig,
+		followUpMessage,
+		xAIVisionModel,
+	)
+	if err != nil {
+		t.Fatalf("build xAI message conversation: %v", err)
+	}
+
+	request, err := buildChatCompletionRequest(loadedConfig, xAIVisionModel, messages)
+	if err != nil {
+		t.Fatalf("build xAI chat completion request: %v", err)
+	}
+
+	assignXAIPreviousResponseID(&request, followUpMessage, instance.nodes, loadedConfig.MaxMessages)
+
+	requestBody, err := buildXAIResponsesRequestBody(request)
+	if err != nil {
+		t.Fatalf("build xAI responses request body: %v", err)
+	}
+
+	return requestBody
+}
+
+func newXAIVisionConversationConfig(xAIVisionModel string) config {
+	loadedConfig := testSearchConfig()
+	loadedConfig.MaxText = defaultMaxText
+	loadedConfig.MaxImages = defaultMaxImages
+	loadedConfig.MaxMessages = defaultMaxMessages
+	loadedConfig.Providers = map[string]providerConfig{xAIProviderName: testXAIProviderConfig()}
+	loadedConfig.Models = map[string]map[string]any{xAIVisionModel: nil}
+	loadedConfig.ModelOrder = []string{xAIVisionModel}
+	loadedConfig.SearchDeciderModel = ""
+
+	return loadedConfig
+}
+
 func setCachedImageOnlyUserNode(
 	instance *bot,
 	userMessage *discordgo.Message,
 	userID string,
 	imageURL string,
 ) {
+	setCachedImageUserNode(instance, userMessage, "<@"+userID+">: ", imageURL, nil)
+}
+
+func setCachedImageUserNode(
+	instance *bot,
+	userMessage *discordgo.Message,
+	text string,
+	imageURL string,
+	parentMessage *discordgo.Message,
+) {
 	node := instance.nodes.getOrCreate(userMessage.ID)
 
 	node.mu.Lock()
 	node.role = messageRoleUser
-	node.text = "<@" + userID + ">: "
-	node.urlScanText = ""
+	node.text = text
+	node.urlScanText = text
 	node.media = []contentPart{{
 		"type":      contentTypeImageURL,
 		"image_url": map[string]string{"url": imageURL},
 	}}
-	node.parentMessage = nil
+	node.parentMessage = parentMessage
 	node.initialized = true
 	instance.nodes.cacheLockedNode(userMessage.ID, node)
 	node.mu.Unlock()

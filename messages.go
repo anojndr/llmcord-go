@@ -700,6 +700,10 @@ func (instance *bot) maybeAugmentConversationWithXAIImageContext(
 		return nil, fmt.Errorf("collect existing xAI image parts: %w", err)
 	}
 
+	if len(imageURLSet) > 0 {
+		return conversation, nil
+	}
+
 	for _, attachmentMessage := range instance.attachmentAugmentationMessages(ctx, sourceMessage) {
 		imageParts, loadErr := instance.imagePartsForMessage(ctx, attachmentMessage)
 		if loadErr != nil {
