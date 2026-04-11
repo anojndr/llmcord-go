@@ -104,6 +104,39 @@ func TestBuildGeminiGenerateContentRequestConvertsMessagesAndHTTPOptions(t *test
 	assertGeminiGenerateContentConfig(t, config)
 }
 
+func TestBuildGeminiGenerateContentRequestAddsPlaceholderForImageOnlyUserMessage(t *testing.T) {
+	t.Parallel()
+
+	request := newSimpleGeminiStreamRequest()
+	request.Messages = []chatMessage{{
+		Role: messageRoleUser,
+		Content: []contentPart{
+			{"type": contentTypeText, "text": ""},
+			{
+				"type":      contentTypeImageURL,
+				"image_url": map[string]string{"url": "data:image/png;base64,aGVsbG8="},
+			},
+		},
+	}}
+
+	contents, _, err := buildGeminiGenerateContentRequest(context.Background(), request, nil)
+	if err != nil {
+		t.Fatalf("build gemini generate content request: %v", err)
+	}
+
+	if len(contents) != 1 || len(contents[0].Parts) != 2 {
+		t.Fatalf("unexpected gemini contents: %#v", contents)
+	}
+
+	if contents[0].Parts[0].Text != imageOnlyQueryPlaceholder {
+		t.Fatalf("unexpected placeholder text part: %#v", contents[0].Parts[0])
+	}
+
+	if contents[0].Parts[1].InlineData == nil {
+		t.Fatal("expected inline image data")
+	}
+}
+
 func TestBuildGeminiGenerateContentRequestIncludesThinkingAliasLevel(t *testing.T) {
 	t.Parallel()
 

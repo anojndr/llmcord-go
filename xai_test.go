@@ -175,6 +175,39 @@ func TestBuildXAIResponsesRequestBodyEncodesTextAttachmentsAsInputFiles(t *testi
 	}
 }
 
+func TestBuildXAIResponsesRequestBodyAddsPlaceholderForImageOnlyUserMessage(t *testing.T) {
+	t.Parallel()
+
+	request := newXAIResponsesStreamingRequest("https://api.x.ai/v1")
+	request.Messages[1].Content = []contentPart{
+		{"type": contentTypeText, "text": ""},
+		{
+			"type":      contentTypeImageURL,
+			"image_url": map[string]string{"url": "data:image/png;base64,abc"},
+		},
+	}
+
+	requestBody, err := buildXAIResponsesRequestBody(request)
+	if err != nil {
+		t.Fatalf("build xAI responses request body: %v", err)
+	}
+
+	inputPayload, inputOK := requestBody["input"].([]map[string]any)
+	if !inputOK || len(inputPayload) != 2 {
+		t.Fatalf("unexpected input payload: %#v", requestBody["input"])
+	}
+
+	userContent, contentOK := inputPayload[1]["content"].([]map[string]any)
+	if !contentOK || len(userContent) != 2 {
+		t.Fatalf("unexpected user content payload: %#v", inputPayload[1]["content"])
+	}
+
+	if userContent[0]["type"] != xAIResponsesInputTextType ||
+		userContent[0]["text"] != imageOnlyQueryPlaceholder {
+		t.Fatalf("unexpected placeholder user part: %#v", userContent[0])
+	}
+}
+
 func TestBuildXAIResponsesRequestBodyAppendsReplyTargetImageToLatestUserTurn(t *testing.T) {
 	t.Parallel()
 
