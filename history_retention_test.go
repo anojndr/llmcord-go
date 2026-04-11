@@ -11,7 +11,7 @@ func TestPersistAugmentedSourceMessageRetainsURLAndSearchSectionsInFollowUpHisto
 	t.Parallel()
 
 	fixture := newHistoryRetentionFixture(t, "at ai what is in this image and these links")
-	conversation := newRetainedSearchContextConversation(t, fixture.userID)
+	conversation := newRetainedSearchContextConversation(t)
 
 	persistAugmentedSourceConversation(t, fixture.instance, fixture.sourceMessage, conversation)
 
@@ -35,7 +35,7 @@ func TestPersistAugmentedSourceMessageRetainsTikTokAndFacebookVideoContextInFoll
 	t.Parallel()
 
 	fixture := newHistoryRetentionFixture(t, "at ai summarize these videos")
-	conversation := newRetainedVideoContextConversation(t, fixture.userID)
+	conversation := newRetainedVideoContextConversation(t)
 
 	persistAugmentedSourceConversation(t, fixture.instance, fixture.sourceMessage, conversation)
 
@@ -99,7 +99,7 @@ func newHistoryRetentionFixture(t *testing.T, sourceContent string) historyReten
 		instance,
 		followUpMessage,
 		assistantMessage,
-		"<@"+userID+">: follow-up question",
+		"follow-up question",
 	)
 
 	return historyRetentionFixture{
@@ -110,14 +110,14 @@ func newHistoryRetentionFixture(t *testing.T, sourceContent string) historyReten
 	}
 }
 
-func newRetainedSearchContextConversation(t *testing.T, userID string) []chatMessage {
+func newRetainedSearchContextConversation(t *testing.T) []chatMessage {
 	t.Helper()
 
 	conversation := []chatMessage{
 		{
 			Role: messageRoleUser,
 			Content: []contentPart{
-				{"type": contentTypeText, "text": "<@" + userID + ">: what is in this image and these links"},
+				{"type": contentTypeText, "text": "what is in this image and these links"},
 				{"type": contentTypeImageURL, "image_url": map[string]string{"url": "data:image/png;base64,abc"}},
 			},
 		},
@@ -191,13 +191,13 @@ func newRetainedSearchContextConversation(t *testing.T, userID string) []chatMes
 	return conversation
 }
 
-func newRetainedVideoContextConversation(t *testing.T, userID string) []chatMessage {
+func newRetainedVideoContextConversation(t *testing.T) []chatMessage {
 	t.Helper()
 
 	conversation := []chatMessage{
 		{
 			Role:    messageRoleUser,
-			Content: "<@" + userID + ">: summarize these videos",
+			Content: "summarize these videos",
 		},
 	}
 

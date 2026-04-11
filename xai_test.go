@@ -178,8 +178,6 @@ func TestBuildXAIResponsesRequestBodyEncodesTextAttachmentsAsInputFiles(t *testi
 func TestBuildXAIResponsesRequestBodyAppendsReplyTargetImageToLatestUserTurn(t *testing.T) {
 	t.Parallel()
 
-	const userID = "676735636656357396"
-
 	requestBody := newXAIReplyTargetImageRequestBody(t, "data:image/png;base64,abc")
 
 	inputPayload, inputOK := requestBody["input"].([]map[string]any)
@@ -197,7 +195,7 @@ func TestBuildXAIResponsesRequestBodyAppendsReplyTargetImageToLatestUserTurn(t *
 	}
 
 	if latestUserContent[0]["type"] != xAIResponsesInputTextType ||
-		latestUserContent[0]["text"] != "<@"+userID+">: describe this" {
+		latestUserContent[0]["text"] != "describe this" {
 		t.Fatalf("unexpected latest user text part: %#v", latestUserContent[0])
 	}
 
@@ -210,14 +208,11 @@ func TestBuildXAIResponsesRequestBodyAppendsReplyTargetImageToLatestUserTurn(t *
 func TestBuildXAIResponsesRequestBodySkipsReplyChainImageWhenFollowUpHasOwnImage(t *testing.T) {
 	t.Parallel()
 
-	const (
-		userID         = "676735636656357396"
-		yellowImageURL = "data:image/png;base64,yellow"
-	)
+	const yellowImageURL = "data:image/png;base64,yellow"
 
 	requestBody := newXAIFollowUpRequestBody(
 		t,
-		"<@"+userID+">: how bout",
+		"how bout",
 		yellowImageURL,
 	)
 
@@ -248,9 +243,7 @@ func TestBuildXAIResponsesRequestBodySkipsReplyChainImageWhenFollowUpHasOwnImage
 func TestBuildXAIResponsesRequestBodySkipsReplyChainImageWhenFollowUpHasNoOwnImage(t *testing.T) {
 	t.Parallel()
 
-	const userID = "676735636656357396"
-
-	requestBody := newXAIFollowUpRequestBody(t, "<@"+userID+">: ty", "")
+	requestBody := newXAIFollowUpRequestBody(t, "ty", "")
 
 	if requestBody["previous_response_id"] != testXAIProviderResponseID {
 		t.Fatalf("unexpected previous response id: %#v", requestBody["previous_response_id"])
@@ -261,7 +254,7 @@ func TestBuildXAIResponsesRequestBodySkipsReplyChainImageWhenFollowUpHasNoOwnIma
 		t.Fatalf("unexpected trimmed input payload: %#v", requestBody["input"])
 	}
 
-	if inputPayload[0]["content"] != "<@"+userID+">: ty" {
+	if inputPayload[0]["content"] != "ty" {
 		t.Fatalf("unexpected text-only follow-up content: %#v", inputPayload[0]["content"])
 	}
 }
@@ -1064,7 +1057,7 @@ func newXAIReplyTargetImageRequestBody(
 	sourceMessage.Content = "at ai describe this"
 	sourceMessage.MessageReference = replyTargetMessage.Reference()
 	sourceMessage.ReferencedMessage = replyTargetMessage
-	setCachedUserNode(instance, sourceMessage, replyTargetMessage, "<@"+userID+">: describe this")
+	setCachedUserNode(instance, sourceMessage, replyTargetMessage, "describe this")
 
 	loadedConfig := newXAIVisionConversationConfig(xAIVisionModel)
 
@@ -1166,7 +1159,7 @@ func newXAIFollowUpRequestFixtureForTest(
 	setCachedImageUserNode(
 		instance,
 		sourceMessage,
-		"<@"+userID+">: tell me what colors are this",
+		"tell me what colors are this",
 		redImageURL,
 		nil,
 	)
@@ -1227,7 +1220,9 @@ func setCachedImageOnlyUserNode(
 	userID string,
 	imageURL string,
 ) {
-	setCachedImageUserNode(instance, userMessage, "<@"+userID+">: ", imageURL, nil)
+	_ = userID
+
+	setCachedImageUserNode(instance, userMessage, "", imageURL, nil)
 }
 
 func setXAIFollowUpNodeForTest(
