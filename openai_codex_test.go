@@ -519,6 +519,46 @@ func TestOpenAICodexInputAndInstructionsConvertsMessages(t *testing.T) {
 	}
 }
 
+func TestBuildOpenAICodexRequestBodyAddsPlaceholderForImageOnlyUserMessage(t *testing.T) {
+	t.Parallel()
+
+	request := chatCompletionRequest{
+		Provider:                    newOpenAICodexProviderRequestConfig("", "", nil, nil, nil),
+		Model:                       testOpenAICodexModel,
+		ConfiguredModel:             "",
+		ContextWindow:               0,
+		AutoCompactThresholdPercent: 0,
+		SessionID:                   "",
+		PreviousResponseID:          "",
+		Messages: []chatMessage{{
+			Role: messageRoleUser,
+			Content: []contentPart{
+				{"type": contentTypeText, "text": ""},
+				{"type": contentTypeImageURL, "image_url": map[string]string{"url": testOpenAICodexImageURL}},
+			},
+		}},
+	}
+
+	requestBody, err := buildOpenAICodexRequestBody(request)
+	if err != nil {
+		t.Fatalf("build codex request body: %v", err)
+	}
+
+	input, inputOK := requestBody["input"].([]map[string]any)
+	if !inputOK || len(input) != 1 {
+		t.Fatalf("unexpected codex input payload: %#v", requestBody["input"])
+	}
+
+	userContent, userContentOK := input[0]["content"].([]map[string]any)
+	if !userContentOK || len(userContent) != 2 {
+		t.Fatalf("unexpected codex user content payload: %#v", input[0]["content"])
+	}
+
+	if userContent[0]["type"] != "input_text" || userContent[0]["text"] != imageOnlyQueryPlaceholder {
+		t.Fatalf("unexpected placeholder user part: %#v", userContent[0])
+	}
+}
+
 func TestOpenAICodexUserPartsRejectUnsupportedContentPartType(t *testing.T) {
 	t.Parallel()
 

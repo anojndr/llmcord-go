@@ -202,6 +202,60 @@ func TestOpenAIClientStreamChatCompletion(t *testing.T) {
 	}
 }
 
+func TestBuildChatCompletionRequestBodyAddsPlaceholderForImageOnlyUserMessage(t *testing.T) {
+	t.Parallel()
+
+	request := chatCompletionRequest{
+		Provider: providerRequestConfig{
+			APIKind:         providerAPIKindOpenAI,
+			BaseURL:         "https://example.com/v1",
+			APIKey:          "test-key",
+			APIKeys:         nil,
+			UseResponsesAPI: false,
+			ExtraHeaders:    nil,
+			ExtraQuery:      nil,
+			ExtraBody:       nil,
+		},
+		Model:                       "gpt-test",
+		ConfiguredModel:             "",
+		ContextWindow:               0,
+		AutoCompactThresholdPercent: 0,
+		SessionID:                   "",
+		PreviousResponseID:          "",
+		Messages: []chatMessage{{
+			Role: messageRoleUser,
+			Content: []contentPart{
+				{"type": contentTypeText, "text": ""},
+				{
+					"type":      contentTypeImageURL,
+					"image_url": map[string]string{"url": "data:image/png;base64,abc"},
+				},
+			},
+		}},
+	}
+
+	requestBody := buildChatCompletionRequestBody(request)
+
+	messages, messagesOK := requestBody["messages"].([]chatMessage)
+	if !messagesOK || len(messages) != 1 {
+		t.Fatalf("unexpected messages payload: %#v", requestBody["messages"])
+	}
+
+	parts, partsOK := messages[0].Content.([]contentPart)
+	if !partsOK || len(parts) != 2 {
+		t.Fatalf("unexpected user content payload: %#v", messages[0].Content)
+	}
+
+	if parts[0]["type"] != contentTypeText || parts[0]["text"] != imageOnlyQueryPlaceholder {
+		t.Fatalf("unexpected placeholder text part: %#v", parts[0])
+	}
+
+	originalParts, originalPartsOK := request.Messages[0].Content.([]contentPart)
+	if !originalPartsOK || originalParts[0]["text"] != "" {
+		t.Fatalf("expected original request messages to remain unchanged: %#v", request.Messages[0].Content)
+	}
+}
+
 func TestOpenAIClientRetriesWithoutStreamingUsageWhenProviderRejectsIt(t *testing.T) {
 	t.Parallel()
 
