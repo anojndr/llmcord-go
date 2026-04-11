@@ -749,7 +749,7 @@ func TestPersistentMessageNodeStoreRestoresRetainedSearchHistoryAfterRestart(t *
 	sourceMessage.Author = newDiscordUser(userID, false)
 	sourceMessage.Content = "at ai what is in this image and these links"
 
-	conversation := newRetainedSearchContextConversation(t, userID)
+	conversation := newRetainedSearchContextConversation(t)
 	persistAugmentedSourceConversation(t, initialInstance, sourceMessage, conversation)
 
 	assistantMessage := new(discordgo.Message)
@@ -795,7 +795,7 @@ func TestPersistentMessageNodeStoreRestoresRetainedSearchHistoryAfterRestart(t *
 	)
 
 	assertRetainedSearchHistory(t, history)
-	assertRestartedConversationTail(t, history, userID, testAssistantReply, "follow-up question")
+	assertRestartedConversationTail(t, history, testAssistantReply, "follow-up question")
 	assertPersistedAssistantMetadata(
 		t,
 		restartedInstance,
@@ -836,7 +836,7 @@ func TestPersistentMessageNodeStoreRestoresRetainedVideoHistoryAfterRestart(t *t
 	sourceMessage.Author = newDiscordUser(userID, false)
 	sourceMessage.Content = "at ai summarize these videos"
 
-	conversation := newRetainedVideoContextConversation(t, userID)
+	conversation := newRetainedVideoContextConversation(t)
 	persistAugmentedSourceConversation(t, initialInstance, sourceMessage, conversation)
 
 	assistantMessage := new(discordgo.Message)
@@ -875,7 +875,7 @@ func TestPersistentMessageNodeStoreRestoresRetainedVideoHistoryAfterRestart(t *t
 	)
 
 	assertRetainedVideoHistory(t, history)
-	assertRestartedConversationTail(t, history, userID, testAssistantReply, "follow-up question")
+	assertRestartedConversationTail(t, history, testAssistantReply, "follow-up question")
 	assertRetainedVideoBytes(t, history)
 }
 
@@ -970,7 +970,6 @@ func retainedRestartHistoryForFollowUp(
 func assertRestartedConversationTail(
 	t *testing.T,
 	history []chatMessage,
-	userID string,
 	assistantReply string,
 	followUpText string,
 ) {
@@ -980,8 +979,7 @@ func assertRestartedConversationTail(
 		t.Fatalf("unexpected assistant history: %#v", history[1])
 	}
 
-	expectedFollowUp := "<@" + userID + ">: " + followUpText
-	if history[2].Role != messageRoleUser || history[2].Content != expectedFollowUp {
+	if history[2].Role != messageRoleUser || history[2].Content != followUpText {
 		t.Fatalf("unexpected follow-up history: %#v", history[2])
 	}
 }

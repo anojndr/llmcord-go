@@ -444,7 +444,7 @@ func TestPersistAugmentedSourceMessageRetainsExtractedPDFTextAndImagesInFollowUp
 
 	followUpMessage := new(discordgo.Message)
 	followUpMessage.ID = "message-pdf-retained-follow-up"
-	setCachedUserNode(instance, followUpMessage, assistantMessage, "<@123>: follow-up question")
+	setCachedUserNode(instance, followUpMessage, assistantMessage, "follow-up question")
 
 	history := retainedHistoryForFollowUp(
 		t,

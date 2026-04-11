@@ -1155,7 +1155,6 @@ func TestGenerateAndSendResponseKeepsAssistantReplyInConversationHistory(t *test
 	assertConversationHistory(
 		t,
 		conversation,
-		userID,
 		assistantReplyText,
 	)
 }
@@ -1467,7 +1466,6 @@ func TestGenerateAndSendResponsePersistsThinkingInConversationHistory(t *testing
 	assertConversationHistory(
 		t,
 		conversation,
-		userID,
 		visibleResponseText(thoughtText, answerText),
 	)
 }
@@ -1842,7 +1840,6 @@ func thinkingAnswerResponseDeltas(thinkingText, answerText string) []streamDelta
 func assertConversationHistory(
 	t *testing.T,
 	conversation []chatMessage,
-	userID string,
 	assistantReplyText string,
 ) {
 	t.Helper()
@@ -1852,7 +1849,7 @@ func assertConversationHistory(
 	}
 
 	if conversation[0].Role != messageRoleUser ||
-		conversation[0].Content != "<@"+userID+">: generate a random 10-digit number" {
+		conversation[0].Content != "generate a random 10-digit number" {
 		t.Fatalf("unexpected source message: %#v", conversation[0])
 	}
 
@@ -1862,7 +1859,7 @@ func assertConversationHistory(
 	}
 
 	if conversation[2].Role != messageRoleUser ||
-		conversation[2].Content != "<@"+userID+">: repeat the 10-digit number that you just generated" {
+		conversation[2].Content != "repeat the 10-digit number that you just generated" {
 		t.Fatalf("unexpected follow-up message: %#v", conversation[2])
 	}
 }

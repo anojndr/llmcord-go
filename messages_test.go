@@ -1304,7 +1304,7 @@ func newGeminiMediaPreparationFailureFixture(
 	loadedConfig.MaxMessages = defaultMaxMessages
 
 	sourceMessage := newPromptMessage(sourceMessageID, channelID, userID, botUserID)
-	seedGeminiMediaPreparationFailureSource(instance, sourceMessage, userID)
+	seedGeminiMediaPreparationFailureSource(instance, sourceMessage)
 
 	return geminiMediaPreparationFailureFixture{
 		instance:          instance,
@@ -1317,12 +1317,11 @@ func newGeminiMediaPreparationFailureFixture(
 func seedGeminiMediaPreparationFailureSource(
 	instance *bot,
 	sourceMessage *discordgo.Message,
-	userID string,
 ) {
 	sourceNode := instance.nodes.getOrCreate(sourceMessage.ID)
 	sourceNode.initialized = true
 	sourceNode.role = messageRoleUser
-	sourceNode.text = "<@" + userID + ">: summarize this clip"
+	sourceNode.text = "summarize this clip"
 	sourceNode.urlScanText = sourceNode.text
 	sourceNode.media = []contentPart{
 		{
@@ -1636,7 +1635,7 @@ func TestBuildMessageConversationKeepsFollowUpQueryPlainForRepliedTextAttachment
 		t.Fatalf("unexpected conversation length: %d", len(messages))
 	}
 
-	if messages[0].Content != "<@"+userID+">: jandron" {
+	if messages[0].Content != "jandron" {
 		t.Fatalf("unexpected replied message content: %#v", messages[0].Content)
 	}
 
@@ -1645,7 +1644,7 @@ func TestBuildMessageConversationKeepsFollowUpQueryPlainForRepliedTextAttachment
 		t.Fatalf("unexpected latest message content type: %T", messages[1].Content)
 	}
 
-	expectedLatestContent := "<@" + userID + ">: what is the text inside this file"
+	expectedLatestContent := "what is the text inside this file"
 	if latestContent != expectedLatestContent {
 		t.Fatalf("unexpected latest message content: got %q want %q", latestContent, expectedLatestContent)
 	}
@@ -1674,7 +1673,7 @@ func TestBuildMessageConversationKeepsFollowUpQueryPlainWhenReplyingToAssistant(
 	sourceMessage.ChannelID = channelID
 	sourceMessage.Author = newDiscordUser(userID, false)
 	sourceMessage.Content = "at ai my name is Jandron"
-	setCachedUserNode(instance, sourceMessage, nil, "<@"+userID+">: my name is Jandron")
+	setCachedUserNode(instance, sourceMessage, nil, "my name is Jandron")
 
 	assistantMessage := new(discordgo.Message)
 	assistantMessage.ID = assistantMessageID
@@ -1701,7 +1700,7 @@ func TestBuildMessageConversationKeepsFollowUpQueryPlainWhenReplyingToAssistant(
 	followUpMessage.Content = "at ai what is my name again"
 	followUpMessage.MessageReference = assistantMessage.Reference()
 	followUpMessage.ReferencedMessage = assistantMessage
-	setCachedUserNode(instance, followUpMessage, assistantMessage, "<@"+userID+">: what is my name again")
+	setCachedUserNode(instance, followUpMessage, assistantMessage, "what is my name again")
 
 	loadedConfig := testSearchConfig()
 	loadedConfig.MaxText = defaultMaxText
@@ -1732,7 +1731,7 @@ func TestBuildMessageConversationKeepsFollowUpQueryPlainWhenReplyingToAssistant(
 		t.Fatalf("unexpected latest message content type: %T", messages[2].Content)
 	}
 
-	expectedLatestContent := "<@" + userID + ">: what is my name again"
+	expectedLatestContent := "what is my name again"
 	if latestContent != expectedLatestContent {
 		t.Fatalf("unexpected latest message content: got %q want %q", latestContent, expectedLatestContent)
 	}
