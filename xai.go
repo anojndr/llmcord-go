@@ -321,7 +321,9 @@ func (client openAIClient) streamResponses(
 }
 
 func buildXAIResponsesRequestBody(request chatCompletionRequest) (map[string]any, error) {
-	input, err := xAIResponsesInput(request.Messages)
+	input, err := xAIResponsesInput(
+		requestMessagesWithImageOnlyQueryPlaceholder(request.Messages),
+	)
 	if err != nil {
 		return nil, err
 	}

@@ -283,7 +283,7 @@ func buildChatCompletionRequestBodyWithUsageOption(
 	includeStreamingUsage bool,
 ) map[string]any {
 	requestBody := make(map[string]any, len(request.Provider.ExtraBody)+requestBodyBaseFields)
-	requestBody["messages"] = request.Messages
+	requestBody["messages"] = requestMessagesWithImageOnlyQueryPlaceholder(request.Messages)
 	requestBody["model"] = request.Model
 	requestBody["stream"] = true
 
