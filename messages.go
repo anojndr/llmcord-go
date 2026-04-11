@@ -315,9 +315,6 @@ func fallbackAttachmentDownloadConversation(
 	}
 
 	content := attachmentDownloadFallbackText
-	if sourceMessage.Author != nil && strings.TrimSpace(sourceMessage.Author.ID) != "" {
-		content = fmt.Sprintf("<@%s>: %s", sourceMessage.Author.ID, content)
-	}
 
 	warningSet := make(map[string]struct{}, len(warnings)+1)
 	for _, warning := range warnings {

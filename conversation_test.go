@@ -247,7 +247,7 @@ func TestBuildConversationAddsFallbackTextWhenAttachmentDownloadFails(t *testing
 		t.Fatalf("unexpected conversation content type: %T", conversation[0].Content)
 	}
 
-	expectedContent := "<@" + userID + ">: " + attachmentDownloadFallbackText
+	expectedContent := attachmentDownloadFallbackText
 	if content != expectedContent {
 		t.Fatalf("unexpected conversation content: %q", content)
 	}
@@ -298,7 +298,7 @@ func TestBuildConversationStopsAtDirectRepliedUserMessage(t *testing.T) {
 		instance,
 		replyTargetMessage,
 		assistantMessage,
-		"<@"+userID+">: "+replyTargetText,
+		replyTargetText,
 	)
 
 	followUpMessage := new(discordgo.Message)
@@ -334,12 +334,12 @@ func TestBuildConversationStopsAtDirectRepliedUserMessage(t *testing.T) {
 	}
 
 	if conversation[0].Role != messageRoleUser ||
-		conversation[0].Content != "<@"+userID+">: "+replyTargetText {
+		conversation[0].Content != replyTargetText {
 		t.Fatalf("unexpected reply target message: %#v", conversation[0])
 	}
 
 	if conversation[1].Role != messageRoleUser ||
-		conversation[1].Content != "<@"+userID+">: hi" {
+		conversation[1].Content != "hi" {
 		t.Fatalf("unexpected follow-up message: %#v", conversation[1])
 	}
 }
