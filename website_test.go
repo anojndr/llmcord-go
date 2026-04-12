@@ -296,7 +296,7 @@ func TestExtractWebsiteURLsIgnoresNonURLLogIdentifiers(t *testing.T) {
 	}
 }
 
-func TestExtractWebsiteURLsForProviderSkipsXHostsForXAIModels(t *testing.T) {
+func TestExtractWebsiteURLsForProviderSkipsAllURLsForXAIModels(t *testing.T) {
 	t.Parallel()
 
 	text := strings.Join([]string{
@@ -308,18 +308,8 @@ func TestExtractWebsiteURLsForProviderSkipsXHostsForXAIModels(t *testing.T) {
 
 	urls := extractWebsiteURLsForProvider(text, "x-ai/grok-4")
 
-	expected := []string{
-		"https://example.com/article",
-	}
-
-	if len(urls) != len(expected) {
-		t.Fatalf("unexpected url count: got %d want %d (%#v)", len(urls), len(expected), urls)
-	}
-
-	for index, expectedURL := range expected {
-		if urls[index] != expectedURL {
-			t.Fatalf("unexpected url at index %d: got %q want %q", index, urls[index], expectedURL)
-		}
+	if len(urls) != 0 {
+		t.Fatalf("unexpected urls: %#v", urls)
 	}
 }
 

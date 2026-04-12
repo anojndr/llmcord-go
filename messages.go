@@ -18,8 +18,6 @@ const (
 	defaultOpenAIProviderName   = "openai"
 )
 
-var errEmptyBotQuery = errors.New("your query is empty retard")
-
 func (instance *bot) handleMessageCreate(
 	_ *discordgo.Session,
 	messageCreate *discordgo.MessageCreate,
@@ -240,10 +238,6 @@ func (instance *bot) prepareMessageResponse(
 		}
 	}
 
-	if len(messages) == 0 && standaloneEmptyBotQuery(message, instance.botUserID()) {
-		return chatCompletionRequest{}, nil, nil, errEmptyBotQuery
-	}
-
 	progress.advance(requestProgressStageGatheringContext)
 
 	messages, searchMetadata, warnings, err := instance.augmentPreparedMessageResponse(
@@ -279,31 +273,6 @@ func (instance *bot) prepareMessageResponse(
 	tracker := progress.handoff(request.ConfiguredModel, searchMetadata)
 
 	return request, tracker, warnings, nil
-}
-
-func (instance *bot) botUserID() string {
-	if instance == nil || instance.session == nil || instance.session.State == nil ||
-		instance.session.State.User == nil {
-		return ""
-	}
-
-	return strings.TrimSpace(instance.session.State.User.ID)
-}
-
-func standaloneEmptyBotQuery(message *discordgo.Message, botUserID string) bool {
-	if message == nil {
-		return false
-	}
-
-	if message.MessageReference != nil || message.ReferencedMessage != nil {
-		return false
-	}
-
-	if len(message.Attachments) > 0 || len(message.Embeds) > 0 || len(message.Components) > 0 {
-		return false
-	}
-
-	return strings.TrimSpace(trimBotMention(message.Content, botUserID)) == ""
 }
 
 func fallbackAttachmentDownloadConversation(
@@ -540,8 +509,9 @@ func (instance *bot) augmentConversationWithVideoURLs(
 	messages []chatMessage,
 	urlExtractionText string,
 ) ([]chatMessage, []string, error) {
-	stages := []preparedAugmentationStage{
-		{
+	var stages []preparedAugmentationStage
+	if !providerHandlesNonFacebookURLsDirectly(providerSlashModel) {
+		stages = append(stages, preparedAugmentationStage{
 			name: "tiktok",
 			prepare: func(taskContext context.Context) (preparedConversationAugmentation, error) {
 				return instance.prepareTikTokAugmentation(
@@ -551,19 +521,23 @@ func (instance *bot) augmentConversationWithVideoURLs(
 					urlExtractionText,
 				)
 			},
+		})
+	}
+
+	stages = append(stages, preparedAugmentationStage{
+		name: "facebook",
+		prepare: func(taskContext context.Context) (preparedConversationAugmentation, error) {
+			return instance.prepareFacebookAugmentation(
+				taskContext,
+				loadedConfig,
+				providerSlashModel,
+				urlExtractionText,
+			)
 		},
-		{
-			name: "facebook",
-			prepare: func(taskContext context.Context) (preparedConversationAugmentation, error) {
-				return instance.prepareFacebookAugmentation(
-					taskContext,
-					loadedConfig,
-					providerSlashModel,
-					urlExtractionText,
-				)
-			},
-		},
-		{
+	})
+
+	if !providerHandlesNonFacebookURLsDirectly(providerSlashModel) {
+		stages = append(stages, preparedAugmentationStage{
 			name: "youtube shorts",
 			prepare: func(taskContext context.Context) (preparedConversationAugmentation, error) {
 				return instance.prepareYouTubeShortsAugmentation(
@@ -573,7 +547,7 @@ func (instance *bot) augmentConversationWithVideoURLs(
 					urlExtractionText,
 				)
 			},
-		},
+		})
 	}
 
 	stageResults := prepareAugmentationStages(ctx, stages)
@@ -851,29 +825,35 @@ func (instance *bot) augmentConversation(
 				)
 			},
 		},
-		{
-			name: "website",
-			prepare: func(taskContext context.Context) (preparedConversationAugmentation, error) {
-				return instance.prepareWebsiteAugmentation(
-					taskContext,
-					loadedConfig,
-					providerSlashModel,
-					urlExtractionText,
-				)
+	}
+
+	if !providerHandlesNonFacebookURLsDirectly(providerSlashModel) {
+		stages = append(
+			stages,
+			preparedAugmentationStage{
+				name: "website",
+				prepare: func(taskContext context.Context) (preparedConversationAugmentation, error) {
+					return instance.prepareWebsiteAugmentation(
+						taskContext,
+						loadedConfig,
+						providerSlashModel,
+						urlExtractionText,
+					)
+				},
 			},
-		},
-		{
-			name: "youtube",
-			prepare: func(taskContext context.Context) (preparedConversationAugmentation, error) {
-				return instance.prepareYouTubeAugmentation(taskContext, urlExtractionText)
+			preparedAugmentationStage{
+				name: "youtube",
+				prepare: func(taskContext context.Context) (preparedConversationAugmentation, error) {
+					return instance.prepareYouTubeAugmentation(taskContext, urlExtractionText)
+				},
 			},
-		},
-		{
-			name: "reddit",
-			prepare: func(taskContext context.Context) (preparedConversationAugmentation, error) {
-				return instance.prepareRedditAugmentation(taskContext, urlExtractionText)
+			preparedAugmentationStage{
+				name: "reddit",
+				prepare: func(taskContext context.Context) (preparedConversationAugmentation, error) {
+					return instance.prepareRedditAugmentation(taskContext, urlExtractionText)
+				},
 			},
-		},
+		)
 	}
 
 	stageResults := prepareAugmentationStages(ctx, stages)
@@ -886,6 +866,10 @@ func (instance *bot) augmentConversation(
 	)
 	if err != nil {
 		return nil, nil, nil, err
+	}
+
+	if providerHandlesNonFacebookURLsDirectly(providerSlashModel) {
+		return augmentedMessages, searchMetadata, warnings, nil
 	}
 
 	augmentedMessages, webSearchMetadata, searchWarnings, err := instance.maybeAugmentConversationWithWebSearch(
@@ -916,6 +900,10 @@ func (instance *bot) sourceMessageURLExtractionText(
 	replyTargetText, _ := instance.messageNodeURLExtractionText(ctx, parentMessage)
 
 	return joinNonEmpty([]string{replyTargetText, sourceText})
+}
+
+func providerHandlesNonFacebookURLsDirectly(providerSlashModel string) bool {
+	return xAIConfiguredModel(providerSlashModel)
 }
 
 func (instance *bot) messageNodeURLExtractionText(

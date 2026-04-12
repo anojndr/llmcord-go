@@ -29,65 +29,105 @@ const (
 var errSendProgressMessageFailed = errors.New("send progress message failed")
 var errProgressMessageEditedTooQuickly = errors.New("progress message edited too quickly")
 
-func TestStandaloneEmptyBotQuery(t *testing.T) {
+func TestBuildMessageConversationUsesPlaceholderForStandaloneEmptyMention(t *testing.T) {
 	t.Parallel()
 
-	bareMessage := new(discordgo.Message)
-	bareMessage.Content = testEmptyAIMention
+	const (
+		channelID       = "channel-1"
+		userID          = "user-1"
+		sourceMessageID = "source-message"
+	)
 
-	queryMessage := new(discordgo.Message)
-	queryMessage.Content = testAIMentionQuery
+	instance := newHistoryRetentionTestBot(t)
 
-	attachmentMessage := new(discordgo.Message)
-	attachmentMessage.Content = testEmptyAIMention
+	sourceMessage := new(discordgo.Message)
+	sourceMessage.ID = sourceMessageID
+	sourceMessage.ChannelID = channelID
+	sourceMessage.Author = newDiscordUser(userID, false)
+	sourceMessage.Content = testEmptyAIMention
 
-	attachment := new(discordgo.MessageAttachment)
-	attachment.URL = "https://cdn.discordapp.com/attachments/test/image.png"
-	attachmentMessage.Attachments = []*discordgo.MessageAttachment{attachment}
+	loadedConfig := testSearchConfig()
+	loadedConfig.MaxText = defaultMaxText
+	loadedConfig.MaxImages = defaultMaxImages
+	loadedConfig.MaxMessages = defaultMaxMessages
 
-	parentMessage := new(discordgo.Message)
-	parentMessage.ID = "parent"
-
-	replyMessage := new(discordgo.Message)
-	replyMessage.Content = testEmptyAIMention
-	replyMessage.MessageReference = parentMessage.Reference()
-
-	testCases := []struct {
-		name    string
-		message *discordgo.Message
-		want    bool
-	}{
-		{
-			name:    "bare at ai",
-			message: bareMessage,
-			want:    true,
-		},
-		{
-			name:    "query text after mention",
-			message: queryMessage,
-			want:    false,
-		},
-		{
-			name:    "attachment keeps query non-empty check off",
-			message: attachmentMessage,
-			want:    false,
-		},
-		{
-			name:    "reply follow up is not standalone",
-			message: replyMessage,
-			want:    false,
-		},
+	messages, _, err := instance.buildMessageConversation(
+		context.Background(),
+		loadedConfig,
+		sourceMessage,
+		"openai/main-model",
+	)
+	if err != nil {
+		t.Fatalf("build message conversation: %v", err)
 	}
 
-	for _, testCase := range testCases {
-		t.Run(testCase.name, func(t *testing.T) {
-			t.Parallel()
+	if len(messages) != 1 {
+		t.Fatalf("unexpected conversation length: %d", len(messages))
+	}
 
-			got := standaloneEmptyBotQuery(testCase.message, "bot-user")
-			if got != testCase.want {
-				t.Fatalf("unexpected standalone empty query result: got %t want %t", got, testCase.want)
-			}
-		})
+	if messages[0].Role != messageRoleUser || messages[0].Content != fileOrImageOnlyQueryPlaceholder {
+		t.Fatalf("unexpected standalone empty mention content: %#v", messages[0])
+	}
+}
+
+func TestBuildMessageConversationKeepsEmptyFollowUpQueryAsPlaceholder(t *testing.T) {
+	t.Parallel()
+
+	const (
+		botUserID          = "bot-user"
+		channelID          = "channel-1"
+		userID             = "676735636656357396"
+		sourceMessageID    = "source-message"
+		assistantMessageID = "assistant-message"
+		followUpMessageID  = "follow-up-message"
+	)
+
+	instance := newHistoryRetentionTestBot(t)
+
+	sourceMessage := new(discordgo.Message)
+	sourceMessage.ID = sourceMessageID
+	sourceMessage.ChannelID = channelID
+	sourceMessage.Author = newDiscordUser(userID, false)
+	sourceMessage.Content = "at ai my name is Jandron"
+	setCachedUserNode(instance, sourceMessage, nil, "my name is Jandron")
+
+	assistantMessage := new(discordgo.Message)
+	assistantMessage.ID = assistantMessageID
+	assistantMessage.ChannelID = channelID
+	assistantMessage.Author = newDiscordUser(botUserID, true)
+	assistantMessage.MessageReference = sourceMessage.Reference()
+	assistantMessage.Type = discordgo.MessageTypeReply
+	setCachedAssistantNode(instance, assistantMessage, sourceMessage)
+
+	followUpMessage := new(discordgo.Message)
+	followUpMessage.ID = followUpMessageID
+	followUpMessage.ChannelID = channelID
+	followUpMessage.Author = newDiscordUser(userID, false)
+	followUpMessage.Content = testEmptyAIMention
+	followUpMessage.MessageReference = assistantMessage.Reference()
+	followUpMessage.ReferencedMessage = assistantMessage
+
+	loadedConfig := testSearchConfig()
+	loadedConfig.MaxText = defaultMaxText
+	loadedConfig.MaxImages = defaultMaxImages
+	loadedConfig.MaxMessages = defaultMaxMessages
+
+	messages, _, err := instance.buildMessageConversation(
+		context.Background(),
+		loadedConfig,
+		followUpMessage,
+		"openai/main-model",
+	)
+	if err != nil {
+		t.Fatalf("build message conversation: %v", err)
+	}
+
+	if len(messages) != 3 {
+		t.Fatalf("unexpected conversation length: %d", len(messages))
+	}
+
+	if messages[2].Role != messageRoleUser || messages[2].Content != fileOrImageOnlyQueryPlaceholder {
+		t.Fatalf("unexpected follow-up content: %#v", messages[2])
 	}
 }
 
@@ -674,21 +714,6 @@ func newBlockedWebsiteClient(gate *concurrentFetchGate) *stubWebsiteContentClien
 	})
 }
 
-func newStaticWebsiteClient() *stubWebsiteContentClient {
-	return newStubWebsiteContentClient(func(
-		_ context.Context,
-		_ config,
-		rawURL string,
-	) (websitePageContent, error) {
-		return websitePageContent{
-			URL:         rawURL,
-			Title:       "Example website",
-			Description: "",
-			Content:     "Website body",
-		}, nil
-	})
-}
-
 func testXAIProviderConfig() providerConfig {
 	return providerConfig{
 		Type:         "",
@@ -699,6 +724,86 @@ func testXAIProviderConfig() providerConfig {
 		ExtraQuery:   nil,
 		ExtraBody:    nil,
 	}
+}
+
+func testXAIAugmentationConfig() config {
+	loadedConfig := testSearchConfig()
+	loadedConfig.Providers[xAIProviderName] = testXAIProviderConfig()
+	loadedConfig.Models["x-ai/grok-4"] = nil
+	loadedConfig.ModelOrder = append([]string{"x-ai/grok-4"}, loadedConfig.ModelOrder...)
+
+	return loadedConfig
+}
+
+func testXAIWithMediaAnalysisConfig() config {
+	loadedConfig := testMediaAnalysisConfig()
+	loadedConfig.Providers[xAIProviderName] = testXAIProviderConfig()
+	loadedConfig.Models["x-ai/grok-4"] = nil
+	loadedConfig.ModelOrder = append([]string{"x-ai/grok-4"}, loadedConfig.ModelOrder...)
+
+	return loadedConfig
+}
+
+func failUnexpectedURLFetch(t *testing.T, label string, rawURL string) {
+	t.Helper()
+	t.Fatalf("unexpected %s fetch for %q", label, rawURL)
+}
+
+func newXAIURLBypassTestBot(t *testing.T, facebook facebookFetcher) *bot {
+	t.Helper()
+
+	instance := new(bot)
+
+	instance.tiktok = newStubTikTokContentClient(func(
+		_ context.Context,
+		rawURL string,
+	) (tiktokVideoContent, error) {
+		failUnexpectedURLFetch(t, "tiktok", rawURL)
+		panic("unreachable")
+	})
+	if facebook != nil {
+		instance.facebook = facebook
+	} else {
+		instance.facebook = newStubFacebookContentClient(func(
+			_ context.Context,
+			rawURL string,
+		) (facebookVideoContent, error) {
+			failUnexpectedURLFetch(t, "facebook", rawURL)
+			panic("unreachable")
+		})
+	}
+
+	instance.youtubeShorts = newStubYouTubeShortsContentClient(func(
+		_ context.Context,
+		rawURL string,
+	) (youtubeShortsVideoContent, error) {
+		failUnexpectedURLFetch(t, "youtube shorts", rawURL)
+		panic("unreachable")
+	})
+	instance.website = newStubWebsiteContentClient(func(
+		_ context.Context,
+		_ config,
+		rawURL string,
+	) (websitePageContent, error) {
+		failUnexpectedURLFetch(t, "website", rawURL)
+		panic("unreachable")
+	})
+	instance.youtube = newStubYouTubeContentClient(func(
+		_ context.Context,
+		rawURL string,
+	) (youtubeVideoContent, error) {
+		failUnexpectedURLFetch(t, "youtube", rawURL)
+		panic("unreachable")
+	})
+	instance.reddit = newStubRedditContentClient(func(
+		_ context.Context,
+		rawURL string,
+	) (redditThreadContent, error) {
+		failUnexpectedURLFetch(t, "reddit", rawURL)
+		panic("unreachable")
+	})
+
+	return instance
 }
 
 func newBlockedYouTubeClient(gate *concurrentFetchGate) *stubYouTubeContentClient {
@@ -836,6 +941,79 @@ func TestAugmentConversationWithVideoURLsFetchesProvidersConcurrentlyAndKeepsOrd
 	assertAugmentedVideoOrder(t, augmentedConversation)
 }
 
+func TestAugmentConversationWithVideoURLsProcessesFacebookOnlyForXAIProviders(t *testing.T) {
+	t.Parallel()
+
+	expectedAnalysis := "Video description per timestamp:\n\n0s to 10s: somebody waves"
+	chatClient, analysisCallCount := newGeminiVideoAnalysisChatClient(t, expectedAnalysis)
+	facebook := newStubFacebookContentClient(func(
+		_ context.Context,
+		rawURL string,
+	) (facebookVideoContent, error) {
+		if rawURL != testFacebookURL {
+			t.Fatalf("unexpected facebook raw url: %q", rawURL)
+		}
+
+		return testFacebookVideoContent(), nil
+	})
+
+	instance := newXAIURLBypassTestBot(t, facebook)
+	instance.chatCompletions = chatClient
+
+	loadedConfig := testXAIWithMediaAnalysisConfig()
+	query := strings.Join([]string{
+		"<@123>: summarize these videos",
+		"https://www.tiktok.com/@mikemhan/video/7614735539660442893",
+		testFacebookURL,
+		testYouTubeShortsCanonicalURL,
+	}, " ")
+
+	conversation := []chatMessage{
+		{
+			Role:    messageRoleUser,
+			Content: query,
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	augmentedConversation, warnings, err := instance.augmentConversationWithVideoURLs(
+		ctx,
+		loadedConfig,
+		"x-ai/grok-4",
+		conversation,
+		messageContentText(conversation[0].Content),
+	)
+	if err != nil {
+		t.Fatalf("augment conversation with video urls: %v", err)
+	}
+
+	if len(warnings) != 0 {
+		t.Fatalf("unexpected warnings: %#v", warnings)
+	}
+
+	if *analysisCallCount != 1 {
+		t.Fatalf("unexpected gemini analysis call count: %d", *analysisCallCount)
+	}
+
+	if len(facebook.calls) != 1 || facebook.calls[0] != testFacebookURL {
+		t.Fatalf("unexpected facebook calls: %#v", facebook.calls)
+	}
+
+	content, ok := augmentedConversation[0].Content.(string)
+	if !ok {
+		t.Fatalf("unexpected content type: %T", augmentedConversation[0].Content)
+	}
+
+	prompt := parseAugmentedUserPrompt(content)
+
+	expectedUserQuery := expectedMediaAnalysisUserText(query, []string{expectedAnalysis})
+	if prompt.UserQuery != expectedUserQuery {
+		t.Fatalf("unexpected augmented user query: got %q want %q", prompt.UserQuery, expectedUserQuery)
+	}
+}
+
 func TestAugmentConversationFetchesIndependentContextBeforeWebSearchDecision(t *testing.T) {
 	t.Parallel()
 
@@ -915,26 +1093,21 @@ func TestAugmentConversationFetchesIndependentContextBeforeWebSearchDecision(t *
 	}
 }
 
-func TestAugmentConversationForXAILeavesXURLsForProviderHandling(t *testing.T) {
+func TestAugmentConversationForXAILeavesNonFacebookURLsForProviderHandling(t *testing.T) {
 	t.Parallel()
 
-	website := newStaticWebsiteClient()
-
-	instance := new(bot)
-	instance.website = website
-
-	loadedConfig := testSearchConfig()
-	loadedConfig.Providers[xAIProviderName] = testXAIProviderConfig()
-	loadedConfig.Models["x-ai/grok-4"] = nil
-	loadedConfig.ModelOrder = append([]string{"x-ai/grok-4"}, loadedConfig.ModelOrder...)
+	instance := newXAIURLBypassTestBot(t, nil)
+	loadedConfig := testXAIAugmentationConfig()
 
 	conversation := []chatMessage{
 		{
 			Role: messageRoleUser,
 			Content: strings.Join([]string{
-				"<@123>: summarize these posts",
+				"<@123>: summarize these links",
 				"https://x.com/example/status/123",
 				"https://example.com/article",
+				"https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+				"https://www.reddit.com/r/testing/comments/abc123/thread-title/",
 			}, " "),
 		},
 	}
@@ -963,30 +1136,33 @@ func TestAugmentConversationForXAILeavesXURLsForProviderHandling(t *testing.T) {
 		t.Fatalf("expected no search metadata: %#v", metadata)
 	}
 
-	if len(website.calls) != 1 {
-		t.Fatalf("unexpected website fetch count: %d", len(website.calls))
-	}
-
-	if website.calls[0] != "https://example.com/article" {
-		t.Fatalf("unexpected website fetch url: %#v", website.calls)
-	}
-
 	content, ok := augmentedConversation[0].Content.(string)
 	if !ok {
 		t.Fatalf("unexpected content type: %T", augmentedConversation[0].Content)
 	}
 
 	prompt := parseAugmentedUserPrompt(content)
-	if !strings.Contains(prompt.UserQuery, "https://x.com/example/status/123") {
-		t.Fatalf("expected x url to remain in user query: %#v", prompt)
+	for _, rawURL := range []string{
+		"https://x.com/example/status/123",
+		"https://example.com/article",
+		"https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+		"https://www.reddit.com/r/testing/comments/abc123/thread-title/",
+	} {
+		if !strings.Contains(prompt.UserQuery, rawURL) {
+			t.Fatalf("expected url to remain in user query: %q in %#v", rawURL, prompt)
+		}
 	}
 
-	if strings.Contains(prompt.WebsiteContent, "https://x.com/example/status/123") {
-		t.Fatalf("expected x url to be excluded from website augmentation: %#v", prompt)
+	if strings.TrimSpace(prompt.WebsiteContent) != "" {
+		t.Fatalf("expected website augmentation to be skipped: %#v", prompt)
 	}
 
-	if !strings.Contains(prompt.WebsiteContent, "https://example.com/article") {
-		t.Fatalf("expected non-x website content to be preserved: %#v", prompt)
+	if strings.TrimSpace(prompt.YouTubeContent) != "" {
+		t.Fatalf("expected youtube augmentation to be skipped: %#v", prompt)
+	}
+
+	if strings.TrimSpace(prompt.RedditContent) != "" {
+		t.Fatalf("expected reddit augmentation to be skipped: %#v", prompt)
 	}
 }
 
@@ -1161,51 +1337,38 @@ func TestRespondToMessageEditsProgressMessageWithRateLimitError(t *testing.T) {
 	}
 }
 
-func TestRespondToMessageEditsProgressMessageWithEmptyStandaloneMentionError(t *testing.T) {
+func TestPrepareMessageResponseUsesPlaceholderForEmptyStandaloneMention(t *testing.T) {
 	t.Parallel()
 
 	const (
-		botUserID       = "bot-user"
 		channelID       = "channel-1"
 		userID          = "user-1"
 		sourceMessageID = "user-message-1"
-		progressID      = "progress-message"
 	)
 
-	progressMessage := new(discordgo.Message)
-	progressMessage.ID = progressID
-	progressMessage.ChannelID = channelID
-	progressMessage.Author = newDiscordUser(botUserID, true)
-
-	patchDescriptions := make([]string, 0, 2)
-	session := newProgressEditCaptureSession(
-		t,
-		channelID,
-		botUserID,
-		progressMessage,
-		&patchDescriptions,
-	)
-
-	instance := newRateLimitedRespondToMessageBot(session)
+	instance := newHistoryRetentionTestBot(t)
+	instance.chatCompletions = newRateLimitedRespondToMessageChatClient()
 	sourceMessage := newRateLimitedRespondToMessageSourceMessage(channelID, sourceMessageID, userID)
 	sourceMessage.Content = testEmptyAIMention
 
-	err := instance.respondToMessage(
+	request, _, _, err := instance.prepareMessageResponse(
 		context.Background(),
 		newRateLimitedRespondToMessageConfig(),
 		sourceMessage,
 		"openai/main-model",
+		nil,
 	)
-	if err == nil {
-		t.Fatal("expected respond to message error")
+	if err != nil {
+		t.Fatalf("prepare message response: %v", err)
 	}
 
-	if len(patchDescriptions) == 0 {
-		t.Fatal("expected progress message edits")
+	index, err := latestUserMessageIndex(request.Messages)
+	if err != nil {
+		t.Fatalf("find latest user message: %v", err)
 	}
 
-	if patchDescriptions[len(patchDescriptions)-1] != errEmptyBotQuery.Error() {
-		t.Fatalf("unexpected final progress error: %#v", patchDescriptions)
+	if request.Messages[index].Content != fileOrImageOnlyQueryPlaceholder {
+		t.Fatalf("unexpected latest user content: %#v", request.Messages[index])
 	}
 }
 

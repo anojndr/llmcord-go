@@ -31,7 +31,9 @@ It also works with local backends such as Ollama, LM Studio, and vLLM.
 
 Behavior notes:
 - xAI-compatible providers can continue server-side conversations with stored `previous_response_id` values when the model matches.
+- When an xAI model is selected, non-Facebook URLs stay provider-side instead of running the bot's URL fetchers first.
 - OpenAI Codex providers derive a stable conversation cache key from the reply-chain anchor message.
+- Empty prompts such as a bare `at ai` or an empty follow-up turn are sent upstream as `.` so providers still receive an explicit user input.
 
 ## Quick Start
 

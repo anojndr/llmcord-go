@@ -7,12 +7,12 @@
 !AGENTS.md
 !LICENSE.md
 
+# Root-level source and docs stay explicit; recursive allowlists are intentional for nested command paths.
 !*.md
 !*.go
 !searchDeciderPrompt.txt
 !cmd/
-!cmd/*/
-!cmd/*/*.go
+!cmd/**/*
 
 !Dockerfile
 !config-example.yaml
