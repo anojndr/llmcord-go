@@ -67,9 +67,11 @@ func (instance *bot) buildConversation(
 		ctx,
 		sourceMessage,
 	)
+	sourceMessageID := strings.TrimSpace(sourceMessage.ID)
 
 	currentMessage := sourceMessage
 	for currentMessage != nil && len(messages) < maxMessages {
+		currentMessageID := strings.TrimSpace(currentMessage.ID)
 		node := instance.nodes.getOrCreate(currentMessage.ID)
 		node.mu.Lock()
 
@@ -78,7 +80,7 @@ func (instance *bot) buildConversation(
 		}
 
 		content, summary := buildMessageContent(node, maxText, contentOptions)
-		if _, ok := preprocessedMessageIDs[strings.TrimSpace(currentMessage.ID)]; ok &&
+		if _, ok := preprocessedMessageIDs[currentMessageID]; ok &&
 			(useGeminiMediaAnalysis || usePDFExtraction) {
 			summary.unsupportedAttachmentCnt -= unsupportedPreprocessedPartCount(
 				node.media,
@@ -89,6 +91,10 @@ func (instance *bot) buildConversation(
 			if summary.unsupportedAttachmentCnt < 0 {
 				summary.unsupportedAttachmentCnt = 0
 			}
+		}
+
+		if content == nil && node.role == messageRoleUser && currentMessageID == sourceMessageID {
+			content = fileOrImageOnlyQueryPlaceholder
 		}
 
 		if content != nil {

@@ -73,3 +73,38 @@ func TestRequestMessagesWithFileOrImageOnlyQueryPlaceholderAddsPlaceholderForFil
 		t.Fatalf("unexpected file part: %#v", parts[1])
 	}
 }
+
+func TestRequestMessagesWithFileOrImageOnlyQueryPlaceholderAddsPlaceholderForEmptyTextUserMessage(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name    string
+		content any
+	}{
+		{
+			name:    "empty string",
+			content: " \n\t ",
+		},
+		{
+			name:    "nil content",
+			content: nil,
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			messages := []chatMessage{{
+				Role:    messageRoleUser,
+				Content: testCase.content,
+			}}
+
+			normalizedMessages := requestMessagesWithFileOrImageOnlyQueryPlaceholder(messages)
+
+			if normalizedMessages[0].Content != fileOrImageOnlyQueryPlaceholder {
+				t.Fatalf("unexpected normalized content: %#v", normalizedMessages[0].Content)
+			}
+		})
+	}
+}
