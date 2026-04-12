@@ -39,30 +39,42 @@ func messageContentWithFileOrImageOnlyQueryPlaceholder(role string, content any)
 		return content, false
 	}
 
-	parts, ok := content.([]contentPart)
-	if !ok || !contentPartsNeedFileOrImageOnlyQueryPlaceholder(parts) {
-		return content, false
-	}
-
-	normalizedParts := make([]contentPart, 0, len(parts)+1)
-	normalizedParts = append(normalizedParts, contentPart{
-		"type": contentTypeText,
-		"text": fileOrImageOnlyQueryPlaceholder,
-	})
-
-	for _, part := range parts {
-		partType, _ := part["type"].(string)
-		if partType == contentTypeText {
-			textValue, _ := part["text"].(string)
-			if strings.TrimSpace(textValue) == "" {
-				continue
-			}
+	switch typedContent := content.(type) {
+	case nil:
+		return fileOrImageOnlyQueryPlaceholder, true
+	case string:
+		if strings.TrimSpace(typedContent) == "" {
+			return fileOrImageOnlyQueryPlaceholder, true
 		}
 
-		normalizedParts = append(normalizedParts, cloneContentPart(part))
-	}
+		return content, false
+	case []contentPart:
+		if !contentPartsNeedFileOrImageOnlyQueryPlaceholder(typedContent) {
+			return content, false
+		}
 
-	return normalizedParts, true
+		normalizedParts := make([]contentPart, 0, len(typedContent)+1)
+		normalizedParts = append(normalizedParts, contentPart{
+			"type": contentTypeText,
+			"text": fileOrImageOnlyQueryPlaceholder,
+		})
+
+		for _, part := range typedContent {
+			partType, _ := part["type"].(string)
+			if partType == contentTypeText {
+				textValue, _ := part["text"].(string)
+				if strings.TrimSpace(textValue) == "" {
+					continue
+				}
+			}
+
+			normalizedParts = append(normalizedParts, cloneContentPart(part))
+		}
+
+		return normalizedParts, true
+	default:
+		return content, false
+	}
 }
 
 func contentPartsNeedFileOrImageOnlyQueryPlaceholder(parts []contentPart) bool {
