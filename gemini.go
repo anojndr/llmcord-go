@@ -248,7 +248,7 @@ func buildGeminiGenerateContentRequest(
 ) ([]*genai.Content, *genai.GenerateContentConfig, error) {
 	contents, systemInstruction, err := geminiContentsAndSystemInstruction(
 		ctx,
-		requestMessagesWithImageOnlyQueryPlaceholder(request.Messages),
+		requestMessagesWithFileOrImageOnlyQueryPlaceholder(request.Messages),
 		files,
 	)
 	if err != nil {

@@ -160,7 +160,7 @@ func (client openAICodexClient) streamChatCompletion(
 
 func buildOpenAICodexRequestBody(request chatCompletionRequest) (map[string]any, error) {
 	input, instructions, err := openAICodexInputAndInstructions(
-		requestMessagesWithImageOnlyQueryPlaceholder(request.Messages),
+		requestMessagesWithFileOrImageOnlyQueryPlaceholder(request.Messages),
 	)
 	if err != nil {
 		return nil, err
