@@ -810,6 +810,13 @@ func geminiPartFromContentPart(
 		}
 
 		return convertedPart, convertedPart != nil, nil
+	case contentTypeFileData:
+		convertedPart, err := geminiUploadedMediaPart(ctx, files, part)
+		if err != nil {
+			return nil, false, err
+		}
+
+		return convertedPart, convertedPart != nil, nil
 	case contentTypeAudioData, contentTypeVideoData:
 		convertedPart, err := geminiUploadedMediaPart(ctx, files, part)
 		if err != nil {

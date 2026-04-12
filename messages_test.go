@@ -448,6 +448,10 @@ func TestMessageContentOptionsForModelRestrictsGeminiDocumentsToPDF(t *testing.T
 		t.Fatal("expected gemini documents to be enabled")
 	}
 
+	if !options.allowFiles {
+		t.Fatal("expected gemini files to be enabled")
+	}
+
 	if len(options.allowedDocumentMIMETypes) != 1 {
 		t.Fatalf("unexpected gemini document MIME type count: %d", len(options.allowedDocumentMIMETypes))
 	}
@@ -494,6 +498,10 @@ func TestMessageContentOptionsForModelAllowsXAIManagedDocuments(t *testing.T) {
 		t.Fatal("expected xAI documents to be enabled")
 	}
 
+	if !options.allowFiles {
+		t.Fatal("expected xAI files to be enabled")
+	}
+
 	if options.allowedDocumentMIMETypes != nil {
 		t.Fatalf("expected xAI documents to allow all supported MIME types: %#v", options.allowedDocumentMIMETypes)
 	}
@@ -504,6 +512,35 @@ func TestMessageContentOptionsForModelAllowsXAIManagedDocuments(t *testing.T) {
 
 	if options.allowVideo {
 		t.Fatalf("expected xAI video to remain disabled: %#v", options)
+	}
+}
+
+func TestMessageContentOptionsForModelLeavesOpenAIFilesDisabled(t *testing.T) {
+	t.Parallel()
+
+	provider := new(providerConfig)
+	provider.BaseURL = testOpenAIBaseURL
+
+	var loadedConfig config
+
+	loadedConfig.Providers = map[string]providerConfig{
+		"openai": *provider,
+	}
+	loadedConfig.Models = map[string]map[string]any{
+		"openai/gpt-5.1": nil,
+	}
+
+	options, err := messageContentOptionsForModel(loadedConfig, "openai/gpt-5.1")
+	if err != nil {
+		t.Fatalf("build message content options: %v", err)
+	}
+
+	if options.allowFiles {
+		t.Fatalf("expected OpenAI-compatible chat files to remain disabled: %#v", options)
+	}
+
+	if options.allowDocuments {
+		t.Fatalf("expected OpenAI-compatible chat documents to remain disabled: %#v", options)
 	}
 }
 

@@ -17,8 +17,11 @@ const (
 	testThinkingReply  = "thinking reply"
 	testVideoBody      = "video-bytes"
 	testVideoMIMEType  = "video/mp4"
+	testBinaryFilename = "payload.bin"
 	testDOCXFilename   = "report.docx"
+	testJSONFilename   = "context.json"
 	testPPTXFilename   = "slides.pptx"
+	testZIPFilename    = "bundle.zip"
 )
 
 func TestBuildMessageTextReadsTextDisplayInsideSection(t *testing.T) {
@@ -230,6 +233,7 @@ func TestBuildConversationAddsFallbackTextWhenAttachmentDownloadFails(t *testing
 			maxImages:                defaultMaxImages,
 			allowAudio:               false,
 			allowDocuments:           false,
+			allowFiles:               false,
 			allowedDocumentMIMETypes: nil,
 			allowVideo:               false,
 		},
@@ -317,6 +321,7 @@ func TestBuildConversationStopsAtDirectRepliedUserMessage(t *testing.T) {
 			maxImages:                defaultMaxImages,
 			allowAudio:               false,
 			allowDocuments:           false,
+			allowFiles:               false,
 			allowedDocumentMIMETypes: nil,
 			allowVideo:               false,
 		},
@@ -342,6 +347,17 @@ func TestBuildConversationStopsAtDirectRepliedUserMessage(t *testing.T) {
 		conversation[1].Content != "hi" {
 		t.Fatalf("unexpected follow-up message: %#v", conversation[1])
 	}
+}
+
+func buildTestZIPArchive(t *testing.T, files map[string]string) []byte {
+	t.Helper()
+
+	archiveFiles := make(map[string][]byte, len(files))
+	for name, contents := range files {
+		archiveFiles[name] = []byte(contents)
+	}
+
+	return buildTestOOXMLArchive(t, archiveFiles)
 }
 
 func slicesContainsString(items []string, target string) bool {
@@ -375,6 +391,143 @@ func TestBuildMediaPartsSupportsGeminiBinaryAttachments(t *testing.T) {
 	assertGeminiBinaryAttachmentParts(t, parts)
 }
 
+func TestAttachmentPayloadToContentPartClassifiesOctetStreamByFilename(t *testing.T) {
+	t.Parallel()
+
+	attachment := new(discordgo.MessageAttachment)
+	attachment.ContentType = mimeTypeOctetStream
+	attachment.Filename = testJSONFilename
+
+	part, ok := attachmentPayloadToContentPart(attachmentPayload{
+		attachment:  attachment,
+		body:        []byte("{\"topic\":\"attachments\"}"),
+		contentType: "",
+	})
+	if !ok {
+		t.Fatal("expected attachment payload to convert")
+	}
+
+	if part["type"] != contentTypeFileData {
+		t.Fatalf("unexpected part type: %#v", part)
+	}
+
+	if part[contentFieldMIMEType] != "application/json" {
+		t.Fatalf("unexpected MIME type: %#v", part[contentFieldMIMEType])
+	}
+}
+
+func TestBuildMessageTextSummarizesGenericBinaryAttachments(t *testing.T) {
+	t.Parallel()
+
+	message := new(discordgo.Message)
+
+	archiveAttachment := new(discordgo.MessageAttachment)
+	archiveAttachment.ContentType = mimeTypeZIP
+	archiveAttachment.Filename = testZIPFilename
+
+	binaryAttachment := new(discordgo.MessageAttachment)
+	binaryAttachment.ContentType = mimeTypeOctetStream
+	binaryAttachment.Filename = testBinaryFilename
+
+	text := buildMessageText(message, "summarize these", []attachmentPayload{
+		{
+			attachment:  archiveAttachment,
+			body:        buildTestZIPArchive(t, map[string]string{"notes.txt": "hello", "config.yaml": "name: test"}),
+			contentType: "",
+		},
+		{
+			attachment:  binaryAttachment,
+			body:        []byte{0x00, 0x01, 0x02, 0x03},
+			contentType: "",
+		},
+	})
+
+	for _, fragment := range []string{
+		"summarize these",
+		"Attachments:",
+		testZIPFilename + " (" + mimeTypeZIP,
+		"zip entries: config.yaml, notes.txt",
+		testBinaryFilename + " (" + mimeTypeOctetStream,
+		"raw binary file attached",
+	} {
+		if !containsFold(text, fragment) {
+			t.Fatalf("expected attachment summary fragment %q in %q", fragment, text)
+		}
+	}
+}
+
+func TestBuildMessageContentInlinesTextFilesWhenDirectFilesDisabled(t *testing.T) {
+	t.Parallel()
+
+	node := new(messageNode)
+	node.role = messageRoleUser
+	node.text = "summarize the attachment"
+	node.media = []contentPart{{
+		"type":               contentTypeFileData,
+		contentFieldBytes:    []byte("{\"enabled\":true}"),
+		contentFieldMIMEType: "application/json",
+		contentFieldFilename: testJSONFilename,
+	}}
+
+	content, summary := buildMessageContent(node, defaultMaxText, messageContentOptions{
+		maxImages:                0,
+		allowAudio:               false,
+		allowDocuments:           false,
+		allowFiles:               false,
+		allowedDocumentMIMETypes: nil,
+		allowVideo:               false,
+	})
+	if summary.unsupportedAttachmentCnt != 0 {
+		t.Fatalf("unexpected unsupported count: %d", summary.unsupportedAttachmentCnt)
+	}
+
+	contentText, ok := content.(string)
+	if !ok {
+		t.Fatalf("unexpected content type: %T", content)
+	}
+
+	for _, fragment := range []string{"summarize the attachment", "{\"enabled\":true}"} {
+		if !containsFold(contentText, fragment) {
+			t.Fatalf("expected inline text fragment %q in %q", fragment, contentText)
+		}
+	}
+}
+
+func TestBuildMessageContentRetainsGenericFilesWhenProviderAllowsThem(t *testing.T) {
+	t.Parallel()
+
+	node := new(messageNode)
+	node.role = messageRoleUser
+	node.text = "summarize the attachment"
+	node.media = []contentPart{{
+		"type":               contentTypeFileData,
+		contentFieldBytes:    []byte("binary-bytes"),
+		contentFieldMIMEType: mimeTypeOctetStream,
+		contentFieldFilename: testBinaryFilename,
+	}}
+
+	content, summary := buildMessageContent(node, defaultMaxText, messageContentOptions{
+		maxImages:                0,
+		allowAudio:               false,
+		allowDocuments:           false,
+		allowFiles:               true,
+		allowedDocumentMIMETypes: nil,
+		allowVideo:               false,
+	})
+	if summary.unsupportedAttachmentCnt != 0 {
+		t.Fatalf("unexpected unsupported count: %d", summary.unsupportedAttachmentCnt)
+	}
+
+	contentParts, ok := content.([]contentPart)
+	if !ok || len(contentParts) != 2 {
+		t.Fatalf("unexpected content payload: %#v", content)
+	}
+
+	if contentParts[1]["type"] != contentTypeFileData {
+		t.Fatalf("expected retained file part: %#v", contentParts[1])
+	}
+}
+
 func testGeminiBinaryAttachmentPayloads() []attachmentPayload {
 	imageAttachment := new(discordgo.MessageAttachment)
 	imageAttachment.ContentType = mimeTypePNG
@@ -401,12 +554,12 @@ func testGeminiBinaryAttachmentPayloads() []attachmentPayload {
 	videoAttachment.Filename = "clip.mp4"
 
 	return []attachmentPayload{
-		{attachment: imageAttachment, body: []byte("image-bytes")},
-		{attachment: audioAttachment, body: []byte("audio-bytes")},
-		{attachment: documentAttachment, body: []byte("document-bytes")},
-		{attachment: docxAttachment, body: []byte("docx-bytes")},
-		{attachment: pptxAttachment, body: []byte("pptx-bytes")},
-		{attachment: videoAttachment, body: []byte(testVideoBody)},
+		{attachment: imageAttachment, body: []byte("image-bytes"), contentType: ""},
+		{attachment: audioAttachment, body: []byte("audio-bytes"), contentType: ""},
+		{attachment: documentAttachment, body: []byte("document-bytes"), contentType: ""},
+		{attachment: docxAttachment, body: []byte("docx-bytes"), contentType: ""},
+		{attachment: pptxAttachment, body: []byte("pptx-bytes"), contentType: ""},
+		{attachment: videoAttachment, body: []byte(testVideoBody), contentType: ""},
 	}
 }
 
@@ -528,7 +681,7 @@ func TestBuildMessageContentFiltersUnsupportedMedia(t *testing.T) {
 		t.Fatalf("unexpected image count: %d", summary.imageCount)
 	}
 
-	if summary.unsupportedAttachmentCnt != 5 {
+	if summary.unsupportedAttachmentCnt != 0 {
 		t.Fatalf("unexpected unsupported count: %d", summary.unsupportedAttachmentCnt)
 	}
 
@@ -551,7 +704,7 @@ func TestBuildMessageContentFiltersUnsupportedMedia(t *testing.T) {
 		t.Fatalf("unexpected part count with gemini media: %d", len(contentParts))
 	}
 
-	if summary.unsupportedAttachmentCnt != 2 {
+	if summary.unsupportedAttachmentCnt != 0 {
 		t.Fatalf("unexpected unsupported count with gemini media: %d", summary.unsupportedAttachmentCnt)
 	}
 }
@@ -573,6 +726,7 @@ func TestMessageContentOptionsAllowsDocumentPartRespectsAllowedMIMETypes(t *test
 		maxImages:                0,
 		allowAudio:               false,
 		allowDocuments:           true,
+		allowFiles:               false,
 		allowedDocumentMIMETypes: allowedGeminiDocumentMIMETypes(),
 		allowVideo:               false,
 	}

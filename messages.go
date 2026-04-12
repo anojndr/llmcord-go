@@ -766,12 +766,14 @@ func messageContentOptionsForModel(
 	if provider.apiKind() == providerAPIKindGemini {
 		options.allowAudio = true
 		options.allowDocuments = true
+		options.allowFiles = true
 		options.allowedDocumentMIMETypes = allowedGeminiDocumentMIMETypes()
 		options.allowVideo = true
 	}
 
 	if xAIConfiguredModel(providerSlashModel) {
 		options.allowDocuments = true
+		options.allowFiles = true
 		options.allowedDocumentMIMETypes = nil
 	}
 

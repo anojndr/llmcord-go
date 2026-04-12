@@ -21,14 +21,16 @@ import (
 )
 
 type attachmentPayload struct {
-	attachment *discordgo.MessageAttachment
-	body       []byte
+	attachment  *discordgo.MessageAttachment
+	body        []byte
+	contentType string
 }
 
 type messageContentOptions struct {
 	maxImages                int
 	allowAudio               bool
 	allowDocuments           bool
+	allowFiles               bool
 	allowedDocumentMIMETypes map[string]struct{}
 	allowVideo               bool
 }
@@ -238,33 +240,29 @@ func selectMessageMedia(
 			selectedMedia = append(selectedMedia, part)
 			imageCount++
 		case contentTypeAudioData:
-			if !options.allowAudio {
-				summary.unsupportedAttachmentCnt++
-
-				continue
+			if options.allowAudio {
+				selectedMedia = append(selectedMedia, part)
 			}
-
-			selectedMedia = append(selectedMedia, part)
 		case contentTypeDocument:
-			if documentPartShouldInlineAsText(part, options) {
+			if attachmentPartShouldInlineAsText(part, options) {
 				continue
 			}
 
-			if !messageContentOptionsAllowsDocumentPart(options, part) {
-				summary.unsupportedAttachmentCnt++
-
+			if messageContentOptionsAllowsDocumentPart(options, part) {
+				selectedMedia = append(selectedMedia, part)
+			}
+		case contentTypeFileData:
+			if attachmentPartShouldInlineAsText(part, options) {
 				continue
 			}
 
-			selectedMedia = append(selectedMedia, part)
+			if options.allowFiles {
+				selectedMedia = append(selectedMedia, part)
+			}
 		case contentTypeVideoData:
-			if !options.allowVideo {
-				summary.unsupportedAttachmentCnt++
-
-				continue
+			if options.allowVideo {
+				selectedMedia = append(selectedMedia, part)
 			}
-
-			selectedMedia = append(selectedMedia, part)
 		default:
 			summary.unsupportedAttachmentCnt++
 		}
@@ -351,7 +349,8 @@ func supportedAttachmentCount(attachments []*discordgo.MessageAttachment) int {
 			continue
 		}
 
-		if attachmentIsSupported(attachmentContentType(attachment)) {
+		_, err := discordAttachmentDownloadURL(attachment.URL)
+		if err == nil {
 			count++
 		}
 	}
@@ -362,7 +361,7 @@ func supportedAttachmentCount(attachments []*discordgo.MessageAttachment) int {
 func buildMessageText(
 	message *discordgo.Message,
 	cleanedContent string,
-	_ []attachmentPayload,
+	payloads []attachmentPayload,
 ) string {
 	textParts := make([]string, 0, 1+len(message.Embeds)+len(message.Components))
 	if cleanedContent != "" {
@@ -391,6 +390,10 @@ func buildMessageText(
 
 	for _, component := range message.Components {
 		textParts = append(textParts, messageComponentTextParts(component)...)
+	}
+
+	if attachmentText := attachmentSummaryText(payloads); attachmentText != "" {
+		textParts = append(textParts, attachmentText)
 	}
 
 	return joinNonEmpty(textParts)
@@ -459,10 +462,11 @@ func buildMediaParts(payloads []attachmentPayload) []contentPart {
 }
 
 func attachmentPayloadToContentPart(payload attachmentPayload) (contentPart, bool) {
-	contentType := attachmentContentType(payload.attachment)
+	contentType := attachmentPayloadContentType(payload)
+	partType := attachmentContentPartType(contentType)
 
-	switch {
-	case strings.HasPrefix(contentType, "image/"):
+	switch partType {
+	case contentTypeImageURL:
 		part := make(contentPart)
 		part["type"] = contentTypeImageURL
 		part["image_url"] = map[string]string{
@@ -474,14 +478,8 @@ func attachmentPayloadToContentPart(payload attachmentPayload) (contentPart, boo
 		}
 
 		return part, true
-	case attachmentIsText(contentType):
-		return binaryAttachmentContentPart(contentTypeDocument, payload, contentType), true
-	case strings.HasPrefix(contentType, "audio/"):
-		return binaryAttachmentContentPart(contentTypeAudioData, payload, contentType), true
-	case attachmentIsDocument(contentType):
-		return binaryAttachmentContentPart(contentTypeDocument, payload, contentType), true
-	case strings.HasPrefix(contentType, "video/"):
-		return binaryAttachmentContentPart(contentTypeVideoData, payload, contentType), true
+	case contentTypeAudioData, contentTypeDocument, contentTypeFileData, contentTypeVideoData:
+		return binaryAttachmentContentPart(partType, payload, contentType), true
 	default:
 		return nil, false
 	}
@@ -511,26 +509,15 @@ func (instance *bot) fetchSupportedAttachments(
 	timeoutContext, cancelTimeout := context.WithTimeout(ctx, attachmentRequestTimeout)
 	defer cancelTimeout()
 
-	supportedAttachments := make([]*discordgo.MessageAttachment, 0, len(attachments))
-
-	for _, attachment := range attachments {
-		if attachment == nil {
-			continue
-		}
-
-		if !attachmentIsSupported(attachmentContentType(attachment)) {
-			continue
-		}
-
-		supportedAttachments = append(supportedAttachments, attachment)
-	}
-
 	results := runTasksConcurrently(
 		timeoutContext,
 		attachmentDownloadConcurrency,
-		len(supportedAttachments),
+		len(attachments),
 		func(taskContext context.Context, index int) (attachmentPayload, error) {
-			attachment := supportedAttachments[index]
+			attachment := attachments[index]
+			if attachment == nil {
+				return attachmentPayload{}, fmt.Errorf("missing attachment: %w", os.ErrInvalid)
+			}
 
 			downloadURL, err := discordAttachmentDownloadURL(attachment.URL)
 			if err != nil {
@@ -545,8 +532,9 @@ func (instance *bot) fetchSupportedAttachments(
 			}
 
 			return attachmentPayload{
-				attachment: attachment,
-				body:       body,
+				attachment:  attachment,
+				body:        body,
+				contentType: attachmentClassification(attachment, body),
 			}, nil
 		},
 	)
@@ -756,14 +744,6 @@ func (err attachmentDownloadStatusError) Error() string {
 	return fmt.Sprintf("attachment request failed with status %d", err.statusCode)
 }
 
-func attachmentIsSupported(contentType string) bool {
-	return attachmentIsText(contentType) ||
-		attachmentIsDocument(contentType) ||
-		strings.HasPrefix(strings.TrimSpace(contentType), "image/") ||
-		strings.HasPrefix(strings.TrimSpace(contentType), "audio/") ||
-		strings.HasPrefix(strings.TrimSpace(contentType), "video/")
-}
-
 func attachmentIsText(contentType string) bool {
 	return strings.HasPrefix(strings.TrimSpace(contentType), "text/")
 }
@@ -839,19 +819,11 @@ func attachmentContentType(attachment *discordgo.MessageAttachment) string {
 		return ""
 	}
 
-	contentType := strings.TrimSpace(attachment.ContentType)
-	if contentType != "" {
-		return contentType
-	}
-
-	if inferredContentType := inferredAttachmentContentType(
-		attachment.Filename,
-		attachment.URL,
-	); inferredContentType != "" {
-		return inferredContentType
-	}
-
-	return ""
+	return resolvedAttachmentContentType(
+		strings.TrimSpace(attachment.ContentType),
+		inferredAttachmentContentType(attachment.Filename, attachment.URL),
+		"",
+	)
 }
 
 func inferredAttachmentContentType(filename, rawURL string) string {
@@ -903,11 +875,19 @@ func filterContentPartsForOptions(
 				filteredParts = append(filteredParts, part)
 			}
 		case contentTypeDocument:
-			if documentPartShouldInlineAsText(part, options) {
+			if attachmentPartShouldInlineAsText(part, options) {
 				continue
 			}
 
 			if messageContentOptionsAllowsDocumentPart(options, part) {
+				filteredParts = append(filteredParts, part)
+			}
+		case contentTypeFileData:
+			if attachmentPartShouldInlineAsText(part, options) {
+				continue
+			}
+
+			if options.allowFiles {
 				filteredParts = append(filteredParts, part)
 			}
 		case contentTypeVideoData:
@@ -924,16 +904,16 @@ func inlineTextAttachmentContent(parts []contentPart, options messageContentOpti
 	textParts := make([]string, 0, len(parts))
 
 	for _, part := range parts {
-		if !documentPartShouldInlineAsText(part, options) {
+		if !attachmentPartShouldInlineAsText(part, options) {
 			continue
 		}
 
-		attachmentBytes, _, _, err := attachmentBinaryData(part)
+		attachmentBytes, mimeType, filename, err := attachmentBinaryData(part)
 		if err != nil {
 			continue
 		}
 
-		textValue := strings.TrimSpace(string(attachmentBytes))
+		textValue := attachmentInlineText(attachmentBytes, mimeType, filename)
 		if textValue == "" {
 			continue
 		}
@@ -962,18 +942,29 @@ func appendInlineAttachmentText(messageText, attachmentText string) string {
 	return joinNonEmpty([]string{messageText, trimmedAttachmentText})
 }
 
-func documentPartShouldInlineAsText(
+func attachmentPartShouldInlineAsText(
 	part contentPart,
 	options messageContentOptions,
 ) bool {
 	partType, _ := part["type"].(string)
-	if partType != contentTypeDocument || messageContentOptionsAllowsDocumentPart(options, part) {
+	if partType != contentTypeDocument && partType != contentTypeFileData {
 		return false
 	}
 
-	mimeType, _ := part[contentFieldMIMEType].(string)
+	if partType == contentTypeDocument && messageContentOptionsAllowsDocumentPart(options, part) {
+		return false
+	}
 
-	return attachmentIsText(mimeType)
+	if partType == contentTypeFileData && options.allowFiles {
+		return false
+	}
+
+	_, mimeType, filename, err := attachmentBinaryData(part)
+	if err != nil {
+		return false
+	}
+
+	return attachmentIsTextLike(mimeType, filename)
 }
 
 func unsupportedPreprocessedPartCount(
@@ -998,6 +989,10 @@ func unsupportedPreprocessedPartCount(
 			}
 		case contentTypeDocument:
 			if usePDFExtraction && !messageContentOptionsAllowsDocumentPart(options, part) {
+				count++
+			}
+		case contentTypeFileData:
+			if !options.allowFiles && !attachmentPartShouldInlineAsText(part, options) {
 				count++
 			}
 		}

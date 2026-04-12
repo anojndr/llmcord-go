@@ -15,7 +15,7 @@ It also works with local backends such as Ollama, LM Studio, and vLLM.
 - Reply-chain conversations in guilds, DMs, and public threads
 - Bot mentions or plain `at ai` triggers in guild channels
 - Streaming replies with progress state, `Show Thinking`, `Show Sources`, and `View on Rentry`
-- Multimodal input handling for images, text attachments, PDFs, DOCX, PPTX, audio, and video
+- Multimodal input handling for images, audio, video, PDFs, DOCX, PPTX, and generic file attachments
 - URL enrichment for TikTok, Facebook, YouTube, YouTube Shorts, Reddit, and generic websites
 - Optional web-search augmentation with Exa or Tavily
 - `vsearch` reverse-image lookup with Yandex Images and optional SerpApi Google Lens
@@ -26,7 +26,7 @@ It also works with local backends such as Ollama, LM Studio, and vLLM.
 
 1. A user mentions the bot, says `at ai`, or replies inside an existing chain.
 2. The bot rebuilds recent conversation state from the reply chain and replied message.
-3. It augments the latest user turn with supported attachments, supported URLs, visual-search results, and optional web-search results.
+3. It augments the latest user turn with attachments, supported URLs, visual-search results, and optional web-search results.
 4. The selected provider streams the response back to Discord.
 
 Behavior notes:
@@ -170,6 +170,8 @@ Model notes:
 - Use `/searchdecidermodel` to switch the search-decider model
 - Use `/searchtype` to switch the Exa Search API mode when `web_search.exa.api_key` is configured
 - Attach files or images for multimodal context
+  Text-like files such as JSON, CSV, logs, Markdown, and source code are inlined when the target provider cannot read raw files directly.
+  Other files are still preserved as explicit attachments and fall back to metadata summaries, including ZIP manifests for archive uploads.
 - Start a prompt with `vsearch` to run reverse-image lookup
 - Use `Show Sources` on searched replies to inspect the cited URLs, including the total source count and pagination when needed
 
