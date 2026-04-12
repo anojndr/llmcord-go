@@ -769,6 +769,53 @@ func TestBuildGeminiGenerateContentRequestUploadsOnlyPDFDocuments(t *testing.T) 
 	}
 }
 
+func TestBuildGeminiGenerateContentRequestUploadsGenericFiles(t *testing.T) {
+	t.Parallel()
+
+	state := new(geminiUploadState)
+	files := newGeminiMediaUploadStub(t, state)
+	request := newSimpleGeminiStreamRequest()
+	request.Messages = []chatMessage{
+		{
+			Role: messageRoleUser,
+			Content: []contentPart{
+				{"type": contentTypeText, "text": "<@123>: summarize this archive"},
+				{
+					"type":               contentTypeFileData,
+					contentFieldBytes:    []byte("zip-bytes"),
+					contentFieldMIMEType: mimeTypeZIP,
+					contentFieldFilename: testZIPFilename,
+				},
+			},
+		},
+	}
+
+	contents, _, err := buildGeminiGenerateContentRequest(
+		context.Background(),
+		request,
+		files,
+	)
+	if err != nil {
+		t.Fatalf("build gemini generate content request: %v", err)
+	}
+
+	if len(state.calls) != 1 {
+		t.Fatalf("unexpected upload count: %d", len(state.calls))
+	}
+
+	if state.calls[0].mimeType != mimeTypeZIP || state.calls[0].displayName != testZIPFilename {
+		t.Fatalf("unexpected generic file upload call: %#v", state.calls[0])
+	}
+
+	if len(contents) != 1 || len(contents[0].Parts) != 2 {
+		t.Fatalf("unexpected gemini content shape: %#v", contents)
+	}
+
+	if contents[0].Parts[1].FileData == nil {
+		t.Fatalf("expected uploaded generic file part: %#v", contents[0].Parts[1])
+	}
+}
+
 type geminiUploadCall struct {
 	mimeType    string
 	displayName string

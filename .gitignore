@@ -4,6 +4,8 @@
 
 !.gitignore
 !.golangci.yml
+!AGENTS.md
+!LICENSE.md
 
 !*.md
 !*.go

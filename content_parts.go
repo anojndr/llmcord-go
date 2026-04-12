@@ -77,7 +77,7 @@ func contentPartsNeedFileOrImageOnlyQueryPlaceholder(parts []contentPart) bool {
 			if strings.TrimSpace(textValue) != "" {
 				return false
 			}
-		case contentTypeDocument, contentTypeImageURL:
+		case contentTypeDocument, contentTypeFileData, contentTypeImageURL:
 			hasFileOrImage = true
 		default:
 			return false

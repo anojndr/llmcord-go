@@ -41,3 +41,35 @@ func TestRequestMessagesWithFileOrImageOnlyQueryPlaceholderAddsPlaceholderForDoc
 		t.Fatalf("expected original request messages to remain unchanged: %#v", messages[0].Content)
 	}
 }
+
+func TestRequestMessagesWithFileOrImageOnlyQueryPlaceholderAddsPlaceholderForFileOnlyUserMessage(t *testing.T) {
+	t.Parallel()
+
+	messages := []chatMessage{{
+		Role: messageRoleUser,
+		Content: []contentPart{
+			{"type": contentTypeText, "text": ""},
+			{
+				"type":               contentTypeFileData,
+				contentFieldBytes:    []byte(testDocumentBody),
+				contentFieldMIMEType: mimeTypeOctetStream,
+				contentFieldFilename: testBinaryFilename,
+			},
+		},
+	}}
+
+	normalizedMessages := requestMessagesWithFileOrImageOnlyQueryPlaceholder(messages)
+
+	parts, ok := normalizedMessages[0].Content.([]contentPart)
+	if !ok || len(parts) != 2 {
+		t.Fatalf("unexpected normalized content: %#v", normalizedMessages[0].Content)
+	}
+
+	if parts[0]["type"] != contentTypeText || parts[0]["text"] != fileOrImageOnlyQueryPlaceholder {
+		t.Fatalf("unexpected placeholder text part: %#v", parts[0])
+	}
+
+	if parts[1]["type"] != contentTypeFileData || parts[1][contentFieldFilename] != testBinaryFilename {
+		t.Fatalf("unexpected file part: %#v", parts[1])
+	}
+}
