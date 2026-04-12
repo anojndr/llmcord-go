@@ -7,7 +7,7 @@
 !AGENTS.md
 !LICENSE.md
 
-# Root-level source and docs stay explicit; recursive allowlists are intentional for nested command paths.
+# Root-level source and docs stay explicit; recursive allowlists are intentional for nested command and test paths.
 !*.md
 !*.go
 !searchDeciderPrompt.txt

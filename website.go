@@ -1304,7 +1304,7 @@ func extractWebsiteURLs(text string) []string {
 
 func extractWebsiteURLsForProvider(text string, providerSlashModel string) []string {
 	websiteURLs := extractWebsiteURLs(text)
-	if !providerHandlesNonFacebookURLsDirectly(providerSlashModel) {
+	if !providerHandlesGeneralURLsDirectly(providerSlashModel) {
 		return websiteURLs
 	}
 

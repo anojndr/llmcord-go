@@ -749,7 +749,77 @@ func failUnexpectedURLFetch(t *testing.T, label string, rawURL string) {
 	t.Fatalf("unexpected %s fetch for %q", label, rawURL)
 }
 
-func newXAIURLBypassTestBot(t *testing.T, facebook facebookFetcher) *bot {
+func newCountingGeminiVideoAnalysisChatClient(
+	t *testing.T,
+	expectedAnalysis string,
+) (*stubChatCompletionClient, *atomic.Int32) {
+	t.Helper()
+
+	callCount := new(atomic.Int32)
+
+	chatClient := newStubChatClient(func(
+		_ context.Context,
+		request chatCompletionRequest,
+		handle func(streamDelta) error,
+	) error {
+		assertGeminiMediaAnalysisRequest(
+			t,
+			request,
+			geminiVideoAnalysisPrompt,
+			contentTypeVideoData,
+		)
+
+		callCount.Add(1)
+
+		return handle(streamDelta{
+			Thinking:           "",
+			Content:            expectedAnalysis,
+			FinishReason:       finishReasonStop,
+			Usage:              nil,
+			ProviderResponseID: "",
+			SearchMetadata:     nil,
+			ResponseImages:     nil,
+		})
+	})
+
+	return chatClient, callCount
+}
+
+func newExpectedFacebookContentClient(t *testing.T) *stubFacebookContentClient {
+	t.Helper()
+
+	return newStubFacebookContentClient(func(
+		_ context.Context,
+		rawURL string,
+	) (facebookVideoContent, error) {
+		if rawURL != testFacebookURL {
+			t.Fatalf("unexpected facebook raw url: %q", rawURL)
+		}
+
+		return testFacebookVideoContent(), nil
+	})
+}
+
+func newExpectedYouTubeShortsContentClient(t *testing.T) *stubYouTubeShortsContentClient {
+	t.Helper()
+
+	return newStubYouTubeShortsContentClient(func(
+		_ context.Context,
+		rawURL string,
+	) (youtubeShortsVideoContent, error) {
+		if rawURL != testYouTubeShortsCanonicalURL {
+			t.Fatalf("unexpected youtube shorts raw url: %q", rawURL)
+		}
+
+		return testYouTubeShortsVideoContent(), nil
+	})
+}
+
+func newXAIURLBypassTestBot(
+	t *testing.T,
+	facebook facebookFetcher,
+	youtubeShorts youtubeShortsFetcher,
+) *bot {
 	t.Helper()
 
 	instance := new(bot)
@@ -773,13 +843,18 @@ func newXAIURLBypassTestBot(t *testing.T, facebook facebookFetcher) *bot {
 		})
 	}
 
-	instance.youtubeShorts = newStubYouTubeShortsContentClient(func(
-		_ context.Context,
-		rawURL string,
-	) (youtubeShortsVideoContent, error) {
-		failUnexpectedURLFetch(t, "youtube shorts", rawURL)
-		panic("unreachable")
-	})
+	if youtubeShorts != nil {
+		instance.youtubeShorts = youtubeShorts
+	} else {
+		instance.youtubeShorts = newStubYouTubeShortsContentClient(func(
+			_ context.Context,
+			rawURL string,
+		) (youtubeShortsVideoContent, error) {
+			failUnexpectedURLFetch(t, "youtube shorts", rawURL)
+			panic("unreachable")
+		})
+	}
+
 	instance.website = newStubWebsiteContentClient(func(
 		_ context.Context,
 		_ config,
@@ -941,23 +1016,15 @@ func TestAugmentConversationWithVideoURLsFetchesProvidersConcurrentlyAndKeepsOrd
 	assertAugmentedVideoOrder(t, augmentedConversation)
 }
 
-func TestAugmentConversationWithVideoURLsProcessesFacebookOnlyForXAIProviders(t *testing.T) {
+func TestAugmentConversationWithVideoURLsProcessesFacebookAndYouTubeShortsForXAIProviders(t *testing.T) {
 	t.Parallel()
 
 	expectedAnalysis := "Video description per timestamp:\n\n0s to 10s: somebody waves"
-	chatClient, analysisCallCount := newGeminiVideoAnalysisChatClient(t, expectedAnalysis)
-	facebook := newStubFacebookContentClient(func(
-		_ context.Context,
-		rawURL string,
-	) (facebookVideoContent, error) {
-		if rawURL != testFacebookURL {
-			t.Fatalf("unexpected facebook raw url: %q", rawURL)
-		}
+	chatClient, analysisCallCount := newCountingGeminiVideoAnalysisChatClient(t, expectedAnalysis)
+	facebook := newExpectedFacebookContentClient(t)
+	youtubeShorts := newExpectedYouTubeShortsContentClient(t)
 
-		return testFacebookVideoContent(), nil
-	})
-
-	instance := newXAIURLBypassTestBot(t, facebook)
+	instance := newXAIURLBypassTestBot(t, facebook, youtubeShorts)
 	instance.chatCompletions = chatClient
 
 	loadedConfig := testXAIWithMediaAnalysisConfig()
@@ -993,12 +1060,16 @@ func TestAugmentConversationWithVideoURLsProcessesFacebookOnlyForXAIProviders(t 
 		t.Fatalf("unexpected warnings: %#v", warnings)
 	}
 
-	if *analysisCallCount != 1 {
-		t.Fatalf("unexpected gemini analysis call count: %d", *analysisCallCount)
+	if analysisCallCount.Load() != 2 {
+		t.Fatalf("unexpected gemini analysis call count: %d", analysisCallCount.Load())
 	}
 
 	if len(facebook.calls) != 1 || facebook.calls[0] != testFacebookURL {
 		t.Fatalf("unexpected facebook calls: %#v", facebook.calls)
+	}
+
+	if len(youtubeShorts.calls) != 1 || youtubeShorts.calls[0] != testYouTubeShortsCanonicalURL {
+		t.Fatalf("unexpected youtube shorts calls: %#v", youtubeShorts.calls)
 	}
 
 	content, ok := augmentedConversation[0].Content.(string)
@@ -1008,7 +1079,10 @@ func TestAugmentConversationWithVideoURLsProcessesFacebookOnlyForXAIProviders(t 
 
 	prompt := parseAugmentedUserPrompt(content)
 
-	expectedUserQuery := expectedMediaAnalysisUserText(query, []string{expectedAnalysis})
+	expectedUserQuery := expectedMediaAnalysisUserText(
+		query,
+		[]string{expectedAnalysis, expectedAnalysis},
+	)
 	if prompt.UserQuery != expectedUserQuery {
 		t.Fatalf("unexpected augmented user query: got %q want %q", prompt.UserQuery, expectedUserQuery)
 	}
@@ -1093,10 +1167,10 @@ func TestAugmentConversationFetchesIndependentContextBeforeWebSearchDecision(t *
 	}
 }
 
-func TestAugmentConversationForXAILeavesNonFacebookURLsForProviderHandling(t *testing.T) {
+func TestAugmentConversationForXAILeavesNonFacebookNonShortsURLsForProviderHandling(t *testing.T) {
 	t.Parallel()
 
-	instance := newXAIURLBypassTestBot(t, nil)
+	instance := newXAIURLBypassTestBot(t, nil, nil)
 	loadedConfig := testXAIAugmentationConfig()
 
 	conversation := []chatMessage{
