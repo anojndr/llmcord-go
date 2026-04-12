@@ -142,7 +142,7 @@ func TestBuildXAIResponsesRequestBodyEncodesTextAttachmentsAsInputFiles(t *testi
 	request.Messages[1].Content = []contentPart{
 		{"type": contentTypeText, "text": "Summarize this file."},
 		{
-			"type":               contentTypeDocument,
+			"type":               contentTypeFileData,
 			contentFieldBytes:    []byte("plain-text file contents"),
 			contentFieldMIMEType: "text/plain",
 			contentFieldFilename: "context.txt",

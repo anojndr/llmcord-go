@@ -518,7 +518,7 @@ func xAIResponsesUserPart(part contentPart) (map[string]any, bool, error) {
 			"image_url": imageURL,
 			"detail":    xAIResponsesImageDetailAuto,
 		}, true, nil
-	case contentTypeDocument:
+	case contentTypeDocument, contentTypeFileData:
 		documentBytes, mimeType, filename, err := attachmentBinaryData(part)
 		if err != nil {
 			return nil, false, err

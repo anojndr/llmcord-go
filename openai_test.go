@@ -311,6 +311,61 @@ func TestBuildChatCompletionRequestBodyAddsPlaceholderForDocumentOnlyUserMessage
 	}
 }
 
+func TestBuildChatCompletionRequestBodyAddsPlaceholderForFileOnlyUserMessage(t *testing.T) {
+	t.Parallel()
+
+	request := chatCompletionRequest{
+		Provider: providerRequestConfig{
+			APIKind:         providerAPIKindOpenAI,
+			BaseURL:         "https://example.com/v1",
+			APIKey:          "test-key",
+			APIKeys:         nil,
+			UseResponsesAPI: false,
+			ExtraHeaders:    nil,
+			ExtraQuery:      nil,
+			ExtraBody:       nil,
+		},
+		Model:                       "gpt-test",
+		ConfiguredModel:             "",
+		ContextWindow:               0,
+		AutoCompactThresholdPercent: 0,
+		SessionID:                   "",
+		PreviousResponseID:          "",
+		Messages: []chatMessage{{
+			Role: messageRoleUser,
+			Content: []contentPart{
+				{"type": contentTypeText, "text": ""},
+				{
+					"type":               contentTypeFileData,
+					contentFieldBytes:    []byte("document-bytes"),
+					contentFieldMIMEType: mimeTypeOctetStream,
+					contentFieldFilename: "payload.bin",
+				},
+			},
+		}},
+	}
+
+	requestBody := buildChatCompletionRequestBody(request)
+
+	messages, messagesOK := requestBody["messages"].([]chatMessage)
+	if !messagesOK || len(messages) != 1 {
+		t.Fatalf("unexpected messages payload: %#v", requestBody["messages"])
+	}
+
+	parts, partsOK := messages[0].Content.([]contentPart)
+	if !partsOK || len(parts) != 2 {
+		t.Fatalf("unexpected user content payload: %#v", messages[0].Content)
+	}
+
+	if parts[0]["type"] != contentTypeText || parts[0]["text"] != fileOrImageOnlyQueryPlaceholder {
+		t.Fatalf("unexpected placeholder text part: %#v", parts[0])
+	}
+
+	if parts[1]["type"] != contentTypeFileData || parts[1][contentFieldFilename] != "payload.bin" {
+		t.Fatalf("unexpected file part: %#v", parts[1])
+	}
+}
+
 func TestOpenAIClientRetriesWithoutStreamingUsageWhenProviderRejectsIt(t *testing.T) {
 	t.Parallel()
 

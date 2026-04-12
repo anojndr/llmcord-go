@@ -486,6 +486,7 @@ func TestBuildConversationSuppressesUnsupportedWarningForReplyTargetGeminiMedia(
 			maxImages:                0,
 			allowAudio:               false,
 			allowDocuments:           false,
+			allowFiles:               false,
 			allowedDocumentMIMETypes: nil,
 			allowVideo:               false,
 		},

@@ -25,6 +25,7 @@ const (
 	autoCompactImageTokens             = 1024
 	autoCompactAudioTokens             = 4096
 	autoCompactDocumentTokens          = 4096
+	autoCompactFileTokens              = 4096
 	autoCompactVideoTokens             = 8192
 	autoCompactSummaryPrefix           = "Earlier conversation summary " +
 		"(auto-compacted to fit the model context window):"
@@ -34,6 +35,7 @@ const (
 	autoCompactImagePlaceholder      = "[image attachment]"
 	autoCompactAudioPlaceholder      = "[audio attachment]"
 	autoCompactDocumentPlaceholder   = "[document attachment]"
+	autoCompactFilePlaceholder       = "[file attachment]"
 	autoCompactVideoPlaceholder      = "[video attachment]"
 )
 
@@ -486,6 +488,8 @@ func renderAutoCompactContentPart(part contentPart) string {
 		return autoCompactMediaPlaceholder(autoCompactAudioPlaceholder, part)
 	case contentTypeDocument:
 		return autoCompactMediaPlaceholder(autoCompactDocumentPlaceholder, part)
+	case contentTypeFileData:
+		return autoCompactMediaPlaceholder(autoCompactFilePlaceholder, part)
 	case contentTypeVideoData:
 		return autoCompactMediaPlaceholder(autoCompactVideoPlaceholder, part)
 	default:
@@ -743,6 +747,8 @@ func estimateContentPartTokens(part contentPart) int {
 		return autoCompactAudioTokens
 	case contentTypeDocument:
 		return autoCompactDocumentTokens
+	case contentTypeFileData:
+		return autoCompactFileTokens
 	case contentTypeVideoData:
 		return autoCompactVideoTokens
 	default:
