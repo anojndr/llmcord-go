@@ -510,7 +510,7 @@ func (instance *bot) augmentConversationWithVideoURLs(
 	urlExtractionText string,
 ) ([]chatMessage, []string, error) {
 	var stages []preparedAugmentationStage
-	if !providerHandlesNonFacebookURLsDirectly(providerSlashModel) {
+	if !providerHandlesTikTokURLsDirectly(providerSlashModel) {
 		stages = append(stages, preparedAugmentationStage{
 			name: "tiktok",
 			prepare: func(taskContext context.Context) (preparedConversationAugmentation, error) {
@@ -536,19 +536,17 @@ func (instance *bot) augmentConversationWithVideoURLs(
 		},
 	})
 
-	if !providerHandlesNonFacebookURLsDirectly(providerSlashModel) {
-		stages = append(stages, preparedAugmentationStage{
-			name: "youtube shorts",
-			prepare: func(taskContext context.Context) (preparedConversationAugmentation, error) {
-				return instance.prepareYouTubeShortsAugmentation(
-					taskContext,
-					loadedConfig,
-					providerSlashModel,
-					urlExtractionText,
-				)
-			},
-		})
-	}
+	stages = append(stages, preparedAugmentationStage{
+		name: "youtube shorts",
+		prepare: func(taskContext context.Context) (preparedConversationAugmentation, error) {
+			return instance.prepareYouTubeShortsAugmentation(
+				taskContext,
+				loadedConfig,
+				providerSlashModel,
+				urlExtractionText,
+			)
+		},
+	})
 
 	stageResults := prepareAugmentationStages(ctx, stages)
 
@@ -827,7 +825,7 @@ func (instance *bot) augmentConversation(
 		},
 	}
 
-	if !providerHandlesNonFacebookURLsDirectly(providerSlashModel) {
+	if !providerHandlesGeneralURLsDirectly(providerSlashModel) {
 		stages = append(
 			stages,
 			preparedAugmentationStage{
@@ -868,7 +866,7 @@ func (instance *bot) augmentConversation(
 		return nil, nil, nil, err
 	}
 
-	if providerHandlesNonFacebookURLsDirectly(providerSlashModel) {
+	if providerHandlesGeneralURLsDirectly(providerSlashModel) {
 		return augmentedMessages, searchMetadata, warnings, nil
 	}
 
@@ -902,7 +900,11 @@ func (instance *bot) sourceMessageURLExtractionText(
 	return joinNonEmpty([]string{replyTargetText, sourceText})
 }
 
-func providerHandlesNonFacebookURLsDirectly(providerSlashModel string) bool {
+func providerHandlesGeneralURLsDirectly(providerSlashModel string) bool {
+	return xAIConfiguredModel(providerSlashModel)
+}
+
+func providerHandlesTikTokURLsDirectly(providerSlashModel string) bool {
 	return xAIConfiguredModel(providerSlashModel)
 }
 
