@@ -1,144 +1,69 @@
-# agents.md
+# AGENTS.md
 
-## Purpose
+A dedicated guide for AI coding agents working on this Go project.
 
-This repository requires strict post-change quality enforcement for all Go code changes.
+## Quality Gates (Mandatory After Every Change)
 
-The agent must do only two things consistently after every change:
+**These quality gates must run after EVERY change (feature, bugfix, refactor, or edit). The agent must enforce them strictly before considering any task complete.**
 
-1. Enforce quality gates after each change
-2. Create and maintain tests for every change
+1. **Linting with golangci-lint**
+   - Run: `golangci-lint run --default=all`
+   - **Fix ALL issues reported by the linter**.
+   - Never suppress, disable, or ignore any findings (no `//nolint` directives, no config exceptions, no rule disables). Always refactor the code to fully satisfy every rule.
 
-## Mandatory Rules
+2. **Testing**
+   - **Create or update tests for every change** (new code, modified behavior, or bugfix — no exceptions).
+   - Run the full test suite with race detection: `go test ./... -race -count=1`
+   - All tests must pass cleanly with zero data races detected.
 
-### 1. Quality gates after every change
+3. **Project Maintenance**
+   - Always update `README.md` to reflect any changes (new features, setup steps, usage notes, etc.).
+   - Always update `.gitignore` (see policy below).
 
-After every code change, the agent must run all required quality gates and fix any failures before considering the task complete.
+## .gitignore Policy
 
-Minimum required gates after each change:
+`.gitignore` **acts as a whitelist**, not a blacklist (inspired by https://rgbcu.be/blog/gitignore).
 
-- `gofmt -s -w .`
-- `go mod tidy`
-- `go test ./...`
-- `go test -race ./...`
-- `go vet ./...`
-- `golangci-lint run --default=all`
+- Default to ignoring everything: `*`
+- Explicitly un-ignore only the files and directories that belong in the repository using `!` patterns.
+- Keep it clean, future-proof, and minimal. Example starting structure:
+  ```
+  *
+  !.gitignore
+  !README.md
+  !go.mod
+  !go.sum
+  !cmd/
+  !cmd/**/*
+  !internal/
+  !internal/**/*
+  !pkg/
+  !pkg/**/*
+  !.github/
+  !.github/**/*
+  !docs/
+  !docs/**/*
+  ```
 
-The agent must fix all issues reported by these commands.
+## Development Commands
 
-The agent must not leave lint findings, vet findings, formatting issues, failing tests, race warnings, or module drift unresolved.
+- Install/update tools: `go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest`
+- Lint: `golangci-lint run --default=all`
+- Test with race detection: `go test ./... -race`
+- Tidy dependencies: `go mod tidy`
+- Format: `gofmt -w .` or `gofumpt -w .` (after lint fixes)
 
-### 2. Tests are required for every change
+## Testing Instructions
 
-Every change must include tests.
+- Every single code change requires corresponding tests.
+- Use table-driven tests where appropriate.
+- Run the full suite with `-race` after any edit.
+- Fix any failing tests or races before moving on.
 
-Rules:
+## Pull Request / Change Guidelines
 
-- Every behavior change must add or update automated tests
-- Every bug fix must include a regression test
-- Every new feature must include tests covering expected behavior
-- Refactors must preserve or improve test coverage around changed behavior
-- If a change affects concurrency, the tests must exercise concurrent behavior where practical
-- If a change affects error handling, the tests must verify failure paths too
+- Run the complete quality gates locally before committing or submitting changes.
+- Ensure `.gitignore` and `README.md` are updated.
+- All gates must pass cleanly.
 
-A change is not complete unless the relevant tests exist and pass.
-
-## Linting Policy
-
-`golangci-lint` is mandatory and must be run in all-linters mode for the installed v2 version.
-
-Required command:
-
-- `golangci-lint run --default=all`
-
-The agent must fix all issues reported by `golangci-lint`.
-
-The agent must not suppress, ignore, or bypass linter findings unless explicitly instructed by a human reviewer.
-
-## Race Condition Testing
-
-After every change, the agent must test for race conditions.
-
-Required command:
-
-- `go test -race ./...`
-
-Any race detector failure must be treated as a blocking issue and must be fixed before the task is complete.
-
-## Code Comment Policy
-
-Do not write useless comments in the code.
-
-Rules:
-
-- Do not add comments that restate what the code already clearly says
-- Do not add obvious line-by-line narration
-- Prefer clear naming and simple structure over explanatory noise
-- Add comments only when they explain intent, non-obvious constraints, reasoning, or important caveats
-
-## Documentation and Repository Hygiene
-
-The agent must always review whether the following files need updates:
-
-- `README.md`
-- `.gitignore`
-
-### README.md
-
-Always update `README.md` if necessary.
-
-`README.md` must be updated if necessary whenever a change affects any of the following:
-
-- setup
-- usage
-- commands
-- configuration
-- testing
-- development workflow
-- behavior visible to contributors or users
-
-If a change does not affect documentation, do not modify `README.md` unnecessarily.
-
-### .gitignore
-
-Always update `.gitignore` if necessary.
-
-`.gitignore` must always be kept up to date.
-
-This repository treats `.gitignore` as a whitelist-oriented control file.
-
-Inspired by https://rgbcu.be/blog/gitignore, prefer a restrictive approach where only intentionally tracked files and directories are allowed, instead of endlessly adding new junk patterns after the fact.
-
-The agent must:
-
-- review whether new files created by the change should be tracked or ignored
-- update `.gitignore` if necessary when project structure changes
-- preserve the whitelist philosophy where practical
-- prevent editor files, build outputs, temporary files, caches, local scripts, and other accidental artifacts from being committed
-
-## Completion Criteria
-
-A change is complete only when all of the following are true:
-
-- code is formatted
-- dependencies are tidy
-- tests were added or updated for the change
-- `go test ./...` passes
-- `go test -race ./...` passes
-- `go vet ./...` passes
-- `golangci-lint run --default=all` passes with all issues fixed
-- `README.md` is updated if necessary
-- `.gitignore` is updated if necessary
-
-## Required Post-Change Command Checklist
-
-Run these after every change:
-
-- `gofmt -s -w .`
-- `go mod tidy`
-- `go test ./...`
-- `go test -race ./...`
-- `go vet ./...`
-- `golangci-lint run --default=all`
-
-Do not mark work complete until every command passes and all reported issues are fixed.
+Treat this AGENTS.md as living, authoritative documentation. Update it only if project conventions evolve. The agent must follow these rules exactly and never deviate.

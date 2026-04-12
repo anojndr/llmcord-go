@@ -554,7 +554,7 @@ func TestBuildOpenAICodexRequestBodyAddsPlaceholderForImageOnlyUserMessage(t *te
 		t.Fatalf("unexpected codex user content payload: %#v", input[0]["content"])
 	}
 
-	if userContent[0]["type"] != "input_text" || userContent[0]["text"] != imageOnlyQueryPlaceholder {
+	if userContent[0]["type"] != "input_text" || userContent[0]["text"] != fileOrImageOnlyQueryPlaceholder {
 		t.Fatalf("unexpected placeholder user part: %#v", userContent[0])
 	}
 }

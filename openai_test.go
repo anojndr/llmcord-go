@@ -246,13 +246,68 @@ func TestBuildChatCompletionRequestBodyAddsPlaceholderForImageOnlyUserMessage(t 
 		t.Fatalf("unexpected user content payload: %#v", messages[0].Content)
 	}
 
-	if parts[0]["type"] != contentTypeText || parts[0]["text"] != imageOnlyQueryPlaceholder {
+	if parts[0]["type"] != contentTypeText || parts[0]["text"] != fileOrImageOnlyQueryPlaceholder {
 		t.Fatalf("unexpected placeholder text part: %#v", parts[0])
 	}
 
 	originalParts, originalPartsOK := request.Messages[0].Content.([]contentPart)
 	if !originalPartsOK || originalParts[0]["text"] != "" {
 		t.Fatalf("expected original request messages to remain unchanged: %#v", request.Messages[0].Content)
+	}
+}
+
+func TestBuildChatCompletionRequestBodyAddsPlaceholderForDocumentOnlyUserMessage(t *testing.T) {
+	t.Parallel()
+
+	request := chatCompletionRequest{
+		Provider: providerRequestConfig{
+			APIKind:         providerAPIKindOpenAI,
+			BaseURL:         "https://example.com/v1",
+			APIKey:          "test-key",
+			APIKeys:         nil,
+			UseResponsesAPI: false,
+			ExtraHeaders:    nil,
+			ExtraQuery:      nil,
+			ExtraBody:       nil,
+		},
+		Model:                       "gpt-test",
+		ConfiguredModel:             "",
+		ContextWindow:               0,
+		AutoCompactThresholdPercent: 0,
+		SessionID:                   "",
+		PreviousResponseID:          "",
+		Messages: []chatMessage{{
+			Role: messageRoleUser,
+			Content: []contentPart{
+				{"type": contentTypeText, "text": ""},
+				{
+					"type":               contentTypeDocument,
+					contentFieldBytes:    []byte("document-bytes"),
+					contentFieldMIMEType: mimeTypePDF,
+					contentFieldFilename: testPDFFilename,
+				},
+			},
+		}},
+	}
+
+	requestBody := buildChatCompletionRequestBody(request)
+
+	messages, messagesOK := requestBody["messages"].([]chatMessage)
+	if !messagesOK || len(messages) != 1 {
+		t.Fatalf("unexpected messages payload: %#v", requestBody["messages"])
+	}
+
+	parts, partsOK := messages[0].Content.([]contentPart)
+	if !partsOK || len(parts) != 2 {
+		t.Fatalf("unexpected user content payload: %#v", messages[0].Content)
+	}
+
+	if parts[0]["type"] != contentTypeText || parts[0]["text"] != fileOrImageOnlyQueryPlaceholder {
+		t.Fatalf("unexpected placeholder text part: %#v", parts[0])
+	}
+
+	if parts[1]["type"] != contentTypeDocument || parts[1][contentFieldFilename] != testPDFFilename {
+		t.Fatalf("unexpected document part: %#v", parts[1])
 	}
 }
 

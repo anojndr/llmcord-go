@@ -2,9 +2,9 @@ package main
 
 import "strings"
 
-const imageOnlyQueryPlaceholder = "."
+const fileOrImageOnlyQueryPlaceholder = "."
 
-func requestMessagesWithImageOnlyQueryPlaceholder(messages []chatMessage) []chatMessage {
+func requestMessagesWithFileOrImageOnlyQueryPlaceholder(messages []chatMessage) []chatMessage {
 	if len(messages) == 0 {
 		return messages
 	}
@@ -13,7 +13,7 @@ func requestMessagesWithImageOnlyQueryPlaceholder(messages []chatMessage) []chat
 	changed := false
 
 	for index, message := range messages {
-		normalizedContent, contentChanged := messageContentWithImageOnlyQueryPlaceholder(
+		normalizedContent, contentChanged := messageContentWithFileOrImageOnlyQueryPlaceholder(
 			message.Role,
 			message.Content,
 		)
@@ -34,20 +34,20 @@ func requestMessagesWithImageOnlyQueryPlaceholder(messages []chatMessage) []chat
 	return normalizedMessages
 }
 
-func messageContentWithImageOnlyQueryPlaceholder(role string, content any) (any, bool) {
+func messageContentWithFileOrImageOnlyQueryPlaceholder(role string, content any) (any, bool) {
 	if !strings.EqualFold(strings.TrimSpace(role), messageRoleUser) {
 		return content, false
 	}
 
 	parts, ok := content.([]contentPart)
-	if !ok || !contentPartsNeedImageOnlyQueryPlaceholder(parts) {
+	if !ok || !contentPartsNeedFileOrImageOnlyQueryPlaceholder(parts) {
 		return content, false
 	}
 
 	normalizedParts := make([]contentPart, 0, len(parts)+1)
 	normalizedParts = append(normalizedParts, contentPart{
 		"type": contentTypeText,
-		"text": imageOnlyQueryPlaceholder,
+		"text": fileOrImageOnlyQueryPlaceholder,
 	})
 
 	for _, part := range parts {
@@ -65,8 +65,8 @@ func messageContentWithImageOnlyQueryPlaceholder(role string, content any) (any,
 	return normalizedParts, true
 }
 
-func contentPartsNeedImageOnlyQueryPlaceholder(parts []contentPart) bool {
-	hasImage := false
+func contentPartsNeedFileOrImageOnlyQueryPlaceholder(parts []contentPart) bool {
+	hasFileOrImage := false
 
 	for _, part := range parts {
 		partType, _ := part["type"].(string)
@@ -77,12 +77,12 @@ func contentPartsNeedImageOnlyQueryPlaceholder(parts []contentPart) bool {
 			if strings.TrimSpace(textValue) != "" {
 				return false
 			}
-		case contentTypeImageURL:
-			hasImage = true
+		case contentTypeDocument, contentTypeImageURL:
+			hasFileOrImage = true
 		default:
 			return false
 		}
 	}
 
-	return hasImage
+	return hasFileOrImage
 }
