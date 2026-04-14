@@ -1101,10 +1101,14 @@ func (instance *bot) prepareResponseEmbedFiles(
 		file, err = instance.responseEmbedFile(ctx, imageURL)
 		if err != nil {
 			if errors.Is(err, errResponseEmbedImageUnavailable) {
+				setResponseEmbedImageURL(embed, sanitizedDescription, imageURL)
+
 				return nil
 			}
 
 			slog.Warn("fetch response embed image", "url", imageURL, "error", err)
+
+			setResponseEmbedImageURL(embed, sanitizedDescription, imageURL)
 
 			return nil
 		}
@@ -1125,25 +1129,45 @@ func (instance *bot) prepareResponseEmbedFiles(
 	return []*discordgo.File{file}
 }
 
+func setResponseEmbedImageURL(embed *discordgo.MessageEmbed, description string, imageURL string) {
+	if embed == nil {
+		return
+	}
+
+	embed.Description = description
+	embed.Image = &discordgo.MessageEmbedImage{
+		URL:      imageURL,
+		ProxyURL: "",
+		Width:    0,
+		Height:   0,
+	}
+}
+
 func responseEmbedFileFromAssets(responseImages []responseImageAsset) *discordgo.File {
 	for _, responseImage := range responseImages {
-		if len(responseImage.Data) == 0 {
-			continue
-		}
-
-		fileName := responseEmbedFilename(responseImage.URL, responseImage.ContentType)
-		if fileName == "response-image" {
-			fileName += defaultResponseImageExtension(responseImage.ContentType)
-		}
-
-		return &discordgo.File{
-			Name:        fileName,
-			ContentType: responseImage.ContentType,
-			Reader:      bytes.NewReader(responseImage.Data),
+		if file := responseEmbedFileFromAsset(responseImage); file != nil {
+			return file
 		}
 	}
 
 	return nil
+}
+
+func responseEmbedFileFromAsset(responseImage responseImageAsset) *discordgo.File {
+	if len(responseImage.Data) == 0 {
+		return nil
+	}
+
+	fileName := responseEmbedFilename(responseImage.URL, responseImage.ContentType)
+	if fileName == "response-image" {
+		fileName += defaultResponseImageExtension(responseImage.ContentType)
+	}
+
+	return &discordgo.File{
+		Name:        fileName,
+		ContentType: responseImage.ContentType,
+		Reader:      bytes.NewReader(responseImage.Data),
+	}
 }
 
 func defaultResponseImageExtension(contentType string) string {
@@ -1262,53 +1286,21 @@ func (instance *bot) responseEmbedFile(
 	ctx context.Context,
 	imageURL string,
 ) (*discordgo.File, error) {
-	const responseEmbedImageMaxBytes = 20 * 1024 * 1024
-
-	if instance == nil || instance.httpClient == nil {
+	if instance == nil {
 		return nil, errResponseEmbedImageUnavailable
 	}
 
-	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodGet, imageURL, nil)
+	imageAsset, err := responseImageAssetFromURL(ctx, instance.httpClient, imageURL)
 	if err != nil {
-		return nil, fmt.Errorf("create response embed image request: %w", err)
+		return nil, err
 	}
 
-	httpResponse, err := instance.httpClient.Do(httpRequest)
-	if err != nil {
-		return nil, fmt.Errorf("fetch response embed image: %w", err)
+	file := responseEmbedFileFromAsset(imageAsset)
+	if file == nil {
+		return nil, errResponseEmbedImageUnavailable
 	}
 
-	defer func() {
-		_ = httpResponse.Body.Close()
-	}()
-
-	if httpResponse.StatusCode < http.StatusOK || httpResponse.StatusCode >= http.StatusMultipleChoices {
-		return nil, fmt.Errorf(
-			"fetch response embed image status %d: %w",
-			httpResponse.StatusCode,
-			os.ErrInvalid,
-		)
-	}
-
-	body, err := io.ReadAll(io.LimitReader(httpResponse.Body, responseEmbedImageMaxBytes+1))
-	if err != nil {
-		return nil, fmt.Errorf("read response embed image: %w", err)
-	}
-
-	if len(body) > responseEmbedImageMaxBytes {
-		return nil, fmt.Errorf("response embed image exceeds %d bytes: %w", responseEmbedImageMaxBytes, os.ErrInvalid)
-	}
-
-	contentType := strings.TrimSpace(httpResponse.Header.Get(contentTypeHeader))
-	if contentType == "" {
-		contentType = http.DetectContentType(body)
-	}
-
-	return &discordgo.File{
-		Name:        responseEmbedFilename(imageURL, contentType),
-		ContentType: contentType,
-		Reader:      bytes.NewReader(body),
-	}, nil
+	return file, nil
 }
 
 func responseEmbedFilename(imageURL string, contentType string) string {
@@ -1431,17 +1423,91 @@ func isResponseImageURL(rawURL string) bool {
 		return false
 	}
 
-	switch strings.ToLower(path.Ext(parsedURL.Path)) {
-	case fileExtensionPNG,
-		fileExtensionJPG,
-		fileExtensionJPEG,
-		fileExtensionWEBP,
-		fileExtensionGIF,
-		fileExtensionAVIF:
-		return true
-	default:
-		return false
+	return strings.TrimSpace(parsedURL.Host) != ""
+}
+
+func responseImageAssetFromURL(
+	ctx context.Context,
+	httpClient *http.Client,
+	imageURL string,
+) (responseImageAsset, error) {
+	contentType, body, err := responseImagePayload(ctx, httpClient, imageURL)
+	if err != nil {
+		return responseImageAsset{}, err
 	}
+
+	return responseImageAsset{
+		ID:          "",
+		URL:         imageURL,
+		ContentType: contentType,
+		Data:        body,
+	}, nil
+}
+
+func responseImagePayload(
+	ctx context.Context,
+	httpClient *http.Client,
+	imageURL string,
+) (string, []byte, error) {
+	const responseEmbedImageMaxBytes = 20 * 1024 * 1024
+
+	if httpClient == nil {
+		return "", nil, errResponseEmbedImageUnavailable
+	}
+
+	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodGet, imageURL, nil)
+	if err != nil {
+		return "", nil, fmt.Errorf("create response embed image request: %w", err)
+	}
+
+	httpRequest.Header.Set("Accept", "image/*")
+
+	httpResponse, err := httpClient.Do(httpRequest)
+	if err != nil {
+		return "", nil, fmt.Errorf("fetch response embed image: %w", err)
+	}
+
+	defer func() {
+		_ = httpResponse.Body.Close()
+	}()
+
+	if httpResponse.StatusCode < http.StatusOK || httpResponse.StatusCode >= http.StatusMultipleChoices {
+		return "", nil, fmt.Errorf(
+			"fetch response embed image status %d: %w",
+			httpResponse.StatusCode,
+			os.ErrInvalid,
+		)
+	}
+
+	body, err := io.ReadAll(io.LimitReader(httpResponse.Body, responseEmbedImageMaxBytes+1))
+	if err != nil {
+		return "", nil, fmt.Errorf("read response embed image: %w", err)
+	}
+
+	if len(body) > responseEmbedImageMaxBytes {
+		return "", nil, fmt.Errorf(
+			"response embed image exceeds %d bytes: %w",
+			responseEmbedImageMaxBytes,
+			os.ErrInvalid,
+		)
+	}
+
+	contentType := normalizedMIMEType(httpResponse.Header.Get(contentTypeHeader))
+	detectedContentType := normalizedMIMEType(http.DetectContentType(body))
+
+	switch {
+	case strings.HasPrefix(contentType, "image/"):
+	case strings.HasPrefix(detectedContentType, "image/"):
+		contentType = detectedContentType
+	default:
+		return "", nil, fmt.Errorf(
+			"response embed image content type %q: %w",
+			strings.TrimSpace(httpResponse.Header.Get(contentTypeHeader)),
+			os.ErrInvalid,
+		)
+	}
+
+	return contentType, body, nil
 }
 
 func contextWindowFooter(usage *tokenUsage, contextWindow int) string {

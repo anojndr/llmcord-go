@@ -21,6 +21,11 @@ type fakeChatCompletionClient struct {
 	deltas []streamDelta
 }
 
+const (
+	testResponseJPEGBytes        = "jpeg-bytes"
+	testGeneratedImageLabelBlock = "Result.\n\nGenerated image:"
+)
+
 func (client fakeChatCompletionClient) streamChatCompletion(
 	_ context.Context,
 	_ chatCompletionRequest,
@@ -476,7 +481,7 @@ func TestPrepareResponseEmbedFilesAttachesFinalGeneratedImage(t *testing.T) {
 		response.Status = httpStatusOKText
 		response.StatusCode = http.StatusOK
 		response.Header = http.Header{contentTypeHeader: []string{"image/jpeg"}}
-		response.Body = io.NopCloser(bytes.NewReader([]byte("jpeg-bytes")))
+		response.Body = io.NopCloser(bytes.NewReader([]byte(testResponseJPEGBytes)))
 		response.Request = request
 
 		return response, nil
@@ -497,7 +502,7 @@ func TestPrepareResponseEmbedFilesAttachesFinalGeneratedImage(t *testing.T) {
 			ID:          testXAIImageOutputID,
 			URL:         testXAIImageURL,
 			ContentType: "image/jpeg",
-			Data:        []byte("jpeg-bytes"),
+			Data:        []byte(testResponseJPEGBytes),
 		}},
 		true,
 	)
@@ -514,16 +519,121 @@ func TestPrepareResponseEmbedFilesAttachesFinalGeneratedImage(t *testing.T) {
 		t.Fatalf("read embed file: %v", err)
 	}
 
-	if string(fileBytes) != "jpeg-bytes" {
+	if string(fileBytes) != testResponseJPEGBytes {
 		t.Fatalf("unexpected embed file bytes: %q", string(fileBytes))
 	}
 
-	if embed.Description != "Result.\n\nGenerated image:" {
+	if embed.Description != testGeneratedImageLabelBlock {
 		t.Fatalf("unexpected embed description after attachment prep: %q", embed.Description)
 	}
 
 	if embed.Image == nil || embed.Image.URL != "attachment://response-image.jpg" {
 		t.Fatalf("unexpected embed image after attachment prep: %#v", embed.Image)
+	}
+}
+
+func TestPrepareResponseEmbedFilesAttachesFinalGeneratedImageWithoutURLExtension(t *testing.T) {
+	t.Parallel()
+
+	const imageURL = "https://assets.grok.com/generated/image"
+
+	instance := new(bot)
+	instance.httpClient = new(http.Client)
+	instance.httpClient.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		t.Helper()
+
+		if request.Method != http.MethodGet || request.URL.String() != imageURL {
+			t.Fatalf("unexpected image request: %s %s", request.Method, request.URL.String())
+		}
+
+		response := new(http.Response)
+		response.Status = httpStatusOKText
+		response.StatusCode = http.StatusOK
+		response.Header = http.Header{contentTypeHeader: []string{"image/jpeg"}}
+		response.Body = io.NopCloser(bytes.NewReader([]byte(testResponseJPEGBytes)))
+		response.Request = request
+
+		return response, nil
+	})
+
+	embed := buildResponseEmbed(
+		testGeneratedImageLabelBlock+"\n"+imageURL,
+		"x-ai/grok-4",
+		embedColorComplete,
+		nil,
+		"",
+	)
+
+	files := instance.prepareResponseEmbedFiles(
+		context.Background(),
+		embed,
+		nil,
+		true,
+	)
+	if len(files) != 1 {
+		t.Fatalf("unexpected embed file count: %#v", files)
+	}
+
+	expectedFileName := responseEmbedFilename(imageURL, mimeTypeJPEG)
+	if files[0].Name != expectedFileName {
+		t.Fatalf("unexpected embed filename: %#v", files[0])
+	}
+
+	if embed.Description != testGeneratedImageLabelBlock {
+		t.Fatalf("unexpected embed description after attachment prep: %q", embed.Description)
+	}
+
+	if embed.Image == nil || embed.Image.URL != "attachment://"+expectedFileName {
+		t.Fatalf("unexpected embed image after attachment prep: %#v", embed.Image)
+	}
+}
+
+func TestPrepareResponseEmbedFilesFallsBackToExternalImageURLWhenDownloadFails(t *testing.T) {
+	t.Parallel()
+
+	instance := new(bot)
+	instance.httpClient = new(http.Client)
+	instance.httpClient.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		t.Helper()
+
+		if request.Method != http.MethodGet || request.URL.String() != testXAIImageURL {
+			t.Fatalf("unexpected image request: %s %s", request.Method, request.URL.String())
+		}
+
+		response := new(http.Response)
+		response.Status = http.StatusText(http.StatusForbidden)
+		response.StatusCode = http.StatusForbidden
+		response.Header = make(http.Header)
+		response.Body = io.NopCloser(bytes.NewReader(nil))
+		response.Request = request
+
+		return response, nil
+	})
+
+	embed := buildResponseEmbed(
+		"Result.\n\nGenerated image:\n"+testXAIImageURL,
+		"x-ai/grok-4",
+		embedColorComplete,
+		nil,
+		"",
+	)
+
+	files := instance.prepareResponseEmbedFiles(
+		context.Background(),
+		embed,
+		nil,
+		true,
+	)
+	if len(files) != 0 {
+		t.Fatalf("unexpected embed file count: %#v", files)
+	}
+
+	if embed.Description != testGeneratedImageLabelBlock {
+		t.Fatalf("unexpected embed description after external image fallback: %q", embed.Description)
+	}
+
+	if embed.Image == nil || embed.Image.URL != testXAIImageURL {
+		t.Fatalf("unexpected embed image after external image fallback: %#v", embed.Image)
 	}
 }
 
@@ -573,7 +683,7 @@ func TestEditEmbedMessageUploadsGeneratedImageAttachmentOnFinalRender(t *testing
 		response.Status = httpStatusOKText
 		response.StatusCode = http.StatusOK
 		response.Header = http.Header{contentTypeHeader: []string{"image/jpeg"}}
-		response.Body = io.NopCloser(bytes.NewReader([]byte("jpeg-bytes")))
+		response.Body = io.NopCloser(bytes.NewReader([]byte(testResponseJPEGBytes)))
 		response.Request = request
 
 		return response, nil
@@ -600,7 +710,7 @@ func TestEditEmbedMessageUploadsGeneratedImageAttachmentOnFinalRender(t *testing
 			ID:          testXAIImageOutputID,
 			URL:         testXAIImageURL,
 			ContentType: "image/jpeg",
-			Data:        []byte("jpeg-bytes"),
+			Data:        []byte(testResponseJPEGBytes),
 		}},
 		true,
 	)
@@ -1699,7 +1809,7 @@ func assertMultipartEmbedImageFile(t *testing.T, fileName string, partBody []byt
 		t.Fatalf("unexpected attachment filename: %q", fileName)
 	}
 
-	if string(partBody) != "jpeg-bytes" {
+	if string(partBody) != testResponseJPEGBytes {
 		t.Fatalf("unexpected attachment body: %q", string(partBody))
 	}
 }

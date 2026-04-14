@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"maps"
 	"net/http"
 	"net/url"
@@ -295,17 +297,12 @@ func (client openAIClient) streamResponses(
 		)
 	}
 
-	terminalEventSeen := false
-	streamState := newXAIResponsesStreamState()
-
-	_, err = consumeServerSentEvents(httpResponse.Body, func(payload []byte) error {
-		terminal, payloadErr := handleXAIResponsesStreamPayload(payload, handle, streamState)
-		if terminal {
-			terminalEventSeen = true
-		}
-
-		return payloadErr
-	})
+	terminalEventSeen, err := client.consumeXAIResponsesStream(
+		ctx,
+		httpResponse.Body,
+		request.Provider,
+		handle,
+	)
 	if err != nil {
 		return fmt.Errorf("consume xAI responses stream: %w", err)
 	}
@@ -318,6 +315,37 @@ func (client openAIClient) streamResponses(
 	}
 
 	return nil
+}
+
+func (client openAIClient) consumeXAIResponsesStream(
+	ctx context.Context,
+	stream io.Reader,
+	provider providerRequestConfig,
+	handle func(streamDelta) error,
+) (bool, error) {
+	terminalEventSeen := false
+	streamState := newXAIResponsesStreamState()
+
+	_, err := consumeServerSentEvents(stream, func(payload []byte) error {
+		terminal, payloadErr := handleXAIResponsesStreamPayload(
+			ctx,
+			payload,
+			handle,
+			streamState,
+			client.httpClient,
+			provider,
+		)
+		if terminal {
+			terminalEventSeen = true
+		}
+
+		return payloadErr
+	})
+	if err != nil {
+		return false, err
+	}
+
+	return terminalEventSeen, nil
 }
 
 func buildXAIResponsesRequestBody(request chatCompletionRequest) (map[string]any, error) {
@@ -565,6 +593,28 @@ func buildXAIResponsesURL(baseURL string, extraQuery map[string]any) (string, er
 	return parsedURL.String(), nil
 }
 
+func buildXAIResponseRetrieveURL(
+	baseURL string,
+	responseID string,
+	extraQuery map[string]any,
+) (string, error) {
+	parsedURL, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil {
+		return "", fmt.Errorf("parse xAI base url %q: %w", baseURL, err)
+	}
+
+	parsedURL.Path = path.Join(parsedURL.Path, "responses", responseID)
+
+	queryValues := parsedURL.Query()
+	for key, value := range extraQuery {
+		queryValues.Set(key, stringifyValue(value))
+	}
+
+	parsedURL.RawQuery = queryValues.Encode()
+
+	return parsedURL.String(), nil
+}
+
 func xAIBaseURLUsesOfficialAPI(baseURL string) bool {
 	parsedURL, err := url.Parse(strings.TrimSpace(baseURL))
 	if err != nil {
@@ -608,13 +658,38 @@ func defaultXAIBridgeSourceAttributionRequest() map[string]any {
 }
 
 func handleXAIResponsesStreamPayload(
+	ctx context.Context,
 	payload []byte,
 	handle func(streamDelta) error,
 	state *xAIResponsesStreamState,
+	httpClient *http.Client,
+	provider providerRequestConfig,
 ) (bool, error) {
 	delta, terminal, err := xAIResponsesStreamPayloadDelta(payload, state)
 	if err != nil {
 		return terminal, err
+	}
+
+	if strings.TrimSpace(delta.ProviderResponseID) != "" &&
+		responseImageAssetsMissingData(delta.ResponseImages) {
+		hydratedImages, hydrateErr := hydrateXAIMissingResponseImageAssets(
+			ctx,
+			httpClient,
+			provider,
+			delta.ProviderResponseID,
+			delta.ResponseImages,
+		)
+		if hydrateErr != nil {
+			slog.Warn(
+				"hydrate xAI response images",
+				"response_id",
+				delta.ProviderResponseID,
+				"error",
+				hydrateErr,
+			)
+		} else {
+			delta.ResponseImages = hydratedImages
+		}
 	}
 
 	if delta.Content == "" &&
@@ -631,6 +706,25 @@ func handleXAIResponsesStreamPayload(
 	}
 
 	return terminal, nil
+}
+
+func hydrateXAIMissingResponseImageAssets(
+	ctx context.Context,
+	httpClient *http.Client,
+	provider providerRequestConfig,
+	responseID string,
+	images []responseImageAsset,
+) ([]responseImageAsset, error) {
+	if !responseImageAssetsMissingData(images) {
+		return cloneResponseImageAssets(images), nil
+	}
+
+	response, err := retrieveXAIResponseForAttempts(ctx, httpClient, provider, responseID)
+	if err != nil {
+		return cloneResponseImageAssets(images), err
+	}
+
+	return mergeResponseImageAssets(images, xAIResponsesOutputImages(response.Output)), nil
 }
 
 func newXAIResponsesStreamState() *xAIResponsesStreamState {
@@ -881,6 +975,20 @@ func xAIResponsesOutputImages(items []xAIResponsesOutputItem) []responseImageAss
 	return images
 }
 
+func responseImageAssetsMissingData(images []responseImageAsset) bool {
+	for _, image := range images {
+		if strings.TrimSpace(image.URL) == "" {
+			continue
+		}
+
+		if len(image.Data) == 0 {
+			return true
+		}
+	}
+
+	return false
+}
+
 func xAIResponsesOutputImageAssets(item *xAIResponsesOutputItem) []responseImageAsset {
 	if item == nil {
 		return nil
@@ -915,6 +1023,106 @@ func xAIResponsesOutputImageBytes(encoded string) []byte {
 	}
 
 	return imageBytes
+}
+
+func retrieveXAIResponseForAttempts(
+	ctx context.Context,
+	httpClient *http.Client,
+	provider providerRequestConfig,
+	responseID string,
+) (xAIResponsesStreamResponse, error) {
+	apiKeys := provider.apiKeysForAttempts()
+	attemptErrors := make([]error, 0, len(apiKeys))
+
+	for _, apiKey := range apiKeys {
+		keyedProvider := provider.withSingleAPIKey(apiKey)
+
+		response, err := retrieveXAIResponse(ctx, httpClient, keyedProvider, responseID)
+		if err == nil {
+			return response, nil
+		}
+
+		attemptErrors = append(attemptErrors, err)
+	}
+
+	if len(attemptErrors) == 1 {
+		return xAIResponsesStreamResponse{}, attemptErrors[0]
+	}
+
+	return xAIResponsesStreamResponse{}, fmt.Errorf(
+		"retrieve xAI response with all configured API keys: %w",
+		errors.Join(attemptErrors...),
+	)
+}
+
+func retrieveXAIResponse(
+	ctx context.Context,
+	httpClient *http.Client,
+	provider providerRequestConfig,
+	responseID string,
+) (xAIResponsesStreamResponse, error) {
+	var responsePayload xAIResponsesStreamResponse
+
+	if httpClient == nil {
+		return responsePayload, errResponseEmbedImageUnavailable
+	}
+
+	requestURL, err := buildXAIResponseRetrieveURL(
+		provider.BaseURL,
+		responseID,
+		provider.ExtraQuery,
+	)
+	if err != nil {
+		return responsePayload, fmt.Errorf("build xAI response retrieve url: %w", err)
+	}
+
+	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
+	if err != nil {
+		return responsePayload, fmt.Errorf("create xAI response retrieve request: %w", err)
+	}
+
+	httpRequest.Header.Set("Accept", "application/json")
+	httpRequest.Header.Set("Authorization", "Bearer "+openAIAPIKey(provider.primaryAPIKey()))
+
+	for key, value := range provider.ExtraHeaders {
+		httpRequest.Header.Set(key, stringifyValue(value))
+	}
+
+	httpResponse, err := httpClient.Do(httpRequest)
+	if err != nil {
+		return responsePayload, fmt.Errorf("send xAI response retrieve request: %w", err)
+	}
+
+	defer func() {
+		_ = httpResponse.Body.Close()
+	}()
+
+	if httpResponse.StatusCode < http.StatusOK || httpResponse.StatusCode >= http.StatusMultipleChoices {
+		responseBody, readErr := io.ReadAll(httpResponse.Body)
+		if readErr != nil {
+			return responsePayload, fmt.Errorf(
+				"read xAI response retrieve error response after status %d: %w",
+				httpResponse.StatusCode,
+				readErr,
+			)
+		}
+
+		return responsePayload, newOpenAIProviderStatusError(
+			"xAI response retrieve failed",
+			httpResponse.StatusCode,
+			httpResponse.Status,
+			httpResponse.Header.Clone(),
+			responseBody,
+			false,
+		)
+	}
+
+	err = json.NewDecoder(httpResponse.Body).Decode(&responsePayload)
+	if err != nil {
+		return responsePayload, fmt.Errorf("decode xAI response retrieve payload: %w", err)
+	}
+
+	return responsePayload, nil
 }
 
 func xAIResponsesOutputItemLabel(action string) string {
