@@ -31,6 +31,7 @@ It also works with local backends such as Ollama, LM Studio, and vLLM.
 
 Behavior notes:
 - xAI-compatible providers can continue server-side conversations with stored `previous_response_id` values when the model matches.
+- xAI image-generation replies rehydrate image bytes from the stored Responses API result when possible, then upload them as a Discord embed attachment; if the remote asset still cannot be downloaded, the bot falls back to an image embed URL instead of leaving a raw URL in the embed body.
 - When an xAI model is selected, non-Facebook, non-YouTube Shorts URLs stay provider-side instead of running the bot's URL fetchers first.
 - OpenAI Codex providers derive a stable conversation cache key from the reply-chain anchor message.
 - Empty prompts such as a bare `at ai` or an empty follow-up turn are sent upstream as `.` so providers still receive an explicit user input.
