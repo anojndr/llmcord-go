@@ -77,11 +77,11 @@ func assertStreamingRequest(t *testing.T, request *http.Request) {
 		t.Fatalf("unexpected path: %s", request.URL.Path)
 	}
 
-	if request.URL.Query().Get("api-version") != "2024-12-01-preview" {
+	if request.URL.Query().Get("api-version") != testXAIAPIVersion {
 		t.Fatalf("unexpected query string: %s", request.URL.RawQuery)
 	}
 
-	if request.Header.Get("Authorization") != "Bearer test-key" {
+	if request.Header.Get("Authorization") != testXAIAuthHeader {
 		t.Fatalf("unexpected authorization header: %q", request.Header.Get("Authorization"))
 	}
 
@@ -149,7 +149,7 @@ func TestOpenAIClientStreamChatCompletion(t *testing.T) {
 				"X-Test": "present",
 			},
 			ExtraQuery: map[string]any{
-				"api-version": "2024-12-01-preview",
+				"api-version": testXAIAPIVersion,
 			},
 			ExtraBody: map[string]any{
 				"temperature": 0.2,
