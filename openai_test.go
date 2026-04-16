@@ -12,7 +12,14 @@ import (
 	"testing"
 )
 
-const testOpenAIDegradedFunctionID = "degraded-function-id"
+const (
+	testOpenAIDegradedFunctionID    = "degraded-function-id"
+	testOpenAIClientRequestID       = "discord-message-1"
+	testOpenAIResponsesPath         = "/v1/responses"
+	testOpenAIResponsesResponseID   = "resp_test_123"
+	testOpenAIResponsesSystemPrompt = "You are concise."
+	testOpenAIResponsesVisionPrompt = "What is in this image?"
+)
 
 type openAIRequestBodyCapture struct {
 	mutex         sync.Mutex
@@ -85,7 +92,7 @@ func assertStreamingRequest(t *testing.T, request *http.Request) {
 		t.Fatalf("unexpected authorization header: %q", request.Header.Get("Authorization"))
 	}
 
-	if request.Header.Get("X-Test") != "present" {
+	if request.Header.Get("X-Test") != testHeaderPresent {
 		t.Fatalf("unexpected extra header: %q", request.Header.Get("X-Test"))
 	}
 
@@ -146,7 +153,7 @@ func TestOpenAIClientStreamChatCompletion(t *testing.T) {
 			APIKeys:         nil,
 			UseResponsesAPI: false,
 			ExtraHeaders: map[string]any{
-				"X-Test": "present",
+				"X-Test": testHeaderPresent,
 			},
 			ExtraQuery: map[string]any{
 				"api-version": testXAIAPIVersion,
@@ -161,6 +168,7 @@ func TestOpenAIClientStreamChatCompletion(t *testing.T) {
 		AutoCompactThresholdPercent: 0,
 		SessionID:                   "",
 		PreviousResponseID:          "",
+		RequestID:                   "",
 		Messages: []chatMessage{
 			{Role: "user", Content: "hello"},
 		},
@@ -222,13 +230,14 @@ func TestBuildChatCompletionRequestBodyAddsPlaceholderForImageOnlyUserMessage(t 
 		AutoCompactThresholdPercent: 0,
 		SessionID:                   "",
 		PreviousResponseID:          "",
+		RequestID:                   "",
 		Messages: []chatMessage{{
 			Role: messageRoleUser,
 			Content: []contentPart{
 				{"type": contentTypeText, "text": ""},
 				{
 					"type":      contentTypeImageURL,
-					"image_url": map[string]string{"url": "data:image/png;base64,abc"},
+					"image_url": map[string]string{"url": testOpenAICodexImageURL},
 				},
 			},
 		}},
@@ -276,6 +285,7 @@ func TestBuildChatCompletionRequestBodyAddsPlaceholderForDocumentOnlyUserMessage
 		AutoCompactThresholdPercent: 0,
 		SessionID:                   "",
 		PreviousResponseID:          "",
+		RequestID:                   "",
 		Messages: []chatMessage{{
 			Role: messageRoleUser,
 			Content: []contentPart{
@@ -331,6 +341,7 @@ func TestBuildChatCompletionRequestBodyAddsPlaceholderForFileOnlyUserMessage(t *
 		AutoCompactThresholdPercent: 0,
 		SessionID:                   "",
 		PreviousResponseID:          "",
+		RequestID:                   "",
 		Messages: []chatMessage{{
 			Role: messageRoleUser,
 			Content: []contentPart{
@@ -392,6 +403,7 @@ func TestOpenAIClientRetriesWithoutStreamingUsageWhenProviderRejectsIt(t *testin
 		AutoCompactThresholdPercent: 0,
 		SessionID:                   "",
 		PreviousResponseID:          "",
+		RequestID:                   "",
 		Messages:                    []chatMessage{{Role: "user", Content: "hello"}},
 	}
 
@@ -532,6 +544,7 @@ func TestOpenAIClientStreamChatCompletionReturnsStatusErrors(t *testing.T) {
 		AutoCompactThresholdPercent: 0,
 		SessionID:                   "",
 		PreviousResponseID:          "",
+		RequestID:                   "",
 		Messages:                    []chatMessage{{Role: "user", Content: "hello"}},
 	}
 
@@ -583,6 +596,7 @@ func TestOpenAIClientStreamChatCompletionParsesJSONStatusErrors(t *testing.T) {
 		AutoCompactThresholdPercent: 0,
 		SessionID:                   "",
 		PreviousResponseID:          "",
+		RequestID:                   "",
 		Messages:                    []chatMessage{{Role: "user", Content: "hello"}},
 	}
 
@@ -640,6 +654,7 @@ func TestOpenAIClientStreamChatCompletionReturnsStreamEventErrors(t *testing.T) 
 		AutoCompactThresholdPercent: 0,
 		SessionID:                   "",
 		PreviousResponseID:          "",
+		RequestID:                   "",
 		Messages:                    []chatMessage{{Role: "user", Content: "hello"}},
 	}
 
@@ -691,6 +706,7 @@ func TestOpenAIClientStreamChatCompletionReturnsBlockedFinishReasonErrors(t *tes
 		AutoCompactThresholdPercent: 0,
 		SessionID:                   "",
 		PreviousResponseID:          "",
+		RequestID:                   "",
 		Messages:                    []chatMessage{{Role: "user", Content: "hello"}},
 	}
 
@@ -740,6 +756,7 @@ func TestOpenAIClientStreamChatCompletionReturnsErrorWithoutDoneMarker(t *testin
 		AutoCompactThresholdPercent: 0,
 		SessionID:                   "",
 		PreviousResponseID:          "",
+		RequestID:                   "",
 		Messages:                    []chatMessage{{Role: "user", Content: "hello"}},
 	}
 
@@ -857,6 +874,7 @@ func newOpenAIDegradedFunctionRetryRequest(baseURL string) chatCompletionRequest
 		AutoCompactThresholdPercent: 0,
 		SessionID:                   "",
 		PreviousResponseID:          "",
+		RequestID:                   "",
 		Messages:                    []chatMessage{{Role: messageRoleUser, Content: "hello"}},
 	}
 }
@@ -1050,4 +1068,298 @@ func openAIRequestFunctionIDs(t *testing.T, requestBody map[string]any) []string
 	}
 
 	return functionIDs
+}
+
+func TestOpenAIClientStreamResponses(t *testing.T) {
+	t.Parallel()
+
+	server := newOpenAIResponsesStreamingTestServer(t)
+	defer server.Close()
+
+	client := newOpenAIClient(server.Client())
+	request := chatCompletionRequest{
+		Provider: providerRequestConfig{
+			APIKind:         providerAPIKindOpenAI,
+			BaseURL:         server.URL + "/v1",
+			APIKey:          "test-key",
+			APIKeys:         nil,
+			UseResponsesAPI: true,
+			ExtraHeaders: map[string]any{
+				"X-Test": testHeaderPresent,
+			},
+			ExtraQuery: nil,
+			ExtraBody:  nil,
+		},
+		Model:                       "gpt-5",
+		ConfiguredModel:             "openai/gpt-5",
+		ContextWindow:               0,
+		AutoCompactThresholdPercent: 0,
+		SessionID:                   "",
+		PreviousResponseID:          "",
+		RequestID:                   testOpenAIClientRequestID,
+		Messages: []chatMessage{
+			{Role: openAICodexRoleSystem, Content: testOpenAIResponsesSystemPrompt},
+			{
+				Role: messageRoleUser,
+				Content: []contentPart{
+					{"type": contentTypeText, "text": testOpenAIResponsesVisionPrompt},
+					{"type": contentTypeImageURL, "image_url": map[string]string{"url": testOpenAICodexImageURL}},
+				},
+			},
+		},
+	}
+
+	var (
+		joinedContent      strings.Builder
+		finishReason       string
+		usage              *tokenUsage
+		providerResponseID string
+	)
+
+	err := client.streamChatCompletion(context.Background(), request, func(delta streamDelta) error {
+		joinedContent.WriteString(delta.Content)
+
+		if delta.Usage != nil {
+			usage = cloneTokenUsage(delta.Usage)
+		}
+
+		if delta.FinishReason != "" {
+			finishReason = delta.FinishReason
+		}
+
+		if delta.ProviderResponseID != "" {
+			providerResponseID = delta.ProviderResponseID
+		}
+
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("stream responses completion: %v", err)
+	}
+
+	if joinedContent.String() != testStreamedHelloText {
+		t.Fatalf("unexpected streamed content: %q", joinedContent.String())
+	}
+
+	if finishReason != finishReasonStop {
+		t.Fatalf("unexpected finish reason: %q", finishReason)
+	}
+
+	if usage == nil || usage.Input != 12 || usage.Output != 34 {
+		t.Fatalf("unexpected usage: %#v", usage)
+	}
+
+	if providerResponseID != testOpenAIResponsesResponseID {
+		t.Fatalf("unexpected provider response id: %q", providerResponseID)
+	}
+}
+
+func TestSetOpenAIClientRequestIDHeaderUsesOfficialAPIOnly(t *testing.T) {
+	t.Parallel()
+
+	officialRequest, err := http.NewRequestWithContext(
+		context.Background(),
+		http.MethodPost,
+		"https://api.openai.com/v1/responses",
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("create official request: %v", err)
+	}
+
+	setOpenAIClientRequestIDHeader(officialRequest, newOpenAIClientRequestIDTestRequest("https://api.openai.com/v1"))
+
+	if got := officialRequest.Header.Get(openAIClientRequestIDHeader); got != testOpenAIClientRequestID {
+		t.Fatalf("unexpected official request id header: %q", got)
+	}
+
+	compatRequest, err := http.NewRequestWithContext(
+		context.Background(),
+		http.MethodPost,
+		"https://api.example.com/v1/chat/completions",
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("create compatibility request: %v", err)
+	}
+
+	setOpenAIClientRequestIDHeader(compatRequest, newOpenAIClientRequestIDTestRequest("https://api.example.com/v1"))
+
+	if got := compatRequest.Header.Get(openAIClientRequestIDHeader); got != "" {
+		t.Fatalf("unexpected compatibility request id header: %q", got)
+	}
+}
+
+func newOpenAIClientRequestIDTestRequest(baseURL string) chatCompletionRequest {
+	return chatCompletionRequest{
+		Provider: providerRequestConfig{
+			APIKind:         providerAPIKindOpenAI,
+			BaseURL:         baseURL,
+			APIKey:          "",
+			APIKeys:         nil,
+			UseResponsesAPI: false,
+			ExtraHeaders:    nil,
+			ExtraQuery:      nil,
+			ExtraBody:       nil,
+		},
+		Model:                       "",
+		ConfiguredModel:             "",
+		ContextWindow:               0,
+		AutoCompactThresholdPercent: 0,
+		SessionID:                   "",
+		PreviousResponseID:          "",
+		RequestID:                   testOpenAIClientRequestID,
+		Messages:                    nil,
+	}
+}
+
+func newOpenAIResponsesStreamingTestServer(t *testing.T) *httptest.Server {
+	t.Helper()
+
+	return httptest.NewServer(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		request *http.Request,
+	) {
+		t.Helper()
+
+		assertOpenAIResponsesRequest(t, request)
+
+		responseWriter.Header().Set("Content-Type", "text/event-stream")
+
+		flusher, ok := responseWriter.(http.Flusher)
+		if !ok {
+			t.Fatal("expected response writer to support flushing")
+		}
+
+		writeStreamChunk(
+			t,
+			responseWriter,
+			"data: {\"type\":\"response.output_text.delta\",\"delta\":\"Hel\"}\n\n",
+		)
+		flusher.Flush()
+		writeStreamChunk(
+			t,
+			responseWriter,
+			"data: {\"type\":\"response.output_text.delta\",\"delta\":\"lo\"}\n\n",
+		)
+		flusher.Flush()
+		writeStreamChunk(
+			t,
+			responseWriter,
+			openAIResponsesCompletedChunk(),
+		)
+		flusher.Flush()
+		writeStreamChunk(t, responseWriter, "data: [DONE]\n\n")
+		flusher.Flush()
+	}))
+}
+
+func openAIResponsesCompletedChunk() string {
+	return "data: {\"type\":\"response.completed\",\"response\":{" +
+		"\"id\":\"" + testOpenAIResponsesResponseID + "\"," +
+		"\"status\":\"completed\"," +
+		"\"usage\":{\"input_tokens\":12,\"output_tokens\":34}}}\n\n"
+}
+
+func assertOpenAIResponsesRequest(t *testing.T, request *http.Request) {
+	t.Helper()
+
+	assertOpenAIResponsesRequestHeaders(t, request)
+	payload := decodeOpenAIRequestBody(t, request)
+	assertOpenAIResponsesRequestPayload(t, payload)
+}
+
+func assertOpenAIResponsesRequestHeaders(t *testing.T, request *http.Request) {
+	t.Helper()
+
+	if request.URL.Path != testOpenAIResponsesPath {
+		t.Fatalf("unexpected path: %s", request.URL.Path)
+	}
+
+	if request.Header.Get("Authorization") != "Bearer test-key" {
+		t.Fatalf("unexpected authorization header: %q", request.Header.Get("Authorization"))
+	}
+
+	if request.Header.Get("X-Test") != testHeaderPresent {
+		t.Fatalf("unexpected extra header: %q", request.Header.Get("X-Test"))
+	}
+}
+
+func assertOpenAIResponsesRequestPayload(t *testing.T, payload map[string]any) {
+	t.Helper()
+
+	if payload["model"] != "gpt-5" {
+		t.Fatalf("unexpected model: %#v", payload["model"])
+	}
+
+	if payload["stream"] != true {
+		t.Fatalf("unexpected stream flag: %#v", payload["stream"])
+	}
+
+	if _, exists := payload["source_attribution"]; exists {
+		t.Fatalf("did not expect xAI-only source attribution: %#v", payload["source_attribution"])
+	}
+
+	inputPayload, inputOK := payload["input"].([]any)
+	if !inputOK || len(inputPayload) != 2 {
+		t.Fatalf("unexpected input payload: %#v", payload["input"])
+	}
+
+	assertOpenAIResponsesSystemMessage(t, inputPayload[0])
+	assertOpenAIResponsesUserMessage(t, inputPayload[1])
+}
+
+func assertOpenAIResponsesSystemMessage(t *testing.T, rawMessage any) {
+	t.Helper()
+
+	systemMessage, systemOK := rawMessage.(map[string]any)
+	if !systemOK {
+		t.Fatalf("unexpected system message payload: %#v", rawMessage)
+	}
+
+	if systemMessage["role"] != openAICodexRoleSystem ||
+		systemMessage["content"] != testOpenAIResponsesSystemPrompt {
+		t.Fatalf("unexpected system message: %#v", systemMessage)
+	}
+}
+
+func assertOpenAIResponsesUserMessage(t *testing.T, rawMessage any) {
+	t.Helper()
+
+	userMessage, userOK := rawMessage.(map[string]any)
+	if !userOK {
+		t.Fatalf("unexpected user message payload: %#v", rawMessage)
+	}
+
+	userContent, contentOK := userMessage["content"].([]any)
+	if !contentOK || len(userContent) != 2 {
+		t.Fatalf("unexpected user content payload: %#v", userMessage["content"])
+	}
+
+	firstPart, firstPartOK := userContent[0].(map[string]any)
+	if !firstPartOK {
+		t.Fatalf("unexpected first user content part: %#v", userContent[0])
+	}
+
+	if firstPart["type"] != xAIResponsesInputTextType ||
+		firstPart["text"] != testOpenAIResponsesVisionPrompt {
+		t.Fatalf("unexpected first user content part: %#v", firstPart)
+	}
+
+	secondPart, secondPartOK := userContent[1].(map[string]any)
+	if !secondPartOK {
+		t.Fatalf("unexpected second user content part: %#v", userContent[1])
+	}
+
+	if secondPart["type"] != xAIResponsesInputImageType {
+		t.Fatalf("unexpected second user content part: %#v", secondPart)
+	}
+
+	if secondPart["image_url"] != testOpenAICodexImageURL {
+		t.Fatalf("unexpected image_url: %#v", secondPart["image_url"])
+	}
+
+	if secondPart["detail"] != xAIResponsesImageDetailAuto {
+		t.Fatalf("unexpected image detail: %#v", secondPart["detail"])
+	}
 }

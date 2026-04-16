@@ -88,10 +88,13 @@ const (
 	attachmentRetryBaseDelay             = 100 * time.Millisecond
 	geminiFilePollInterval               = 500 * time.Millisecond
 	geminiFileProcessingTimeout          = 2 * time.Minute
+	geminiInlineImageByteLimit           = 4 * 1024 * 1024
 	openRouterHost                       = "openrouter.ai"
+	openAIOfficialAPIHost                = "api.openai.com"
 	openRouterTransformsField            = "transforms"
 	openRouterMiddleOutTransform         = "middle-out"
 	searchDeciderTimeout                 = 30 * time.Second
+	chatCompletionTimeout                = 5 * time.Minute
 	facebookRequestTimeout               = 30 * time.Second
 	tikTokRenderPollInterval             = 500 * time.Millisecond
 	tikTokRenderTimeout                  = 2 * time.Minute

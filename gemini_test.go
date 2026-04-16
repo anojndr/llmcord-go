@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"io"
 	"iter"
 	"net/http"
@@ -17,6 +19,8 @@ const (
 	testHeaderPresent     = "present"
 	testGeminiHelloPrompt = "hello"
 	testGeminiDocumentURI = "https://example.com/files/document"
+	testGeminiImagePrompt = "What is in this image?"
+	testGeminiMediaURI    = "https://example.com/files/audio"
 )
 
 type stubGeminiAPIClient struct {
@@ -128,12 +132,45 @@ func TestBuildGeminiGenerateContentRequestAddsPlaceholderForImageOnlyUserMessage
 		t.Fatalf("unexpected gemini contents: %#v", contents)
 	}
 
-	if contents[0].Parts[0].Text != fileOrImageOnlyQueryPlaceholder {
-		t.Fatalf("unexpected placeholder text part: %#v", contents[0].Parts[0])
+	if contents[0].Parts[0].InlineData == nil {
+		t.Fatalf("expected inline image data first: %#v", contents[0].Parts[0])
 	}
 
-	if contents[0].Parts[1].InlineData == nil {
-		t.Fatal("expected inline image data")
+	if contents[0].Parts[1].Text != fileOrImageOnlyQueryPlaceholder {
+		t.Fatalf("unexpected placeholder text part: %#v", contents[0].Parts[1])
+	}
+}
+
+func TestBuildGeminiGenerateContentRequestPlacesSingleImageBeforePrompt(t *testing.T) {
+	t.Parallel()
+
+	request := newSimpleGeminiStreamRequest()
+	request.Messages = []chatMessage{{
+		Role: messageRoleUser,
+		Content: []contentPart{
+			{"type": contentTypeText, "text": testGeminiImagePrompt},
+			{
+				"type":      contentTypeImageURL,
+				"image_url": map[string]string{"url": "data:image/png;base64,aGVsbG8="},
+			},
+		},
+	}}
+
+	contents, _, err := buildGeminiGenerateContentRequest(context.Background(), request, nil)
+	if err != nil {
+		t.Fatalf("build gemini generate content request: %v", err)
+	}
+
+	if len(contents) != 1 || len(contents[0].Parts) != 2 {
+		t.Fatalf("unexpected gemini contents: %#v", contents)
+	}
+
+	if contents[0].Parts[0].InlineData == nil {
+		t.Fatalf("expected image part first: %#v", contents[0].Parts[0])
+	}
+
+	if contents[0].Parts[1].Text != testGeminiImagePrompt {
+		t.Fatalf("expected prompt after image: %#v", contents[0].Parts[1])
 	}
 }
 
@@ -171,6 +208,57 @@ func TestBuildGeminiGenerateContentRequestAddsPlaceholderForDocumentOnlyUserMess
 
 	if contents[0].Parts[1].FileData == nil || contents[0].Parts[1].FileData.FileURI != testGeminiDocumentURI {
 		t.Fatalf("expected uploaded document file part: %#v", contents[0].Parts[1])
+	}
+}
+
+func TestBuildGeminiGenerateContentRequestUploadsLargeImages(t *testing.T) {
+	t.Parallel()
+
+	state := new(geminiUploadState)
+	files := newGeminiMediaUploadStub(t, state)
+	request := newSimpleGeminiStreamRequest()
+
+	largeImage := bytes.Repeat([]byte("a"), geminiInlineImageByteLimit+1)
+	request.Messages = []chatMessage{{
+		Role: messageRoleUser,
+		Content: []contentPart{
+			{"type": contentTypeText, "text": "Summarize this image."},
+			{
+				"type": contentTypeImageURL,
+				"image_url": map[string]string{
+					"url": "data:image/png;base64," + base64.StdEncoding.EncodeToString(largeImage),
+				},
+			},
+		},
+	}}
+
+	contents, _, err := buildGeminiGenerateContentRequest(context.Background(), request, files)
+	if err != nil {
+		t.Fatalf("build gemini generate content request: %v", err)
+	}
+
+	if len(state.calls) != 1 {
+		t.Fatalf("unexpected upload calls: %#v", state.calls)
+	}
+
+	if state.calls[0].mimeType != mimeTypePNG {
+		t.Fatalf("unexpected uploaded MIME type: %#v", state.calls[0].mimeType)
+	}
+
+	if !bytes.Equal(state.calls[0].body, largeImage) {
+		t.Fatal("unexpected uploaded image bytes")
+	}
+
+	if len(contents) != 1 || len(contents[0].Parts) != 2 {
+		t.Fatalf("unexpected gemini contents: %#v", contents)
+	}
+
+	if contents[0].Parts[0].FileData == nil || contents[0].Parts[0].FileData.FileURI != testGeminiMediaURI {
+		t.Fatalf("expected uploaded image file part first: %#v", contents[0].Parts[0])
+	}
+
+	if contents[0].Parts[1].Text != "Summarize this image." {
+		t.Fatalf("expected prompt after uploaded image: %#v", contents[0].Parts[1])
 	}
 }
 
@@ -850,7 +938,7 @@ func newGeminiMediaUploadStub(t *testing.T, state *geminiUploadState) stubGemini
 
 		uploadedFile := new(genai.File)
 		uploadedFile.Name = "files/audio"
-		uploadedFile.URI = "https://example.com/files/audio"
+		uploadedFile.URI = testGeminiMediaURI
 		uploadedFile.MIMEType = config.MIMEType
 		uploadedFile.State = genai.FileStateActive
 
@@ -904,6 +992,7 @@ func newGeminiMediaUploadRequest() chatCompletionRequest {
 		AutoCompactThresholdPercent: 0,
 		SessionID:                   "",
 		PreviousResponseID:          "",
+		RequestID:                   "",
 		Messages: []chatMessage{
 			{
 				Role: messageRoleUser,
@@ -970,7 +1059,7 @@ func assertGeminiUploadedMediaParts(t *testing.T, contents []*genai.Content) {
 		t.Fatal("expected uploaded audio file part")
 	}
 
-	if contents[0].Parts[1].FileData.FileURI != "https://example.com/files/audio" {
+	if contents[0].Parts[1].FileData.FileURI != testGeminiMediaURI {
 		t.Fatalf("unexpected audio URI: %#v", contents[0].Parts[1].FileData)
 	}
 
@@ -1013,6 +1102,7 @@ func newGeminiBuildTestRequest() chatCompletionRequest {
 		AutoCompactThresholdPercent: 0,
 		SessionID:                   "",
 		PreviousResponseID:          "",
+		RequestID:                   "",
 		Messages: []chatMessage{
 			{Role: "system", Content: "Be concise."},
 			{
@@ -1048,6 +1138,7 @@ func newSimpleGeminiStreamRequest() chatCompletionRequest {
 		AutoCompactThresholdPercent: 0,
 		SessionID:                   "",
 		PreviousResponseID:          "",
+		RequestID:                   "",
 		Messages:                    []chatMessage{{Role: messageRoleUser, Content: "hello"}},
 	}
 }
@@ -1067,20 +1158,20 @@ func assertGeminiConvertedContents(t *testing.T, contents []*genai.Content) {
 		t.Fatalf("unexpected first part count: %d", len(contents[0].Parts))
 	}
 
-	if contents[0].Parts[0].Text != "<@123>: what is this?" {
-		t.Fatalf("unexpected first text part: %q", contents[0].Parts[0].Text)
-	}
-
-	if contents[0].Parts[1].InlineData == nil {
+	if contents[0].Parts[0].InlineData == nil {
 		t.Fatal("expected inline image data")
 	}
 
-	if contents[0].Parts[1].InlineData.MIMEType != mimeTypePNG {
-		t.Fatalf("unexpected image MIME type: %q", contents[0].Parts[1].InlineData.MIMEType)
+	if contents[0].Parts[0].InlineData.MIMEType != mimeTypePNG {
+		t.Fatalf("unexpected image MIME type: %q", contents[0].Parts[0].InlineData.MIMEType)
 	}
 
-	if string(contents[0].Parts[1].InlineData.Data) != testGeminiHelloPrompt {
-		t.Fatalf("unexpected image bytes: %q", string(contents[0].Parts[1].InlineData.Data))
+	if string(contents[0].Parts[0].InlineData.Data) != testGeminiHelloPrompt {
+		t.Fatalf("unexpected image bytes: %q", string(contents[0].Parts[0].InlineData.Data))
+	}
+
+	if contents[0].Parts[1].Text != "<@123>: what is this?" {
+		t.Fatalf("unexpected prompt text part: %q", contents[0].Parts[1].Text)
 	}
 
 	if contents[1].Role != string(genai.RoleModel) {

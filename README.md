@@ -30,11 +30,13 @@ It also works with local backends such as Ollama, LM Studio, and vLLM.
 4. The selected provider streams the response back to Discord.
 
 Behavior notes:
+- Official OpenAI providers (`https://api.openai.com/v1`) now use the Responses API, while other OpenAI-compatible backends stay on Chat Completions unless they expose their own compatible Responses endpoint.
 - xAI-compatible providers can continue server-side conversations with stored `previous_response_id` values when the model matches.
 - xAI image-generation replies rehydrate image bytes from the stored Responses API result when possible, then upload them as a Discord embed attachment; if the remote asset still cannot be downloaded, the bot falls back to an image embed URL instead of leaving a raw URL in the embed body.
 - When an xAI model is selected, non-Facebook, non-YouTube Shorts URLs stay provider-side instead of running the bot's URL fetchers first.
 - OpenAI Codex providers derive a stable conversation cache key from the reply-chain anchor message.
 - Empty prompts such as a bare `at ai` or an empty follow-up turn are sent upstream as `.` so providers still receive an explicit user input.
+- Provider response streams are capped at 5 minutes so bad multimodal requests fail cleanly instead of hanging the bot indefinitely.
 
 ## Quick Start
 
@@ -175,6 +177,7 @@ Model notes:
 - Attach files or images for multimodal context
   Text-like files such as JSON, CSV, logs, Markdown, and source code are inlined when the target provider cannot read raw files directly.
   Other files are still preserved as explicit attachments and fall back to metadata summaries, including ZIP manifests for archive uploads.
+  Gemini single-image prompts are sent image-first, and images larger than 4 MiB are uploaded through the Gemini Files API instead of being inlined. With the default `max_images: 5`, that keeps inline Gemini image payloads within the documented 20 MB request guidance.
 - Start a prompt with `vsearch` to run reverse-image lookup
 - Use `Show Sources` on searched replies to inspect the cited URLs, including the total source count and pagination when needed
 

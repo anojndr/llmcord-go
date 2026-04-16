@@ -720,6 +720,10 @@ func geminiContentFromChatMessage(
 		return nil, false, nil
 	}
 
+	if role == genai.RoleUser {
+		parts = reorderGeminiSingleImagePromptParts(parts)
+	}
+
 	return genai.NewContentFromParts(parts, role), true, nil
 }
 
@@ -793,7 +797,7 @@ func geminiPartFromContentPart(
 	case contentTypeText:
 		return geminiTextPart(part)
 	case contentTypeImageURL:
-		convertedPart, ok, err := geminiImagePart(part)
+		convertedPart, ok, err := geminiImagePart(ctx, files, part)
 		if err != nil {
 			return nil, false, err
 		}
@@ -842,7 +846,11 @@ func geminiTextPart(part contentPart) (*genai.Part, bool, error) {
 	return genai.NewPartFromText(textValue), true, nil
 }
 
-func geminiImagePart(part contentPart) (*genai.Part, bool, error) {
+func geminiImagePart(
+	ctx context.Context,
+	files geminiFilesClient,
+	part contentPart,
+) (*genai.Part, bool, error) {
 	imageURL, err := geminiImageURL(part)
 	if err != nil {
 		return nil, false, err
@@ -855,6 +863,15 @@ func geminiImagePart(part contentPart) (*genai.Part, bool, error) {
 	imageBytes, mimeType, err := geminiInlineImage(imageURL)
 	if err != nil {
 		return nil, false, err
+	}
+
+	if len(imageBytes) > geminiInlineImageByteLimit && files != nil {
+		uploadedPart, uploadErr := geminiUploadedBytesPart(ctx, files, imageBytes, mimeType, "")
+		if uploadErr != nil {
+			return nil, false, uploadErr
+		}
+
+		return uploadedPart, uploadedPart != nil, nil
 	}
 
 	return genai.NewPartFromBytes(imageBytes, mimeType), true, nil
@@ -878,6 +895,24 @@ func geminiUploadedMediaPart(
 	mediaBytes, mimeType, filename, err := attachmentBinaryData(part)
 	if err != nil {
 		return nil, err
+	}
+
+	if len(mediaBytes) == 0 {
+		return nil, fmt.Errorf("empty gemini media bytes: %w", os.ErrInvalid)
+	}
+
+	return geminiUploadedBytesPart(ctx, files, mediaBytes, mimeType, filename)
+}
+
+func geminiUploadedBytesPart(
+	ctx context.Context,
+	files geminiFilesClient,
+	mediaBytes []byte,
+	mimeType string,
+	filename string,
+) (*genai.Part, error) {
+	if files == nil {
+		return nil, fmt.Errorf("missing gemini file client: %w", os.ErrInvalid)
 	}
 
 	if len(mediaBytes) == 0 {
@@ -972,6 +1007,50 @@ func geminiInlineImage(imageURL string) ([]byte, string, error) {
 	}
 
 	return imageBytes, mimeType, nil
+}
+
+func reorderGeminiSingleImagePromptParts(parts []*genai.Part) []*genai.Part {
+	const geminiSingleImagePromptPartCount = 2
+
+	if len(parts) != geminiSingleImagePromptPartCount {
+		return parts
+	}
+
+	firstIsText := geminiPartIsText(parts[0])
+	secondIsText := geminiPartIsText(parts[1])
+	firstIsImage := geminiPartIsImage(parts[0])
+	secondIsImage := geminiPartIsImage(parts[1])
+
+	if firstIsText && secondIsImage {
+		return []*genai.Part{parts[1], parts[0]}
+	}
+
+	if firstIsImage && secondIsText {
+		return parts
+	}
+
+	return parts
+}
+
+func geminiPartIsText(part *genai.Part) bool {
+	if part == nil {
+		return false
+	}
+
+	return strings.TrimSpace(part.Text) != ""
+}
+
+func geminiPartIsImage(part *genai.Part) bool {
+	if part == nil {
+		return false
+	}
+
+	if part.InlineData != nil && strings.HasPrefix(normalizedMIMEType(part.InlineData.MIMEType), "image/") {
+		return true
+	}
+
+	return part.FileData != nil &&
+		strings.HasPrefix(normalizedMIMEType(part.FileData.MIMEType), "image/")
 }
 
 func geminiWaitForFileActive(

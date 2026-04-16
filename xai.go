@@ -124,7 +124,16 @@ func providerUsesResponsesAPI(providerName string, provider providerConfig) bool
 		return true
 	}
 
-	return xAIBaseURLUsesOfficialAPI(provider.BaseURL)
+	return xAIBaseURLUsesOfficialAPI(provider.BaseURL) ||
+		openAIBaseURLUsesOfficialAPI(provider.BaseURL)
+}
+
+func responsesRequestLabel(request chatCompletionRequest) string {
+	if xAIConfiguredModel(request.ConfiguredModel) || xAIBaseURLUsesOfficialAPI(request.Provider.BaseURL) {
+		return "xAI responses"
+	}
+
+	return "responses"
 }
 
 func assignXAIPreviousResponseID(
@@ -235,19 +244,21 @@ func (client openAIClient) streamResponses(
 	request chatCompletionRequest,
 	handle func(streamDelta) error,
 ) error {
+	requestLabel := responsesRequestLabel(request)
+
 	requestBody, err := buildXAIResponsesRequestBody(request)
 	if err != nil {
-		return fmt.Errorf("build xAI responses request body: %w", err)
+		return fmt.Errorf("build %s request body: %w", requestLabel, err)
 	}
 
 	requestBytes, err := json.Marshal(requestBody)
 	if err != nil {
-		return fmt.Errorf("marshal xAI responses request: %w", err)
+		return fmt.Errorf("marshal %s request: %w", requestLabel, err)
 	}
 
 	requestURL, err := buildXAIResponsesURL(request.Provider.BaseURL, request.Provider.ExtraQuery)
 	if err != nil {
-		return fmt.Errorf("build xAI responses url: %w", err)
+		return fmt.Errorf("build %s url: %w", requestLabel, err)
 	}
 
 	httpRequest, err := http.NewRequestWithContext(
@@ -257,12 +268,13 @@ func (client openAIClient) streamResponses(
 		bytes.NewReader(requestBytes),
 	)
 	if err != nil {
-		return fmt.Errorf("create xAI responses request: %w", err)
+		return fmt.Errorf("create %s request: %w", requestLabel, err)
 	}
 
 	httpRequest.Header.Set("Accept", "text/event-stream")
 	httpRequest.Header.Set("Authorization", "Bearer "+openAIAPIKey(request.Provider.primaryAPIKey()))
 	httpRequest.Header.Set("Content-Type", "application/json")
+	setOpenAIClientRequestIDHeader(httpRequest, request)
 
 	for key, value := range request.Provider.ExtraHeaders {
 		httpRequest.Header.Set(key, stringifyValue(value))
@@ -270,7 +282,7 @@ func (client openAIClient) streamResponses(
 
 	httpResponse, err := client.httpClient.Do(httpRequest)
 	if err != nil {
-		return fmt.Errorf("send xAI responses request: %w", err)
+		return fmt.Errorf("send %s request: %w", requestLabel, err)
 	}
 
 	defer func() {
@@ -281,14 +293,15 @@ func (client openAIClient) streamResponses(
 		responseBody, readErr := io.ReadAll(httpResponse.Body)
 		if readErr != nil {
 			return fmt.Errorf(
-				"read xAI responses error response after status %d: %w",
+				"read %s error response after status %d: %w",
+				requestLabel,
 				httpResponse.StatusCode,
 				readErr,
 			)
 		}
 
 		return newOpenAIProviderStatusError(
-			"xAI responses request failed",
+			requestLabel+" request failed",
 			httpResponse.StatusCode,
 			httpResponse.Status,
 			httpResponse.Header.Clone(),
@@ -304,12 +317,13 @@ func (client openAIClient) streamResponses(
 		handle,
 	)
 	if err != nil {
-		return fmt.Errorf("consume xAI responses stream: %w", err)
+		return fmt.Errorf("consume %s stream: %w", requestLabel, err)
 	}
 
 	if !terminalEventSeen {
 		return fmt.Errorf(
-			"xAI responses stream ended before response.completed: %w",
+			"%s stream ended before response.completed: %w",
+			requestLabel,
 			io.ErrUnexpectedEOF,
 		)
 	}
