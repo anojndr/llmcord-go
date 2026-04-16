@@ -199,7 +199,6 @@ func geminiHandleStreamUpdate(handle func(streamDelta) error, delta streamDelta)
 			Usage:              nil,
 			ProviderResponseID: "",
 			SearchMetadata:     nil,
-			ResponseImages:     nil,
 		})
 		if err != nil {
 			return fmt.Errorf(handleStreamDeltaErrorFormat, err)
@@ -214,7 +213,6 @@ func geminiHandleStreamUpdate(handle func(streamDelta) error, delta streamDelta)
 			Usage:              cloneTokenUsage(delta.Usage),
 			ProviderResponseID: "",
 			SearchMetadata:     nil,
-			ResponseImages:     nil,
 		})
 		if err != nil {
 			return fmt.Errorf(handleStreamDeltaErrorFormat, err)
@@ -232,7 +230,6 @@ func geminiHandleFinishReason(handle func(streamDelta) error, finishReason strin
 		Usage:              nil,
 		ProviderResponseID: "",
 		SearchMetadata:     nil,
-		ResponseImages:     nil,
 	})
 	if err != nil {
 		return fmt.Errorf(handleStreamDeltaErrorFormat, err)
@@ -1177,7 +1174,6 @@ func geminiStreamDelta(response *genai.GenerateContentResponse) (streamDelta, er
 				Usage:              nil,
 				ProviderResponseID: "",
 				SearchMetadata:     nil,
-				ResponseImages:     nil,
 			}, err
 		}
 	}

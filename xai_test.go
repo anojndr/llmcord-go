@@ -496,72 +496,6 @@ func TestOpenAIClientStreamChatCompletionFallsBackToCompletedXAIImageOutput(t *t
 	}
 }
 
-func TestOpenAIClientStreamChatCompletionCarriesCompletedXAIImageBytes(t *testing.T) {
-	t.Parallel()
-
-	server := newXAIResponsesStreamingImageTestServer(t, true)
-	defer server.Close()
-
-	client := newOpenAIClient(server.Client())
-	request := newXAIResponsesStreamingRequest(server.URL + "/v1")
-
-	var responseImages []responseImageAsset
-
-	err := client.streamChatCompletion(context.Background(), request, func(delta streamDelta) error {
-		if len(delta.ResponseImages) > 0 {
-			responseImages = mergeResponseImageAssets(responseImages, delta.ResponseImages)
-		}
-
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("stream xAI image bytes: %v", err)
-	}
-
-	if len(responseImages) != 1 {
-		t.Fatalf("unexpected response images: %#v", responseImages)
-	}
-
-	if string(responseImages[0].Data) != "image-bytes" {
-		t.Fatalf("unexpected response image bytes: %#v", responseImages[0])
-	}
-}
-
-func TestOpenAIClientStreamChatCompletionRetrievesXAIImageBytesByResponseID(t *testing.T) {
-	t.Parallel()
-
-	server := newXAIResponsesStreamingRetrieveImageTestServer(t)
-	defer server.Close()
-
-	client := newOpenAIClient(server.Client())
-	request := newXAIResponsesStreamingRequest(server.URL + "/v1")
-
-	var responseImages []responseImageAsset
-
-	err := client.streamChatCompletion(context.Background(), request, func(delta streamDelta) error {
-		if len(delta.ResponseImages) > 0 {
-			responseImages = mergeResponseImageAssets(responseImages, delta.ResponseImages)
-		}
-
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("stream xAI image retrieval by response id: %v", err)
-	}
-
-	if len(responseImages) != 1 {
-		t.Fatalf("unexpected response images: %#v", responseImages)
-	}
-
-	if responseImages[0].ContentType != mimeTypeJPEG {
-		t.Fatalf("unexpected response image content type: %#v", responseImages[0])
-	}
-
-	if string(responseImages[0].Data) != "image-bytes" {
-		t.Fatalf("unexpected response image bytes: %#v", responseImages[0])
-	}
-}
-
 func TestAssignXAIPreviousResponseIDUsesAssistantAnchorAndTrimsHistory(t *testing.T) {
 	t.Parallel()
 
@@ -659,7 +593,6 @@ func TestGenerateAndSendResponseStoresProviderResponseIDForXAIContinuation(t *te
 				Usage:              nil,
 				ProviderResponseID: testXAIProviderResponseID,
 				SearchMetadata:     nil,
-				ResponseImages:     nil,
 			},
 		},
 	}
@@ -952,67 +885,6 @@ func newXAIResponsesStreamingImageTestServer(
 	}))
 }
 
-func newXAIResponsesStreamingRetrieveImageTestServer(t *testing.T) *httptest.Server {
-	t.Helper()
-
-	var serverURL string
-
-	server := httptest.NewServer(http.HandlerFunc(func(
-		responseWriter http.ResponseWriter,
-		request *http.Request,
-	) {
-		t.Helper()
-
-		switch request.URL.Path {
-		case "/v1/responses":
-			assertXAIResponsesRequest(t, request)
-
-			responseWriter.Header().Set("Content-Type", "text/event-stream")
-
-			flusher, responseOK := responseWriter.(http.Flusher)
-			if !responseOK {
-				t.Fatal("expected response writer to support flushing")
-			}
-
-			writeStreamChunk(t, responseWriter, xAIResponseOutputItemDoneChunkForURL(serverURL+"/generated/image"))
-			flusher.Flush()
-
-			writeStreamChunk(t, responseWriter, xAIResponseCompletedChunkForURL(serverURL+"/generated/image"))
-			flusher.Flush()
-
-			writeStreamChunk(t, responseWriter, "data: [DONE]\n\n")
-			flusher.Flush()
-		case "/v1/responses/" + testXAIProviderResponseID:
-			if request.Method != http.MethodGet {
-				t.Fatalf("unexpected retrieve request method: %s", request.Method)
-			}
-
-			if request.URL.Query().Get("api-version") != testXAIAPIVersion {
-				t.Fatalf("unexpected retrieve query string: %s", request.URL.RawQuery)
-			}
-
-			if request.Header.Get("Authorization") != testXAIAuthHeader {
-				t.Fatalf("unexpected retrieve authorization header: %q", request.Header.Get("Authorization"))
-			}
-
-			response := xAIResponseRetrievePayload(serverURL + "/generated/image")
-
-			responseWriter.Header().Set(contentTypeHeader, "application/json")
-
-			_, err := responseWriter.Write([]byte(response))
-			if err != nil {
-				t.Fatalf("write response retrieval payload: %v", err)
-			}
-		default:
-			t.Fatalf("unexpected request path: %s", request.URL.Path)
-		}
-	}))
-
-	serverURL = server.URL
-
-	return server
-}
-
 func assertXAIResponsesRequest(t *testing.T, request *http.Request) {
 	t.Helper()
 
@@ -1139,17 +1011,6 @@ func xAIResponseOutputItemDoneChunk() string {
 		"\"prompt\":\"Generate an image of a cat.\"}}\n\n"
 }
 
-func xAIResponseOutputItemDoneChunkForURL(imageURL string) string {
-	return "data: {\"type\":\"response.output_item.done\",\"item\":{" +
-		"\"id\":\"" + testXAIImageOutputID + "\"," +
-		"\"type\":\"image_generation_call\"," +
-		"\"status\":\"completed\"," +
-		"\"result_url\":\"" + imageURL + "\"," +
-		"\"mime_type\":\"" + mimeTypeJPEG + "\"," +
-		"\"action\":\"generate\"," +
-		"\"prompt\":\"Generate an image of a cat.\"}}\n\n"
-}
-
 func xAIResponseCompletedChunkWithImageOutput() string {
 	return "data: {\"type\":\"response.completed\",\"response\":{" +
 		"\"id\":\"" + testXAIProviderResponseID + "\"," +
@@ -1171,37 +1032,6 @@ func xAIResponseCompletedChunkWithImageOutput() string {
 		"\"url\":\"https://example.com/source\"," +
 		"\"search_queries\":[\"latest ai news\"]" +
 		"}]}}}\n\n"
-}
-
-func xAIResponseCompletedChunkForURL(imageURL string) string {
-	return "data: {\"type\":\"response.completed\",\"response\":{" +
-		"\"id\":\"" + testXAIProviderResponseID + "\"," +
-		"\"status\":\"completed\"," +
-		"\"usage\":{\"input_tokens\":12,\"output_tokens\":34}," +
-		"\"output\":[{" +
-		"\"id\":\"" + testXAIImageOutputID + "\"," +
-		"\"type\":\"image_generation_call\"," +
-		"\"status\":\"completed\"," +
-		"\"result_url\":\"" + imageURL + "\"," +
-		"\"mime_type\":\"" + mimeTypeJPEG + "\"," +
-		"\"action\":\"generate\"," +
-		"\"prompt\":\"Generate an image of a cat.\"}]}}\n\n"
-}
-
-func xAIResponseRetrievePayload(imageURL string) string {
-	return "{" +
-		"\"id\":\"" + testXAIProviderResponseID + "\"," +
-		"\"status\":\"completed\"," +
-		"\"usage\":{\"input_tokens\":12,\"output_tokens\":34}," +
-		"\"output\":[{" +
-		"\"id\":\"" + testXAIImageOutputID + "\"," +
-		"\"type\":\"image_generation_call\"," +
-		"\"status\":\"completed\"," +
-		"\"result\":\"" + testXAIImageResultBase64 + "\"," +
-		"\"result_url\":\"" + imageURL + "\"," +
-		"\"mime_type\":\"" + mimeTypeJPEG + "\"," +
-		"\"action\":\"generate\"," +
-		"\"prompt\":\"Generate an image of a cat.\"}]}"
 }
 
 func newXAIResponsesStreamingRequest(baseURL string) chatCompletionRequest {
