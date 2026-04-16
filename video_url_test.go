@@ -128,7 +128,6 @@ func newConcurrentDownloadedVideoAnalysisChatClient(
 			Usage:              nil,
 			ProviderResponseID: "",
 			SearchMetadata:     nil,
-			ResponseImages:     nil,
 		})
 	})
 }
