@@ -807,7 +807,6 @@ func newCountingGeminiVideoAnalysisChatClient(
 			Usage:              nil,
 			ProviderResponseID: "",
 			SearchMetadata:     nil,
-			ResponseImages:     nil,
 		})
 	})
 
@@ -996,7 +995,6 @@ func newNoSearchDecisionChatClient(
 			Usage:              nil,
 			ProviderResponseID: "",
 			SearchMetadata:     nil,
-			ResponseImages:     nil,
 		})
 	})
 }

@@ -6,8 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"mime"
-	"mime/multipart"
 	"net/http"
 	"os"
 	"testing"
@@ -20,11 +18,6 @@ import (
 type fakeChatCompletionClient struct {
 	deltas []streamDelta
 }
-
-const (
-	testResponseJPEGBytes        = "jpeg-bytes"
-	testGeneratedImageLabelBlock = "Result.\n\nGenerated image:"
-)
 
 func (client fakeChatCompletionClient) streamChatCompletion(
 	_ context.Context,
@@ -316,7 +309,6 @@ func TestHandleGeneratedStreamDeltaMergesSearchMetadataFromStream(t *testing.T) 
 				MaxURLs:             1,
 				VisualSearchSources: nil,
 			},
-			ResponseImages: nil,
 		},
 	)
 	if err != nil {
@@ -479,7 +471,7 @@ func TestBuildResponseEmbedLeavesGeneratedImageURLInDescription(t *testing.T) {
 		"",
 	)
 	if embed.Image != nil {
-		t.Fatalf("expected embed image to be unset before final attachment upload: %#v", embed.Image)
+		t.Fatalf("expected embed image to remain unset: %#v", embed.Image)
 	}
 
 	if embed.Description != "Result.\n\nGenerated image:\n"+testXAIImageURL {
@@ -487,179 +479,7 @@ func TestBuildResponseEmbedLeavesGeneratedImageURLInDescription(t *testing.T) {
 	}
 }
 
-func TestPrepareResponseEmbedFilesAttachesFinalGeneratedImage(t *testing.T) {
-	t.Parallel()
-
-	instance := new(bot)
-	instance.httpClient = new(http.Client)
-	instance.httpClient.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
-		t.Helper()
-
-		if request.Method != http.MethodGet || request.URL.String() != testXAIImageURL {
-			t.Fatalf("unexpected image request: %s %s", request.Method, request.URL.String())
-		}
-
-		response := new(http.Response)
-		response.Status = httpStatusOKText
-		response.StatusCode = http.StatusOK
-		response.Header = http.Header{contentTypeHeader: []string{"image/jpeg"}}
-		response.Body = io.NopCloser(bytes.NewReader([]byte(testResponseJPEGBytes)))
-		response.Request = request
-
-		return response, nil
-	})
-
-	embed := buildResponseEmbed(
-		"Result.\n\nGenerated image:\n"+testXAIImageURL,
-		"x-ai/grok-4",
-		embedColorComplete,
-		nil,
-		"",
-	)
-
-	files := instance.prepareResponseEmbedFiles(
-		context.Background(),
-		embed,
-		[]responseImageAsset{{
-			ID:          testXAIImageOutputID,
-			URL:         testXAIImageURL,
-			ContentType: "image/jpeg",
-			Data:        []byte(testResponseJPEGBytes),
-		}},
-		true,
-	)
-	if len(files) != 1 {
-		t.Fatalf("unexpected embed file count: %#v", files)
-	}
-
-	if files[0].Name != "response-image.jpg" {
-		t.Fatalf("unexpected embed filename: %#v", files[0])
-	}
-
-	fileBytes, err := io.ReadAll(files[0].Reader)
-	if err != nil {
-		t.Fatalf("read embed file: %v", err)
-	}
-
-	if string(fileBytes) != testResponseJPEGBytes {
-		t.Fatalf("unexpected embed file bytes: %q", string(fileBytes))
-	}
-
-	if embed.Description != testGeneratedImageLabelBlock {
-		t.Fatalf("unexpected embed description after attachment prep: %q", embed.Description)
-	}
-
-	if embed.Image == nil || embed.Image.URL != "attachment://response-image.jpg" {
-		t.Fatalf("unexpected embed image after attachment prep: %#v", embed.Image)
-	}
-}
-
-func TestPrepareResponseEmbedFilesAttachesFinalGeneratedImageWithoutURLExtension(t *testing.T) {
-	t.Parallel()
-
-	const imageURL = "https://assets.grok.com/generated/image"
-
-	instance := new(bot)
-	instance.httpClient = new(http.Client)
-	instance.httpClient.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
-		t.Helper()
-
-		if request.Method != http.MethodGet || request.URL.String() != imageURL {
-			t.Fatalf("unexpected image request: %s %s", request.Method, request.URL.String())
-		}
-
-		response := new(http.Response)
-		response.Status = httpStatusOKText
-		response.StatusCode = http.StatusOK
-		response.Header = http.Header{contentTypeHeader: []string{"image/jpeg"}}
-		response.Body = io.NopCloser(bytes.NewReader([]byte(testResponseJPEGBytes)))
-		response.Request = request
-
-		return response, nil
-	})
-
-	embed := buildResponseEmbed(
-		testGeneratedImageLabelBlock+"\n"+imageURL,
-		"x-ai/grok-4",
-		embedColorComplete,
-		nil,
-		"",
-	)
-
-	files := instance.prepareResponseEmbedFiles(
-		context.Background(),
-		embed,
-		nil,
-		true,
-	)
-	if len(files) != 1 {
-		t.Fatalf("unexpected embed file count: %#v", files)
-	}
-
-	expectedFileName := responseEmbedFilename(imageURL, mimeTypeJPEG)
-	if files[0].Name != expectedFileName {
-		t.Fatalf("unexpected embed filename: %#v", files[0])
-	}
-
-	if embed.Description != testGeneratedImageLabelBlock {
-		t.Fatalf("unexpected embed description after attachment prep: %q", embed.Description)
-	}
-
-	if embed.Image == nil || embed.Image.URL != "attachment://"+expectedFileName {
-		t.Fatalf("unexpected embed image after attachment prep: %#v", embed.Image)
-	}
-}
-
-func TestPrepareResponseEmbedFilesFallsBackToExternalImageURLWhenDownloadFails(t *testing.T) {
-	t.Parallel()
-
-	instance := new(bot)
-	instance.httpClient = new(http.Client)
-	instance.httpClient.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
-		t.Helper()
-
-		if request.Method != http.MethodGet || request.URL.String() != testXAIImageURL {
-			t.Fatalf("unexpected image request: %s %s", request.Method, request.URL.String())
-		}
-
-		response := new(http.Response)
-		response.Status = http.StatusText(http.StatusForbidden)
-		response.StatusCode = http.StatusForbidden
-		response.Header = make(http.Header)
-		response.Body = io.NopCloser(bytes.NewReader(nil))
-		response.Request = request
-
-		return response, nil
-	})
-
-	embed := buildResponseEmbed(
-		"Result.\n\nGenerated image:\n"+testXAIImageURL,
-		"x-ai/grok-4",
-		embedColorComplete,
-		nil,
-		"",
-	)
-
-	files := instance.prepareResponseEmbedFiles(
-		context.Background(),
-		embed,
-		nil,
-		true,
-	)
-	if len(files) != 0 {
-		t.Fatalf("unexpected embed file count: %#v", files)
-	}
-
-	if embed.Description != testGeneratedImageLabelBlock {
-		t.Fatalf("unexpected embed description after external image fallback: %q", embed.Description)
-	}
-
-	if embed.Image == nil || embed.Image.URL != testXAIImageURL {
-		t.Fatalf("unexpected embed image after external image fallback: %#v", embed.Image)
-	}
-}
-
-func TestEditEmbedMessageUploadsGeneratedImageAttachmentOnFinalRender(t *testing.T) {
+func TestEditEmbedMessageLeavesGeneratedImageURLInDescription(t *testing.T) {
 	t.Parallel()
 
 	const (
@@ -681,7 +501,13 @@ func TestEditEmbedMessageUploadsGeneratedImageAttachmentOnFinalRender(t *testing
 			t.Fatalf("unexpected request: %s %s", request.Method, request.URL.Path)
 		}
 
-		assertMultipartEmbedImageEditRequest(t, request)
+		assertRequestEmbed(
+			t,
+			request,
+			"x-ai/grok-4",
+			"Result.\n\nGenerated image:\n"+testXAIImageURL,
+			"",
+		)
 
 		editedMessage := new(discordgo.Message)
 		editedMessage.ID = messageID
@@ -693,23 +519,6 @@ func TestEditEmbedMessageUploadsGeneratedImageAttachmentOnFinalRender(t *testing
 
 	instance := new(bot)
 	instance.session = session
-	instance.httpClient = new(http.Client)
-	instance.httpClient.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
-		t.Helper()
-
-		if request.Method != http.MethodGet || request.URL.String() != testXAIImageURL {
-			t.Fatalf("unexpected image fetch request: %s %s", request.Method, request.URL.String())
-		}
-
-		response := new(http.Response)
-		response.Status = httpStatusOKText
-		response.StatusCode = http.StatusOK
-		response.Header = http.Header{contentTypeHeader: []string{"image/jpeg"}}
-		response.Body = io.NopCloser(bytes.NewReader([]byte(testResponseJPEGBytes)))
-		response.Request = request
-
-		return response, nil
-	})
 
 	message := new(discordgo.Message)
 	message.ID = messageID
@@ -724,17 +533,9 @@ func TestEditEmbedMessageUploadsGeneratedImageAttachmentOnFinalRender(t *testing
 	)
 
 	err = instance.editEmbedMessage(
-		context.Background(),
 		message,
 		embed,
 		nil,
-		[]responseImageAsset{{
-			ID:          testXAIImageOutputID,
-			URL:         testXAIImageURL,
-			ContentType: "image/jpeg",
-			Data:        []byte(testResponseJPEGBytes),
-		}},
-		true,
 	)
 	if err != nil {
 		t.Fatalf("edit embed message: %v", err)
@@ -1726,117 +1527,6 @@ func assertRequestEmbed(
 	}
 }
 
-func assertMultipartEmbedImageEditRequest(t *testing.T, request *http.Request) {
-	t.Helper()
-
-	reader := multipartRequestReader(t, request)
-	payloadFound := false
-	fileFound := false
-
-	for {
-		part, err := reader.NextPart()
-		if errors.Is(err, io.EOF) {
-			break
-		}
-
-		if err != nil {
-			t.Fatalf("read multipart part: %v", err)
-		}
-
-		partBody, err := io.ReadAll(part)
-		if err != nil {
-			t.Fatalf("read multipart body: %v", err)
-		}
-
-		switch part.FormName() {
-		case "payload_json":
-			payloadFound = true
-
-			assertMultipartEmbedImagePayload(t, partBody)
-		case "files[0]":
-			fileFound = true
-
-			assertMultipartEmbedImageFile(t, part.FileName(), partBody)
-		default:
-			t.Fatalf("unexpected multipart form field: %q", part.FormName())
-		}
-	}
-
-	if !payloadFound {
-		t.Fatal("expected payload_json part")
-	}
-
-	if !fileFound {
-		t.Fatal("expected files[0] part")
-	}
-}
-
-func multipartRequestReader(t *testing.T, request *http.Request) *multipart.Reader {
-	t.Helper()
-
-	mediaType, params, err := mime.ParseMediaType(request.Header.Get(contentTypeHeader))
-	if err != nil {
-		t.Fatalf("parse content type: %v", err)
-	}
-
-	if mediaType != "multipart/form-data" {
-		t.Fatalf("unexpected media type: %q", mediaType)
-	}
-
-	return multipart.NewReader(request.Body, params["boundary"])
-}
-
-func assertMultipartEmbedImagePayload(t *testing.T, payloadBody []byte) {
-	t.Helper()
-
-	var payload map[string]any
-
-	err := json.Unmarshal(payloadBody, &payload)
-	if err != nil {
-		t.Fatalf("decode payload_json: %v", err)
-	}
-
-	embeds, embedsOK := payload["embeds"].([]any)
-	if !embedsOK || len(embeds) != 1 {
-		t.Fatalf("unexpected embeds payload: %#v", payload["embeds"])
-	}
-
-	embed, embedOK := embeds[0].(map[string]any)
-	if !embedOK {
-		t.Fatalf("unexpected embed payload: %#v", embeds[0])
-	}
-
-	if embed["description"] != "Result.\n\nGenerated image:" {
-		t.Fatalf("unexpected embed description: %#v", embed["description"])
-	}
-
-	image, imageOK := embed["image"].(map[string]any)
-	if !imageOK {
-		t.Fatalf("unexpected embed image payload: %#v", embed["image"])
-	}
-
-	if image["url"] != "attachment://response-image.jpg" {
-		t.Fatalf("unexpected embed image url: %#v", image["url"])
-	}
-
-	attachments, attachmentsOK := payload["attachments"].([]any)
-	if !attachmentsOK || len(attachments) != 0 {
-		t.Fatalf("unexpected attachments payload: %#v", payload["attachments"])
-	}
-}
-
-func assertMultipartEmbedImageFile(t *testing.T, fileName string, partBody []byte) {
-	t.Helper()
-
-	if fileName != "response-image.jpg" {
-		t.Fatalf("unexpected attachment filename: %q", fileName)
-	}
-
-	if string(partBody) != testResponseJPEGBytes {
-		t.Fatalf("unexpected attachment body: %q", string(partBody))
-	}
-}
-
 func assertPlainEditRequest(
 	t *testing.T,
 	request *http.Request,
@@ -1947,7 +1637,6 @@ func thinkingAnswerResponseDeltas(thinkingText, answerText string) []streamDelta
 			Usage:              nil,
 			ProviderResponseID: "",
 			SearchMetadata:     nil,
-			ResponseImages:     nil,
 		},
 		{
 			Thinking:           "",
@@ -1956,7 +1645,6 @@ func thinkingAnswerResponseDeltas(thinkingText, answerText string) []streamDelta
 			Usage:              nil,
 			ProviderResponseID: "",
 			SearchMetadata:     nil,
-			ResponseImages:     nil,
 		},
 		{
 			Thinking:           "",
@@ -1965,7 +1653,6 @@ func thinkingAnswerResponseDeltas(thinkingText, answerText string) []streamDelta
 			Usage:              nil,
 			ProviderResponseID: "",
 			SearchMetadata:     nil,
-			ResponseImages:     nil,
 		},
 	}
 }
