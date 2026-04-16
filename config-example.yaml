@@ -68,8 +68,9 @@ providers:
   openai:
     base_url: https://api.openai.com/v1
     api_key: 
-    # Requests through the built-in `openai` provider default to
-    # `verbosity: low`. To override it for every request:
+    # Requests through the built-in `openai` provider use the Responses API on
+    # api.openai.com and default to `verbosity: low`. To override it for every
+    # request:
     # extra_body:
     #   verbosity: medium
 

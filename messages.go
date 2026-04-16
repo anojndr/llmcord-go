@@ -261,6 +261,8 @@ func (instance *bot) prepareMessageResponse(
 			fmt.Errorf("build chat completion request: %w", err)
 	}
 
+	request.RequestID = strings.TrimSpace(message.ID)
+
 	assignOpenAICodexSessionID(&request, message, instance.nodes, loadedConfig.MaxMessages)
 	assignXAIPreviousResponseID(&request, message, instance.nodes, loadedConfig.MaxMessages)
 
@@ -1112,6 +1114,7 @@ func buildChatCompletionRequest(
 		AutoCompactThresholdPercent: loadedConfig.AutoCompactThresholdPercent,
 		SessionID:                   "",
 		PreviousResponseID:          "",
+		RequestID:                   "",
 		Messages:                    messages,
 	}, nil
 }

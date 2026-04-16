@@ -24,6 +24,7 @@ const (
 	openAIStreamToolCallsFinishReason    = "tool_calls"
 	openAIStreamFunctionCallFinishReason = "function_call"
 	openAIDegradedFunctionIDMatchParts   = 2
+	openAIClientRequestIDHeader          = "X-Client-Request-Id"
 )
 
 type chatMessage struct {
@@ -39,6 +40,7 @@ type chatCompletionRequest struct {
 	AutoCompactThresholdPercent int
 	SessionID                   string
 	PreviousResponseID          string
+	RequestID                   string
 	Messages                    []chatMessage
 }
 
@@ -231,6 +233,7 @@ func (client openAIClient) streamChatCompletionAttempt(
 	httpRequest.Header.Set("Accept", "text/event-stream")
 	httpRequest.Header.Set("Authorization", "Bearer "+openAIAPIKey(request.Provider.primaryAPIKey()))
 	httpRequest.Header.Set("Content-Type", "application/json")
+	setOpenAIClientRequestIDHeader(httpRequest, request)
 
 	for key, value := range request.Provider.ExtraHeaders {
 		httpRequest.Header.Set(key, stringifyValue(value))
@@ -593,6 +596,32 @@ func openAIAPIKey(apiKey string) string {
 	}
 
 	return apiKey
+}
+
+func openAIBaseURLUsesOfficialAPI(baseURL string) bool {
+	parsedURL, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil {
+		return false
+	}
+
+	host := strings.ToLower(strings.TrimSpace(parsedURL.Hostname()))
+
+	return host == openAIOfficialAPIHost
+}
+
+func setOpenAIClientRequestIDHeader(
+	httpRequest *http.Request,
+	request chatCompletionRequest,
+) {
+	if httpRequest == nil || request.RequestID == "" {
+		return
+	}
+
+	if !openAIBaseURLUsesOfficialAPI(request.Provider.BaseURL) {
+		return
+	}
+
+	httpRequest.Header.Set(openAIClientRequestIDHeader, request.RequestID)
 }
 
 func consumeServerSentEvents(reader io.Reader, handle func([]byte) error) (bool, error) {

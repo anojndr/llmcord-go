@@ -173,6 +173,7 @@ func TestAutoCompactRequestTruncatesLatestOversizedMessage(t *testing.T) {
 		AutoCompactThresholdPercent: 90,
 		SessionID:                   "",
 		PreviousResponseID:          "",
+		RequestID:                   "",
 		Messages: []chatMessage{
 			{Role: messageRoleUser, Content: autoCompactSizedASCIIText(810)},
 		},
@@ -270,6 +271,7 @@ func TestAutoCompactRequestTruncatesLatestOversizedMessageBeforeSummarizingHisto
 		AutoCompactThresholdPercent: 90,
 		SessionID:                   "",
 		PreviousResponseID:          "",
+		RequestID:                   "",
 		Messages: []chatMessage{
 			{Role: openAICodexRoleSystem, Content: "Always be helpful."},
 			{Role: messageRoleUser, Content: autoCompactSizedASCIIText(250)},

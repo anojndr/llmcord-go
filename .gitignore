@@ -6,9 +6,9 @@
 !.golangci.yml
 !AGENTS.md
 !LICENSE.md
+!README.md
 
 # Root-level source and docs stay explicit; recursive allowlists are intentional for nested command and test paths.
-!*.md
 !*.go
 !searchDeciderPrompt.txt
 !cmd/

@@ -601,6 +601,7 @@ func TestAssignXAIPreviousResponseIDUsesAssistantAnchorAndTrimsHistory(t *testin
 		AutoCompactThresholdPercent: 0,
 		SessionID:                   "",
 		PreviousResponseID:          "",
+		RequestID:                   "",
 		Messages: []chatMessage{
 			{Role: openAICodexRoleSystem, Content: "You are concise."},
 			{Role: messageRoleUser, Content: "first question"},
@@ -1225,6 +1226,7 @@ func newXAIResponsesStreamingRequest(baseURL string) chatCompletionRequest {
 		AutoCompactThresholdPercent: 0,
 		SessionID:                   "",
 		PreviousResponseID:          "",
+		RequestID:                   "",
 		Messages: []chatMessage{
 			{Role: openAICodexRoleSystem, Content: "You are concise."},
 			{
