@@ -106,6 +106,11 @@ func TestUserFacingResponseErrorReturnsRawErrorText(t *testing.T) {
 			expected: newTestUnavailableGeminiAPIErrorPointer("service unavailable").Error(),
 		},
 		{
+			name:     "context deadline exceeded returns timeout message",
+			err:      context.DeadlineExceeded,
+			expected: "The model timed out while processing the request. Try again.",
+		},
+		{
 			name:     "unknown error returns raw message",
 			err:      errPartialStreamFailure,
 			expected: "partial stream failure",
@@ -125,6 +130,23 @@ func TestUserFacingResponseErrorReturnsRawErrorText(t *testing.T) {
 				)
 			}
 		})
+	}
+}
+
+func TestStreamChatCompletionContextAddsDeadline(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := streamChatCompletionContext(context.Background())
+	defer cancel()
+
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		t.Fatal("expected stream context deadline")
+	}
+
+	remaining := time.Until(deadline)
+	if remaining <= 0 || remaining > chatCompletionTimeout+time.Second {
+		t.Fatalf("unexpected remaining timeout: %s", remaining)
 	}
 }
 
@@ -1200,6 +1222,7 @@ func emptyChatCompletionRequest() chatCompletionRequest {
 		AutoCompactThresholdPercent: 0,
 		SessionID:                   "",
 		PreviousResponseID:          "",
+		RequestID:                   "",
 		Messages:                    nil,
 	}
 }

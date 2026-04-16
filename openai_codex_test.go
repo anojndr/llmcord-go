@@ -44,6 +44,7 @@ func TestOpenAICodexClientStreamChatCompletion(t *testing.T) {
 		AutoCompactThresholdPercent: 0,
 		SessionID:                   "",
 		PreviousResponseID:          "",
+		RequestID:                   "",
 		Messages: []chatMessage{
 			{Role: openAICodexRoleSystem, Content: "Be brief."},
 			{
@@ -105,6 +106,7 @@ func TestOpenAICodexClientRejectsInvalidTokenWithoutAccountHeader(t *testing.T) 
 		AutoCompactThresholdPercent: 0,
 		SessionID:                   "",
 		PreviousResponseID:          "",
+		RequestID:                   "",
 		Messages: []chatMessage{
 			{Role: openAICodexRoleSystem, Content: "Be brief."},
 			{Role: messageRoleUser, Content: testOpenAICodexHelloText},
@@ -203,6 +205,7 @@ func TestOpenAICodexClientStreamChatCompletionIncludesCacheMetadata(t *testing.T
 		AutoCompactThresholdPercent: 0,
 		SessionID:                   sessionID,
 		PreviousResponseID:          "",
+		RequestID:                   "",
 		Messages: []chatMessage{
 			{Role: openAICodexRoleSystem, Content: "Be brief."},
 			{
@@ -246,6 +249,7 @@ func TestBuildOpenAICodexRequestBodyPreservesNestedReasoningConfig(t *testing.T)
 		AutoCompactThresholdPercent: 0,
 		SessionID:                   "",
 		PreviousResponseID:          "",
+		RequestID:                   "",
 		Messages: []chatMessage{
 			{Role: messageRoleUser, Content: testOpenAICodexHelloText},
 		},
@@ -291,6 +295,7 @@ func TestBuildOpenAICodexRequestBodyDefaultsReasoningSummaryWithoutEffort(t *tes
 		AutoCompactThresholdPercent: 0,
 		SessionID:                   "",
 		PreviousResponseID:          "",
+		RequestID:                   "",
 		Messages: []chatMessage{
 			{Role: messageRoleUser, Content: testOpenAICodexHelloText},
 		},
@@ -338,6 +343,7 @@ func TestBuildOpenAICodexRequestBodyClampsNestedReasoningConfigWithoutMutatingOr
 		AutoCompactThresholdPercent: 0,
 		SessionID:                   "",
 		PreviousResponseID:          "",
+		RequestID:                   "",
 		Messages: []chatMessage{
 			{Role: messageRoleUser, Content: testOpenAICodexHelloText},
 		},
@@ -530,6 +536,7 @@ func TestBuildOpenAICodexRequestBodyAddsPlaceholderForImageOnlyUserMessage(t *te
 		AutoCompactThresholdPercent: 0,
 		SessionID:                   "",
 		PreviousResponseID:          "",
+		RequestID:                   "",
 		Messages: []chatMessage{{
 			Role: messageRoleUser,
 			Content: []contentPart{
@@ -674,6 +681,7 @@ func TestOpenAICodexClientStreamChatCompletionParsesJSONStatusErrors(t *testing.
 		AutoCompactThresholdPercent: 0,
 		SessionID:                   "",
 		PreviousResponseID:          "",
+		RequestID:                   "",
 		Messages:                    []chatMessage{{Role: messageRoleUser, Content: testOpenAICodexHelloText}},
 	}
 

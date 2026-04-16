@@ -1054,6 +1054,7 @@ func newOpenAIRetryRequest(baseURL string) chatCompletionRequest {
 		AutoCompactThresholdPercent: 0,
 		SessionID:                   "",
 		PreviousResponseID:          "",
+		RequestID:                   "",
 		Messages:                    []chatMessage{{Role: messageRoleUser, Content: "hello"}},
 	}
 }
@@ -1129,6 +1130,7 @@ func newOpenAICodexRetryRequest(baseURL, validAPIKey string) chatCompletionReque
 		AutoCompactThresholdPercent: 0,
 		SessionID:                   "",
 		PreviousResponseID:          "",
+		RequestID:                   "",
 		Messages: []chatMessage{
 			{Role: openAICodexRoleSystem, Content: "Be brief."},
 			{
@@ -1261,6 +1263,7 @@ func newGeminiRetryRequest() chatCompletionRequest {
 		AutoCompactThresholdPercent: 0,
 		SessionID:                   "",
 		PreviousResponseID:          "",
+		RequestID:                   "",
 		Messages:                    []chatMessage{{Role: messageRoleUser, Content: "hello"}},
 	}
 }

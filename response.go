@@ -185,6 +185,14 @@ func withoutCancelContext(ctx context.Context) context.Context {
 	return context.WithoutCancel(ctx)
 }
 
+func streamChatCompletionContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	return context.WithTimeout(ctx, chatCompletionTimeout)
+}
+
 func (tracker *responseTracker) release(store *messageNodeStore, fullText string, thinkingText string) {
 	for _, pending := range tracker.pendingResponses {
 		pending.node.role = messageRoleAssistant
@@ -238,7 +246,10 @@ func (instance *bot) generateAndSendResponse(
 		renderedAnswerText:  "",
 	}
 
-	streamErr := instance.chatCompletions.streamChatCompletion(ctx, request, func(delta streamDelta) error {
+	streamContext, cancelStream := streamChatCompletionContext(ctx)
+	defer cancelStream()
+
+	streamErr := instance.chatCompletions.streamChatCompletion(streamContext, request, func(delta streamDelta) error {
 		return instance.handleGeneratedStreamDelta(ctx, tracker, &streamState, delta)
 	})
 	if streamErr != nil && finishReason == "" {
@@ -451,10 +462,17 @@ func (instance *bot) renderFinalResponse(
 }
 
 func userFacingResponseError(err error) string {
-	const genericResponseErrorText = "Couldn't generate a response right now. Try again."
+	const (
+		genericResponseErrorText  = "Couldn't generate a response right now. Try again."
+		timedOutResponseErrorText = "The model timed out while processing the request. Try again."
+	)
 
 	if err == nil {
 		return genericResponseErrorText
+	}
+
+	if errors.Is(err, context.DeadlineExceeded) {
+		return timedOutResponseErrorText
 	}
 
 	errorText := strings.TrimSpace(err.Error())

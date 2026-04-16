@@ -229,6 +229,35 @@ func TestBuildChatCompletionRequestDefaultsOpenAIProviderVerbosityToLow(t *testi
 	}
 }
 
+func TestBuildChatCompletionRequestUsesResponsesAPIForOfficialOpenAIProvider(t *testing.T) {
+	t.Parallel()
+
+	provider := new(providerConfig)
+	provider.BaseURL = "https://api.openai.com/v1"
+
+	var loadedConfig config
+
+	loadedConfig.Providers = map[string]providerConfig{
+		"openai": *provider,
+	}
+	loadedConfig.Models = map[string]map[string]any{
+		"openai/gpt-5.1": nil,
+	}
+
+	request, err := buildChatCompletionRequest(
+		loadedConfig,
+		"openai/gpt-5.1",
+		[]chatMessage{{Role: messageRoleUser, Content: "hello"}},
+	)
+	if err != nil {
+		t.Fatalf("build chat completion request: %v", err)
+	}
+
+	if !request.Provider.UseResponsesAPI {
+		t.Fatal("expected official OpenAI provider to use the Responses API")
+	}
+}
+
 func TestBuildChatCompletionRequestUsesContextWindowWithoutSendingItToProvider(t *testing.T) {
 	t.Parallel()
 
