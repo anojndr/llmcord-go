@@ -229,11 +229,11 @@ func TestBuildChatCompletionRequestDefaultsOpenAIProviderVerbosityToLow(t *testi
 	}
 }
 
-func TestBuildChatCompletionRequestUsesResponsesAPIForOfficialOpenAIProvider(t *testing.T) {
+func TestBuildChatCompletionRequestUsesResponsesAPIForOpenAIProvider(t *testing.T) {
 	t.Parallel()
 
 	provider := new(providerConfig)
-	provider.BaseURL = testOfficialOpenAIBaseURL
+	provider.BaseURL = testOpenAIBaseURL
 
 	var loadedConfig config
 
@@ -254,7 +254,7 @@ func TestBuildChatCompletionRequestUsesResponsesAPIForOfficialOpenAIProvider(t *
 	}
 
 	if !request.Provider.UseResponsesAPI {
-		t.Fatal("expected official OpenAI provider to use the Responses API")
+		t.Fatal("expected openai provider to use the Responses API")
 	}
 }
 
@@ -1345,7 +1345,7 @@ func TestBuildChatCompletionRequestNormalizesOpenAIResponsesReasoningAlias(t *te
 	t.Parallel()
 
 	provider := new(providerConfig)
-	provider.BaseURL = testOfficialOpenAIBaseURL
+	provider.BaseURL = testOpenAIBaseURL
 	provider.ExtraBody = map[string]any{
 		"verbosity":        openAIReasoningEffortMedium,
 		"reasoning_effort": openAIReasoningEffortMedium,
@@ -1385,7 +1385,7 @@ func TestBuildChatCompletionRequestNormalizesOpenAIResponsesReasoningAlias(t *te
 	}
 
 	if !request.Provider.UseResponsesAPI {
-		t.Fatal("expected official OpenAI provider to use the Responses API")
+		t.Fatal("expected openai provider to use the Responses API")
 	}
 
 	if request.Provider.ExtraBody["verbosity"] != openAIReasoningEffortMedium {
@@ -1423,7 +1423,7 @@ func TestBuildChatCompletionRequestNormalizesOpenAIResponsesReasoningEffort(t *t
 	t.Parallel()
 
 	provider := new(providerConfig)
-	provider.BaseURL = testOfficialOpenAIBaseURL
+	provider.BaseURL = testOpenAIBaseURL
 
 	modelParameters := map[string]any{
 		"reasoning_effort": openAIReasoningEffortMinimal,
@@ -1476,7 +1476,7 @@ func TestBuildChatCompletionRequestNormalizesOpenAIResponsesLowAliases(t *testin
 			t.Parallel()
 
 			provider := new(providerConfig)
-			provider.BaseURL = testOfficialOpenAIBaseURL
+			provider.BaseURL = testOpenAIBaseURL
 
 			var loadedConfig config
 
@@ -1520,19 +1520,19 @@ func TestBuildChatCompletionRequestNormalizesOpenAIChatCompletionsLowAliases(t *
 	t.Parallel()
 
 	for _, configuredModel := range []string{
-		"openai/gpt-5.4-low",
-		"openai/gpt-5.4-low:vision",
+		"compat/gpt-5.4-low",
+		"compat/gpt-5.4-low:vision",
 	} {
 		t.Run(configuredModel, func(t *testing.T) {
 			t.Parallel()
 
 			provider := new(providerConfig)
-			provider.BaseURL = testOpenAIBaseURL
+			provider.BaseURL = testOfficialOpenAIBaseURL
 
 			var loadedConfig config
 
 			loadedConfig.Providers = map[string]providerConfig{
-				"openai": *provider,
+				"compat": *provider,
 			}
 			loadedConfig.Models = map[string]map[string]any{
 				configuredModel: nil,
@@ -1548,7 +1548,7 @@ func TestBuildChatCompletionRequestNormalizesOpenAIChatCompletionsLowAliases(t *
 			}
 
 			if request.Provider.UseResponsesAPI {
-				t.Fatal("expected non-official OpenAI provider to stay on Chat Completions")
+				t.Fatal("expected non-openai provider to stay on Chat Completions")
 			}
 
 			if request.Model != openAIReasoningModelGPT54 {

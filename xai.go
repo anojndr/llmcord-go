@@ -125,16 +125,20 @@ type xAIResponsesStreamState struct {
 }
 
 func providerUsesResponsesAPI(providerName string, provider providerConfig) bool {
-	if provider.apiKind() != providerAPIKindOpenAI {
+	apiKind := provider.apiKind()
+	if apiKind != providerAPIKindOpenAI {
 		return false
+	}
+
+	if usesBuiltInOpenAIProvider(providerName, apiKind) {
+		return true
 	}
 
 	if strings.EqualFold(strings.TrimSpace(providerName), xAIProviderName) {
 		return true
 	}
 
-	return xAIBaseURLUsesOfficialAPI(provider.BaseURL) ||
-		openAIBaseURLUsesOfficialAPI(provider.BaseURL)
+	return xAIBaseURLUsesOfficialAPI(provider.BaseURL)
 }
 
 func responsesRequestLabel(request chatCompletionRequest) string {
@@ -398,7 +402,8 @@ func buildXAIResponsesRequestBody(request chatCompletionRequest) (map[string]any
 	}
 
 	extraBody := request.Provider.ExtraBody
-	if openAIBaseURLUsesOfficialAPI(request.Provider.BaseURL) {
+	if request.Provider.APIKind == providerAPIKindOpenAI &&
+		openAIConfiguredModel(request.ConfiguredModel) {
 		extraBody = normalizeOpenAIResponsesExtraBody(request.Model, extraBody)
 	}
 

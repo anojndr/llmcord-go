@@ -12,7 +12,7 @@
 !LICENSE.md
 !README.md
 
-# Root-level source and docs stay explicit; recursive allowlists are intentional for nested command and test paths.
+# Root-level source and docs stay explicit; local scratch files remain ignored by default.
 !*.go
 !searchDeciderPrompt.txt
 !cmd/
