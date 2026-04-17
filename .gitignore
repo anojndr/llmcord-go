@@ -5,6 +5,8 @@
 !.gitignore
 !.golangci.yml
 !AGENTS.md
+!.github/
+!.github/**/*
 !LICENSE.md
 !README.md
 
