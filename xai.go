@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"mime/multipart"
 	"net/http"
+	"net/textproto"
 	"net/url"
 	"os"
 	"path"
@@ -39,11 +41,16 @@ const (
 	xAIResponsesInputTextType          = "input_text"
 	xAIResponsesOutputTypeImage        = "image_generation_call"
 	xAIResponsesStatusCompleted        = "completed"
+	xAIResponsesUploadPurposeUserData  = "user_data"
 	xAIMarkdownLinkMatchParts          = 4
 	xAINumberedLineMatchParts          = 2
 	xAISourceAppendixHeader            = "Sources\n"
 	xAISourceAppendixParagraphHeader   = "\n\nSources\n"
 	xAISourceQueriesAppendixSeparator  = "\n\nSearch Queries\n"
+	xAIInputImageUploadFilename        = "input-image"
+	xAIInlineImageByteLimit            = 4 * 1024 * 1024
+	base64DecodedLengthNumerator       = 3
+	base64DecodedLengthDenominator     = 4
 )
 
 type xAIResponsesUsage struct {
@@ -73,6 +80,10 @@ type xAIResponsesOutputItem struct {
 	Action        string `json:"action"`
 	Prompt        string `json:"prompt"`
 	RevisedPrompt string `json:"revised_prompt"`
+}
+
+type xAIResponsesFile struct {
+	ID string `json:"id"`
 }
 
 type xAISourceAttribution struct {
@@ -244,7 +255,7 @@ func (client openAIClient) streamResponses(
 ) error {
 	requestLabel := responsesRequestLabel(request)
 
-	requestBody, err := buildXAIResponsesRequestBody(request)
+	requestBody, err := prepareXAIResponsesRequestBody(ctx, client.httpClient, request)
 	if err != nil {
 		return fmt.Errorf("build %s request body: %w", requestLabel, err)
 	}
@@ -346,6 +357,28 @@ func (client openAIClient) consumeXAIResponsesStream(
 	return terminalEventSeen, nil
 }
 
+func prepareXAIResponsesRequestBody(
+	ctx context.Context,
+	httpClient *http.Client,
+	request chatCompletionRequest,
+) (map[string]any, error) {
+	requestBody, err := buildXAIResponsesRequestBody(request)
+	if err != nil {
+		return nil, err
+	}
+
+	if !xAIResponsesShouldUploadImageFiles(request) {
+		return requestBody, nil
+	}
+
+	err = xAIResponsesReplaceLargeInlineImagesWithFileIDs(ctx, httpClient, request, requestBody)
+	if err != nil {
+		return nil, err
+	}
+
+	return requestBody, nil
+}
+
 func buildXAIResponsesRequestBody(request chatCompletionRequest) (map[string]any, error) {
 	input, err := xAIResponsesInput(
 		requestMessagesWithFileOrImageOnlyQueryPlaceholder(request.Messages),
@@ -370,6 +403,14 @@ func buildXAIResponsesRequestBody(request chatCompletionRequest) (map[string]any
 	}
 
 	return requestBody, nil
+}
+
+func xAIResponsesShouldUploadImageFiles(request chatCompletionRequest) bool {
+	if xAIConfiguredModel(request.ConfiguredModel) {
+		return true
+	}
+
+	return strings.Contains(strings.ToLower(strings.TrimSpace(request.Model)), "grok")
 }
 
 func xAIResponsesInput(messages []chatMessage) ([]map[string]any, error) {
@@ -530,9 +571,17 @@ func xAIResponsesUserPart(part contentPart) (map[string]any, bool, error) {
 			"text": textValue,
 		}, true, nil
 	case contentTypeImageURL:
-		imageURL, err := geminiImageURL(part)
+		imageURL, fileID, err := xAIResponsesImageReference(part)
 		if err != nil {
 			return nil, false, err
+		}
+
+		if fileID != "" {
+			return map[string]any{
+				"type":    xAIResponsesInputImageType,
+				"file_id": fileID,
+				"detail":  xAIResponsesImageDetailAuto,
+			}, true, nil
 		}
 
 		if imageURL == "" {
@@ -573,6 +622,255 @@ func xAIResponsesUserPart(part contentPart) (map[string]any, bool, error) {
 	}
 }
 
+func xAIResponsesImageReference(part contentPart) (string, string, error) {
+	stringMap, foundStringMap := part["image_url"].(map[string]string)
+	if foundStringMap {
+		return strings.TrimSpace(stringMap["url"]), strings.TrimSpace(stringMap["file_id"]), nil
+	}
+
+	rawImageURL, foundMap := part["image_url"].(map[string]any)
+	if !foundMap {
+		return "", "", fmt.Errorf("decode xAI image_url content part: %w", os.ErrInvalid)
+	}
+
+	imageURL, _ := rawImageURL["url"].(string)
+	fileID, _ := rawImageURL["file_id"].(string)
+
+	return strings.TrimSpace(imageURL), strings.TrimSpace(fileID), nil
+}
+
+func xAIResponsesReplaceLargeInlineImagesWithFileIDs(
+	ctx context.Context,
+	httpClient *http.Client,
+	request chatCompletionRequest,
+	requestBody map[string]any,
+) error {
+	if httpClient == nil {
+		return fmt.Errorf("missing xAI file upload client: %w", os.ErrInvalid)
+	}
+
+	input, ok := requestBody["input"].([]map[string]any)
+	if !ok {
+		return nil
+	}
+
+	uploadedFileIDs := make(map[string]string)
+
+	for messageIndex, message := range input {
+		content, contentOK := message["content"].([]map[string]any)
+		if !contentOK {
+			continue
+		}
+
+		for partIndex, part := range content {
+			fileID, replace, err := xAIResponsesPreparedImageFileID(
+				ctx,
+				httpClient,
+				request,
+				part,
+				uploadedFileIDs,
+			)
+			if err != nil {
+				return fmt.Errorf("prepare xAI image input %d.%d: %w", messageIndex, partIndex, err)
+			}
+
+			if !replace {
+				continue
+			}
+
+			delete(part, "image_url")
+			part["file_id"] = fileID
+		}
+	}
+
+	return nil
+}
+
+func xAIResponsesPreparedImageFileID(
+	ctx context.Context,
+	httpClient *http.Client,
+	request chatCompletionRequest,
+	part map[string]any,
+	uploadedFileIDs map[string]string,
+) (string, bool, error) {
+	partType, _ := part["type"].(string)
+	if partType != xAIResponsesInputImageType {
+		return "", false, nil
+	}
+
+	fileIDValue, _ := part["file_id"].(string)
+	if strings.TrimSpace(fileIDValue) != "" {
+		return "", false, nil
+	}
+
+	imageURL, _ := part["image_url"].(string)
+	imageURL = strings.TrimSpace(imageURL)
+
+	shouldUpload, err := xAIResponsesShouldUploadInlineImage(imageURL)
+	if err != nil {
+		return "", false, err
+	}
+
+	if !shouldUpload {
+		return "", false, nil
+	}
+
+	imageBytes, mimeType, err := geminiInlineImage(imageURL)
+	if err != nil {
+		return "", false, err
+	}
+
+	if cachedFileID, exists := uploadedFileIDs[imageURL]; exists {
+		return cachedFileID, true, nil
+	}
+
+	fileID, err := uploadXAIResponsesInputFile(ctx, httpClient, request, imageBytes, mimeType)
+	if err != nil {
+		return "", false, err
+	}
+
+	uploadedFileIDs[imageURL] = fileID
+
+	return fileID, true, nil
+}
+
+func xAIResponsesShouldUploadInlineImage(imageURL string) (bool, error) {
+	if !strings.HasPrefix(imageURL, "data:") {
+		return false, nil
+	}
+
+	metadata, payload, found := strings.Cut(strings.TrimPrefix(imageURL, "data:"), ",")
+	if !found {
+		return false, fmt.Errorf("parse xAI data URL %q: %w", imageURL, os.ErrInvalid)
+	}
+
+	if !strings.Contains(strings.ToLower(metadata), "base64") {
+		return false, nil
+	}
+
+	return base64DecodedLengthEstimate(payload) > xAIInlineImageByteLimit, nil
+}
+
+func base64DecodedLengthEstimate(payload string) int {
+	trimmedPayload := strings.TrimRight(strings.TrimSpace(payload), "=")
+
+	return len(trimmedPayload) * base64DecodedLengthNumerator / base64DecodedLengthDenominator
+}
+
+func uploadXAIResponsesInputFile(
+	ctx context.Context,
+	httpClient *http.Client,
+	request chatCompletionRequest,
+	fileBytes []byte,
+	mimeType string,
+) (string, error) {
+	requestURL, err := buildXAIFileUploadURL(request.Provider.BaseURL, request.Provider.ExtraQuery)
+	if err != nil {
+		return "", fmt.Errorf("build xAI file upload url: %w", err)
+	}
+
+	requestBody, contentType, err := xAIFileUploadPayload(fileBytes, mimeType)
+	if err != nil {
+		return "", err
+	}
+
+	httpRequest, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodPost,
+		requestURL,
+		bytes.NewReader(requestBody),
+	)
+	if err != nil {
+		return "", fmt.Errorf("create xAI file upload request: %w", err)
+	}
+
+	httpRequest.Header.Set("Accept", "application/json")
+	httpRequest.Header.Set("Authorization", "Bearer "+openAIAPIKey(request.Provider.primaryAPIKey()))
+	httpRequest.Header.Set("Content-Type", contentType)
+	setOpenAIClientRequestIDHeader(httpRequest, request)
+
+	for key, value := range request.Provider.ExtraHeaders {
+		httpRequest.Header.Set(key, stringifyValue(value))
+	}
+
+	httpResponse, err := httpClient.Do(httpRequest)
+	if err != nil {
+		return "", fmt.Errorf("send xAI file upload request: %w", err)
+	}
+
+	defer func() {
+		_ = httpResponse.Body.Close()
+	}()
+
+	return xAIUploadedFileIDFromResponse(httpResponse)
+}
+
+func xAIFileUploadPayload(fileBytes []byte, mimeType string) ([]byte, string, error) {
+	var requestBody bytes.Buffer
+
+	multipartWriter := multipart.NewWriter(&requestBody)
+
+	err := multipartWriter.WriteField("purpose", xAIResponsesUploadPurposeUserData)
+	if err != nil {
+		return nil, "", fmt.Errorf("write xAI file upload purpose: %w", err)
+	}
+
+	filePartHeaders := make(textproto.MIMEHeader)
+	filePartHeaders.Set(
+		"Content-Disposition",
+		fmt.Sprintf(`form-data; name="file"; filename="%s"`, xAIInputImageUploadFilename),
+	)
+	filePartHeaders.Set("Content-Type", mimeType)
+
+	fileWriter, err := multipartWriter.CreatePart(filePartHeaders)
+	if err != nil {
+		return nil, "", fmt.Errorf("create xAI file upload part: %w", err)
+	}
+
+	_, err = fileWriter.Write(fileBytes)
+	if err != nil {
+		return nil, "", fmt.Errorf("write xAI file upload bytes: %w", err)
+	}
+
+	err = multipartWriter.Close()
+	if err != nil {
+		return nil, "", fmt.Errorf("close xAI file upload body: %w", err)
+	}
+
+	return requestBody.Bytes(), multipartWriter.FormDataContentType(), nil
+}
+
+func xAIUploadedFileIDFromResponse(httpResponse *http.Response) (string, error) {
+	responseBody, err := io.ReadAll(httpResponse.Body)
+	if err != nil {
+		return "", fmt.Errorf("read xAI file upload response after status %d: %w", httpResponse.StatusCode, err)
+	}
+
+	if httpResponse.StatusCode < http.StatusOK || httpResponse.StatusCode >= http.StatusMultipleChoices {
+		return "", newOpenAIProviderStatusError(
+			"xAI file upload request failed",
+			httpResponse.StatusCode,
+			httpResponse.Status,
+			httpResponse.Header.Clone(),
+			responseBody,
+			false,
+		)
+	}
+
+	var uploadedFile xAIResponsesFile
+
+	err = json.Unmarshal(responseBody, &uploadedFile)
+	if err != nil {
+		return "", fmt.Errorf("decode xAI file upload response: %w", err)
+	}
+
+	if strings.TrimSpace(uploadedFile.ID) == "" {
+		return "", fmt.Errorf("missing xAI file upload id: %w", os.ErrInvalid)
+	}
+
+	return uploadedFile.ID, nil
+}
+
 func buildXAIResponsesURL(baseURL string, extraQuery map[string]any) (string, error) {
 	parsedURL, err := url.Parse(strings.TrimSpace(baseURL))
 	if err != nil {
@@ -580,6 +878,24 @@ func buildXAIResponsesURL(baseURL string, extraQuery map[string]any) (string, er
 	}
 
 	parsedURL.Path = path.Join(parsedURL.Path, "responses")
+
+	queryValues := parsedURL.Query()
+	for key, value := range extraQuery {
+		queryValues.Set(key, stringifyValue(value))
+	}
+
+	parsedURL.RawQuery = queryValues.Encode()
+
+	return parsedURL.String(), nil
+}
+
+func buildXAIFileUploadURL(baseURL string, extraQuery map[string]any) (string, error) {
+	parsedURL, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil {
+		return "", fmt.Errorf("parse xAI base url %q: %w", baseURL, err)
+	}
+
+	parsedURL.Path = path.Join(parsedURL.Path, "files")
 
 	queryValues := parsedURL.Query()
 	for key, value := range extraQuery {
