@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -210,6 +212,46 @@ func TestBuildXAIResponsesRequestBodyAddsPlaceholderForImageOnlyUserMessage(t *t
 	}
 }
 
+func TestBuildXAIResponsesRequestBodyUsesImageFileIDReferences(t *testing.T) {
+	t.Parallel()
+
+	request := newXAIResponsesStreamingRequest("https://api.x.ai/v1")
+	request.Messages[1].Content = []contentPart{
+		{"type": contentTypeText, "text": testGeminiImagePrompt},
+		{
+			"type":      contentTypeImageURL,
+			"image_url": map[string]any{"file_id": "file_image_123"},
+		},
+	}
+
+	requestBody, err := buildXAIResponsesRequestBody(request)
+	if err != nil {
+		t.Fatalf("build xAI responses request body: %v", err)
+	}
+
+	inputPayload, inputOK := requestBody["input"].([]map[string]any)
+	if !inputOK || len(inputPayload) != 2 {
+		t.Fatalf("unexpected input payload: %#v", requestBody["input"])
+	}
+
+	userContent, contentOK := inputPayload[1]["content"].([]map[string]any)
+	if !contentOK || len(userContent) != 2 {
+		t.Fatalf("unexpected user content payload: %#v", inputPayload[1]["content"])
+	}
+
+	if userContent[1]["type"] != xAIResponsesInputImageType {
+		t.Fatalf("unexpected image content part: %#v", userContent[1])
+	}
+
+	if userContent[1]["file_id"] != "file_image_123" {
+		t.Fatalf("unexpected xAI image file_id: %#v", userContent[1]["file_id"])
+	}
+
+	if _, exists := userContent[1]["image_url"]; exists {
+		t.Fatalf("expected image_url to be omitted when file_id is present: %#v", userContent[1])
+	}
+}
+
 func TestBuildXAIResponsesRequestBodyAddsPlaceholderForDocumentOnlyUserMessage(t *testing.T) {
 	t.Parallel()
 
@@ -331,6 +373,74 @@ func TestBuildXAIResponsesRequestBodySkipsReplyChainImageWhenFollowUpHasNoOwnIma
 
 	if inputPayload[0]["content"] != "ty" {
 		t.Fatalf("unexpected text-only follow-up content: %#v", inputPayload[0]["content"])
+	}
+}
+
+func TestPrepareXAIResponsesRequestBodyUploadsLargeInlineImagesAsFiles(t *testing.T) {
+	t.Parallel()
+
+	largeImage := bytes.Repeat([]byte("x"), xAIInlineImageByteLimit+1)
+	largeImageURL := "data:image/png;base64," + base64.StdEncoding.EncodeToString(largeImage)
+
+	uploadCount := 0
+
+	server := httptest.NewServer(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		request *http.Request,
+	) {
+		t.Helper()
+
+		uploadCount++
+
+		assertXAIFileUploadRequest(t, request, largeImage, mimeTypePNG)
+
+		responseWriter.Header().Set("Content-Type", "application/json")
+
+		_, err := responseWriter.Write([]byte(`{"id":"file_large_image"}`))
+		if err != nil {
+			t.Fatalf("write upload response: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	request := newXAIResponsesStreamingRequest(server.URL + "/v1")
+	request.Messages[1].Content = []contentPart{
+		{"type": contentTypeText, "text": testGeminiImagePrompt},
+		{
+			"type":      contentTypeImageURL,
+			"image_url": map[string]string{"url": largeImageURL},
+		},
+	}
+
+	requestBody, err := prepareXAIResponsesRequestBody(context.Background(), server.Client(), request)
+	if err != nil {
+		t.Fatalf("prepare xAI responses request body: %v", err)
+	}
+
+	if uploadCount != 1 {
+		t.Fatalf("unexpected xAI image upload count: %d", uploadCount)
+	}
+
+	inputPayload, inputOK := requestBody["input"].([]map[string]any)
+	if !inputOK || len(inputPayload) != 2 {
+		t.Fatalf("unexpected input payload: %#v", requestBody["input"])
+	}
+
+	userContent, contentOK := inputPayload[1]["content"].([]map[string]any)
+	if !contentOK || len(userContent) != 2 {
+		t.Fatalf("unexpected user content payload: %#v", inputPayload[1]["content"])
+	}
+
+	if userContent[1]["type"] != xAIResponsesInputImageType {
+		t.Fatalf("unexpected image content part: %#v", userContent[1])
+	}
+
+	if userContent[1]["file_id"] != "file_large_image" {
+		t.Fatalf("unexpected uploaded xAI image file_id: %#v", userContent[1]["file_id"])
+	}
+
+	if _, exists := userContent[1]["image_url"]; exists {
+		t.Fatalf("expected inline image_url to be replaced after upload: %#v", userContent[1])
 	}
 }
 
@@ -983,6 +1093,86 @@ func assertXAIResponsesUserMessage(t *testing.T, rawMessage any) {
 
 	if secondPart["image_url"] != "data:image/png;base64,abc" {
 		t.Fatalf("unexpected image_url: %#v", secondPart["image_url"])
+	}
+}
+
+func assertXAIFileUploadRequest(
+	t *testing.T,
+	request *http.Request,
+	expectedBytes []byte,
+	expectedMIMEType string,
+) {
+	t.Helper()
+
+	if request.URL.Path != "/v1/files" {
+		t.Fatalf("unexpected upload path: %s", request.URL.Path)
+	}
+
+	if request.URL.Query().Get("api-version") != testXAIAPIVersion {
+		t.Fatalf("unexpected upload query string: %s", request.URL.RawQuery)
+	}
+
+	if request.Header.Get("Authorization") != testXAIAuthHeader {
+		t.Fatalf("unexpected upload authorization header: %q", request.Header.Get("Authorization"))
+	}
+
+	if request.Header.Get("X-Test") != "present" {
+		t.Fatalf("unexpected upload extra header: %q", request.Header.Get("X-Test"))
+	}
+
+	multipartReader, err := request.MultipartReader()
+	if err != nil {
+		t.Fatalf("build xAI upload multipart reader: %v", err)
+	}
+
+	var (
+		purposeValue    string
+		fileBytes       []byte
+		fileContentType string
+		fileName        string
+	)
+
+	for {
+		part, partErr := multipartReader.NextPart()
+		if partErr == io.EOF {
+			break
+		}
+
+		if partErr != nil {
+			t.Fatalf("read xAI upload part: %v", partErr)
+		}
+
+		partBody, readErr := io.ReadAll(part)
+		if readErr != nil {
+			t.Fatalf("read xAI upload part body: %v", readErr)
+		}
+
+		switch part.FormName() {
+		case "purpose":
+			purposeValue = string(partBody)
+		case "file":
+			fileBytes = partBody
+			fileContentType = part.Header.Get("Content-Type")
+			fileName = part.FileName()
+		default:
+			t.Fatalf("unexpected xAI upload form field: %q", part.FormName())
+		}
+	}
+
+	if purposeValue != xAIResponsesUploadPurposeUserData {
+		t.Fatalf("unexpected xAI upload purpose: %q", purposeValue)
+	}
+
+	if fileContentType != expectedMIMEType {
+		t.Fatalf("unexpected xAI upload content type: %q", fileContentType)
+	}
+
+	if fileName != xAIInputImageUploadFilename {
+		t.Fatalf("unexpected xAI upload filename: %q", fileName)
+	}
+
+	if !bytes.Equal(fileBytes, expectedBytes) {
+		t.Fatal("unexpected uploaded xAI image bytes")
 	}
 }
 

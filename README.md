@@ -32,6 +32,7 @@ It also works with local backends such as Ollama, LM Studio, and vLLM.
 Behavior notes:
 - Official OpenAI providers (`https://api.openai.com/v1`) now use the Responses API, while other OpenAI-compatible backends stay on Chat Completions unless they expose their own compatible Responses endpoint.
 - xAI-compatible providers can continue server-side conversations with stored `previous_response_id` values when the model matches.
+- xAI and Grok-compatible Responses requests keep direct image URLs inline, accept image `file_id` references, and automatically upload oversized inline Base64 images through `/v1/files` before sending `input_image.file_id`.
 - xAI image-generation replies keep the provider's generated image URL in the response body instead of rendering it as a Discord embed image.
 - Final answers that include `https://files.catbox.moe/...` links are followed by a plain Discord reply containing those Catbox URLs so Discord can render them outside the bot embed.
 - When an xAI model is selected, non-Facebook, non-YouTube Shorts URLs stay provider-side instead of running the bot's URL fetchers first.
@@ -179,6 +180,7 @@ Model notes:
   Text-like files such as JSON, CSV, logs, Markdown, and source code are inlined when the target provider cannot read raw files directly.
   Other files are still preserved as explicit attachments and fall back to metadata summaries, including ZIP manifests for archive uploads.
   Gemini single-image prompts are sent image-first, and images larger than 4 MiB are uploaded through the Gemini Files API instead of being inlined. With the default `max_images: 5`, that keeps inline Gemini image payloads within the documented 20 MB request guidance.
+  xAI and Grok-compatible Responses requests automatically switch oversized inline image data URLs to uploaded file references so Grok bridge deployments do not have to carry large Base64 image JSON through the final `/v1/responses` call.
 - Start a prompt with `vsearch` to run reverse-image lookup
 - Use `Show Sources` on searched replies to inspect the cited URLs, including the total source count and pagination when needed
 
