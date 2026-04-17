@@ -281,6 +281,7 @@ func buildChatCompletionRequestBodyWithUsageOption(
 	requestBody["messages"] = requestMessagesWithFileOrImageOnlyQueryPlaceholder(request.Messages)
 	requestBody["model"] = request.Model
 	requestBody["stream"] = true
+	addOpenAIPromptCacheKey(requestBody, request)
 
 	maps.Copy(requestBody, request.Provider.ExtraBody)
 

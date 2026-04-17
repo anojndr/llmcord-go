@@ -809,6 +809,70 @@ func TestAssignOpenAICodexSessionIDUsesConversationAnchor(t *testing.T) {
 	}
 }
 
+func TestAssignOpenAIPromptCacheKeyUsesConversationAnchorForOpenAIProvider(t *testing.T) {
+	t.Parallel()
+
+	const testChannelID = "channel-1"
+
+	store := newMessageNodeStore(8)
+	rootMessage := new(discordgo.Message)
+	rootMessage.ID = "100"
+	rootMessage.ChannelID = testChannelID
+
+	assistantMessage := new(discordgo.Message)
+	assistantMessage.ID = "200"
+	assistantMessage.ChannelID = testChannelID
+
+	followUpMessage := new(discordgo.Message)
+	followUpMessage.ID = "300"
+	followUpMessage.ChannelID = testChannelID
+
+	store.getOrCreate(assistantMessage.ID).parentMessage = rootMessage
+	store.getOrCreate(followUpMessage.ID).parentMessage = assistantMessage
+
+	var rootRequest chatCompletionRequest
+
+	rootRequest.Provider.APIKind = providerAPIKindOpenAI
+	rootRequest.Provider.BaseURL = testOpenAIBaseURL
+	rootRequest.ConfiguredModel = "openai/gpt-5.4"
+
+	followUpRequest := rootRequest
+
+	assignOpenAIPromptCacheKey(&rootRequest, assistantMessage, store, 10)
+	assignOpenAIPromptCacheKey(&followUpRequest, followUpMessage, store, 10)
+
+	if rootRequest.SessionID == "" {
+		t.Fatal("expected non-empty session id")
+	}
+
+	if !strings.HasPrefix(rootRequest.SessionID, openAIProviderPromptCacheKeyPrefix+"-") {
+		t.Fatalf("unexpected prompt cache key: %q", rootRequest.SessionID)
+	}
+
+	if rootRequest.SessionID != followUpRequest.SessionID {
+		t.Fatalf("expected shared session id, got %q and %q", rootRequest.SessionID, followUpRequest.SessionID)
+	}
+}
+
+func TestAssignOpenAIPromptCacheKeySkipsNonOpenAIProvider(t *testing.T) {
+	t.Parallel()
+
+	var request chatCompletionRequest
+
+	request.Provider.APIKind = providerAPIKindOpenAI
+	request.Provider.BaseURL = testOpenAIBaseURL
+	request.ConfiguredModel = "compatible/gpt-test"
+
+	message := new(discordgo.Message)
+	message.ID = "100"
+
+	assignOpenAIPromptCacheKey(&request, message, nil, 10)
+
+	if request.SessionID != "" {
+		t.Fatalf("unexpected session id: %q", request.SessionID)
+	}
+}
+
 func newOpenAICodexProviderRequestConfig(
 	apiKey string,
 	baseURL string,
