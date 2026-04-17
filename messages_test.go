@@ -233,7 +233,7 @@ func TestBuildChatCompletionRequestUsesResponsesAPIForOfficialOpenAIProvider(t *
 	t.Parallel()
 
 	provider := new(providerConfig)
-	provider.BaseURL = "https://api.openai.com/v1"
+	provider.BaseURL = testOfficialOpenAIBaseURL
 
 	var loadedConfig config
 
@@ -1336,8 +1336,233 @@ func TestBuildChatCompletionRequestNormalizesOpenAICodexReasoningAlias(t *testin
 		t.Fatalf("unexpected original reasoning config: %#v", modelParameters["reasoning"])
 	}
 
-	if originalReasoningConfig["effort"] != "high" {
+	if originalReasoningConfig["effort"] != openAICodexReasoningHigh {
 		t.Fatalf("unexpected mutation of original reasoning config: %#v", originalReasoningConfig)
+	}
+}
+
+func TestBuildChatCompletionRequestNormalizesOpenAIResponsesReasoningAlias(t *testing.T) {
+	t.Parallel()
+
+	provider := new(providerConfig)
+	provider.BaseURL = testOfficialOpenAIBaseURL
+	provider.ExtraBody = map[string]any{
+		"verbosity":        openAIReasoningEffortMedium,
+		"reasoning_effort": openAIReasoningEffortMedium,
+	}
+
+	modelParameters := map[string]any{
+		"reasoning": map[string]any{
+			"summary": openAIReasoningSummaryConcise,
+			"effort":  "high",
+		},
+	}
+
+	var loadedConfig config
+
+	loadedConfig.Providers = map[string]providerConfig{
+		"openai": *provider,
+	}
+	loadedConfig.Models = map[string]map[string]any{
+		"openai/gpt-5.4-none": modelParameters,
+	}
+
+	request, err := buildChatCompletionRequest(
+		loadedConfig,
+		"openai/gpt-5.4-none",
+		[]chatMessage{{Role: messageRoleUser, Content: "hello"}},
+	)
+	if err != nil {
+		t.Fatalf("build chat completion request: %v", err)
+	}
+
+	if request.Model != openAIReasoningModelGPT54 {
+		t.Fatalf("unexpected request model: %q", request.Model)
+	}
+
+	if request.ConfiguredModel != "openai/gpt-5.4-none" {
+		t.Fatalf("unexpected configured model: %q", request.ConfiguredModel)
+	}
+
+	if !request.Provider.UseResponsesAPI {
+		t.Fatal("expected official OpenAI provider to use the Responses API")
+	}
+
+	if request.Provider.ExtraBody["verbosity"] != openAIReasoningEffortMedium {
+		t.Fatalf("unexpected provider extra body: %#v", request.Provider.ExtraBody)
+	}
+
+	if _, ok := request.Provider.ExtraBody["reasoning_effort"]; ok {
+		t.Fatalf("unexpected top-level reasoning_effort: %#v", request.Provider.ExtraBody)
+	}
+
+	reasoningConfig, reasoningConfigOK := request.Provider.ExtraBody["reasoning"].(map[string]any)
+	if !reasoningConfigOK {
+		t.Fatalf("unexpected reasoning config: %#v", request.Provider.ExtraBody["reasoning"])
+	}
+
+	if reasoningConfig["summary"] != openAIReasoningSummaryConcise {
+		t.Fatalf("unexpected reasoning summary: %#v", reasoningConfig["summary"])
+	}
+
+	if reasoningConfig["effort"] != openAIReasoningEffortNone {
+		t.Fatalf("unexpected reasoning effort: %#v", reasoningConfig["effort"])
+	}
+
+	originalReasoningConfig, ok := modelParameters["reasoning"].(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected original reasoning config: %#v", modelParameters["reasoning"])
+	}
+
+	if originalReasoningConfig["effort"] != openAICodexReasoningHigh {
+		t.Fatalf("unexpected mutation of original reasoning config: %#v", originalReasoningConfig)
+	}
+}
+
+func TestBuildChatCompletionRequestNormalizesOpenAIResponsesReasoningEffort(t *testing.T) {
+	t.Parallel()
+
+	provider := new(providerConfig)
+	provider.BaseURL = testOfficialOpenAIBaseURL
+
+	modelParameters := map[string]any{
+		"reasoning_effort": openAIReasoningEffortMinimal,
+	}
+
+	var loadedConfig config
+
+	loadedConfig.Providers = map[string]providerConfig{
+		"openai": *provider,
+	}
+	loadedConfig.Models = map[string]map[string]any{
+		"openai/gpt-5.4": modelParameters,
+	}
+
+	request, err := buildChatCompletionRequest(
+		loadedConfig,
+		"openai/gpt-5.4",
+		[]chatMessage{{Role: messageRoleUser, Content: "hello"}},
+	)
+	if err != nil {
+		t.Fatalf("build chat completion request: %v", err)
+	}
+
+	if _, ok := request.Provider.ExtraBody["reasoning_effort"]; ok {
+		t.Fatalf("unexpected top-level reasoning_effort: %#v", request.Provider.ExtraBody)
+	}
+
+	reasoningConfig, reasoningConfigOK := request.Provider.ExtraBody["reasoning"].(map[string]any)
+	if !reasoningConfigOK {
+		t.Fatalf("unexpected reasoning config: %#v", request.Provider.ExtraBody["reasoning"])
+	}
+
+	if reasoningConfig["effort"] != openAIReasoningEffortLow {
+		t.Fatalf("unexpected reasoning effort: %#v", reasoningConfig["effort"])
+	}
+
+	if modelParameters["reasoning_effort"] != openAIReasoningEffortMinimal {
+		t.Fatalf("unexpected mutation of original reasoning config: %#v", modelParameters)
+	}
+}
+
+func TestBuildChatCompletionRequestNormalizesOpenAIResponsesLowAliases(t *testing.T) {
+	t.Parallel()
+
+	for _, configuredModel := range []string{
+		"openai/gpt-5.4-low",
+		"openai/gpt-5.4-low:vision",
+	} {
+		t.Run(configuredModel, func(t *testing.T) {
+			t.Parallel()
+
+			provider := new(providerConfig)
+			provider.BaseURL = testOfficialOpenAIBaseURL
+
+			var loadedConfig config
+
+			loadedConfig.Providers = map[string]providerConfig{
+				"openai": *provider,
+			}
+			loadedConfig.Models = map[string]map[string]any{
+				configuredModel: nil,
+			}
+
+			request, err := buildChatCompletionRequest(
+				loadedConfig,
+				configuredModel,
+				[]chatMessage{{Role: messageRoleUser, Content: "hello"}},
+			)
+			if err != nil {
+				t.Fatalf("build chat completion request: %v", err)
+			}
+
+			if request.Model != openAIReasoningModelGPT54 {
+				t.Fatalf("unexpected request model: %q", request.Model)
+			}
+
+			if request.ConfiguredModel != configuredModel {
+				t.Fatalf("unexpected configured model: %q", request.ConfiguredModel)
+			}
+
+			reasoningConfig, reasoningConfigOK := request.Provider.ExtraBody["reasoning"].(map[string]any)
+			if !reasoningConfigOK {
+				t.Fatalf("unexpected reasoning config: %#v", request.Provider.ExtraBody["reasoning"])
+			}
+
+			if reasoningConfig["effort"] != openAIReasoningEffortLow {
+				t.Fatalf("unexpected reasoning effort: %#v", reasoningConfig["effort"])
+			}
+		})
+	}
+}
+
+func TestBuildChatCompletionRequestNormalizesOpenAIChatCompletionsLowAliases(t *testing.T) {
+	t.Parallel()
+
+	for _, configuredModel := range []string{
+		"openai/gpt-5.4-low",
+		"openai/gpt-5.4-low:vision",
+	} {
+		t.Run(configuredModel, func(t *testing.T) {
+			t.Parallel()
+
+			provider := new(providerConfig)
+			provider.BaseURL = testOpenAIBaseURL
+
+			var loadedConfig config
+
+			loadedConfig.Providers = map[string]providerConfig{
+				"openai": *provider,
+			}
+			loadedConfig.Models = map[string]map[string]any{
+				configuredModel: nil,
+			}
+
+			request, err := buildChatCompletionRequest(
+				loadedConfig,
+				configuredModel,
+				[]chatMessage{{Role: messageRoleUser, Content: "hello"}},
+			)
+			if err != nil {
+				t.Fatalf("build chat completion request: %v", err)
+			}
+
+			if request.Provider.UseResponsesAPI {
+				t.Fatal("expected non-official OpenAI provider to stay on Chat Completions")
+			}
+
+			if request.Model != openAIReasoningModelGPT54 {
+				t.Fatalf("unexpected request model: %q", request.Model)
+			}
+
+			if request.ConfiguredModel != configuredModel {
+				t.Fatalf("unexpected configured model: %q", request.ConfiguredModel)
+			}
+
+			if request.Provider.ExtraBody["reasoning_effort"] != openAIReasoningEffortLow {
+				t.Fatalf("unexpected reasoning effort: %#v", request.Provider.ExtraBody["reasoning_effort"])
+			}
+		})
 	}
 }
 

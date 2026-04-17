@@ -1071,6 +1071,7 @@ func buildChatCompletionRequest(
 
 	modelParameters := requestModelParameters(loadedConfig.Models[providerSlashModel])
 	providerAPIKind := provider.apiKind()
+	useResponsesAPI := providerUsesResponsesAPI(providerName, provider)
 	extraBody := mergeExtraBody(provider.ExtraBody, modelParameters)
 	extraBody = defaultProviderVerbosity(providerName, providerAPIKind, extraBody)
 
@@ -1095,6 +1096,15 @@ func buildChatCompletionRequest(
 		modelName, extraBody = normalizeOpenAICodexModelAlias(modelName, extraBody)
 	}
 
+	if providerAPIKind == providerAPIKindOpenAI {
+		if useResponsesAPI && openAIBaseURLUsesOfficialAPI(provider.BaseURL) {
+			modelName, extraBody = normalizeOpenAIResponsesModelAlias(modelName, extraBody)
+			extraBody = normalizeOpenAIResponsesExtraBody(modelName, extraBody)
+		} else {
+			modelName, extraBody = normalizeOpenAIChatCompletionsModelAlias(modelName, extraBody)
+		}
+	}
+
 	extraBody = defaultOpenRouterTransforms(provider, extraBody)
 
 	return chatCompletionRequest{
@@ -1103,7 +1113,7 @@ func buildChatCompletionRequest(
 			BaseURL:         provider.BaseURL,
 			APIKey:          provider.primaryAPIKey(),
 			APIKeys:         provider.apiKeys(),
-			UseResponsesAPI: providerUsesResponsesAPI(providerName, provider),
+			UseResponsesAPI: useResponsesAPI,
 			ExtraHeaders:    provider.ExtraHeaders,
 			ExtraQuery:      provider.ExtraQuery,
 			ExtraBody:       extraBody,

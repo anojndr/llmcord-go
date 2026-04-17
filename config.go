@@ -641,6 +641,10 @@ func effectiveAliasedModelIntSettingValues(
 func modelLocalSettingBaseModel(provider providerConfig, modelName string) (string, error) {
 	switch provider.apiKind() {
 	case providerAPIKindOpenAI:
+		if baseModelName, _, hasAlias := openAIReasoningEffortAlias(modelName); hasAlias {
+			return baseModelName, nil
+		}
+
 		return modelName, nil
 	case providerAPIKindGemini:
 		baseModelName, _, err := normalizeGeminiModelAlias(modelName, nil)

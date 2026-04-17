@@ -1190,6 +1190,66 @@ func TestSetOpenAIClientRequestIDHeaderUsesOfficialAPIOnly(t *testing.T) {
 	}
 }
 
+func TestBuildOpenAIResponsesRequestBodyNormalizesReasoningConfig(t *testing.T) {
+	t.Parallel()
+
+	request := chatCompletionRequest{
+		Provider: providerRequestConfig{
+			APIKind:         providerAPIKindOpenAI,
+			BaseURL:         testOfficialOpenAIBaseURL,
+			APIKey:          "test-key",
+			APIKeys:         nil,
+			UseResponsesAPI: true,
+			ExtraHeaders:    nil,
+			ExtraQuery:      nil,
+			ExtraBody: map[string]any{
+				"reasoning_effort":  openAIReasoningEffortMinimal,
+				"reasoning_summary": openAIReasoningSummaryConcise,
+			},
+		},
+		Model:                       openAIReasoningModelGPT54,
+		ConfiguredModel:             "openai/gpt-5.4",
+		ContextWindow:               0,
+		AutoCompactThresholdPercent: 0,
+		SessionID:                   "",
+		PreviousResponseID:          "",
+		RequestID:                   "",
+		Messages: []chatMessage{
+			{Role: messageRoleUser, Content: "hello"},
+		},
+	}
+
+	requestBody, err := buildXAIResponsesRequestBody(request)
+	if err != nil {
+		t.Fatalf("build responses request body: %v", err)
+	}
+
+	if _, exists := requestBody["reasoning_effort"]; exists {
+		t.Fatalf("unexpected top-level reasoning_effort: %#v", requestBody["reasoning_effort"])
+	}
+
+	if _, exists := requestBody["reasoning_summary"]; exists {
+		t.Fatalf("unexpected top-level reasoning_summary: %#v", requestBody["reasoning_summary"])
+	}
+
+	reasoningConfig, ok := requestBody["reasoning"].(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected reasoning config type: %T", requestBody["reasoning"])
+	}
+
+	if reasoningConfig["effort"] != openAIReasoningEffortLow {
+		t.Fatalf("unexpected reasoning effort: %#v", reasoningConfig["effort"])
+	}
+
+	if reasoningConfig["summary"] != openAIReasoningSummaryConcise {
+		t.Fatalf("unexpected reasoning summary: %#v", reasoningConfig["summary"])
+	}
+
+	if request.Provider.ExtraBody["reasoning_effort"] != openAIReasoningEffortMinimal {
+		t.Fatalf("unexpected mutation of original reasoning config: %#v", request.Provider.ExtraBody)
+	}
+}
+
 func newOpenAIClientRequestIDTestRequest(baseURL string) chatCompletionRequest {
 	return chatCompletionRequest{
 		Provider: providerRequestConfig{
