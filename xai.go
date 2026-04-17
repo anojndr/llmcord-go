@@ -717,7 +717,7 @@ func xAIResponsesPreparedImageFileID(
 	imageURL, _ := part["image_url"].(string)
 	imageURL = strings.TrimSpace(imageURL)
 
-	shouldUpload, err := xAIResponsesShouldUploadInlineImage(imageURL)
+	shouldUpload, err := xAIResponsesShouldUploadInlineImage(request, imageURL)
 	if err != nil {
 		return "", false, err
 	}
@@ -745,7 +745,10 @@ func xAIResponsesPreparedImageFileID(
 	return fileID, true, nil
 }
 
-func xAIResponsesShouldUploadInlineImage(imageURL string) (bool, error) {
+func xAIResponsesShouldUploadInlineImage(
+	request chatCompletionRequest,
+	imageURL string,
+) (bool, error) {
 	if !strings.HasPrefix(imageURL, "data:") {
 		return false, nil
 	}
@@ -757,6 +760,10 @@ func xAIResponsesShouldUploadInlineImage(imageURL string) (bool, error) {
 
 	if !strings.Contains(strings.ToLower(metadata), "base64") {
 		return false, nil
+	}
+
+	if !xAIBaseURLUsesOfficialAPI(request.Provider.BaseURL) {
+		return true, nil
 	}
 
 	return base64DecodedLengthEstimate(payload) > xAIInlineImageByteLimit, nil
