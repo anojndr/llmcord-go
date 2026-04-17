@@ -479,6 +479,276 @@ func TestBuildResponseEmbedLeavesGeneratedImageURLInDescription(t *testing.T) {
 	}
 }
 
+func TestCatboxResponseURLsDeduplicatesMarkdownLinks(t *testing.T) {
+	t.Parallel()
+
+	urls := catboxResponseURLs(
+		"See [https://files.catbox.moe/qrgalb.jpg](https://files.catbox.moe/qrgalb.jpg), " +
+			"https://files.catbox.moe/demo.mp4, and https://example.com/ignore.jpg.",
+	)
+
+	expectedURLs := []string{
+		"https://files.catbox.moe/qrgalb.jpg",
+		"https://files.catbox.moe/demo.mp4",
+	}
+	if len(urls) != len(expectedURLs) {
+		t.Fatalf("unexpected catbox url count: %#v", urls)
+	}
+
+	for index, expectedURL := range expectedURLs {
+		if urls[index] != expectedURL {
+			t.Fatalf("unexpected catbox url at %d: got %q want %q", index, urls[index], expectedURL)
+		}
+	}
+}
+
+func TestRenderFinalResponseResendsCatboxURLsWithoutBreakingReplyHistory(t *testing.T) {
+	t.Parallel()
+	testRenderFinalResponseResendsCatboxURLsWithoutBreakingReplyHistory(t)
+}
+
+func testRenderFinalResponseResendsCatboxURLsWithoutBreakingReplyHistory(t *testing.T) {
+	t.Helper()
+
+	const (
+		botUserID       = "bot-user"
+		channelID       = "channel-1"
+		userID          = "user-1"
+		sourceMessageID = "user-message-1"
+		responseID      = "assistant-message-1"
+		catboxReplyID   = "assistant-message-2"
+		modelName       = "x-ai/grok-4"
+		followUpText    = "repeat the image link"
+		catboxURL       = "https://files.catbox.moe/qrgalb.jpg"
+	)
+
+	answerText := "Result.\n\nGenerated image:\n" +
+		"[https://files.catbox.moe/qrgalb.jpg](https://files.catbox.moe/qrgalb.jpg)"
+
+	sourceMessage := newPromptMessage(sourceMessageID, channelID, userID, botUserID)
+	responseMessage := newAssistantReplyMessage(
+		responseID,
+		newDiscordUser(botUserID, true),
+		sourceMessage,
+	)
+	catboxReplyMessage := newAssistantReplyMessage(
+		catboxReplyID,
+		newDiscordUser(botUserID, true),
+		responseMessage,
+	)
+
+	session := newCatboxReplyHistoryTestSession(
+		t,
+		channelID,
+		botUserID,
+		catboxURL,
+		responseMessage,
+		catboxReplyMessage,
+	)
+	instance := new(bot)
+	instance.session = session
+	instance.nodes = newMessageNodeStore(10)
+
+	tracker := newResponseTracker(sourceMessage, modelName)
+	tracker.providerResponseID = testXAIProviderResponseID
+
+	accumulator := newSegmentAccumulator(embedResponseMaxLength)
+	_ = accumulator.appendText(answerText)
+
+	err := instance.renderFinalResponse(
+		context.Background(),
+		tracker,
+		nil,
+		&accumulator,
+		"",
+		finishReasonStop,
+		false,
+	)
+	if err != nil {
+		t.Fatalf("render final response: %v", err)
+	}
+
+	tracker.release(instance.nodes, answerText, "")
+
+	if len(tracker.responseMessages) != 1 {
+		t.Fatalf("unexpected tracked response message count: %d", len(tracker.responseMessages))
+	}
+
+	assertCachedCatboxReplyNode(
+		t,
+		instance.nodes,
+		catboxReplyID,
+		responseID,
+		testXAIProviderResponseID,
+		modelName,
+	)
+	assertCatboxReplyConversation(
+		t,
+		instance,
+		channelID,
+		userID,
+		answerText,
+		followUpText,
+		catboxReplyMessage,
+	)
+}
+
+func newCatboxReplyHistoryTestSession(
+	t *testing.T,
+	channelID string,
+	botUserID string,
+	catboxURL string,
+	responseMessage *discordgo.Message,
+	catboxReplyMessage *discordgo.Message,
+) *discordgo.Session {
+	t.Helper()
+
+	session, err := discordgo.New("Bot discord-token")
+	if err != nil {
+		t.Fatalf("create discord session: %v", err)
+	}
+
+	session.State.User = newDiscordUser(botUserID, true)
+
+	channel := new(discordgo.Channel)
+	channel.ID = channelID
+	channel.Type = discordgo.ChannelTypeDM
+
+	err = session.State.ChannelAdd(channel)
+	if err != nil {
+		t.Fatalf("add channel to state: %v", err)
+	}
+
+	postCount := 0
+	client := new(http.Client)
+	client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		t.Helper()
+
+		if request.Method != http.MethodPost ||
+			request.URL.Path != "/api/v9/channels/"+channelID+"/messages" {
+			t.Fatalf("unexpected request: %s %s", request.Method, request.URL.Path)
+		}
+
+		bodyBytes, err := io.ReadAll(request.Body)
+		if err != nil {
+			t.Fatalf("read request body: %v", err)
+		}
+
+		postCount++
+
+		var payload map[string]any
+
+		err = json.Unmarshal(bodyBytes, &payload)
+		if err != nil {
+			t.Fatalf("decode request payload: %v", err)
+		}
+
+		if content, contentOK := payload["content"].(string); contentOK && content == catboxURL {
+			assertPlainReplyPayload(t, payload, catboxURL, responseMessage.ID)
+
+			return newJSONResponse(t, request, catboxReplyMessage), nil
+		}
+
+		return newJSONResponse(t, request, responseMessage), nil
+	})
+	session.Client = client
+
+	return session
+}
+
+func assertCachedCatboxReplyNode(
+	t *testing.T,
+	store *messageNodeStore,
+	messageID string,
+	parentMessageID string,
+	providerResponseID string,
+	providerResponseModel string,
+) {
+	t.Helper()
+
+	catboxReplyNode, nodeFound := store.get(messageID)
+	if !nodeFound {
+		t.Fatalf("expected cached catbox reply node for %q", messageID)
+	}
+
+	catboxReplyNode.mu.Lock()
+	defer catboxReplyNode.mu.Unlock()
+
+	if catboxReplyNode.role != messageRoleAssistant {
+		t.Fatalf("unexpected catbox reply role: %q", catboxReplyNode.role)
+	}
+
+	if catboxReplyNode.text != "" {
+		t.Fatalf("expected catbox reply text to stay out of history, got %q", catboxReplyNode.text)
+	}
+
+	if catboxReplyNode.providerResponseID != providerResponseID {
+		t.Fatalf("unexpected catbox provider response id: %q", catboxReplyNode.providerResponseID)
+	}
+
+	if catboxReplyNode.providerResponseModel != providerResponseModel {
+		t.Fatalf("unexpected catbox provider response model: %q", catboxReplyNode.providerResponseModel)
+	}
+
+	if catboxReplyNode.parentMessage == nil || catboxReplyNode.parentMessage.ID != parentMessageID {
+		t.Fatalf("unexpected catbox reply parent: %#v", catboxReplyNode.parentMessage)
+	}
+}
+
+func assertCatboxReplyConversation(
+	t *testing.T,
+	instance *bot,
+	channelID string,
+	userID string,
+	answerText string,
+	followUpText string,
+	catboxReplyMessage *discordgo.Message,
+) {
+	t.Helper()
+
+	followUpMessage := new(discordgo.Message)
+	followUpMessage.ID = "user-message-2"
+	followUpMessage.ChannelID = channelID
+	followUpMessage.Author = newDiscordUser(userID, false)
+	followUpMessage.Content = followUpText
+	followUpMessage.MessageReference = catboxReplyMessage.Reference()
+	followUpMessage.ReferencedMessage = catboxReplyMessage
+
+	var contentOptions messageContentOptions
+
+	conversation, warnings := instance.buildConversation(
+		context.Background(),
+		followUpMessage,
+		defaultMaxText,
+		contentOptions,
+		defaultMaxMessages,
+		false,
+		false,
+	)
+	if len(warnings) != 0 {
+		t.Fatalf("unexpected warnings: %#v", warnings)
+	}
+
+	if len(conversation) != 3 {
+		t.Fatalf("unexpected conversation length: %#v", conversation)
+	}
+
+	if conversation[0].Role != messageRoleUser ||
+		conversation[0].Content != "generate a random 10-digit number" {
+		t.Fatalf("unexpected source message: %#v", conversation[0])
+	}
+
+	if conversation[1].Role != messageRoleAssistant ||
+		conversation[1].Content != answerText {
+		t.Fatalf("unexpected assistant message: %#v", conversation[1])
+	}
+
+	if conversation[2].Role != messageRoleUser ||
+		conversation[2].Content != followUpText {
+		t.Fatalf("unexpected follow-up message: %#v", conversation[2])
+	}
+}
+
 func TestEditEmbedMessageLeavesGeneratedImageURLInDescription(t *testing.T) {
 	t.Parallel()
 
@@ -1485,6 +1755,18 @@ func assertRequestEmbed(
 		t.Fatalf("decode request body: %v", err)
 	}
 
+	assertEmbedPayload(t, payload, expectedModelName, expectedDescription, expectedFooter)
+}
+
+func assertEmbedPayload(
+	t *testing.T,
+	payload map[string]any,
+	expectedModelName string,
+	expectedDescription string,
+	expectedFooter string,
+) {
+	t.Helper()
+
 	embeds, embedsOK := payload["embeds"].([]any)
 	if !embedsOK || len(embeds) != 1 {
 		t.Fatalf("unexpected embeds payload: %#v", payload["embeds"])
@@ -1565,6 +1847,56 @@ func assertPlainEditRequest(
 
 	if textDisplay["content"] != expectedContent {
 		t.Fatalf("unexpected text display content: %#v", textDisplay["content"])
+	}
+}
+
+func assertPlainReplyPayload(
+	t *testing.T,
+	payload map[string]any,
+	expectedContent string,
+	expectedReferenceMessageID string,
+) {
+	t.Helper()
+
+	if payload["content"] != expectedContent {
+		t.Fatalf("unexpected message content: %#v", payload["content"])
+	}
+
+	if flags, ok := payload["flags"].(float64); !ok ||
+		discordgo.MessageFlags(int(flags)) != discordgo.MessageFlagsSuppressNotifications {
+		t.Fatalf("unexpected flags payload: %#v", payload["flags"])
+	}
+
+	if embedsValue, embedsSet := payload["embeds"]; embedsSet && embedsValue != nil {
+		embeds, embedsOK := embedsValue.([]any)
+		if !embedsOK || len(embeds) != 0 {
+			t.Fatalf("unexpected embeds payload: %#v", payload["embeds"])
+		}
+	}
+
+	if componentsValue, componentsSet := payload["components"]; componentsSet && componentsValue != nil {
+		components, componentsOK := componentsValue.([]any)
+		if !componentsOK || len(components) != 0 {
+			t.Fatalf("unexpected components payload: %#v", payload["components"])
+		}
+	}
+
+	reference, referenceOK := payload["message_reference"].(map[string]any)
+	if !referenceOK {
+		t.Fatalf("unexpected message reference payload: %#v", payload["message_reference"])
+	}
+
+	if reference["message_id"] != expectedReferenceMessageID {
+		t.Fatalf("unexpected reply target: %#v", reference["message_id"])
+	}
+
+	allowedMentions, allowedMentionsOK := payload["allowed_mentions"].(map[string]any)
+	if !allowedMentionsOK {
+		t.Fatalf("unexpected allowed mentions payload: %#v", payload["allowed_mentions"])
+	}
+
+	if repliedUser, ok := allowedMentions["replied_user"].(bool); !ok || repliedUser {
+		t.Fatalf("unexpected replied_user value: %#v", allowedMentions["replied_user"])
 	}
 }
 
