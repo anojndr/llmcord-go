@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -48,6 +50,12 @@ type responseTracker struct {
 	progressActive     bool
 	responseVisible    bool
 }
+
+const (
+	discordMessageContentMaxLength = 2000
+)
+
+var catboxResponseURLRegexp = regexp.MustCompile(`(?i)\bhttps?://files\.catbox\.moe/[^\s<>\]\)]+`)
 
 func newSegmentAccumulator(maxLength int) segmentAccumulator {
 	return segmentAccumulator{
@@ -428,6 +436,8 @@ func (instance *bot) renderFinalResponse(
 			return fmt.Errorf("send plain response: %w", err)
 		}
 
+		instance.sendCatboxURLReplies(tracker, accumulator.joined())
+
 		return nil
 	}
 
@@ -443,6 +453,8 @@ func (instance *bot) renderFinalResponse(
 	if err != nil {
 		return fmt.Errorf("render final embed response: %w", err)
 	}
+
+	instance.sendCatboxURLReplies(tracker, accumulator.joined())
 
 	return nil
 }
@@ -897,6 +909,135 @@ func (instance *bot) sendPlainResponseMessage(
 	}
 
 	return sentMessage, pending, nil
+}
+
+func catboxResponseURLs(text string) []string {
+	rawURLs := catboxResponseURLRegexp.FindAllString(text, -1)
+	urls := make([]string, 0, len(rawURLs))
+	seenURLs := make(map[string]struct{}, len(rawURLs))
+
+	for _, rawURL := range rawURLs {
+		normalizedURL, err := normalizeWebsiteURL(rawURL)
+		if err != nil {
+			continue
+		}
+
+		if _, ok := seenURLs[normalizedURL]; ok {
+			continue
+		}
+
+		seenURLs[normalizedURL] = struct{}{}
+		urls = append(urls, normalizedURL)
+	}
+
+	return urls
+}
+
+func contentBatchesForLines(lines []string, maxLength int) []string {
+	if maxLength <= 0 {
+		return nil
+	}
+
+	batches := make([]string, 0, len(lines))
+	currentBatch := ""
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		if currentBatch == "" {
+			currentBatch = line
+
+			continue
+		}
+
+		nextBatch := currentBatch + "\n" + line
+		if runeCount(nextBatch) > maxLength {
+			batches = append(batches, currentBatch)
+			currentBatch = line
+
+			continue
+		}
+
+		currentBatch = nextBatch
+	}
+
+	if currentBatch != "" {
+		batches = append(batches, currentBatch)
+	}
+
+	return batches
+}
+
+func (instance *bot) sendCatboxURLReplies(tracker *responseTracker, answerText string) {
+	if instance == nil || instance.session == nil || tracker == nil || len(tracker.responseMessages) == 0 {
+		return
+	}
+
+	responseMessage := tracker.responseMessages[len(tracker.responseMessages)-1]
+
+	replyBatches := contentBatchesForLines(
+		catboxResponseURLs(answerText),
+		discordMessageContentMaxLength,
+	)
+	if len(replyBatches) == 0 {
+		return
+	}
+
+	for _, replyBatch := range replyBatches {
+		send := newReplyMessage(responseMessage)
+		send.Content = replyBatch
+
+		sentMessage, err := instance.session.ChannelMessageSendComplex(responseMessage.ChannelID, send)
+		if err != nil {
+			slog.Warn(
+				"send catbox url reply",
+				"channel_id",
+				responseMessage.ChannelID,
+				"message_id",
+				responseMessage.ID,
+				"error",
+				err,
+			)
+
+			return
+		}
+
+		instance.cacheAuxiliaryAssistantReply(sentMessage, responseMessage, tracker)
+	}
+}
+
+func (instance *bot) cacheAuxiliaryAssistantReply(
+	sentMessage *discordgo.Message,
+	parentMessage *discordgo.Message,
+	tracker *responseTracker,
+) {
+	if instance == nil || instance.nodes == nil || sentMessage == nil {
+		return
+	}
+
+	node := instance.nodes.getOrCreate(sentMessage.ID)
+	node.mu.Lock()
+	defer node.mu.Unlock()
+
+	node.role = messageRoleAssistant
+	node.text = ""
+	node.thinkingText = ""
+	node.urlScanText = ""
+	node.rentryURL = ""
+	node.providerResponseID = strings.TrimSpace(tracker.providerResponseID)
+	node.providerResponseModel = strings.TrimSpace(tracker.modelName)
+	node.media = nil
+	node.searchMetadata = cloneSearchMetadata(tracker.searchMetadata)
+	node.hasBadAttachments = false
+	node.attachmentDownloadFailed = false
+	node.fetchParentFailed = false
+	node.parentMessage = parentMessage
+	node.initialized = true
+
+	instance.nodes.cacheLockedNode(sentMessage.ID, node)
 }
 
 func (instance *bot) sendEmbedMessage(
