@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -23,7 +24,10 @@ const (
 	testXAIUploadedFileID     = "file_uploaded_image"
 	testXAIAPIVersion         = "2024-12-01-preview"
 	testXAIAuthHeader         = "Bearer test-key"
+	testXAIFileUploadPath     = "/v1/files"
 )
+
+var errUnexpectedXAIFileUploadRequest = errors.New("unexpected xAI file upload request")
 
 func TestBuildChatCompletionRequestEnablesResponsesAPIForXAIProvider(t *testing.T) {
 	t.Parallel()
@@ -394,7 +398,7 @@ func TestPrepareXAIResponsesRequestBodyUploadsLargeInlineImagesAsFiles(t *testin
 
 		uploadCount++
 
-		assertXAIFileUploadRequest(t, request, largeImage, mimeTypePNG)
+		assertXAIFileUploadRequest(t, request, largeImage)
 
 		responseWriter.Header().Set("Content-Type", "application/json")
 
@@ -462,7 +466,7 @@ func TestPrepareXAIResponsesRequestBodyUploadsBridgeInlineImagesAsFiles(t *testi
 
 		uploadCount++
 
-		assertXAIFileUploadRequest(t, request, smallImage, mimeTypePNG)
+		assertXAIFileUploadRequest(t, request, smallImage)
 
 		responseWriter.Header().Set("Content-Type", "application/json")
 
@@ -521,7 +525,8 @@ func TestPrepareXAIResponsesRequestBodyKeepsSmallOfficialInlineImages(t *testing
 
 	httpClient := newTestHTTPClient(roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		t.Fatalf("unexpected xAI file upload request: %s %s", request.Method, request.URL.String())
-		return nil, nil
+
+		return nil, errUnexpectedXAIFileUploadRequest
 	}))
 
 	request := newXAIResponsesStreamingRequest("https://api.x.ai/v1")
@@ -1033,13 +1038,10 @@ func newXAIResponsesStreamingTestServer(t *testing.T) *httptest.Server {
 	) {
 		t.Helper()
 
-		if request.URL.Path == "/v1/files" {
-			assertXAIFileUploadRequest(t, request, []byte("abc"), mimeTypePNG)
-			responseWriter.Header().Set("Content-Type", "application/json")
-			_, err := responseWriter.Write([]byte(`{"id":"` + testXAIUploadedFileID + `"}`))
-			if err != nil {
-				t.Fatalf("write upload response: %v", err)
-			}
+		if request.URL.Path == testXAIFileUploadPath {
+			assertXAIFileUploadRequest(t, request, []byte("abc"))
+			writeXAIFileUploadResponse(t, responseWriter)
+
 			return
 		}
 
@@ -1086,13 +1088,10 @@ func newXAIResponsesStreamingImageTestServer(
 	) {
 		t.Helper()
 
-		if request.URL.Path == "/v1/files" {
-			assertXAIFileUploadRequest(t, request, []byte("abc"), mimeTypePNG)
-			responseWriter.Header().Set("Content-Type", "application/json")
-			_, err := responseWriter.Write([]byte(`{"id":"` + testXAIUploadedFileID + `"}`))
-			if err != nil {
-				t.Fatalf("write upload response: %v", err)
-			}
+		if request.URL.Path == testXAIFileUploadPath {
+			assertXAIFileUploadRequest(t, request, []byte("abc"))
+			writeXAIFileUploadResponse(t, responseWriter)
+
 			return
 		}
 
@@ -1132,11 +1131,9 @@ func newXAIResponsesStreamingImageTestServer(
 	}))
 }
 
-func assertXAIResponsesRequest(t *testing.T, request *http.Request) {
-	assertXAIResponsesRequestWithImageAssertion(t, request, assertXAIResponsesUserMessage)
-}
-
 func assertXAIUploadedResponsesRequest(t *testing.T, request *http.Request) {
+	t.Helper()
+
 	assertXAIResponsesRequestWithImageAssertion(t, request, assertXAIUploadedResponsesUserMessage)
 }
 
@@ -1209,42 +1206,6 @@ func assertXAIResponsesSystemMessage(t *testing.T, rawMessage any) {
 	}
 }
 
-func assertXAIResponsesUserMessage(t *testing.T, rawMessage any) {
-	t.Helper()
-
-	userMessage, messageOK := rawMessage.(map[string]any)
-	if !messageOK {
-		t.Fatalf("unexpected user message payload: %#v", rawMessage)
-	}
-
-	userContent, contentOK := userMessage["content"].([]any)
-	if !contentOK || len(userContent) != 2 {
-		t.Fatalf("unexpected user content payload: %#v", userMessage["content"])
-	}
-
-	firstPart, firstPartOK := userContent[0].(map[string]any)
-	if !firstPartOK {
-		t.Fatalf("unexpected first user content part: %#v", userContent[0])
-	}
-
-	if firstPart["type"] != xAIResponsesInputTextType || firstPart["text"] != "What is in this image?" {
-		t.Fatalf("unexpected first user content part: %#v", firstPart)
-	}
-
-	secondPart, secondPartOK := userContent[1].(map[string]any)
-	if !secondPartOK {
-		t.Fatalf("unexpected second user content part: %#v", userContent[1])
-	}
-
-	if secondPart["type"] != xAIResponsesInputImageType {
-		t.Fatalf("unexpected second user content part: %#v", secondPart)
-	}
-
-	if secondPart["image_url"] != testXAIInputImageURL {
-		t.Fatalf("unexpected image_url: %#v", secondPart["image_url"])
-	}
-}
-
 func assertXAIUploadedResponsesUserMessage(t *testing.T, rawMessage any) {
 	t.Helper()
 
@@ -1289,11 +1250,10 @@ func assertXAIFileUploadRequest(
 	t *testing.T,
 	request *http.Request,
 	expectedBytes []byte,
-	expectedMIMEType string,
 ) {
 	t.Helper()
 
-	if request.URL.Path != "/v1/files" {
+	if request.URL.Path != testXAIFileUploadPath {
 		t.Fatalf("unexpected upload path: %s", request.URL.Path)
 	}
 
@@ -1352,7 +1312,7 @@ func assertXAIFileUploadRequest(
 		t.Fatalf("unexpected xAI upload purpose: %q", purposeValue)
 	}
 
-	if fileContentType != expectedMIMEType {
+	if fileContentType != mimeTypePNG {
 		t.Fatalf("unexpected xAI upload content type: %q", fileContentType)
 	}
 
@@ -1362,6 +1322,17 @@ func assertXAIFileUploadRequest(
 
 	if !bytes.Equal(fileBytes, expectedBytes) {
 		t.Fatal("unexpected uploaded xAI image bytes")
+	}
+}
+
+func writeXAIFileUploadResponse(t *testing.T, responseWriter http.ResponseWriter) {
+	t.Helper()
+
+	responseWriter.Header().Set("Content-Type", "application/json")
+
+	_, err := responseWriter.Write([]byte(`{"id":"` + testXAIUploadedFileID + `"}`))
+	if err != nil {
+		t.Fatalf("write upload response: %v", err)
 	}
 }
 

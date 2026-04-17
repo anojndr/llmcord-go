@@ -479,35 +479,35 @@ func TestBuildResponseEmbedLeavesGeneratedImageURLInDescription(t *testing.T) {
 	}
 }
 
-func TestCatboxResponseURLsDeduplicatesMarkdownLinks(t *testing.T) {
+func TestImgbbResponseURLsDeduplicatesMarkdownLinks(t *testing.T) {
 	t.Parallel()
 
-	urls := catboxResponseURLs(
-		"See [https://files.catbox.moe/qrgalb.jpg](https://files.catbox.moe/qrgalb.jpg), " +
-			"https://files.catbox.moe/demo.mp4, and https://example.com/ignore.jpg.",
+	urls := imgbbResponseURLs(
+		"See [https://i.ibb.co/FkQ1WJ3k/image.jpg](https://i.ibb.co/FkQ1WJ3k/image.jpg), " +
+			"https://i.ibb.co/demo123/preview.png, and https://example.com/ignore.jpg.",
 	)
 
 	expectedURLs := []string{
-		"https://files.catbox.moe/qrgalb.jpg",
-		"https://files.catbox.moe/demo.mp4",
+		"https://i.ibb.co/FkQ1WJ3k/image.jpg",
+		"https://i.ibb.co/demo123/preview.png",
 	}
 	if len(urls) != len(expectedURLs) {
-		t.Fatalf("unexpected catbox url count: %#v", urls)
+		t.Fatalf("unexpected imgbb url count: %#v", urls)
 	}
 
 	for index, expectedURL := range expectedURLs {
 		if urls[index] != expectedURL {
-			t.Fatalf("unexpected catbox url at %d: got %q want %q", index, urls[index], expectedURL)
+			t.Fatalf("unexpected imgbb url at %d: got %q want %q", index, urls[index], expectedURL)
 		}
 	}
 }
 
-func TestRenderFinalResponseResendsCatboxURLsWithoutBreakingReplyHistory(t *testing.T) {
+func TestRenderFinalResponseResendsImgbbURLsWithoutBreakingReplyHistory(t *testing.T) {
 	t.Parallel()
-	testRenderFinalResponseResendsCatboxURLsWithoutBreakingReplyHistory(t)
+	testRenderFinalResponseResendsImgbbURLsWithoutBreakingReplyHistory(t)
 }
 
-func testRenderFinalResponseResendsCatboxURLsWithoutBreakingReplyHistory(t *testing.T) {
+func testRenderFinalResponseResendsImgbbURLsWithoutBreakingReplyHistory(t *testing.T) {
 	t.Helper()
 
 	const (
@@ -516,14 +516,14 @@ func testRenderFinalResponseResendsCatboxURLsWithoutBreakingReplyHistory(t *test
 		userID          = "user-1"
 		sourceMessageID = "user-message-1"
 		responseID      = "assistant-message-1"
-		catboxReplyID   = "assistant-message-2"
+		imgbbReplyID    = "assistant-message-2"
 		modelName       = "x-ai/grok-4"
 		followUpText    = "repeat the image link"
-		catboxURL       = "https://files.catbox.moe/qrgalb.jpg"
+		imgbbURL        = "https://i.ibb.co/FkQ1WJ3k/image.jpg"
 	)
 
 	answerText := "Result.\n\nGenerated image:\n" +
-		"[https://files.catbox.moe/qrgalb.jpg](https://files.catbox.moe/qrgalb.jpg)"
+		"[https://i.ibb.co/FkQ1WJ3k/image.jpg](https://i.ibb.co/FkQ1WJ3k/image.jpg)"
 
 	sourceMessage := newPromptMessage(sourceMessageID, channelID, userID, botUserID)
 	responseMessage := newAssistantReplyMessage(
@@ -531,19 +531,19 @@ func testRenderFinalResponseResendsCatboxURLsWithoutBreakingReplyHistory(t *test
 		newDiscordUser(botUserID, true),
 		sourceMessage,
 	)
-	catboxReplyMessage := newAssistantReplyMessage(
-		catboxReplyID,
+	imgbbReplyMessage := newAssistantReplyMessage(
+		imgbbReplyID,
 		newDiscordUser(botUserID, true),
 		responseMessage,
 	)
 
-	session := newCatboxReplyHistoryTestSession(
+	session := newImgbbReplyHistoryTestSession(
 		t,
 		channelID,
 		botUserID,
-		catboxURL,
+		imgbbURL,
 		responseMessage,
-		catboxReplyMessage,
+		imgbbReplyMessage,
 	)
 	instance := new(bot)
 	instance.session = session
@@ -574,32 +574,32 @@ func testRenderFinalResponseResendsCatboxURLsWithoutBreakingReplyHistory(t *test
 		t.Fatalf("unexpected tracked response message count: %d", len(tracker.responseMessages))
 	}
 
-	assertCachedCatboxReplyNode(
+	assertCachedImgbbReplyNode(
 		t,
 		instance.nodes,
-		catboxReplyID,
+		imgbbReplyID,
 		responseID,
 		testXAIProviderResponseID,
 		modelName,
 	)
-	assertCatboxReplyConversation(
+	assertImgbbReplyConversation(
 		t,
 		instance,
 		channelID,
 		userID,
 		answerText,
 		followUpText,
-		catboxReplyMessage,
+		imgbbReplyMessage,
 	)
 }
 
-func newCatboxReplyHistoryTestSession(
+func newImgbbReplyHistoryTestSession(
 	t *testing.T,
 	channelID string,
 	botUserID string,
-	catboxURL string,
+	imgbbURL string,
 	responseMessage *discordgo.Message,
-	catboxReplyMessage *discordgo.Message,
+	imgbbReplyMessage *discordgo.Message,
 ) *discordgo.Session {
 	t.Helper()
 
@@ -643,10 +643,10 @@ func newCatboxReplyHistoryTestSession(
 			t.Fatalf("decode request payload: %v", err)
 		}
 
-		if content, contentOK := payload["content"].(string); contentOK && content == catboxURL {
-			assertPlainReplyPayload(t, payload, catboxURL, responseMessage.ID)
+		if content, contentOK := payload["content"].(string); contentOK && content == imgbbURL {
+			assertPlainReplyPayload(t, payload, imgbbURL, responseMessage.ID)
 
-			return newJSONResponse(t, request, catboxReplyMessage), nil
+			return newJSONResponse(t, request, imgbbReplyMessage), nil
 		}
 
 		return newJSONResponse(t, request, responseMessage), nil
@@ -656,7 +656,7 @@ func newCatboxReplyHistoryTestSession(
 	return session
 }
 
-func assertCachedCatboxReplyNode(
+func assertCachedImgbbReplyNode(
 	t *testing.T,
 	store *messageNodeStore,
 	messageID string,
@@ -666,43 +666,43 @@ func assertCachedCatboxReplyNode(
 ) {
 	t.Helper()
 
-	catboxReplyNode, nodeFound := store.get(messageID)
+	imgbbReplyNode, nodeFound := store.get(messageID)
 	if !nodeFound {
-		t.Fatalf("expected cached catbox reply node for %q", messageID)
+		t.Fatalf("expected cached imgbb reply node for %q", messageID)
 	}
 
-	catboxReplyNode.mu.Lock()
-	defer catboxReplyNode.mu.Unlock()
+	imgbbReplyNode.mu.Lock()
+	defer imgbbReplyNode.mu.Unlock()
 
-	if catboxReplyNode.role != messageRoleAssistant {
-		t.Fatalf("unexpected catbox reply role: %q", catboxReplyNode.role)
+	if imgbbReplyNode.role != messageRoleAssistant {
+		t.Fatalf("unexpected imgbb reply role: %q", imgbbReplyNode.role)
 	}
 
-	if catboxReplyNode.text != "" {
-		t.Fatalf("expected catbox reply text to stay out of history, got %q", catboxReplyNode.text)
+	if imgbbReplyNode.text != "" {
+		t.Fatalf("expected imgbb reply text to stay out of history, got %q", imgbbReplyNode.text)
 	}
 
-	if catboxReplyNode.providerResponseID != providerResponseID {
-		t.Fatalf("unexpected catbox provider response id: %q", catboxReplyNode.providerResponseID)
+	if imgbbReplyNode.providerResponseID != providerResponseID {
+		t.Fatalf("unexpected imgbb provider response id: %q", imgbbReplyNode.providerResponseID)
 	}
 
-	if catboxReplyNode.providerResponseModel != providerResponseModel {
-		t.Fatalf("unexpected catbox provider response model: %q", catboxReplyNode.providerResponseModel)
+	if imgbbReplyNode.providerResponseModel != providerResponseModel {
+		t.Fatalf("unexpected imgbb provider response model: %q", imgbbReplyNode.providerResponseModel)
 	}
 
-	if catboxReplyNode.parentMessage == nil || catboxReplyNode.parentMessage.ID != parentMessageID {
-		t.Fatalf("unexpected catbox reply parent: %#v", catboxReplyNode.parentMessage)
+	if imgbbReplyNode.parentMessage == nil || imgbbReplyNode.parentMessage.ID != parentMessageID {
+		t.Fatalf("unexpected imgbb reply parent: %#v", imgbbReplyNode.parentMessage)
 	}
 }
 
-func assertCatboxReplyConversation(
+func assertImgbbReplyConversation(
 	t *testing.T,
 	instance *bot,
 	channelID string,
 	userID string,
 	answerText string,
 	followUpText string,
-	catboxReplyMessage *discordgo.Message,
+	imgbbReplyMessage *discordgo.Message,
 ) {
 	t.Helper()
 
@@ -711,8 +711,8 @@ func assertCatboxReplyConversation(
 	followUpMessage.ChannelID = channelID
 	followUpMessage.Author = newDiscordUser(userID, false)
 	followUpMessage.Content = followUpText
-	followUpMessage.MessageReference = catboxReplyMessage.Reference()
-	followUpMessage.ReferencedMessage = catboxReplyMessage
+	followUpMessage.MessageReference = imgbbReplyMessage.Reference()
+	followUpMessage.ReferencedMessage = imgbbReplyMessage
 
 	var contentOptions messageContentOptions
 
