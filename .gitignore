@@ -4,13 +4,13 @@
 
 !.gitignore
 !.golangci.yml
+
+# Track only repo-owned root docs and instructions; future scratch notes stay ignored by default.
 !AGENTS.md
 !.github/
 !.github/**/*
 !LICENSE.md
 !README.md
-
-# Keep root markdown docs explicit so new local notes stay ignored by default.
 
 # Root-level source and docs stay explicit; recursive allowlists are intentional for nested command and test paths.
 !*.go

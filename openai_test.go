@@ -15,6 +15,7 @@ import (
 const (
 	testOpenAIDegradedFunctionID    = "degraded-function-id"
 	testOpenAIClientRequestID       = "discord-message-1"
+	testOpenAIPromptCacheKey        = "openai-session-123"
 	testOpenAIResponsesPath         = "/v1/responses"
 	testOpenAIResponsesResponseID   = "resp_test_123"
 	testOpenAIResponsesSystemPrompt = "You are concise."
@@ -374,6 +375,68 @@ func TestBuildChatCompletionRequestBodyAddsPlaceholderForFileOnlyUserMessage(t *
 
 	if parts[1]["type"] != contentTypeFileData || parts[1][contentFieldFilename] != "payload.bin" {
 		t.Fatalf("unexpected file part: %#v", parts[1])
+	}
+}
+
+func TestBuildChatCompletionRequestBodyIncludesPromptCacheKeyForOpenAIProvider(t *testing.T) {
+	t.Parallel()
+
+	request := chatCompletionRequest{
+		Provider: providerRequestConfig{
+			APIKind:         providerAPIKindOpenAI,
+			BaseURL:         testOpenAIBaseURL,
+			APIKey:          "test-key",
+			APIKeys:         nil,
+			UseResponsesAPI: false,
+			ExtraHeaders:    nil,
+			ExtraQuery:      nil,
+			ExtraBody:       nil,
+		},
+		Model:                       "gpt-test",
+		ConfiguredModel:             "openai/gpt-test",
+		ContextWindow:               0,
+		AutoCompactThresholdPercent: 0,
+		SessionID:                   testOpenAIPromptCacheKey,
+		PreviousResponseID:          "",
+		RequestID:                   "",
+		Messages:                    []chatMessage{{Role: messageRoleUser, Content: "hello"}},
+	}
+
+	requestBody := buildChatCompletionRequestBody(request)
+
+	if requestBody["prompt_cache_key"] != testOpenAIPromptCacheKey {
+		t.Fatalf("unexpected prompt_cache_key: %#v", requestBody["prompt_cache_key"])
+	}
+}
+
+func TestBuildChatCompletionRequestBodySkipsPromptCacheKeyForNonOpenAIProvider(t *testing.T) {
+	t.Parallel()
+
+	request := chatCompletionRequest{
+		Provider: providerRequestConfig{
+			APIKind:         providerAPIKindOpenAI,
+			BaseURL:         testOpenAIBaseURL,
+			APIKey:          "test-key",
+			APIKeys:         nil,
+			UseResponsesAPI: false,
+			ExtraHeaders:    nil,
+			ExtraQuery:      nil,
+			ExtraBody:       nil,
+		},
+		Model:                       "gpt-test",
+		ConfiguredModel:             "compatible/gpt-test",
+		ContextWindow:               0,
+		AutoCompactThresholdPercent: 0,
+		SessionID:                   testOpenAIPromptCacheKey,
+		PreviousResponseID:          "",
+		RequestID:                   "",
+		Messages:                    []chatMessage{{Role: messageRoleUser, Content: "hello"}},
+	}
+
+	requestBody := buildChatCompletionRequestBody(request)
+
+	if _, exists := requestBody["prompt_cache_key"]; exists {
+		t.Fatalf("unexpected prompt_cache_key: %#v", requestBody["prompt_cache_key"])
 	}
 }
 
@@ -1176,14 +1239,14 @@ func TestSetOpenAIClientRequestIDHeaderUsesOfficialAPIOnly(t *testing.T) {
 	compatRequest, err := http.NewRequestWithContext(
 		context.Background(),
 		http.MethodPost,
-		"https://api.example.com/v1/chat/completions",
+		testOpenAIBaseURL+"/chat/completions",
 		nil,
 	)
 	if err != nil {
 		t.Fatalf("create compatibility request: %v", err)
 	}
 
-	setOpenAIClientRequestIDHeader(compatRequest, newOpenAIClientRequestIDTestRequest("https://api.example.com/v1"))
+	setOpenAIClientRequestIDHeader(compatRequest, newOpenAIClientRequestIDTestRequest(testOpenAIBaseURL))
 
 	if got := compatRequest.Header.Get(openAIClientRequestIDHeader); got != "" {
 		t.Fatalf("unexpected compatibility request id header: %q", got)
@@ -1247,6 +1310,42 @@ func TestBuildOpenAIResponsesRequestBodyNormalizesReasoningConfig(t *testing.T) 
 
 	if request.Provider.ExtraBody["reasoning_effort"] != openAIReasoningEffortMinimal {
 		t.Fatalf("unexpected mutation of original reasoning config: %#v", request.Provider.ExtraBody)
+	}
+}
+
+func TestBuildOpenAIResponsesRequestBodyIncludesPromptCacheKeyForOpenAIProvider(t *testing.T) {
+	t.Parallel()
+
+	request := chatCompletionRequest{
+		Provider: providerRequestConfig{
+			APIKind:         providerAPIKindOpenAI,
+			BaseURL:         testOpenAIBaseURL,
+			APIKey:          "test-key",
+			APIKeys:         nil,
+			UseResponsesAPI: true,
+			ExtraHeaders:    nil,
+			ExtraQuery:      nil,
+			ExtraBody:       nil,
+		},
+		Model:                       "gpt-5",
+		ConfiguredModel:             "openai/gpt-5",
+		ContextWindow:               0,
+		AutoCompactThresholdPercent: 0,
+		SessionID:                   testOpenAIPromptCacheKey,
+		PreviousResponseID:          "",
+		RequestID:                   "",
+		Messages: []chatMessage{
+			{Role: messageRoleUser, Content: "hello"},
+		},
+	}
+
+	requestBody, err := buildXAIResponsesRequestBody(request)
+	if err != nil {
+		t.Fatalf("build responses request body: %v", err)
+	}
+
+	if requestBody["prompt_cache_key"] != testOpenAIPromptCacheKey {
+		t.Fatalf("unexpected prompt_cache_key: %#v", requestBody["prompt_cache_key"])
 	}
 }
 

@@ -263,7 +263,7 @@ func (instance *bot) prepareMessageResponse(
 
 	request.RequestID = strings.TrimSpace(message.ID)
 
-	assignOpenAICodexSessionID(&request, message, instance.nodes, loadedConfig.MaxMessages)
+	assignOpenAIPromptCacheKey(&request, message, instance.nodes, loadedConfig.MaxMessages)
 	assignXAIPreviousResponseID(&request, message, instance.nodes, loadedConfig.MaxMessages)
 
 	request, autoCompactResult := instance.autoCompactRequest(ctx, request)

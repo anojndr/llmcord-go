@@ -391,6 +391,7 @@ func buildXAIResponsesRequestBody(request chatCompletionRequest) (map[string]any
 	requestBody["model"] = request.Model
 	requestBody["stream"] = true
 	requestBody["input"] = input
+	addOpenAIPromptCacheKey(requestBody, request)
 
 	if strings.TrimSpace(request.PreviousResponseID) != "" {
 		requestBody["previous_response_id"] = request.PreviousResponseID
