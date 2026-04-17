@@ -36,7 +36,7 @@ Behavior notes:
 - xAI-compatible providers can continue server-side conversations with stored `previous_response_id` values when the model matches.
 - xAI and Grok-compatible Responses requests keep direct image URLs inline, accept image `file_id` references, and upload inline Base64 images through `/v1/files` before sending `input_image.file_id` whenever the target is a non-official xAI/Grok bridge. Official `api.x.ai` keeps small inline images and still uploads oversized ones.
 - xAI image-generation replies keep the provider's generated image URL in the response body instead of rendering it as a Discord embed image.
-- Final answers that include `https://files.catbox.moe/...` links are followed by a plain Discord reply containing those Catbox URLs so Discord can render them outside the bot embed.
+- Final answers that include `https://i.ibb.co/...` links are followed by a plain Discord reply containing those imgbb image URLs so Discord can render them outside the bot embed.
 - When an xAI model is selected, non-Facebook, non-YouTube Shorts URLs stay provider-side instead of running the bot's URL fetchers first.
 - Empty prompts such as a bare `at ai` or an empty follow-up turn are sent upstream as `.` so providers still receive an explicit user input.
 - Provider response streams are capped at 5 minutes so bad multimodal requests fail cleanly instead of hanging the bot indefinitely.

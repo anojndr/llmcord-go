@@ -55,7 +55,7 @@ const (
 	discordMessageContentMaxLength = 2000
 )
 
-var catboxResponseURLRegexp = regexp.MustCompile(`(?i)\bhttps?://files\.catbox\.moe/[^\s<>\]\)]+`)
+var imgbbResponseURLRegexp = regexp.MustCompile(`(?i)\bhttps?://i\.ibb\.co/[^\s<>\]\)]+`)
 
 func newSegmentAccumulator(maxLength int) segmentAccumulator {
 	return segmentAccumulator{
@@ -436,7 +436,7 @@ func (instance *bot) renderFinalResponse(
 			return fmt.Errorf("send plain response: %w", err)
 		}
 
-		instance.sendCatboxURLReplies(tracker, accumulator.joined())
+		instance.sendImgbbURLReplies(tracker, accumulator.joined())
 
 		return nil
 	}
@@ -454,7 +454,7 @@ func (instance *bot) renderFinalResponse(
 		return fmt.Errorf("render final embed response: %w", err)
 	}
 
-	instance.sendCatboxURLReplies(tracker, accumulator.joined())
+	instance.sendImgbbURLReplies(tracker, accumulator.joined())
 
 	return nil
 }
@@ -911,8 +911,8 @@ func (instance *bot) sendPlainResponseMessage(
 	return sentMessage, pending, nil
 }
 
-func catboxResponseURLs(text string) []string {
-	rawURLs := catboxResponseURLRegexp.FindAllString(text, -1)
+func imgbbResponseURLs(text string) []string {
+	rawURLs := imgbbResponseURLRegexp.FindAllString(text, -1)
 	urls := make([]string, 0, len(rawURLs))
 	seenURLs := make(map[string]struct{}, len(rawURLs))
 
@@ -971,7 +971,7 @@ func contentBatchesForLines(lines []string, maxLength int) []string {
 	return batches
 }
 
-func (instance *bot) sendCatboxURLReplies(tracker *responseTracker, answerText string) {
+func (instance *bot) sendImgbbURLReplies(tracker *responseTracker, answerText string) {
 	if instance == nil || instance.session == nil || tracker == nil || len(tracker.responseMessages) == 0 {
 		return
 	}
@@ -979,7 +979,7 @@ func (instance *bot) sendCatboxURLReplies(tracker *responseTracker, answerText s
 	responseMessage := tracker.responseMessages[len(tracker.responseMessages)-1]
 
 	replyBatches := contentBatchesForLines(
-		catboxResponseURLs(answerText),
+		imgbbResponseURLs(answerText),
 		discordMessageContentMaxLength,
 	)
 	if len(replyBatches) == 0 {
@@ -993,7 +993,7 @@ func (instance *bot) sendCatboxURLReplies(tracker *responseTracker, answerText s
 		sentMessage, err := instance.session.ChannelMessageSendComplex(responseMessage.ChannelID, send)
 		if err != nil {
 			slog.Warn(
-				"send catbox url reply",
+				"send imgbb url reply",
 				"channel_id",
 				responseMessage.ChannelID,
 				"message_id",
