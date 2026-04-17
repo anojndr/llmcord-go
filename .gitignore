@@ -8,7 +8,7 @@
 !LICENSE.md
 !README.md
 
-# Keep root markdown docs explicit to preserve whitelist behavior.
+# Keep root markdown docs explicit so new local notes stay ignored by default.
 
 # Root-level source and docs stay explicit; recursive allowlists are intentional for nested command and test paths.
 !*.go
