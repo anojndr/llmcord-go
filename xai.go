@@ -396,7 +396,12 @@ func buildXAIResponsesRequestBody(request chatCompletionRequest) (map[string]any
 		requestBody["previous_response_id"] = request.PreviousResponseID
 	}
 
-	maps.Copy(requestBody, request.Provider.ExtraBody)
+	extraBody := request.Provider.ExtraBody
+	if openAIBaseURLUsesOfficialAPI(request.Provider.BaseURL) {
+		extraBody = normalizeOpenAIResponsesExtraBody(request.Model, extraBody)
+	}
+
+	maps.Copy(requestBody, extraBody)
 
 	if shouldDefaultXAIBridgeSourceAttribution(request) {
 		requestBody["source_attribution"] = defaultXAIBridgeSourceAttributionRequest()

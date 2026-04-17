@@ -190,7 +190,7 @@ func buildOpenAICodexRequestBody(request chatCompletionRequest) (map[string]any,
 }
 
 func normalizeOpenAICodexModelAlias(model string, extraBody map[string]any) (string, map[string]any) {
-	resolvedModel, reasoningEffort, hasAlias := openAICodexReasoningEffortAlias(model)
+	resolvedModel, reasoningEffort, hasAlias := openAIReasoningEffortAlias(model)
 	if !hasAlias {
 		return model, extraBody
 	}
@@ -200,7 +200,7 @@ func normalizeOpenAICodexModelAlias(model string, extraBody map[string]any) (str
 		normalizedExtraBody = make(map[string]any, 1)
 	}
 
-	reasoningConfig := openAICodexReasoningConfigExtraBody(normalizedExtraBody)
+	reasoningConfig := openAIReasoningConfigExtraBody(normalizedExtraBody)
 	reasoningConfig["effort"] = normalizeOpenAICodexReasoningEffort(resolvedModel, reasoningEffort)
 	normalizedExtraBody["reasoning"] = reasoningConfig
 	delete(normalizedExtraBody, "reasoning_effort")
@@ -208,72 +208,29 @@ func normalizeOpenAICodexModelAlias(model string, extraBody map[string]any) (str
 	return resolvedModel, normalizedExtraBody
 }
 
-func openAICodexReasoningEffortAlias(model string) (string, string, bool) {
-	lowerModel := strings.ToLower(model)
-	for _, alias := range []struct {
-		suffix          string
-		reasoningEffort string
-	}{
-		{
-			suffix:          "-none",
-			reasoningEffort: "none",
-		},
-		{
-			suffix:          "-minimal",
-			reasoningEffort: "minimal",
-		},
-		{
-			suffix:          "-low",
-			reasoningEffort: "low",
-		},
-		{
-			suffix:          "-medium",
-			reasoningEffort: "medium",
-		},
-		{
-			suffix:          "-high",
-			reasoningEffort: "high",
-		},
-		{
-			suffix:          "-xhigh",
-			reasoningEffort: "xhigh",
-		},
-	} {
-		if !strings.HasSuffix(lowerModel, alias.suffix) || len(model) <= len(alias.suffix) {
-			continue
-		}
-
-		return model[:len(model)-len(alias.suffix)], alias.reasoningEffort, true
-	}
-
-	return "", "", false
-}
-
 func normalizeOpenAICodexReasoningEffort(model, effort string) string {
-	normalizedEffort := strings.ToLower(strings.TrimSpace(effort))
+	normalizedEffort := normalizeOpenAIReasoningEffort(model, effort)
 	if normalizedEffort == "" {
 		return ""
 	}
 
-	modelID := strings.TrimSpace(model)
-	if slashIndex := strings.LastIndex(modelID, "/"); slashIndex >= 0 {
-		modelID = modelID[slashIndex+1:]
-	}
+	modelID := openAIReasoningModelID(model)
 
 	switch {
 	case modelID == "gpt-5.1-codex-mini":
 		switch normalizedEffort {
-		case openAICodexReasoningHigh, "xhigh":
+		case openAICodexReasoningHigh, openAIReasoningEffortXHigh:
 			return openAICodexReasoningHigh
 		default:
 			return openAICodexVerbosityMedium
 		}
-	case modelID == "gpt-5.1" && normalizedEffort == "xhigh":
+	case modelID == openAIReasoningModelGPT51 && normalizedEffort == openAIReasoningEffortXHigh:
 		return openAICodexReasoningHigh
 	case (strings.HasPrefix(modelID, "gpt-5.2") ||
 		strings.HasPrefix(modelID, "gpt-5.3") ||
-		strings.HasPrefix(modelID, "gpt-5.4")) && normalizedEffort == "minimal":
-		return "low"
+		strings.HasPrefix(modelID, openAIReasoningModelGPT54)) &&
+		normalizedEffort == openAIReasoningEffortMinimal:
+		return openAIReasoningEffortLow
 	default:
 		return normalizedEffort
 	}
@@ -320,20 +277,6 @@ func normalizeOpenAICodexRequestBody(requestBody map[string]any, model string) {
 	if _, exists := reasoningConfig["summary"]; !exists {
 		reasoningConfig["summary"] = openAICodexAuto
 	}
-}
-
-func openAICodexReasoningConfigExtraBody(extraBody map[string]any) map[string]any {
-	existingReasoningConfig, reasoningConfigExists := extraBody["reasoning"]
-	if !reasoningConfigExists || existingReasoningConfig == nil {
-		return make(map[string]any, 1)
-	}
-
-	reasoningConfig, ok := existingReasoningConfig.(map[string]any)
-	if !ok {
-		return make(map[string]any, 1)
-	}
-
-	return maps.Clone(reasoningConfig)
 }
 
 func nestedRequestBodyMap(requestBody map[string]any, key string) map[string]any {

@@ -260,7 +260,7 @@ func TestBuildOpenAICodexRequestBodyPreservesNestedReasoningConfig(t *testing.T)
 		t.Fatalf("build codex request body: %v", err)
 	}
 
-	if requestBody["model"] != "gpt-5.4" {
+	if requestBody["model"] != openAIReasoningModelGPT54 {
 		t.Fatalf("unexpected model: %#v", requestBody["model"])
 	}
 
@@ -269,11 +269,11 @@ func TestBuildOpenAICodexRequestBodyPreservesNestedReasoningConfig(t *testing.T)
 		t.Fatalf("unexpected reasoning config type: %T", requestBody["reasoning"])
 	}
 
-	if reasoningConfig["effort"] != "none" {
+	if reasoningConfig["effort"] != openAIReasoningEffortNone {
 		t.Fatalf("unexpected reasoning effort: %#v", reasoningConfig["effort"])
 	}
 
-	if reasoningConfig["summary"] != "concise" {
+	if reasoningConfig["summary"] != openAIReasoningSummaryConcise {
 		t.Fatalf("unexpected reasoning summary: %#v", reasoningConfig["summary"])
 	}
 }
@@ -964,7 +964,7 @@ func assertOpenAICodexPayload(t *testing.T, payload map[string]any, expectedSess
 		t.Fatalf("unexpected reasoning config type: %T", payload["reasoning"])
 	}
 
-	if reasoningConfig["effort"] != "medium" {
+	if reasoningConfig["effort"] != openAIReasoningEffortMedium {
 		t.Fatalf("unexpected reasoning effort: %#v", reasoningConfig["effort"])
 	}
 

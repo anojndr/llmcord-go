@@ -315,6 +315,8 @@ func normalizeGeminiModelAlias(
 }
 
 func geminiThinkingLevelAlias(model string) (string, genai.ThinkingLevel, bool) {
+	model = trimConfiguredModelLocalSuffixes(model)
+
 	lowerModel := strings.ToLower(model)
 	for _, alias := range []struct {
 		suffix        string

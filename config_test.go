@@ -805,6 +805,86 @@ models:
 	}
 }
 
+func TestLoadConfigInheritsContextWindowAcrossOpenAIAliases(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	configText := `
+bot_token: discord-token
+providers:
+  openai:
+    base_url: https://api.openai.com/v1
+models:
+  openai/gpt-5.4:
+    context_window: 1050000
+  openai/gpt-5.4-low:
+  openai/gpt-5.4-none:
+  openai/gpt-5.4-xhigh:
+    context_window: 1050000
+`
+
+	err := os.WriteFile(configPath, []byte(configText), 0o600)
+	if err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	loadedConfig, err := loadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	for _, modelName := range []string{
+		"openai/gpt-5.4",
+		"openai/gpt-5.4-low",
+		"openai/gpt-5.4-none",
+		"openai/gpt-5.4-xhigh",
+	} {
+		if loadedConfig.modelContextWindow(modelName) != 1_050_000 {
+			t.Fatalf("unexpected context window for %s: %d", modelName, loadedConfig.modelContextWindow(modelName))
+		}
+	}
+}
+
+func TestLoadConfigInheritsContextWindowAcrossOpenAICompatibleAliases(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	configText := `
+bot_token: discord-token
+providers:
+  openai:
+    base_url: https://api.example.com/v1
+models:
+  openai/gpt-5.4:
+    context_window: 1050000
+  openai/gpt-5.4-low:
+  openai/gpt-5.4-none:
+    context_window: 1050000
+`
+
+	err := os.WriteFile(configPath, []byte(configText), 0o600)
+	if err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	loadedConfig, err := loadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	for _, modelName := range []string{
+		"openai/gpt-5.4",
+		"openai/gpt-5.4-low",
+		"openai/gpt-5.4-none",
+	} {
+		if loadedConfig.modelContextWindow(modelName) != 1_050_000 {
+			t.Fatalf("unexpected context window for %s: %d", modelName, loadedConfig.modelContextWindow(modelName))
+		}
+	}
+}
+
 func TestLoadConfigInheritsContextWindowAcrossGeminiAliases(t *testing.T) {
 	t.Parallel()
 
@@ -926,6 +1006,34 @@ models:
 	_, err = loadConfig(configPath)
 	if err == nil {
 		t.Fatal("expected mismatched alias context window to fail validation")
+	}
+}
+
+func TestLoadConfigRejectsMismatchedContextWindowAcrossOpenAIAliases(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	configText := `
+bot_token: discord-token
+providers:
+  openai:
+    base_url: https://api.openai.com/v1
+models:
+  openai/gpt-5.4:
+    context_window: 1050000
+  openai/gpt-5.4-none:
+    context_window: 400000
+`
+
+	err := os.WriteFile(configPath, []byte(configText), 0o600)
+	if err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	_, err = loadConfig(configPath)
+	if err == nil {
+		t.Fatal("expected mismatched OpenAI alias context window to fail validation")
 	}
 }
 

@@ -13,8 +13,9 @@ import (
 )
 
 const (
-	testOpenAIBaseURL       = "https://api.example.com/v1"
-	testSearchDeciderModel2 = "openai/decider-model"
+	testOpenAIBaseURL         = "https://api.example.com/v1"
+	testOfficialOpenAIBaseURL = "https://api.openai.com/v1"
+	testSearchDeciderModel2   = "openai/decider-model"
 )
 
 func TestAppendMediaAnalysesToConversationPreservesImages(t *testing.T) {
