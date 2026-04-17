@@ -474,7 +474,7 @@ func (instance *bot) decideWebSearch(
 		return searchDecision{}, nil, fmt.Errorf("build search decider request: %w", err)
 	}
 
-	assignOpenAICodexSessionID(&request, sourceMessage, instance.nodes, loadedConfig.MaxMessages)
+	assignOpenAIPromptCacheKey(&request, sourceMessage, instance.nodes, loadedConfig.MaxMessages)
 
 	searchContext, cancel := context.WithTimeout(ctx, searchDeciderTimeout)
 	defer cancel()
