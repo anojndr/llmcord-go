@@ -53,3 +53,35 @@ func TestParseOpenAIHTTPErrorResponseFallsBackToStatusText(t *testing.T) {
 		t.Fatalf("unexpected fallback error message: %#v", errorInfo)
 	}
 }
+
+func TestParseOpenAIHTTPErrorResponseIgnoresOversizedOpaqueBody(t *testing.T) {
+	t.Parallel()
+
+	errorInfo := parseOpenAIHTTPErrorResponse(
+		http.StatusBadGateway,
+		"bad gateway",
+		http.Header{},
+		[]byte(strings.Repeat("A", openAIHTTPErrorBodyPreviewRunes+50)),
+		false,
+	)
+
+	if errorInfo.Message != "bad gateway" {
+		t.Fatalf("unexpected fallback error message for oversized body: %#v", errorInfo)
+	}
+}
+
+func TestParseOpenAIHTTPErrorResponseKeepsShortPlainTextBody(t *testing.T) {
+	t.Parallel()
+
+	errorInfo := parseOpenAIHTTPErrorResponse(
+		http.StatusBadGateway,
+		"bad gateway",
+		http.Header{},
+		[]byte("temporary upstream failure"),
+		false,
+	)
+
+	if errorInfo.Message != "temporary upstream failure" {
+		t.Fatalf("unexpected plain-text error message: %#v", errorInfo)
+	}
+}

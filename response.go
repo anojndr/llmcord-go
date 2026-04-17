@@ -53,6 +53,7 @@ type responseTracker struct {
 
 const (
 	discordMessageContentMaxLength = 2000
+	userFacingErrorMaxRunes        = 1500
 )
 
 var imgbbResponseURLRegexp = regexp.MustCompile(`(?i)\bhttps?://i\.ibb\.co/[^\s<>\]\)]+`)
@@ -462,7 +463,9 @@ func (instance *bot) renderFinalResponse(
 func userFacingResponseError(err error) string {
 	const (
 		genericResponseErrorText  = "Couldn't generate a response right now. Try again."
+		invalidProviderErrorText  = "The provider returned an invalid or oversized error response. Try again."
 		timedOutResponseErrorText = "The model timed out while processing the request. Try again."
+		truncatedErrorSuffix      = " [truncated]"
 	)
 
 	if err == nil {
@@ -476,6 +479,19 @@ func userFacingResponseError(err error) string {
 	errorText := strings.TrimSpace(err.Error())
 	if errorText == "" {
 		return genericResponseErrorText
+	}
+
+	if openAIHTTPErrorBodyLooksOpaque(errorText) {
+		return invalidProviderErrorText
+	}
+
+	if runeCount(errorText) > userFacingErrorMaxRunes {
+		truncateAt := max(0, userFacingErrorMaxRunes-runeCount(truncatedErrorSuffix))
+		if truncateAt == 0 {
+			return invalidProviderErrorText
+		}
+
+		return truncateRunes(errorText, truncateAt) + truncatedErrorSuffix
 	}
 
 	return errorText

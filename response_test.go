@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -107,6 +108,29 @@ func TestUserFacingResponseErrorReturnsRawErrorText(t *testing.T) {
 			name:     "unknown error returns raw message",
 			err:      errPartialStreamFailure,
 			expected: "partial stream failure",
+		},
+		{
+			name: "oversized opaque error falls back to bounded provider message",
+			err: providerStatusError{
+				StatusCode: http.StatusBadGateway,
+				Message:    strings.Repeat("A", userFacingErrorMaxRunes+200),
+				RetryDelay: 0,
+				Err:        os.ErrInvalid,
+			},
+			expected: "The provider returned an invalid or oversized error response. Try again.",
+		},
+		{
+			name: "oversized readable error is truncated",
+			err: providerStatusError{
+				StatusCode: http.StatusBadGateway,
+				Message:    strings.Repeat("readable error ", 200),
+				RetryDelay: 0,
+				Err:        os.ErrInvalid,
+			},
+			expected: truncateRunes(
+				strings.Repeat("readable error ", 200),
+				userFacingErrorMaxRunes-runeCount(" [truncated]"),
+			) + " [truncated]",
 		},
 	}
 

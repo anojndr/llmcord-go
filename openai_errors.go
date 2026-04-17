@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -14,6 +15,7 @@ const (
 	openAICodexUsageLimitReachedCode = "usage_limit_reached"
 	openAICodexUsageNotIncludedCode  = "usage_not_included"
 	openAIRateLimitExceededCode      = "rate_limit_exceeded"
+	openAIHTTPErrorBodyPreviewRunes  = 512
 	openAIHTTPErrorMetadataCapacity  = 3
 	openAIRetryAfterHeader           = "Retry-After"
 	openAIRetryAfterMilliseconds     = "Retry-After-Ms"
@@ -84,7 +86,7 @@ func defaultOpenAIHTTPErrorInfo(
 	responseBody []byte,
 ) openAIHTTPErrorInfo {
 	errorInfo := openAIHTTPErrorInfo{
-		Message:         strings.TrimSpace(string(responseBody)),
+		Message:         openAIHTTPErrorBodyMessage(responseBody),
 		FriendlyMessage: "",
 		Code:            "",
 		Type:            "",
@@ -101,6 +103,49 @@ func defaultOpenAIHTTPErrorInfo(
 	}
 
 	return errorInfo
+}
+
+func openAIHTTPErrorBodyMessage(responseBody []byte) string {
+	if len(responseBody) == 0 {
+		return ""
+	}
+
+	trimmedBody := bytes.TrimSpace(responseBody)
+	if len(trimmedBody) == 0 {
+		return ""
+	}
+
+	bodyText := strings.TrimSpace(string(bytes.ToValidUTF8(trimmedBody, []byte{})))
+	if bodyText == "" {
+		return ""
+	}
+
+	if runeCount(bodyText) > openAIHTTPErrorBodyPreviewRunes {
+		return ""
+	}
+
+	if openAIHTTPErrorBodyLooksOpaque(bodyText) {
+		return ""
+	}
+
+	return bodyText
+}
+
+func openAIHTTPErrorBodyLooksOpaque(bodyText string) bool {
+	fields := strings.Fields(bodyText)
+	if len(fields) == 0 {
+		return false
+	}
+
+	longestFieldRunes := 0
+	for _, field := range fields {
+		fieldRunes := runeCount(field)
+		if fieldRunes > longestFieldRunes {
+			longestFieldRunes = fieldRunes
+		}
+	}
+
+	return longestFieldRunes > openAIHTTPErrorBodyPreviewRunes/2
 }
 
 func parseOpenAIHTTPErrorPayload(responseBody []byte) (*openAIHTTPErrorPayload, bool) {
