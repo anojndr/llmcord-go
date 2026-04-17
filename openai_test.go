@@ -1217,36 +1217,42 @@ func TestOpenAIClientStreamResponses(t *testing.T) {
 	}
 }
 
-func TestSetOpenAIClientRequestIDHeaderUsesOfficialAPIOnly(t *testing.T) {
+func TestSetOpenAIClientRequestIDHeaderUsesOpenAIProviderOnly(t *testing.T) {
 	t.Parallel()
 
-	officialRequest, err := http.NewRequestWithContext(
+	openAIRequest, err := http.NewRequestWithContext(
 		context.Background(),
 		http.MethodPost,
-		"https://api.openai.com/v1/responses",
+		testOpenAIBaseURL+"/responses",
 		nil,
 	)
 	if err != nil {
-		t.Fatalf("create official request: %v", err)
+		t.Fatalf("create openai request: %v", err)
 	}
 
-	setOpenAIClientRequestIDHeader(officialRequest, newOpenAIClientRequestIDTestRequest("https://api.openai.com/v1"))
+	setOpenAIClientRequestIDHeader(
+		openAIRequest,
+		newOpenAIClientRequestIDTestRequest(testOpenAIBaseURL, "openai/gpt-5"),
+	)
 
-	if got := officialRequest.Header.Get(openAIClientRequestIDHeader); got != testOpenAIClientRequestID {
-		t.Fatalf("unexpected official request id header: %q", got)
+	if got := openAIRequest.Header.Get(openAIClientRequestIDHeader); got != testOpenAIClientRequestID {
+		t.Fatalf("unexpected openai request id header: %q", got)
 	}
 
 	compatRequest, err := http.NewRequestWithContext(
 		context.Background(),
 		http.MethodPost,
-		testOpenAIBaseURL+"/chat/completions",
+		testOfficialOpenAIBaseURL+"/responses",
 		nil,
 	)
 	if err != nil {
 		t.Fatalf("create compatibility request: %v", err)
 	}
 
-	setOpenAIClientRequestIDHeader(compatRequest, newOpenAIClientRequestIDTestRequest(testOpenAIBaseURL))
+	setOpenAIClientRequestIDHeader(
+		compatRequest,
+		newOpenAIClientRequestIDTestRequest(testOfficialOpenAIBaseURL, "compat/gpt-5"),
+	)
 
 	if got := compatRequest.Header.Get(openAIClientRequestIDHeader); got != "" {
 		t.Fatalf("unexpected compatibility request id header: %q", got)
@@ -1259,7 +1265,7 @@ func TestBuildOpenAIResponsesRequestBodyNormalizesReasoningConfig(t *testing.T) 
 	request := chatCompletionRequest{
 		Provider: providerRequestConfig{
 			APIKind:         providerAPIKindOpenAI,
-			BaseURL:         testOfficialOpenAIBaseURL,
+			BaseURL:         testOpenAIBaseURL,
 			APIKey:          "test-key",
 			APIKeys:         nil,
 			UseResponsesAPI: true,
@@ -1349,7 +1355,10 @@ func TestBuildOpenAIResponsesRequestBodyIncludesPromptCacheKeyForOpenAIProvider(
 	}
 }
 
-func newOpenAIClientRequestIDTestRequest(baseURL string) chatCompletionRequest {
+func newOpenAIClientRequestIDTestRequest(
+	baseURL string,
+	configuredModel string,
+) chatCompletionRequest {
 	return chatCompletionRequest{
 		Provider: providerRequestConfig{
 			APIKind:         providerAPIKindOpenAI,
@@ -1362,7 +1371,7 @@ func newOpenAIClientRequestIDTestRequest(baseURL string) chatCompletionRequest {
 			ExtraBody:       nil,
 		},
 		Model:                       "",
-		ConfiguredModel:             "",
+		ConfiguredModel:             configuredModel,
 		ContextWindow:               0,
 		AutoCompactThresholdPercent: 0,
 		SessionID:                   "",
@@ -1441,6 +1450,13 @@ func assertOpenAIResponsesRequestHeaders(t *testing.T, request *http.Request) {
 
 	if request.Header.Get("X-Test") != testHeaderPresent {
 		t.Fatalf("unexpected extra header: %q", request.Header.Get("X-Test"))
+	}
+
+	if request.Header.Get(openAIClientRequestIDHeader) != testOpenAIClientRequestID {
+		t.Fatalf(
+			"unexpected request id header: %q",
+			request.Header.Get(openAIClientRequestIDHeader),
+		)
 	}
 }
 

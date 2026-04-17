@@ -591,17 +591,6 @@ func openAIAPIKey(apiKey string) string {
 	return apiKey
 }
 
-func openAIBaseURLUsesOfficialAPI(baseURL string) bool {
-	parsedURL, err := url.Parse(strings.TrimSpace(baseURL))
-	if err != nil {
-		return false
-	}
-
-	host := strings.ToLower(strings.TrimSpace(parsedURL.Hostname()))
-
-	return host == openAIOfficialAPIHost
-}
-
 func setOpenAIClientRequestIDHeader(
 	httpRequest *http.Request,
 	request chatCompletionRequest,
@@ -610,7 +599,8 @@ func setOpenAIClientRequestIDHeader(
 		return
 	}
 
-	if !openAIBaseURLUsesOfficialAPI(request.Provider.BaseURL) {
+	if request.Provider.APIKind != providerAPIKindOpenAI ||
+		!openAIConfiguredModel(request.ConfiguredModel) {
 		return
 	}
 
