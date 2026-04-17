@@ -30,9 +30,9 @@ It also works with local backends such as Ollama, LM Studio, and vLLM.
 4. The selected provider streams the response back to Discord.
 
 Behavior notes:
-- Official OpenAI providers (`https://api.openai.com/v1`) now use the Responses API, while other OpenAI-compatible backends stay on Chat Completions unless they expose their own compatible Responses endpoint.
-- OpenAI GPT-5 aliases such as `openai/gpt-5.4-low`, `-none`, `-medium`, `-high`, and `-xhigh` now normalize to the base GPT-5 model. On the official OpenAI Responses path they set `reasoning.effort`; on Chat Completions-compatible paths they set `reasoning_effort`.
-- The built-in `openai` provider and OpenAI Codex providers derive a stable reply-chain `prompt_cache_key` from the anchor message so long shared prefixes can benefit from prompt caching, even when the `openai` provider points at a custom base URL. On eligible `api.openai.com` models you can additionally request `prompt_cache_retention: 24h` through `extra_body`.
+- The built-in `openai` provider uses the Responses API regardless of its configured `base_url`. Other OpenAI-compatible providers stay on Chat Completions unless they explicitly opt into a different Responses-compatible flow such as `x-ai`.
+- OpenAI GPT-5 aliases such as `openai/gpt-5.4-low`, `-none`, `-medium`, `-high`, and `-xhigh` now normalize to the base GPT-5 model. On the built-in `openai` provider they set `reasoning.effort`; on other OpenAI-compatible providers they set `reasoning_effort`.
+- The built-in `openai` provider and OpenAI Codex providers derive a stable reply-chain `prompt_cache_key` from the anchor message so long shared prefixes can benefit from prompt caching, even when the `openai` provider points at a custom base URL. You can also request `prompt_cache_retention: 24h` through `extra_body` for `openai/...` models.
 - xAI-compatible providers can continue server-side conversations with stored `previous_response_id` values when the model matches.
 - xAI and Grok-compatible Responses requests keep direct image URLs inline, accept image `file_id` references, and automatically upload oversized inline Base64 images through `/v1/files` before sending `input_image.file_id`.
 - xAI image-generation replies keep the provider's generated image URL in the response body instead of rendering it as a Discord embed image.
@@ -156,8 +156,8 @@ Providers can be declared in four ways:
 
 Model notes:
 - `context_window` is local-only metadata used for reply-footers and automatic context compaction.
-- OpenAI GPT-5 aliases such as `openai/gpt-5.4-low` control reasoning effort. For GPT-5.4 that alias resolves to `gpt-5.4` with `reasoning.effort=low` on the official Responses API, or `reasoning_effort=low` on Chat Completions-compatible paths; `-minimal` is normalized to `low` to match current model support.
-- `openai/...` models can send a stable `prompt_cache_key` regardless of the configured `base_url`. On eligible official OpenAI models you can also request extended prompt-cache retention by setting `prompt_cache_retention: 24h` in the provider or model `extra_body`. If you omit it, OpenAI defaults to `in_memory`.
+- OpenAI GPT-5 aliases such as `openai/gpt-5.4-low` control reasoning effort. For GPT-5.4 that alias resolves to `gpt-5.4` with `reasoning.effort=low` on the built-in `openai` provider, or `reasoning_effort=low` on other OpenAI-compatible providers; `-minimal` is normalized to `low` to match current model support.
+- `openai/...` models can send a stable `prompt_cache_key` regardless of the configured `base_url`. You can also request extended prompt-cache retention by setting `prompt_cache_retention: 24h` in the provider or model `extra_body`.
 - Gemini aliases such as `-minimal`, `-low`, `-medium`, and `-high` control thought effort.
 - Codex aliases such as `-none`, `-minimal`, `-low`, `-medium`, `-high`, and `-xhigh` control reasoning effort.
 

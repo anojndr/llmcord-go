@@ -978,12 +978,20 @@ func defaultProviderVerbosity(
 	return extraBody
 }
 
+func usesBuiltInOpenAIProvider(
+	providerName string,
+	providerAPIKind providerAPIKind,
+) bool {
+	return providerAPIKind == providerAPIKindOpenAI &&
+		strings.EqualFold(strings.TrimSpace(providerName), defaultOpenAIProviderName)
+}
+
 func usesDefaultProviderVerbosity(providerName string, providerAPIKind providerAPIKind) bool {
 	if providerAPIKind == providerAPIKindOpenAICodex {
 		return true
 	}
 
-	return providerAPIKind == providerAPIKindOpenAI && strings.EqualFold(providerName, defaultOpenAIProviderName)
+	return usesBuiltInOpenAIProvider(providerName, providerAPIKind)
 }
 
 func requestBodyHasVerbosity(extraBody map[string]any) bool {
@@ -1097,7 +1105,7 @@ func buildChatCompletionRequest(
 	}
 
 	if providerAPIKind == providerAPIKindOpenAI {
-		if useResponsesAPI && openAIBaseURLUsesOfficialAPI(provider.BaseURL) {
+		if useResponsesAPI && usesBuiltInOpenAIProvider(providerName, providerAPIKind) {
 			modelName, extraBody = normalizeOpenAIResponsesModelAlias(modelName, extraBody)
 			extraBody = normalizeOpenAIResponsesExtraBody(modelName, extraBody)
 		} else {

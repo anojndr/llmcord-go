@@ -90,7 +90,6 @@ const (
 	geminiFileProcessingTimeout          = 2 * time.Minute
 	geminiInlineImageByteLimit           = 4 * 1024 * 1024
 	openRouterHost                       = "openrouter.ai"
-	openAIOfficialAPIHost                = "api.openai.com"
 	openRouterTransformsField            = "transforms"
 	openRouterMiddleOutTransform         = "middle-out"
 	searchDeciderTimeout                 = 30 * time.Second
