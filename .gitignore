@@ -20,6 +20,7 @@
 # Keep repo-owned YAML files explicit; local runtime config stays ignored by default.
 
 # Keep runtime and deployment manifests explicit so local-only config files remain ignored.
+# In particular, `config-example.yaml` is tracked while user-specific `config.yaml` stays ignored.
 !Dockerfile
 !config-example.yaml
 !docker-compose.yaml

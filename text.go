@@ -206,7 +206,7 @@ func minInt(left, right int) int {
 }
 
 func splitConfiguredModel(configuredModel string) (string, string, error) {
-	trimmedModel := strings.TrimSuffix(configuredModel, ":vision")
+	trimmedModel := trimConfiguredModelLocalSuffixes(configuredModel)
 
 	parts := strings.SplitN(trimmedModel, "/", configuredModelParts)
 	if len(parts) != configuredModelParts {
@@ -218,4 +218,8 @@ func splitConfiguredModel(configuredModel string) (string, string, error) {
 	}
 
 	return parts[0], parts[1], nil
+}
+
+func trimConfiguredModelLocalSuffixes(model string) string {
+	return strings.TrimSuffix(model, ":vision")
 }
