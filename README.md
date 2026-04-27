@@ -20,7 +20,7 @@ It also works with local backends such as Ollama, LM Studio, and vLLM.
 - Optional web-search augmentation with Exa or Tavily
 - `vsearch` reverse-image lookup with Yandex Images and optional SerpApi Google Lens
 - Hot-reloaded `config.yaml`, permissions, channel model locks, and PostgreSQL-backed history persistence
-- Automatic context compaction when a model has `context_window` configured
+- Automatic context compaction when a model has `context_window` configured, including conservative budgeting for structured text such as CSV logs
 
 ## Request Flow
 
@@ -155,7 +155,7 @@ Providers can be declared in four ways:
 | `system_prompt` | Optional prompt prepended to every request. `{date}` and `{time}` are expanded with the host time zone. |
 
 Model notes:
-- `context_window` is local-only metadata used for reply-footers and automatic context compaction.
+- `context_window` is local-only metadata used for reply-footers and automatic context compaction. CSV, numeric logs, and other punctuation-heavy text are budgeted more conservatively than prose because they often tokenize more densely.
 - OpenAI GPT-5 aliases such as `openai/gpt-5.4-low` control reasoning effort. For GPT-5.4 that alias resolves to `gpt-5.4` with `reasoning.effort=low` on the built-in `openai` provider, or `reasoning_effort=low` on other OpenAI-compatible providers; `-minimal` is normalized to `low` to match current model support.
 - `openai/...` models can send a stable `prompt_cache_key` regardless of the configured `base_url`. You can also request extended prompt-cache retention by setting `prompt_cache_retention: 24h` in the provider or model `extra_body`.
 - Gemini aliases such as `-minimal`, `-low`, `-medium`, and `-high` control thought effort.

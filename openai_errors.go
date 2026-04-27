@@ -138,6 +138,7 @@ func openAIHTTPErrorBodyLooksOpaque(bodyText string) bool {
 	}
 
 	longestFieldRunes := 0
+
 	for _, field := range fields {
 		fieldRunes := runeCount(field)
 		if fieldRunes > longestFieldRunes {

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 const (
@@ -21,6 +23,8 @@ const (
 	autoCompactMaxChunkTokens          = 3000
 	autoCompactChunkDivisor            = 3
 	autoCompactCharsPerToken           = 4
+	autoCompactLetterRunBytesPerToken  = 6
+	autoCompactDigitRunBytesPerToken   = 3
 	autoCompactMessageOverheadTokens   = 8
 	autoCompactImageTokens             = 1024
 	autoCompactAudioTokens             = 4096
@@ -40,6 +44,14 @@ const (
 )
 
 var errAutoCompactRequestTooLarge = errors.New("unable to auto-compact request within token limit")
+
+type autoCompactTextRunKind int
+
+const (
+	autoCompactTextRunNone autoCompactTextRunKind = iota
+	autoCompactTextRunLetter
+	autoCompactTextRunDigit
+)
 
 type autoCompactStrategy string
 
@@ -557,18 +569,22 @@ func splitTextToApproxTokenChunks(text string, tokenLimit int) []string {
 		tokenLimit = autoCompactMinChunkTokens
 	}
 
-	charLimit := tokenLimit * autoCompactCharsPerToken
 	chunks := make([]string, 0, 1)
 	remainingText := trimmedText
 
 	for remainingText != "" {
-		if runeCount(remainingText) <= charLimit {
+		if estimateTextTokens(remainingText) <= tokenLimit {
 			chunks = append(chunks, remainingText)
 
 			break
 		}
 
-		chunkText, nextText := splitRunesPrefix(remainingText, charLimit)
+		prefixRunes := maxTextPrefixRunesForApproxTokens(remainingText, tokenLimit)
+		if prefixRunes <= 0 {
+			prefixRunes = 1
+		}
+
+		chunkText, nextText := splitRunesPrefix(remainingText, prefixRunes)
 		chunks = append(chunks, strings.TrimSpace(chunkText))
 		remainingText = strings.TrimSpace(nextText)
 	}
@@ -649,18 +665,40 @@ func truncateTextToApproxTokens(text string, tokenLimit int) string {
 		return trimmedText
 	}
 
+	prefixRunes := maxTextPrefixRunesForApproxTokens(trimmedText, tokenLimit)
+	if prefixRunes <= 0 {
+		return ""
+	}
+
+	return strings.TrimSpace(string([]rune(trimmedText)[:prefixRunes]))
+}
+
+func maxTextPrefixRunesForApproxTokens(text string, tokenLimit int) int {
+	if tokenLimit <= 0 {
+		return 0
+	}
+
+	trimmedText := strings.TrimSpace(text)
+	if trimmedText == "" {
+		return 0
+	}
+
+	if estimateTextTokens(trimmedText) <= tokenLimit {
+		return runeCount(trimmedText)
+	}
+
 	runes := []rune(trimmedText)
 	maxRunes := minInt(len(runes), tokenLimit*autoCompactCharsPerToken)
 	low := 0
 	high := maxRunes
-	best := ""
+	best := 0
 
 	for low <= high {
 		mid := (low + high) / autoCompactBinarySearchDivisor
 		candidate := strings.TrimSpace(string(runes[:mid]))
 
 		if estimateTextTokens(candidate) <= tokenLimit {
-			best = candidate
+			best = mid
 			low = mid + 1
 
 			continue
@@ -762,18 +800,121 @@ func estimateTextTokens(text string) int {
 		return 0
 	}
 
-	textLength := len(trimmedText)
-	tokens := textLength / autoCompactCharsPerToken
-
-	if textLength%autoCompactCharsPerToken != 0 {
-		tokens++
-	}
+	tokens := max(
+		ceilDivPositive(len(trimmedText), autoCompactCharsPerToken),
+		estimateStructuredTextTokens(trimmedText),
+	)
 
 	if tokens == 0 {
 		return 1
 	}
 
 	return tokens
+}
+
+func estimateStructuredTextTokens(text string) int {
+	tokens := 0
+	runKind := autoCompactTextRunNone
+	runRunes := 0
+	runBytes := 0
+
+	flushRun := func() {
+		tokens += estimateStructuredTextRunTokens(runKind, runRunes, runBytes)
+		runKind = autoCompactTextRunNone
+		runRunes = 0
+		runBytes = 0
+	}
+
+	for _, value := range text {
+		if unicode.IsSpace(value) {
+			flushRun()
+
+			if value == '\n' || value == '\r' {
+				tokens++
+			}
+
+			continue
+		}
+
+		nextRunKind := autoCompactStructuredTextRunKind(value)
+		if nextRunKind == autoCompactTextRunNone {
+			flushRun()
+
+			tokens++
+
+			continue
+		}
+
+		if runKind != nextRunKind {
+			flushRun()
+
+			runKind = nextRunKind
+		}
+
+		runRunes++
+		runBytes += runeByteLength(value)
+	}
+
+	flushRun()
+
+	return tokens
+}
+
+func autoCompactStructuredTextRunKind(value rune) autoCompactTextRunKind {
+	switch {
+	case unicode.IsLetter(value) || unicode.IsMark(value):
+		return autoCompactTextRunLetter
+	case unicode.IsDigit(value):
+		return autoCompactTextRunDigit
+	default:
+		return autoCompactTextRunNone
+	}
+}
+
+func estimateStructuredTextRunTokens(
+	kind autoCompactTextRunKind,
+	runRunes int,
+	runBytes int,
+) int {
+	if runRunes <= 0 || runBytes <= 0 {
+		return 0
+	}
+
+	switch kind {
+	case autoCompactTextRunNone:
+		return 0
+	case autoCompactTextRunLetter:
+		if runBytes > runRunes {
+			return runRunes
+		}
+
+		return ceilDivPositive(runBytes, autoCompactLetterRunBytesPerToken)
+	case autoCompactTextRunDigit:
+		return ceilDivPositive(runBytes, autoCompactDigitRunBytesPerToken)
+	default:
+		return 0
+	}
+}
+
+func runeByteLength(value rune) int {
+	byteLength := utf8.RuneLen(value)
+	if byteLength <= 0 {
+		return 1
+	}
+
+	return byteLength
+}
+
+func ceilDivPositive(value int, divisor int) int {
+	if value <= 0 {
+		return 0
+	}
+
+	if divisor <= 0 {
+		return value
+	}
+
+	return (value + divisor - 1) / divisor
 }
 
 func splitLeadingSystemMessages(messages []chatMessage) ([]chatMessage, []chatMessage) {
