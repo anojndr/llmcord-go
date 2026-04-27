@@ -54,7 +54,28 @@ func newTestUnavailableGeminiAPIErrorPointer(message string) error {
 func TestUserFacingResponseErrorReturnsRawErrorText(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
+	for _, testCase := range userFacingResponseErrorRawTextCases() {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := userFacingResponseError(testCase.err)
+			if got != testCase.expected {
+				t.Fatalf(
+					"unexpected user-facing error: got %q want %q",
+					got,
+					testCase.expected,
+				)
+			}
+		})
+	}
+}
+
+func userFacingResponseErrorRawTextCases() []struct {
+	name     string
+	err      error
+	expected string
+} {
+	return []struct {
 		name     string
 		err      error
 		expected string
@@ -132,21 +153,6 @@ func TestUserFacingResponseErrorReturnsRawErrorText(t *testing.T) {
 				userFacingErrorMaxRunes-runeCount(" [truncated]"),
 			) + " [truncated]",
 		},
-	}
-
-	for _, testCase := range tests {
-		t.Run(testCase.name, func(t *testing.T) {
-			t.Parallel()
-
-			got := userFacingResponseError(testCase.err)
-			if got != testCase.expected {
-				t.Fatalf(
-					"unexpected user-facing error: got %q want %q",
-					got,
-					testCase.expected,
-				)
-			}
-		})
 	}
 }
 
