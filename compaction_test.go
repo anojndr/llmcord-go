@@ -237,6 +237,67 @@ func TestAutoCompactRequestTruncatesLatestOversizedMessage(t *testing.T) {
 	}
 }
 
+func TestAutoCompactRequestTruncatesCSVLikeLatestMessageConservatively(t *testing.T) {
+	t.Parallel()
+
+	csvText := repeatedAutoCompactCSVRows(600)
+	request := chatCompletionRequest{
+		Provider: providerRequestConfig{
+			APIKind:         "",
+			BaseURL:         "",
+			APIKey:          "",
+			APIKeys:         nil,
+			UseResponsesAPI: false,
+			ExtraHeaders:    nil,
+			ExtraQuery:      nil,
+			ExtraBody:       nil,
+		},
+		Model:                       "",
+		ConfiguredModel:             testAutoCompactMainModel,
+		ContextWindow:               1_000,
+		AutoCompactThresholdPercent: 90,
+		SessionID:                   "",
+		PreviousResponseID:          "",
+		RequestID:                   "",
+		Messages: []chatMessage{
+			{Role: messageRoleUser, Content: csvText},
+		},
+	}
+
+	singleMessageLimit := autoCompactSingleMessageTokenLimit(
+		request.ContextWindow,
+		request.AutoCompactThresholdPercent,
+	)
+	if estimateChatMessageTokens(request.Messages[0]) <= singleMessageLimit {
+		t.Fatalf("unexpected test setup: csv message already fits %d", singleMessageLimit)
+	}
+
+	instance := new(bot)
+	instance.chatCompletions = newUnexpectedCompactionClient(t)
+
+	compactedRequest, result := instance.autoCompactRequest(context.Background(), request)
+	if !result.TruncatedMessage {
+		t.Fatal("expected csv-like latest message truncation")
+	}
+
+	truncatedText, ok := compactedRequest.Messages[0].Content.(string)
+	if !ok {
+		t.Fatalf("unexpected truncated content type: %T", compactedRequest.Messages[0].Content)
+	}
+
+	if estimateChatMessageTokens(compactedRequest.Messages[0]) > singleMessageLimit {
+		t.Fatalf(
+			"expected csv-like latest message to fit the single-message limit: %d > %d",
+			estimateChatMessageTokens(compactedRequest.Messages[0]),
+			singleMessageLimit,
+		)
+	}
+
+	if runeCount(truncatedText) >= singleMessageLimit*autoCompactCharsPerToken {
+		t.Fatalf("expected csv-like text to truncate below the prose character budget: %d", runeCount(truncatedText))
+	}
+}
+
 func TestAutoCompactRequestTruncatesLatestOversizedMessageBeforeSummarizingHistory(t *testing.T) {
 	t.Parallel()
 
@@ -326,6 +387,54 @@ func TestAutoCompactRequestTruncatesLatestOversizedMessageBeforeSummarizingHisto
 		request.AutoCompactThresholdPercent,
 	) {
 		t.Fatalf("expected latest message to fit the single-message limit: %#v", latestMessage)
+	}
+}
+
+func TestEstimateTextTokensCountsCSVLikeTextMoreConservativelyThanProse(t *testing.T) {
+	t.Parallel()
+
+	csvText := repeatedAutoCompactCSVRows(20)
+
+	naiveCSVTokens := ceilDivPositive(len(strings.TrimSpace(csvText)), autoCompactCharsPerToken)
+	if estimateTextTokens(csvText) <= naiveCSVTokens {
+		t.Fatalf(
+			"expected csv-like token estimate above naive character ratio: got %d want > %d",
+			estimateTextTokens(csvText),
+			naiveCSVTokens,
+		)
+	}
+
+	proseText := repeatedAutoCompactText("average frame pacing stayed steady during the capture", 20)
+
+	naiveProseTokens := ceilDivPositive(len(strings.TrimSpace(proseText)), autoCompactCharsPerToken)
+	if estimateTextTokens(proseText) != naiveProseTokens {
+		t.Fatalf(
+			"expected prose estimate to keep the character ratio: got %d want %d",
+			estimateTextTokens(proseText),
+			naiveProseTokens,
+		)
+	}
+}
+
+func TestSplitTextToApproxTokenChunksKeepsCSVLikeChunksWithinBudget(t *testing.T) {
+	t.Parallel()
+
+	const chunkTokenLimit = autoCompactMinChunkTokens
+
+	chunks := splitTextToApproxTokenChunks(repeatedAutoCompactCSVRows(50), chunkTokenLimit)
+	if len(chunks) < 2 {
+		t.Fatalf("expected csv-like text to split into multiple chunks: %d", len(chunks))
+	}
+
+	for index, chunk := range chunks {
+		if estimateTextTokens(chunk) > chunkTokenLimit {
+			t.Fatalf(
+				"expected chunk %d to fit token budget: %d > %d",
+				index,
+				estimateTextTokens(chunk),
+				chunkTokenLimit,
+			)
+		}
 	}
 }
 
@@ -470,7 +579,7 @@ func TestDecideWebSearchAutoCompactsSearchDeciderRequest(t *testing.T) {
 	}))
 	loadedConfig := testSearchConfig()
 	loadedConfig.ModelContextWindows = map[string]int{
-		testSearchDeciderModel: 1700,
+		testSearchDeciderModel: 2200,
 	}
 
 	conversation := []chatMessage{
@@ -711,4 +820,23 @@ func repeatedAutoCompactText(fragment string, repeats int) string {
 
 func autoCompactSizedASCIIText(tokens int) string {
 	return strings.Repeat("a", tokens*autoCompactCharsPerToken)
+}
+
+func repeatedAutoCompactCSVRows(rows int) string {
+	header := strings.Join([]string{
+		"Application",
+		"ProcessID",
+		"SwapChainAddress",
+		"PresentRuntime",
+		"SyncInterval",
+		"PresentFlags",
+		"AllowsTearing",
+		"PresentMode",
+		"PCL",
+		"MsPCLatency",
+		"FPS",
+	}, ",") + "\n"
+	row := "Overwatch.exe,10436,0xE84F640,DXGI,0,0,0,Unknown,Application,0.0107,16.6590,15.9657,NA,0.0627,0.0000,NA\n"
+
+	return header + strings.Repeat(row, rows)
 }

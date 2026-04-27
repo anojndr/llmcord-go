@@ -5,7 +5,7 @@
 !.gitignore
 !.golangci.yml
 
-# Track only repo-owned root docs and instructions; future scratch notes stay ignored by default.
+# Track only repo-owned root docs, prompts, and instructions; future scratch notes stay ignored by default.
 !AGENTS.md
 !.github/
 !.github/**/*
