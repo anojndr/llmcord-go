@@ -163,7 +163,7 @@ func assignXAIPreviousResponseID(
 	store *messageNodeStore,
 	maxMessages int,
 ) {
-	if request == nil || !request.Provider.UseResponsesAPI {
+	if request == nil || !requestUsesXAIPreviousResponseID(*request) {
 		return
 	}
 
@@ -184,6 +184,15 @@ func assignXAIPreviousResponseID(
 
 	request.PreviousResponseID = previousResponseID
 	request.Messages = continuationMessages
+}
+
+func requestUsesXAIPreviousResponseID(request chatCompletionRequest) bool {
+	if !request.Provider.UseResponsesAPI {
+		return false
+	}
+
+	return xAIConfiguredModel(request.ConfiguredModel) ||
+		xAIBaseURLUsesOfficialAPI(request.Provider.BaseURL)
 }
 
 func xAIConversationPreviousResponseID(
