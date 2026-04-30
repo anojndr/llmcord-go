@@ -11,6 +11,7 @@ const (
 	openAIReasoningEffortLow      = defaultProviderVerbosityLow
 	openAIReasoningEffortMedium   = openAICodexVerbosityMedium
 	openAIReasoningEffortXHigh    = "xhigh"
+	openAIReasoningSummaryAuto    = "auto"
 	openAIReasoningSummaryConcise = "concise"
 	openAIReasoningModelGPT51     = "gpt-5.1"
 	openAIReasoningModelGPT54     = "gpt-5.4"
@@ -55,11 +56,10 @@ func normalizeOpenAIChatCompletionsModelAlias(model string, extraBody map[string
 }
 
 func normalizeOpenAIResponsesExtraBody(model string, extraBody map[string]any) map[string]any {
-	if len(extraBody) == 0 {
-		return extraBody
-	}
-
 	normalizedExtraBody := maps.Clone(extraBody)
+	if normalizedExtraBody == nil {
+		normalizedExtraBody = make(map[string]any, 1)
+	}
 
 	if reasoningEffort, ok := normalizedExtraBody["reasoning_effort"]; ok {
 		reasoningConfig := nestedRequestBodyMap(normalizedExtraBody, "reasoning")
@@ -81,6 +81,10 @@ func normalizeOpenAIResponsesExtraBody(model string, extraBody map[string]any) m
 
 	existingReasoningConfig, reasoningConfigExists := normalizedExtraBody["reasoning"]
 	if !reasoningConfigExists || existingReasoningConfig == nil {
+		normalizedExtraBody["reasoning"] = map[string]any{
+			"summary": openAIReasoningSummaryAuto,
+		}
+
 		return normalizedExtraBody
 	}
 
@@ -92,6 +96,10 @@ func normalizeOpenAIResponsesExtraBody(model string, extraBody map[string]any) m
 	clonedReasoningConfig := maps.Clone(reasoningConfig)
 	if effort, effortOK := clonedReasoningConfig["effort"].(string); effortOK {
 		clonedReasoningConfig["effort"] = normalizeOpenAIReasoningEffort(model, effort)
+	}
+
+	if _, summaryExists := clonedReasoningConfig["summary"]; !summaryExists {
+		clonedReasoningConfig["summary"] = openAIReasoningSummaryAuto
 	}
 
 	normalizedExtraBody["reasoning"] = clonedReasoningConfig
