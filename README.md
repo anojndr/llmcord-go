@@ -39,7 +39,8 @@ Behavior notes:
 - Final answers that include `https://i.ibb.co/...` links are followed by a plain Discord reply containing those imgbb image URLs so Discord can render them outside the bot embed.
 - When an xAI model is selected, non-Facebook, non-YouTube Shorts URLs stay provider-side instead of running the bot's URL fetchers first.
 - Empty prompts such as a bare `at ai` or an empty follow-up turn are sent upstream as `.` so providers still receive an explicit user input.
-- Provider response streams are capped at 5 minutes so bad multimodal requests fail cleanly instead of hanging the bot indefinitely.
+- Provider response streams are capped at 5 minutes so bad multimodal requests fail cleanly instead of hanging the bot indefinitely. Built-in `openai/...` Responses requests are capped at 30 minutes because OpenAI reasoning responses can legitimately run longer before completing.
+- Search-decider requests are capped at 60 seconds before the bot skips web search and continues with a warning.
 
 ## Quick Start
 

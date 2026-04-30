@@ -92,8 +92,9 @@ const (
 	openRouterHost                       = "openrouter.ai"
 	openRouterTransformsField            = "transforms"
 	openRouterMiddleOutTransform         = "middle-out"
-	searchDeciderTimeout                 = 30 * time.Second
+	searchDeciderTimeout                 = time.Minute
 	chatCompletionTimeout                = 5 * time.Minute
+	openAIResponsesChatCompletionTimeout = 30 * time.Minute
 	facebookRequestTimeout               = 30 * time.Second
 	tikTokRenderPollInterval             = 500 * time.Millisecond
 	tikTokRenderTimeout                  = 2 * time.Minute
