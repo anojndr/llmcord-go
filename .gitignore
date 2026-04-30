@@ -14,7 +14,7 @@
 !LICENSE.md
 !README.md
 
-# Root-level Go sources and tests stay explicit; local scratch files remain ignored by default.
+# Root-level Go sources and tests stay explicit; local scratch and gate outputs remain ignored by default.
 !*.go
 !searchDeciderPrompt.txt
 !cmd/

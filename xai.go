@@ -27,30 +27,36 @@ var (
 )
 
 const (
-	xAIProviderName                    = "x-ai"
-	xAIResponsesRequestBodyBaseFields  = 4
-	xAIResponsesStreamEventCompleted   = "response.completed"
-	xAIResponsesStreamEventError       = "error"
-	xAIResponsesStreamEventFailed      = "response.failed"
-	xAIResponsesStreamEventIncomplete  = "response.incomplete"
-	xAIResponsesStreamEventOutputDone  = "response.output_item.done"
-	xAIResponsesStreamEventOutputDelta = "response.output_text.delta"
-	xAIResponsesImageDetailAuto        = "auto"
-	xAIResponsesInputFileType          = "input_file"
-	xAIResponsesInputImageType         = "input_image"
-	xAIResponsesInputTextType          = "input_text"
-	xAIResponsesOutputTypeImage        = "image_generation_call"
-	xAIResponsesStatusCompleted        = "completed"
-	xAIResponsesUploadPurposeUserData  = "user_data"
-	xAIMarkdownLinkMatchParts          = 4
-	xAINumberedLineMatchParts          = 2
-	xAISourceAppendixHeader            = "Sources\n"
-	xAISourceAppendixParagraphHeader   = "\n\nSources\n"
-	xAISourceQueriesAppendixSeparator  = "\n\nSearch Queries\n"
-	xAIInputImageUploadFilename        = "input-image"
-	xAIInlineImageByteLimit            = 4 * 1024 * 1024
-	base64DecodedLengthNumerator       = 3
-	base64DecodedLengthDenominator     = 4
+	xAIProviderName                                  = "x-ai"
+	xAIResponsesRequestBodyBaseFields                = 4
+	xAIResponsesStreamEventCompleted                 = "response.completed"
+	xAIResponsesStreamEventError                     = "error"
+	xAIResponsesStreamEventFailed                    = "response.failed"
+	xAIResponsesStreamEventIncomplete                = "response.incomplete"
+	xAIResponsesStreamEventOutputDone                = "response.output_item.done"
+	xAIResponsesStreamEventOutputDelta               = "response.output_text.delta"
+	xAIResponsesStreamEventReasoningTextDone         = "response.reasoning_text.done"
+	xAIResponsesStreamEventReasoningTextDelta        = "response.reasoning_text.delta"
+	xAIResponsesStreamEventReasoningSummaryPartDone  = "response.reasoning_summary_part.done"
+	xAIResponsesStreamEventReasoningSummaryTextDelta = "response.reasoning_summary_text.delta"
+	xAIResponsesImageDetailAuto                      = "auto"
+	xAIResponsesInputFileType                        = "input_file"
+	xAIResponsesInputImageType                       = "input_image"
+	xAIResponsesInputTextType                        = "input_text"
+	xAIResponsesOutputTypeImage                      = "image_generation_call"
+	xAIResponsesOutputTypeReasoning                  = "reasoning"
+	xAIResponsesReasoningSummaryTextType             = "summary_text"
+	xAIResponsesStatusCompleted                      = "completed"
+	xAIResponsesUploadPurposeUserData                = "user_data"
+	xAIMarkdownLinkMatchParts                        = 4
+	xAINumberedLineMatchParts                        = 2
+	xAISourceAppendixHeader                          = "Sources\n"
+	xAISourceAppendixParagraphHeader                 = "\n\nSources\n"
+	xAISourceQueriesAppendixSeparator                = "\n\nSearch Queries\n"
+	xAIInputImageUploadFilename                      = "input-image"
+	xAIInlineImageByteLimit                          = 4 * 1024 * 1024
+	base64DecodedLengthNumerator                     = 3
+	base64DecodedLengthDenominator                   = 4
 )
 
 type xAIResponsesUsage struct {
@@ -71,15 +77,16 @@ type xAIResponsesIncompleteDetails struct {
 }
 
 type xAIResponsesOutputItem struct {
-	ID            string `json:"id"`
-	Type          string `json:"type"`
-	Status        string `json:"status"`
-	Result        string `json:"result"`
-	ResultURL     string `json:"result_url"`
-	MIMEType      string `json:"mime_type"`
-	Action        string `json:"action"`
-	Prompt        string `json:"prompt"`
-	RevisedPrompt string `json:"revised_prompt"`
+	ID            string          `json:"id"`
+	Type          string          `json:"type"`
+	Status        string          `json:"status"`
+	Result        string          `json:"result"`
+	ResultURL     string          `json:"result_url"`
+	MIMEType      string          `json:"mime_type"`
+	Action        string          `json:"action"`
+	Prompt        string          `json:"prompt"`
+	RevisedPrompt string          `json:"revised_prompt"`
+	Summary       json.RawMessage `json:"summary"`
 }
 
 type xAIResponsesFile struct {
@@ -119,9 +126,10 @@ type xAIResponsesStreamEvent struct {
 }
 
 type xAIResponsesStreamState struct {
-	seenOutputItemIDs  map[string]struct{}
-	seenOutputItemURLs map[string]struct{}
-	hasVisibleContent  bool
+	seenOutputItemIDs    map[string]struct{}
+	seenOutputItemURLs   map[string]struct{}
+	seenReasoningItemIDs map[string]struct{}
+	hasVisibleContent    bool
 }
 
 func providerUsesResponsesAPI(providerName string, provider providerConfig) bool {
@@ -978,6 +986,7 @@ func handleXAIResponsesStreamPayload(
 	}
 
 	if delta.Content == "" &&
+		delta.Thinking == "" &&
 		delta.FinishReason == "" &&
 		delta.Usage == nil &&
 		delta.ProviderResponseID == "" {
@@ -994,9 +1003,10 @@ func handleXAIResponsesStreamPayload(
 
 func newXAIResponsesStreamState() *xAIResponsesStreamState {
 	return &xAIResponsesStreamState{
-		seenOutputItemIDs:  make(map[string]struct{}),
-		seenOutputItemURLs: make(map[string]struct{}),
-		hasVisibleContent:  false,
+		seenOutputItemIDs:    make(map[string]struct{}),
+		seenOutputItemURLs:   make(map[string]struct{}),
+		seenReasoningItemIDs: make(map[string]struct{}),
+		hasVisibleContent:    false,
 	}
 }
 
@@ -1016,6 +1026,18 @@ func xAIResponsesStreamPayloadDelta(
 	eventType := strings.TrimSpace(event.Type)
 
 	switch eventType {
+	case xAIResponsesStreamEventReasoningSummaryTextDelta,
+		xAIResponsesStreamEventReasoningTextDelta:
+		delta := emptyDelta
+		delta.Thinking = event.Delta
+
+		return delta, false, nil
+	case xAIResponsesStreamEventReasoningSummaryPartDone,
+		xAIResponsesStreamEventReasoningTextDone:
+		delta := emptyDelta
+		delta.Thinking = "\n\n"
+
+		return delta, false, nil
 	case xAIResponsesStreamEventOutputDelta:
 		if state != nil && event.Delta != "" {
 			state.hasVisibleContent = true
@@ -1027,7 +1049,11 @@ func xAIResponsesStreamPayloadDelta(
 		return delta, false, nil
 	case xAIResponsesStreamEventOutputDone:
 		delta := emptyDelta
-		delta.Content = xAIResponsesOutputItemText(event.Item, state, false)
+
+		delta.Thinking = xAIResponsesOutputItemThinking(event.Item, state)
+		if delta.Thinking == "" {
+			delta.Content = xAIResponsesOutputItemText(event.Item, state, false)
+		}
 
 		return delta, false, nil
 	case xAIResponsesStreamEventCompleted:
@@ -1114,10 +1140,11 @@ func xAIResponsesCompletedDelta(
 		}, xAIResponsesStatusError(status, reason)
 	}
 
+	thinking := xAIResponsesOutputItemsThinking(response.Output, state)
 	content := xAIResponsesOutputItemsText(response.Output, state, true)
 
 	return streamDelta{
-		Thinking:           "",
+		Thinking:           thinking,
 		Content:            content,
 		FinishReason:       finishReasonStop,
 		Usage:              xAIResponsesTokenUsage(response.Usage),
@@ -1144,6 +1171,84 @@ func xAIResponsesOutputItemsText(
 
 	for index := range items {
 		builder.WriteString(xAIResponsesOutputItemText(&items[index], state, final))
+	}
+
+	return builder.String()
+}
+
+func xAIResponsesOutputItemsThinking(
+	items []xAIResponsesOutputItem,
+	state *xAIResponsesStreamState,
+) string {
+	if len(items) == 0 {
+		return ""
+	}
+
+	var builder strings.Builder
+
+	for index := range items {
+		builder.WriteString(xAIResponsesOutputItemThinking(&items[index], state))
+	}
+
+	return builder.String()
+}
+
+func xAIResponsesOutputItemThinking(
+	item *xAIResponsesOutputItem,
+	state *xAIResponsesStreamState,
+) string {
+	summaryText := xAIResponsesReasoningSummaryText(item)
+	if summaryText == "" || xAIResponsesReasoningItemSeen(state, item) {
+		return ""
+	}
+
+	xAIResponsesMarkReasoningItemSeen(state, item)
+
+	return summaryText + "\n\n"
+}
+
+func xAIResponsesReasoningSummaryText(item *xAIResponsesOutputItem) string {
+	if item == nil || !strings.EqualFold(strings.TrimSpace(item.Type), xAIResponsesOutputTypeReasoning) {
+		return ""
+	}
+
+	if len(item.Summary) == 0 || string(item.Summary) == "null" {
+		return ""
+	}
+
+	var summaryText string
+
+	err := json.Unmarshal(item.Summary, &summaryText)
+	if err == nil {
+		return strings.TrimSpace(summaryText)
+	}
+
+	var summaryParts []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+
+	err = json.Unmarshal(item.Summary, &summaryParts)
+	if err != nil {
+		return ""
+	}
+
+	var builder strings.Builder
+
+	for _, part := range summaryParts {
+		partType := strings.TrimSpace(part.Type)
+
+		text := strings.TrimSpace(part.Text)
+		if text == "" ||
+			(partType != "" && !strings.EqualFold(partType, xAIResponsesReasoningSummaryTextType)) {
+			continue
+		}
+
+		if builder.Len() > 0 {
+			builder.WriteString("\n\n")
+		}
+
+		builder.WriteString(text)
 	}
 
 	return builder.String()
@@ -1253,6 +1358,24 @@ func xAIResponsesOutputItemSeen(state *xAIResponsesStreamState, item xAIResponse
 	return false
 }
 
+func xAIResponsesReasoningItemSeen(
+	state *xAIResponsesStreamState,
+	item *xAIResponsesOutputItem,
+) bool {
+	if state == nil || item == nil {
+		return false
+	}
+
+	itemID := strings.TrimSpace(item.ID)
+	if itemID == "" {
+		return false
+	}
+
+	_, ok := state.seenReasoningItemIDs[itemID]
+
+	return ok
+}
+
 func xAIResponsesMarkOutputItemSeen(state *xAIResponsesStreamState, item xAIResponsesOutputItem) {
 	if state == nil {
 		return
@@ -1266,6 +1389,20 @@ func xAIResponsesMarkOutputItemSeen(state *xAIResponsesStreamState, item xAIResp
 	resultURL := strings.ToLower(strings.TrimSpace(item.ResultURL))
 	if resultURL != "" {
 		state.seenOutputItemURLs[resultURL] = struct{}{}
+	}
+}
+
+func xAIResponsesMarkReasoningItemSeen(
+	state *xAIResponsesStreamState,
+	item *xAIResponsesOutputItem,
+) {
+	if state == nil || item == nil {
+		return
+	}
+
+	itemID := strings.TrimSpace(item.ID)
+	if itemID != "" {
+		state.seenReasoningItemIDs[itemID] = struct{}{}
 	}
 }
 
