@@ -43,6 +43,7 @@ type responseTracker struct {
 	modelName          string
 	contextWindow      int
 	usage              *tokenUsage
+	contextUsage       *tokenUsage
 	providerResponseID string
 	responseMessages   []*discordgo.Message
 	pendingResponses   []pendingResponse
@@ -287,6 +288,7 @@ func (instance *bot) generateAndSendResponse(
 
 	responseErr := instance.renderFinalResponse(
 		ctx,
+		request,
 		tracker,
 		warnings,
 		&finalAccumulator,
@@ -432,6 +434,7 @@ func responseTextWithError(responseText, errorText string) string {
 
 func (instance *bot) renderFinalResponse(
 	ctx context.Context,
+	request chatCompletionRequest,
 	tracker *responseTracker,
 	warnings []string,
 	accumulator *segmentAccumulator,
@@ -454,6 +457,11 @@ func (instance *bot) renderFinalResponse(
 
 		return nil
 	}
+
+	tracker.contextUsage = retainedContextWindowUsage(
+		request,
+		visibleResponseText(thinkingText, accumulator.joined()),
+	)
 
 	err := instance.renderEmbedResponse(
 		ctx,
@@ -622,7 +630,7 @@ func (instance *bot) renderEmbedResponse(
 	)
 	if final && len(desiredSpecs) > 0 {
 		desiredSpecs[len(desiredSpecs)-1].footerText = contextWindowFooter(
-			tracker.usage,
+			tracker.footerUsage(),
 			tracker.contextWindow,
 		)
 	}
@@ -660,6 +668,18 @@ func (instance *bot) renderEmbedResponse(
 	tracker.responseVisible = true
 
 	return nil
+}
+
+func (tracker *responseTracker) footerUsage() *tokenUsage {
+	if tracker == nil {
+		return nil
+	}
+
+	if tracker.contextUsage != nil {
+		return tracker.contextUsage
+	}
+
+	return tracker.usage
 }
 
 func (instance *bot) renderEmbedSpec(
@@ -1229,6 +1249,17 @@ func contextWindowFooter(usage *tokenUsage, contextWindow int) string {
 		formatCompactTokenCount(contextWindow),
 		formatContextWindowUsagePercent(usedTokens, contextWindow),
 	)
+}
+
+func retainedContextWindowUsage(request chatCompletionRequest, responseText string) *tokenUsage {
+	usage := new(tokenUsage)
+	usage.Input = estimateChatCompletionRequestTokens(request)
+	usage.Output = estimateChatMessageTokens(chatMessage{
+		Role:    messageRoleAssistant,
+		Content: responseText,
+	})
+
+	return usage
 }
 
 func formatContextWindowUsagePercent(usedTokens, contextWindow int) string {
