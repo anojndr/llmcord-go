@@ -184,12 +184,25 @@ func withoutCancelContext(ctx context.Context) context.Context {
 	return context.WithoutCancel(ctx)
 }
 
-func streamChatCompletionContext(ctx context.Context) (context.Context, context.CancelFunc) {
+func streamChatCompletionContext(
+	ctx context.Context,
+	request chatCompletionRequest,
+) (context.Context, context.CancelFunc) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 
-	return context.WithTimeout(ctx, chatCompletionTimeout)
+	return context.WithTimeout(ctx, streamChatCompletionTimeout(request))
+}
+
+func streamChatCompletionTimeout(request chatCompletionRequest) time.Duration {
+	if request.Provider.APIKind == providerAPIKindOpenAI &&
+		request.Provider.UseResponsesAPI &&
+		openAIConfiguredModel(request.ConfiguredModel) {
+		return openAIResponsesChatCompletionTimeout
+	}
+
+	return chatCompletionTimeout
 }
 
 func (tracker *responseTracker) release(store *messageNodeStore, fullText string, thinkingText string) {
@@ -245,7 +258,7 @@ func (instance *bot) generateAndSendResponse(
 		renderedAnswerText:  "",
 	}
 
-	streamContext, cancelStream := streamChatCompletionContext(ctx)
+	streamContext, cancelStream := streamChatCompletionContext(ctx, request)
 	defer cancelStream()
 
 	streamErr := instance.chatCompletions.streamChatCompletion(streamContext, request, func(delta streamDelta) error {
