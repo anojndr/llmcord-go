@@ -1174,6 +1174,7 @@ func TestOpenAIClientStreamResponses(t *testing.T) {
 
 	var (
 		joinedContent      strings.Builder
+		joinedThinking     strings.Builder
 		finishReason       string
 		usage              *tokenUsage
 		providerResponseID string
@@ -1181,6 +1182,7 @@ func TestOpenAIClientStreamResponses(t *testing.T) {
 
 	err := client.streamChatCompletion(context.Background(), request, func(delta streamDelta) error {
 		joinedContent.WriteString(delta.Content)
+		joinedThinking.WriteString(delta.Thinking)
 
 		if delta.Usage != nil {
 			usage = cloneTokenUsage(delta.Usage)
@@ -1202,6 +1204,10 @@ func TestOpenAIClientStreamResponses(t *testing.T) {
 
 	if joinedContent.String() != testStreamedHelloText {
 		t.Fatalf("unexpected streamed content: %q", joinedContent.String())
+	}
+
+	if joinedThinking.String() != "Inspecting...\n\nNeed more steps\n\nChecking raw-compatible event...\n\n" {
+		t.Fatalf("unexpected streamed thinking: %q", joinedThinking.String())
 	}
 
 	if finishReason != finishReasonStop {
@@ -1319,6 +1325,47 @@ func TestBuildOpenAIResponsesRequestBodyNormalizesReasoningConfig(t *testing.T) 
 	}
 }
 
+func TestBuildOpenAIResponsesRequestBodyDefaultsReasoningSummary(t *testing.T) {
+	t.Parallel()
+
+	request := chatCompletionRequest{
+		Provider: providerRequestConfig{
+			APIKind:         providerAPIKindOpenAI,
+			BaseURL:         testOpenAIBaseURL,
+			APIKey:          "test-key",
+			APIKeys:         nil,
+			UseResponsesAPI: true,
+			ExtraHeaders:    nil,
+			ExtraQuery:      nil,
+			ExtraBody:       nil,
+		},
+		Model:                       openAIReasoningModelGPT54,
+		ConfiguredModel:             "openai/gpt-5.4",
+		ContextWindow:               0,
+		AutoCompactThresholdPercent: 0,
+		SessionID:                   "",
+		PreviousResponseID:          "",
+		RequestID:                   "",
+		Messages: []chatMessage{
+			{Role: messageRoleUser, Content: "hello"},
+		},
+	}
+
+	requestBody, err := buildXAIResponsesRequestBody(request)
+	if err != nil {
+		t.Fatalf("build responses request body: %v", err)
+	}
+
+	reasoningConfig, ok := requestBody["reasoning"].(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected reasoning config type: %T", requestBody["reasoning"])
+	}
+
+	if reasoningConfig["summary"] != openAIReasoningSummaryAuto {
+		t.Fatalf("unexpected reasoning summary: %#v", reasoningConfig["summary"])
+	}
+}
+
 func TestBuildOpenAIResponsesRequestBodyIncludesPromptCacheKeyForOpenAIProvider(t *testing.T) {
 	t.Parallel()
 
@@ -1399,6 +1446,38 @@ func newOpenAIResponsesStreamingTestServer(t *testing.T) *httptest.Server {
 			t.Fatal("expected response writer to support flushing")
 		}
 
+		writeStreamChunk(
+			t,
+			responseWriter,
+			"data: {\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"Inspecting...\"}\n\n",
+		)
+		flusher.Flush()
+		writeStreamChunk(
+			t,
+			responseWriter,
+			"data: {\"type\":\"response.reasoning_summary_part.done\"}\n\n",
+		)
+		flusher.Flush()
+		writeStreamChunk(
+			t,
+			responseWriter,
+			"data: {\"type\":\"response.output_item.done\",\"item\":{\"id\":\"rs_1\","+
+				"\"type\":\"reasoning\",\"summary\":[{\"type\":\"summary_text\","+
+				"\"text\":\"Need more steps\"}]}}\n\n",
+		)
+		flusher.Flush()
+		writeStreamChunk(
+			t,
+			responseWriter,
+			"data: {\"type\":\"response.reasoning_text.delta\",\"delta\":\"Checking raw-compatible event...\"}\n\n",
+		)
+		flusher.Flush()
+		writeStreamChunk(
+			t,
+			responseWriter,
+			"data: {\"type\":\"response.reasoning_text.done\"}\n\n",
+		)
+		flusher.Flush()
 		writeStreamChunk(
 			t,
 			responseWriter,
