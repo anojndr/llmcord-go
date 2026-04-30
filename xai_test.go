@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -789,6 +790,64 @@ func TestAssignXAIPreviousResponseIDUsesAssistantAnchorAndTrimsHistory(t *testin
 
 	if request.Messages[0].Content != "follow-up one" || request.Messages[1].Content != "follow-up two" {
 		t.Fatalf("unexpected continuation messages: %#v", request.Messages)
+	}
+}
+
+func TestAssignXAIPreviousResponseIDSkipsBuiltInOpenAIProvider(t *testing.T) {
+	t.Parallel()
+
+	store := newMessageNodeStore(4)
+
+	rootUser := newTestDiscordMessage("100")
+	assistant := newTestDiscordMessage("200")
+	followUp := newTestDiscordMessage("300")
+
+	setConversationNode(store, rootUser.ID, messageRoleUser, "", "", nil)
+	setConversationNode(
+		store,
+		assistant.ID,
+		messageRoleAssistant,
+		testXAIProviderResponseID,
+		"openai/gpt-5.4",
+		rootUser,
+	)
+	setConversationNode(store, followUp.ID, messageRoleUser, "", "", assistant)
+
+	request := chatCompletionRequest{
+		Provider: providerRequestConfig{
+			APIKind:         providerAPIKindOpenAI,
+			BaseURL:         testOfficialOpenAIBaseURL,
+			APIKey:          "",
+			APIKeys:         nil,
+			UseResponsesAPI: true,
+			ExtraHeaders:    nil,
+			ExtraQuery:      nil,
+			ExtraBody:       nil,
+		},
+		Model:                       "gpt-5.4",
+		ConfiguredModel:             "openai/gpt-5.4",
+		ContextWindow:               0,
+		AutoCompactThresholdPercent: 0,
+		SessionID:                   "",
+		PreviousResponseID:          "",
+		RequestID:                   "",
+		Messages: []chatMessage{
+			{Role: openAICodexRoleSystem, Content: "You are concise."},
+			{Role: messageRoleUser, Content: "first question"},
+			{Role: messageRoleAssistant, Content: "first answer"},
+			{Role: messageRoleUser, Content: "follow-up"},
+		},
+	}
+	originalMessages := append([]chatMessage(nil), request.Messages...)
+
+	assignXAIPreviousResponseID(&request, followUp, store, defaultMaxMessages)
+
+	if request.PreviousResponseID != "" {
+		t.Fatalf("unexpected previous response id: %q", request.PreviousResponseID)
+	}
+
+	if !slices.Equal(request.Messages, originalMessages) {
+		t.Fatalf("unexpected openai message trimming: %#v", request.Messages)
 	}
 }
 
