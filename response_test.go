@@ -648,6 +648,7 @@ func testRenderFinalResponseResendsImgbbURLsWithoutBreakingReplyHistory(t *testi
 
 	err := instance.renderFinalResponse(
 		context.Background(),
+		emptyChatCompletionRequest(),
 		tracker,
 		nil,
 		&accumulator,
@@ -914,6 +915,53 @@ func TestContextWindowFooterFormatsCompactUsage(t *testing.T) {
 	if footerText != "context window: 20k/400k (5% used)" {
 		t.Fatalf("unexpected context window footer: %q", footerText)
 	}
+}
+
+func TestRetainedContextWindowUsageGrowsAcrossFollowUpWhenProviderTotalsShrink(t *testing.T) {
+	t.Parallel()
+
+	const (
+		firstAnswer  = "Use MKV, enable multiple recording audio tracks, then assign desktop and mic to separate tracks."
+		followUp     = "can VLC play MKV files"
+		secondAnswer = "Yes. VLC can play MKV files."
+	)
+
+	firstRequest := emptyChatCompletionRequest()
+	firstRequest.Messages = []chatMessage{
+		{Role: openAICodexRoleSystem, Content: "You are concise."},
+		{Role: messageRoleUser, Content: "How do I keep OBS audio channels separated in one recording file?"},
+	}
+	firstUsage := retainedContextWindowUsage(firstRequest, firstAnswer)
+
+	secondRequest := emptyChatCompletionRequest()
+	secondRequest.Messages = appendChatMessages(firstRequest.Messages, []chatMessage{
+		{Role: messageRoleAssistant, Content: firstAnswer},
+		{Role: messageRoleUser, Content: followUp},
+	})
+	secondUsage := retainedContextWindowUsage(secondRequest, secondAnswer)
+
+	firstProviderUsage := &tokenUsage{Input: firstUsage.Input, Output: firstUsage.Output + 800}
+	secondProviderUsage := &tokenUsage{Input: secondUsage.Input, Output: secondUsage.Output}
+
+	if tokenUsageTotal(secondProviderUsage) >= tokenUsageTotal(firstProviderUsage) {
+		t.Fatalf(
+			"test setup did not reproduce shrinking provider totals: first=%#v second=%#v",
+			firstProviderUsage,
+			secondProviderUsage,
+		)
+	}
+
+	if tokenUsageTotal(secondUsage) <= tokenUsageTotal(firstUsage) {
+		t.Fatalf("retained context usage should grow across follow-up: first=%#v second=%#v", firstUsage, secondUsage)
+	}
+}
+
+func tokenUsageTotal(usage *tokenUsage) int {
+	if usage == nil {
+		return 0
+	}
+
+	return usage.Input + usage.Output
 }
 
 func TestRenderEmbedResponseIncludesConfiguredModelAsAuthor(t *testing.T) {
