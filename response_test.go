@@ -156,10 +156,44 @@ func userFacingResponseErrorRawTextCases() []struct {
 	}
 }
 
-func TestStreamChatCompletionContextAddsDeadline(t *testing.T) {
+func TestStreamChatCompletionContextAddsDefaultDeadline(t *testing.T) {
 	t.Parallel()
 
-	ctx, cancel := streamChatCompletionContext(context.Background())
+	request := newStreamTimeoutTestRequest(
+		providerAPIKindGemini,
+		false,
+		"gemini/gemini-test",
+	)
+
+	assertStreamChatCompletionContextTimeout(t, request, chatCompletionTimeout)
+}
+
+func TestStreamChatCompletionContextAllowsLongOpenAIResponses(t *testing.T) {
+	t.Parallel()
+
+	request := newStreamTimeoutTestRequest(providerAPIKindOpenAI, true, "openai/gpt-5")
+
+	assertStreamChatCompletionContextTimeout(t, request, openAIResponsesChatCompletionTimeout)
+}
+
+func TestStreamChatCompletionContextKeepsCompatibleResponsesDefault(t *testing.T) {
+	t.Parallel()
+
+	request := newStreamTimeoutTestRequest(providerAPIKindOpenAI, true, "x-ai/grok-4")
+
+	assertStreamChatCompletionContextTimeout(t, request, chatCompletionTimeout)
+}
+
+func assertStreamChatCompletionContextTimeout(
+	t *testing.T,
+	request chatCompletionRequest,
+	expected time.Duration,
+) {
+	t.Helper()
+
+	startedAt := time.Now()
+
+	ctx, cancel := streamChatCompletionContext(context.Background(), request)
 	defer cancel()
 
 	deadline, ok := ctx.Deadline()
@@ -167,9 +201,36 @@ func TestStreamChatCompletionContextAddsDeadline(t *testing.T) {
 		t.Fatal("expected stream context deadline")
 	}
 
-	remaining := time.Until(deadline)
-	if remaining <= 0 || remaining > chatCompletionTimeout+time.Second {
-		t.Fatalf("unexpected remaining timeout: %s", remaining)
+	actual := deadline.Sub(startedAt)
+	if actual <= expected-time.Second || actual > expected+time.Second {
+		t.Fatalf("unexpected stream timeout: got %s want %s", actual, expected)
+	}
+}
+
+func newStreamTimeoutTestRequest(
+	apiKind providerAPIKind,
+	useResponsesAPI bool,
+	configuredModel string,
+) chatCompletionRequest {
+	return chatCompletionRequest{
+		Provider: providerRequestConfig{
+			APIKind:         apiKind,
+			BaseURL:         "",
+			APIKey:          "",
+			APIKeys:         nil,
+			UseResponsesAPI: useResponsesAPI,
+			ExtraHeaders:    nil,
+			ExtraQuery:      nil,
+			ExtraBody:       nil,
+		},
+		Model:                       "",
+		ConfiguredModel:             configuredModel,
+		ContextWindow:               0,
+		AutoCompactThresholdPercent: 0,
+		SessionID:                   "",
+		PreviousResponseID:          "",
+		RequestID:                   "",
+		Messages:                    nil,
 	}
 }
 
