@@ -432,6 +432,7 @@ func (instance *bot) analyzeMediaWithGemini(
 				},
 			},
 		},
+		false,
 	)
 	if err != nil {
 		return "", fmt.Errorf("build gemini media analysis request: %w", err)

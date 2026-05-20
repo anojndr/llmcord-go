@@ -280,6 +280,12 @@ func buildGeminiGenerateContentRequest(
 		config.ThinkingConfig = thinkingConfig
 	}
 
+	if request.Provider.EnableGrounding {
+		googleSearchTool := new(genai.Tool)
+		googleSearchTool.GoogleSearch = new(genai.GoogleSearch)
+		config.Tools = append(config.Tools, googleSearchTool)
+	}
+
 	if len(extraBody) > 0 {
 		httpOptions := new(genai.HTTPOptions)
 		httpOptions.ExtraBody = extraBody

@@ -48,10 +48,7 @@ providers:
     #   - primary-key
     #   - backup-key
     api_key: 
-    # Optional:
-    # base_url: https://generativelanguage.googleapis.com
-    # extra_query:
-    #   version: v1beta
+    # enable_grounding: true
     # Thought summaries are enabled by default. To turn them off:
     # extra_body:
     #   thinkingConfig:
