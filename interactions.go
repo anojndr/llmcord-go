@@ -81,6 +81,8 @@ func (instance *bot) handleApplicationCommandInteraction(
 		}
 
 		return nil
+	case groundingCommandName:
+		return instance.handleGroundingCommand(session, interaction)
 	default:
 		return nil
 	}
@@ -946,4 +948,67 @@ func isUnknownInteractionRESTError(err *discordgo.RESTError) bool {
 	return err != nil &&
 		err.Message != nil &&
 		err.Message.Code == discordUnknownInteractionCode
+}
+
+func (instance *bot) handleGroundingCommand(
+	session *discordgo.Session,
+	interaction *discordgo.InteractionCreate,
+) error {
+	options := interaction.ApplicationCommandData().Options
+
+	var requestedEnabled *bool
+
+	if len(options) > 0 {
+		val := options[0].BoolValue()
+		requestedEnabled = &val
+	}
+
+	loadedConfig, err := loadConfig(instance.configPath)
+	if err != nil {
+		return fmt.Errorf("load config for grounding command: %w", err)
+	}
+
+	channelIDs, err := instance.interactionChannelIDs(interaction)
+	if err != nil {
+		slog.Warn("resolve interaction channel ids", "channel_id", interaction.ChannelID, "error", err)
+		channelIDs = []string{interaction.ChannelID}
+	}
+
+	currentModel := instance.currentModelForChannelIDs(loadedConfig, channelIDs)
+
+	provider, err := configuredModelProvider(loadedConfig, currentModel)
+	if err != nil {
+		return respondInteractionText(session, interaction.Interaction, "Could not resolve current provider.")
+	}
+
+	if provider.apiKind() != providerAPIKindGemini {
+		return respondInteractionText(session, interaction.Interaction, "Grounding is only supported for Gemini models.")
+	}
+
+	currentEnabled := instance.currentGroundingEnabled(provider)
+
+	if requestedEnabled == nil {
+		return respondInteractionText(
+			session,
+			interaction.Interaction,
+			fmt.Sprintf("Current Gemini grounding: `%t`", currentEnabled),
+		)
+	}
+
+	if *requestedEnabled == currentEnabled {
+		return respondInteractionText(
+			session,
+			interaction.Interaction,
+			fmt.Sprintf("Gemini grounding is already `%t`.", currentEnabled),
+		)
+	}
+
+	instance.setCurrentGroundingEnabled(requestedEnabled)
+	slog.Info("grounding switched", "enabled", *requestedEnabled)
+
+	return respondInteractionText(
+		session,
+		interaction.Interaction,
+		fmt.Sprintf("Gemini grounding switched to: `%t`", *requestedEnabled),
+	)
 }

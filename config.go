@@ -75,12 +75,13 @@ type permissionsConfig struct {
 }
 
 type rawProviderConfig struct {
-	Type         scalarString     `yaml:"type"`
-	BaseURL      scalarString     `yaml:"base_url"`
-	APIKey       scalarStringList `yaml:"api_key"`
-	ExtraHeaders map[string]any   `yaml:"extra_headers"`
-	ExtraQuery   map[string]any   `yaml:"extra_query"`
-	ExtraBody    map[string]any   `yaml:"extra_body"`
+	Type            scalarString     `yaml:"type"`
+	BaseURL         scalarString     `yaml:"base_url"`
+	APIKey          scalarStringList `yaml:"api_key"`
+	EnableGrounding *bool            `yaml:"enable_grounding"`
+	ExtraHeaders    map[string]any   `yaml:"extra_headers"`
+	ExtraQuery      map[string]any   `yaml:"extra_query"`
+	ExtraBody       map[string]any   `yaml:"extra_body"`
 }
 
 type rawTavilySearchConfig struct {
@@ -113,13 +114,14 @@ type rawDatabaseConfig struct {
 }
 
 type providerConfig struct {
-	Type         string
-	BaseURL      string
-	APIKey       string
-	APIKeys      []string
-	ExtraHeaders map[string]any
-	ExtraQuery   map[string]any
-	ExtraBody    map[string]any
+	Type            string
+	BaseURL         string
+	APIKey          string
+	APIKeys         []string
+	EnableGrounding bool
+	ExtraHeaders    map[string]any
+	ExtraQuery      map[string]any
+	ExtraBody       map[string]any
 }
 
 type tavilySearchConfig struct {
@@ -426,13 +428,14 @@ func normalizeProviderConfig(rawProvider rawProviderConfig) providerConfig {
 	}
 
 	return providerConfig{
-		Type:         providerType,
-		BaseURL:      baseURL,
-		APIKey:       firstAPIKey(apiKeys),
-		APIKeys:      apiKeys,
-		ExtraHeaders: rawProvider.ExtraHeaders,
-		ExtraQuery:   rawProvider.ExtraQuery,
-		ExtraBody:    rawProvider.ExtraBody,
+		Type:            providerType,
+		BaseURL:         baseURL,
+		APIKey:          firstAPIKey(apiKeys),
+		APIKeys:         apiKeys,
+		EnableGrounding: boolValueOrDefault(rawProvider.EnableGrounding, false),
+		ExtraHeaders:    rawProvider.ExtraHeaders,
+		ExtraQuery:      rawProvider.ExtraQuery,
+		ExtraBody:       rawProvider.ExtraBody,
 	}
 }
 

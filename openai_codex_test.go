@@ -141,11 +141,9 @@ func TestBuildOpenAICodexRequestBodyDefaultsVerbosityToLow(t *testing.T) {
 		"openai-codex/gpt-5.4": nil,
 	}
 
-	request, err := buildChatCompletionRequest(
-		loadedConfig,
+	request, err := buildChatCompletionRequest(loadedConfig,
 		"openai-codex/gpt-5.4",
-		[]chatMessage{{Role: messageRoleUser, Content: "hello"}},
-	)
+		[]chatMessage{{Role: messageRoleUser, Content: "hello"}}, false)
 	if err != nil {
 		t.Fatalf("build chat completion request: %v", err)
 	}
@@ -886,6 +884,7 @@ func newOpenAICodexProviderRequestConfig(
 		APIKey:          apiKey,
 		APIKeys:         nil,
 		UseResponsesAPI: false,
+		EnableGrounding: false,
 		ExtraHeaders:    extraHeaders,
 		ExtraQuery:      extraQuery,
 		ExtraBody:       extraBody,

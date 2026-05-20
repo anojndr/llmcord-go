@@ -45,11 +45,9 @@ func TestBuildChatCompletionRequestEnablesResponsesAPIForXAIProvider(t *testing.
 		"x-ai/grok-4": nil,
 	}
 
-	request, err := buildChatCompletionRequest(
-		loadedConfig,
+	request, err := buildChatCompletionRequest(loadedConfig,
 		"x-ai/grok-4",
-		[]chatMessage{{Role: messageRoleUser, Content: "hello"}},
-	)
+		[]chatMessage{{Role: messageRoleUser, Content: "hello"}}, false)
 	if err != nil {
 		t.Fatalf("build chat completion request: %v", err)
 	}
@@ -574,13 +572,14 @@ func TestCanExtractPDFContentsDisablesLocalExtractionForXAI(t *testing.T) {
 
 	loadedConfig.Providers = map[string]providerConfig{
 		xAIProviderName: {
-			Type:         "",
-			BaseURL:      "https://api.x.ai/v1",
-			APIKey:       "",
-			APIKeys:      nil,
-			ExtraHeaders: nil,
-			ExtraQuery:   nil,
-			ExtraBody:    nil,
+			Type:            "",
+			BaseURL:         "https://api.x.ai/v1",
+			APIKey:          "",
+			APIKeys:         nil,
+			EnableGrounding: false,
+			ExtraHeaders:    nil,
+			ExtraQuery:      nil,
+			ExtraBody:       nil,
 		},
 	}
 	loadedConfig.Models = map[string]map[string]any{
@@ -758,6 +757,7 @@ func TestAssignXAIPreviousResponseIDUsesAssistantAnchorAndTrimsHistory(t *testin
 			APIKey:          "",
 			APIKeys:         nil,
 			UseResponsesAPI: true,
+			EnableGrounding: false,
 			ExtraHeaders:    nil,
 			ExtraQuery:      nil,
 			ExtraBody:       nil,
@@ -820,6 +820,7 @@ func TestAssignXAIPreviousResponseIDSkipsBuiltInOpenAIProvider(t *testing.T) {
 			APIKey:          "",
 			APIKeys:         nil,
 			UseResponsesAPI: true,
+			EnableGrounding: false,
 			ExtraHeaders:    nil,
 			ExtraQuery:      nil,
 			ExtraBody:       nil,
@@ -1451,6 +1452,7 @@ func newXAIResponsesStreamingRequest(baseURL string) chatCompletionRequest {
 			APIKey:          "test-key",
 			APIKeys:         nil,
 			UseResponsesAPI: true,
+			EnableGrounding: false,
 			ExtraHeaders: map[string]any{
 				"X-Test": "present",
 			},
@@ -1525,7 +1527,7 @@ func newXAIReplyTargetImageRequestBody(
 		t.Fatalf("build xAI message conversation: %v", err)
 	}
 
-	request, err := buildChatCompletionRequest(loadedConfig, xAIVisionModel, messages)
+	request, err := buildChatCompletionRequest(loadedConfig, xAIVisionModel, messages, false)
 	if err != nil {
 		t.Fatalf("build xAI chat completion request: %v", err)
 	}
@@ -1565,7 +1567,7 @@ func newXAIFollowUpRequestBody(
 		t.Fatalf("build xAI message conversation: %v", err)
 	}
 
-	request, err := buildChatCompletionRequest(loadedConfig, fixture.xAIVisionModel, messages)
+	request, err := buildChatCompletionRequest(loadedConfig, fixture.xAIVisionModel, messages, false)
 	if err != nil {
 		t.Fatalf("build xAI chat completion request: %v", err)
 	}
