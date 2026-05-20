@@ -424,6 +424,7 @@ models:
 		loadedConfig,
 		"exa/exa-research-pro",
 		[]chatMessage{{Role: messageRoleUser, Content: "hello"}},
+		false,
 	)
 	if err != nil {
 		t.Fatalf("build chat completion request: %v", err)
@@ -521,6 +522,7 @@ models:
 		loadedConfig,
 		"nvidia/qwen/qwen3.5-397b-a17b:vision",
 		[]chatMessage{{Role: messageRoleUser, Content: "hello"}},
+		false,
 	)
 	if err != nil {
 		t.Fatalf("build chat completion request: %v", err)

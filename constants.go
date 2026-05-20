@@ -23,7 +23,7 @@ const (
 	defaultMaxImages                     = 5
 	defaultMaxMessages                   = 25
 	maxMessageNodes                      = 500
-	registeredCommandCount               = 3
+	registeredCommandCount               = 4
 	maxAutocompleteChoices               = 25
 	statusMessageMaxLength               = 128
 	plainResponseMaxLength               = 4000
@@ -54,6 +54,10 @@ const (
 	searchDeciderModelCommandDescription = "View or switch the current search decider model"
 	searchDeciderModelOptionName         = "model"
 	searchDeciderModelOptionDescription  = "Search decider model to view or use"
+	groundingCommandName                 = "grounding"
+	groundingCommandDescription          = "View or switch Gemini grounding (native search)"
+	groundingOptionName                  = "enabled"
+	groundingOptionDescription           = "Whether grounding should be enabled"
 	showSourcesButtonCustomID            = "show_sources"
 	showSourcesPageButtonCustomIDPrefix  = "show_sources_page:"
 	showSourcesButtonLabel               = "Show Sources"

@@ -18,6 +18,7 @@ It also works with local backends such as Ollama, LM Studio, and vLLM.
 - Multimodal input handling for images, audio, video, PDFs, DOCX, PPTX, and generic file attachments
 - URL enrichment for TikTok, Facebook, YouTube, YouTube Shorts, Reddit, and generic websites
 - Optional web-search augmentation with Exa or Tavily
+- Native Gemini grounding support (Google Search tool) that bypasses the custom search decider
 - `vsearch` reverse-image lookup with Yandex Images and optional SerpApi Google Lens
 - Hot-reloaded `config.yaml`, permissions, channel model locks, and PostgreSQL-backed history persistence
 - Automatic context compaction when a model has `context_window` configured, including conservative budgeting for structured text such as CSV logs
@@ -145,7 +146,7 @@ Providers can be declared in four ways:
 
 | Setting | Purpose |
 | --- | --- |
-| `providers` | Provider definitions keyed by provider name. OpenAI-compatible providers use `base_url`; `type: exa` defaults to `https://api.exa.ai`; `type: openai-codex` defaults to `https://chatgpt.com/backend-api`. |
+| `providers` | Provider definitions keyed by provider name. OpenAI-compatible providers use `base_url`; `type: exa` defaults to `https://api.exa.ai`; `type: openai-codex` defaults to `https://chatgpt.com/backend-api`; `type: gemini` supports `enable_grounding: true` to use the native Google Search tool. |
 | `models` | Ordered `<provider>/<model>` map. The first entry is the startup default. `:vision` is a local hint for image-capability heuristics. |
 | `channel_model_locks` | Optional map of Discord channel IDs to configured models. `/model` is disabled in locked channels. |
 | `search_decider_model` | Optional model used to decide whether web search is needed. Defaults to the first configured model. |
