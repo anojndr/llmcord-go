@@ -469,6 +469,7 @@ func (instance *bot) decideWebSearch(
 		loadedConfig,
 		searchDeciderModel,
 		searchDeciderMessages,
+		false,
 	)
 	if err != nil {
 		return searchDecision{}, nil, fmt.Errorf("build search decider request: %w", err)

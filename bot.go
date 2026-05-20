@@ -15,32 +15,33 @@ import (
 )
 
 type bot struct {
-	configPath                string
-	session                   *discordgo.Session
-	httpClient                *http.Client
-	chatCompletions           chatCompletionStreamer
-	webSearch                 webSearcher
-	visualSearch              visualSearcher
-	serpAPIVisualSearch       serpAPIVisualSearcher
-	rentry                    rentryCreator
-	tiktok                    tiktokFetcher
-	facebook                  facebookFetcher
-	youtubeShorts             youtubeShortsFetcher
-	youtube                   youtubeFetcher
-	reddit                    redditFetcher
-	website                   websiteFetcher
-	nodes                     *messageNodeStore
-	currentModel              string
-	currentExaSearchTypeValue string
-	currentSearchDeciderModel string
-	modelMu                   sync.RWMutex
-	editMu                    sync.Mutex
-	nextEditAtByMessage       map[string]time.Time
-	startupMu                 sync.Mutex
-	discordReady              bool
-	sessionConfigured         bool
-	onlineAnnounced           bool
-	onlineOutput              io.Writer
+	configPath                   string
+	session                      *discordgo.Session
+	httpClient                   *http.Client
+	chatCompletions              chatCompletionStreamer
+	webSearch                    webSearcher
+	visualSearch                 visualSearcher
+	serpAPIVisualSearch          serpAPIVisualSearcher
+	rentry                       rentryCreator
+	tiktok                       tiktokFetcher
+	facebook                     facebookFetcher
+	youtubeShorts                youtubeShortsFetcher
+	youtube                      youtubeFetcher
+	reddit                       redditFetcher
+	website                      websiteFetcher
+	nodes                        *messageNodeStore
+	currentModel                 string
+	currentExaSearchTypeValue    string
+	currentSearchDeciderModel    string
+	currentGroundingEnabledValue *bool
+	modelMu                      sync.RWMutex
+	editMu                       sync.Mutex
+	nextEditAtByMessage          map[string]time.Time
+	startupMu                    sync.Mutex
+	discordReady                 bool
+	sessionConfigured            bool
+	onlineAnnounced              bool
+	onlineOutput                 io.Writer
 }
 
 func newBot(ctx context.Context, configPath string, loadedConfig config) (*bot, error) {
@@ -272,6 +273,7 @@ func (instance *bot) syncCommands() error {
 	commands = append(commands, newModelCommand())
 	commands = append(commands, newSearchTypeCommand())
 	commands = append(commands, newSearchDeciderModelCommand())
+	commands = append(commands, newGroundingCommand())
 
 	_, err := instance.session.ApplicationCommandBulkOverwrite(
 		instance.session.State.User.ID,
@@ -301,6 +303,22 @@ func newSearchDeciderModelCommand() *discordgo.ApplicationCommand {
 		searchDeciderModelOptionName,
 		searchDeciderModelOptionDescription,
 	)
+}
+
+func newGroundingCommand() *discordgo.ApplicationCommand {
+	command := new(discordgo.ApplicationCommand)
+	command.Name = groundingCommandName
+	command.Description = groundingCommandDescription
+
+	option := new(discordgo.ApplicationCommandOption)
+	option.Type = discordgo.ApplicationCommandOptionBoolean
+	option.Name = groundingOptionName
+	option.Description = groundingOptionDescription
+	option.Required = false
+
+	command.Options = []*discordgo.ApplicationCommandOption{option}
+
+	return command
 }
 
 func newSearchTypeCommand() *discordgo.ApplicationCommand {
@@ -486,4 +504,22 @@ func (instance *bot) setCurrentSearchDeciderModel(modelName string) {
 	defer instance.modelMu.Unlock()
 
 	instance.currentSearchDeciderModel = modelName
+}
+
+func (instance *bot) currentGroundingEnabled(provider providerConfig) bool {
+	instance.modelMu.Lock()
+	defer instance.modelMu.Unlock()
+
+	if instance.currentGroundingEnabledValue != nil {
+		return *instance.currentGroundingEnabledValue
+	}
+
+	return provider.EnableGrounding
+}
+
+func (instance *bot) setCurrentGroundingEnabled(enabled *bool) {
+	instance.modelMu.Lock()
+	defer instance.modelMu.Unlock()
+
+	instance.currentGroundingEnabledValue = enabled
 }

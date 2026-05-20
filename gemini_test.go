@@ -78,11 +78,9 @@ func TestBuildChatCompletionRequestUsesGeminiAPIKindForLegacyBaseURL(t *testing.
 		"google/gemini-3-flash-preview": nil,
 	}
 
-	request, err := buildChatCompletionRequest(
-		*loadedConfig,
+	request, err := buildChatCompletionRequest(*loadedConfig,
 		"google/gemini-3-flash-preview",
-		[]chatMessage{{Role: messageRoleUser, Content: "<@123>: hi"}},
-	)
+		[]chatMessage{{Role: messageRoleUser, Content: "<@123>: hi"}}, false)
 	if err != nil {
 		t.Fatalf("build chat completion request: %v", err)
 	}
@@ -277,11 +275,9 @@ func TestBuildGeminiGenerateContentRequestIncludesThinkingAliasLevel(t *testing.
 		"google/gemini-3.1-flash-lite-preview-minimal": nil,
 	}
 
-	request, err := buildChatCompletionRequest(
-		loadedConfig,
+	request, err := buildChatCompletionRequest(loadedConfig,
 		"google/gemini-3.1-flash-lite-preview-minimal",
-		[]chatMessage{{Role: messageRoleUser, Content: testGeminiHelloPrompt}},
-	)
+		[]chatMessage{{Role: messageRoleUser, Content: testGeminiHelloPrompt}}, false)
 	if err != nil {
 		t.Fatalf("build chat completion request: %v", err)
 	}

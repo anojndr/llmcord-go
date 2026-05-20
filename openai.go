@@ -50,6 +50,7 @@ type providerRequestConfig struct {
 	APIKey          string
 	APIKeys         []string
 	UseResponsesAPI bool
+	EnableGrounding bool
 	ExtraHeaders    map[string]any
 	ExtraQuery      map[string]any
 	ExtraBody       map[string]any

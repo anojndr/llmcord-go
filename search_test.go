@@ -1024,13 +1024,14 @@ func TestMaybeAugmentConversationWithWebSearchSkipsDeciderForExaResearchPro(t *t
 
 	loadedConfig := testSearchConfig()
 	loadedConfig.Providers["exa"] = providerConfig{
-		Type:         providerTypeExa,
-		BaseURL:      "",
-		APIKey:       "",
-		APIKeys:      nil,
-		ExtraHeaders: nil,
-		ExtraQuery:   nil,
-		ExtraBody:    nil,
+		Type:            providerTypeExa,
+		BaseURL:         "",
+		APIKey:          "",
+		APIKeys:         nil,
+		EnableGrounding: false,
+		ExtraHeaders:    nil,
+		ExtraQuery:      nil,
+		ExtraBody:       nil,
 	}
 	loadedConfig.Models["exa/exa-research-pro"] = nil
 	loadedConfig.ModelOrder = append([]string{"exa/exa-research-pro"}, loadedConfig.ModelOrder...)
@@ -1096,13 +1097,14 @@ func TestMaybeAugmentConversationWithWebSearchSkipsDeciderForXAIProvider(t *test
 
 	loadedConfig := testSearchConfig()
 	loadedConfig.Providers["x-ai"] = providerConfig{
-		Type:         "",
-		BaseURL:      "https://api.x.ai/v1",
-		APIKey:       "",
-		APIKeys:      nil,
-		ExtraHeaders: nil,
-		ExtraQuery:   nil,
-		ExtraBody:    nil,
+		Type:            "",
+		BaseURL:         "https://api.x.ai/v1",
+		APIKey:          "",
+		APIKeys:         nil,
+		EnableGrounding: false,
+		ExtraHeaders:    nil,
+		ExtraQuery:      nil,
+		ExtraBody:       nil,
 	}
 	loadedConfig.Models["x-ai/grok-4"] = nil
 	loadedConfig.ModelOrder = append([]string{"x-ai/grok-4"}, loadedConfig.ModelOrder...)
@@ -2202,6 +2204,7 @@ func testGeminiSearchConfig() config {
 
 	googleProvider := new(providerConfig)
 	googleProvider.Type = string(providerAPIKindGemini)
+	googleProvider.EnableGrounding = true
 
 	loadedConfig.Providers = map[string]providerConfig{
 		"google": *googleProvider,

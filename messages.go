@@ -255,7 +255,17 @@ func (instance *bot) prepareMessageResponse(
 
 	messages = prependSystemPrompt(messages, loadedConfig.SystemPrompt, time.Now())
 
-	request, err := buildChatCompletionRequest(loadedConfig, providerSlashModel, messages)
+	provider, err := configuredModelProvider(loadedConfig, providerSlashModel)
+	if err != nil {
+		return chatCompletionRequest{}, nil, nil, err
+	}
+
+	request, err := buildChatCompletionRequest(
+		loadedConfig,
+		providerSlashModel,
+		messages,
+		instance.currentGroundingEnabled(provider),
+	)
 	if err != nil {
 		return chatCompletionRequest{}, nil, nil,
 			fmt.Errorf("build chat completion request: %w", err)
@@ -813,6 +823,11 @@ func (instance *bot) augmentConversation(
 	warnings []string,
 	urlExtractionText string,
 ) ([]chatMessage, *searchMetadata, []string, error) {
+	provider, err := configuredModelProvider(loadedConfig, providerSlashModel)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
 	stages := []preparedAugmentationStage{
 		{
 			name: "visual search",
@@ -868,7 +883,7 @@ func (instance *bot) augmentConversation(
 		return nil, nil, nil, err
 	}
 
-	if providerHandlesGeneralURLsDirectly(providerSlashModel) {
+	if providerHandlesGeneralURLsDirectly(providerSlashModel) || instance.currentGroundingEnabled(provider) {
 		return augmentedMessages, searchMetadata, warnings, nil
 	}
 
@@ -1058,6 +1073,7 @@ func buildChatCompletionRequest(
 	loadedConfig config,
 	providerSlashModel string,
 	messages []chatMessage,
+	groundingEnabled bool,
 ) (chatCompletionRequest, error) {
 	providerName, modelName, err := splitConfiguredModel(providerSlashModel)
 	if err != nil {
@@ -1122,6 +1138,7 @@ func buildChatCompletionRequest(
 			APIKey:          provider.primaryAPIKey(),
 			APIKeys:         provider.apiKeys(),
 			UseResponsesAPI: useResponsesAPI,
+			EnableGrounding: groundingEnabled,
 			ExtraHeaders:    provider.ExtraHeaders,
 			ExtraQuery:      provider.ExtraQuery,
 			ExtraBody:       extraBody,

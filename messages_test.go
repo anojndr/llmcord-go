@@ -148,11 +148,9 @@ func TestBuildChatCompletionRequestPreservesConfiguredModelForDisplay(t *testing
 		},
 	}
 
-	request, err := buildChatCompletionRequest(
-		loadedConfig,
+	request, err := buildChatCompletionRequest(loadedConfig,
 		"openai/gpt-5.1",
-		[]chatMessage{{Role: messageRoleUser, Content: "hello"}},
-	)
+		[]chatMessage{{Role: messageRoleUser, Content: "hello"}}, false)
 	if err != nil {
 		t.Fatalf("build chat completion request: %v", err)
 	}
@@ -182,11 +180,9 @@ func TestBuildChatCompletionRequestPreservesProviderAPIKeys(t *testing.T) {
 		"openai/gpt-5.1": nil,
 	}
 
-	request, err := buildChatCompletionRequest(
-		loadedConfig,
+	request, err := buildChatCompletionRequest(loadedConfig,
 		"openai/gpt-5.1",
-		[]chatMessage{{Role: messageRoleUser, Content: "hello"}},
-	)
+		[]chatMessage{{Role: messageRoleUser, Content: "hello"}}, false)
 	if err != nil {
 		t.Fatalf("build chat completion request: %v", err)
 	}
@@ -215,11 +211,9 @@ func TestBuildChatCompletionRequestDefaultsOpenAIProviderVerbosityToLow(t *testi
 		"openai/gpt-5.1": nil,
 	}
 
-	request, err := buildChatCompletionRequest(
-		loadedConfig,
+	request, err := buildChatCompletionRequest(loadedConfig,
 		"openai/gpt-5.1",
-		[]chatMessage{{Role: messageRoleUser, Content: "hello"}},
-	)
+		[]chatMessage{{Role: messageRoleUser, Content: "hello"}}, false)
 	if err != nil {
 		t.Fatalf("build chat completion request: %v", err)
 	}
@@ -244,11 +238,9 @@ func TestBuildChatCompletionRequestUsesResponsesAPIForOpenAIProvider(t *testing.
 		"openai/gpt-5.1": nil,
 	}
 
-	request, err := buildChatCompletionRequest(
-		loadedConfig,
+	request, err := buildChatCompletionRequest(loadedConfig,
 		"openai/gpt-5.1",
-		[]chatMessage{{Role: messageRoleUser, Content: "hello"}},
-	)
+		[]chatMessage{{Role: messageRoleUser, Content: "hello"}}, false)
 	if err != nil {
 		t.Fatalf("build chat completion request: %v", err)
 	}
@@ -282,11 +274,9 @@ func TestBuildChatCompletionRequestUsesContextWindowWithoutSendingItToProvider(t
 	}
 	loadedConfig.AutoCompactThresholdPercent = 75
 
-	request, err := buildChatCompletionRequest(
-		loadedConfig,
+	request, err := buildChatCompletionRequest(loadedConfig,
 		"openai/gpt-5.1",
-		[]chatMessage{{Role: messageRoleUser, Content: "hello"}},
-	)
+		[]chatMessage{{Role: messageRoleUser, Content: "hello"}}, false)
 	if err != nil {
 		t.Fatalf("build chat completion request: %v", err)
 	}
@@ -330,11 +320,9 @@ func TestBuildChatCompletionRequestDefaultsOpenRouterTransforms(t *testing.T) {
 		"router/anthropic/claude-3.7-sonnet": nil,
 	}
 
-	request, err := buildChatCompletionRequest(
-		loadedConfig,
+	request, err := buildChatCompletionRequest(loadedConfig,
 		"router/anthropic/claude-3.7-sonnet",
-		[]chatMessage{{Role: messageRoleUser, Content: "hello"}},
-	)
+		[]chatMessage{{Role: messageRoleUser, Content: "hello"}}, false)
 	if err != nil {
 		t.Fatalf("build chat completion request: %v", err)
 	}
@@ -380,11 +368,9 @@ func TestBuildChatCompletionRequestPreservesExplicitOpenRouterTransforms(t *test
 		"router/anthropic/claude-3.7-sonnet": modelParameters,
 	}
 
-	request, err := buildChatCompletionRequest(
-		loadedConfig,
+	request, err := buildChatCompletionRequest(loadedConfig,
 		"router/anthropic/claude-3.7-sonnet",
-		[]chatMessage{{Role: messageRoleUser, Content: "hello"}},
-	)
+		[]chatMessage{{Role: messageRoleUser, Content: "hello"}}, false)
 	if err != nil {
 		t.Fatalf("build chat completion request: %v", err)
 	}
@@ -428,11 +414,9 @@ func TestBuildChatCompletionRequestNormalizesGeminiThinkingAlias(t *testing.T) {
 		"google/gemini-3.1-flash-lite-preview-minimal": modelParameters,
 	}
 
-	request, err := buildChatCompletionRequest(
-		loadedConfig,
+	request, err := buildChatCompletionRequest(loadedConfig,
 		"google/gemini-3.1-flash-lite-preview-minimal",
-		[]chatMessage{{Role: messageRoleUser, Content: "hello"}},
-	)
+		[]chatMessage{{Role: messageRoleUser, Content: "hello"}}, false)
 	if err != nil {
 		t.Fatalf("build chat completion request: %v", err)
 	}
@@ -493,11 +477,9 @@ func TestBuildChatCompletionRequestRejectsGeminiThinkingAliasWithInvalidThinking
 		},
 	}
 
-	_, err := buildChatCompletionRequest(
-		loadedConfig,
+	_, err := buildChatCompletionRequest(loadedConfig,
 		"google/gemini-3.1-flash-lite-preview-minimal",
-		[]chatMessage{{Role: messageRoleUser, Content: "hello"}},
-	)
+		[]chatMessage{{Role: messageRoleUser, Content: "hello"}}, false)
 	if err == nil {
 		t.Fatal("expected invalid thinkingConfig to fail")
 	}
@@ -545,13 +527,14 @@ func TestMessageContentOptionsForModelAllowsXAIManagedDocuments(t *testing.T) {
 
 	loadedConfig.Providers = map[string]providerConfig{
 		xAIProviderName: {
-			Type:         "",
-			BaseURL:      "https://api.x.ai/v1",
-			APIKey:       "",
-			APIKeys:      nil,
-			ExtraHeaders: nil,
-			ExtraQuery:   nil,
-			ExtraBody:    nil,
+			Type:            "",
+			BaseURL:         "https://api.x.ai/v1",
+			APIKey:          "",
+			APIKeys:         nil,
+			EnableGrounding: false,
+			ExtraHeaders:    nil,
+			ExtraQuery:      nil,
+			ExtraBody:       nil,
 		},
 	}
 	loadedConfig.Models = map[string]map[string]any{
@@ -745,13 +728,14 @@ func newBlockedWebsiteClient(gate *concurrentFetchGate) *stubWebsiteContentClien
 
 func testXAIProviderConfig() providerConfig {
 	return providerConfig{
-		Type:         "",
-		BaseURL:      "https://api.x.ai/v1",
-		APIKey:       "",
-		APIKeys:      nil,
-		ExtraHeaders: nil,
-		ExtraQuery:   nil,
-		ExtraBody:    nil,
+		Type:            "",
+		BaseURL:         "https://api.x.ai/v1",
+		APIKey:          "",
+		APIKeys:         nil,
+		EnableGrounding: false,
+		ExtraHeaders:    nil,
+		ExtraQuery:      nil,
+		ExtraBody:       nil,
 	}
 }
 
@@ -1293,11 +1277,9 @@ func TestBuildChatCompletionRequestNormalizesOpenAICodexReasoningAlias(t *testin
 		"codex/gpt-5.4-none": modelParameters,
 	}
 
-	request, err := buildChatCompletionRequest(
-		loadedConfig,
+	request, err := buildChatCompletionRequest(loadedConfig,
 		"codex/gpt-5.4-none",
-		[]chatMessage{{Role: messageRoleUser, Content: "hello"}},
-	)
+		[]chatMessage{{Role: messageRoleUser, Content: "hello"}}, false)
 	if err != nil {
 		t.Fatalf("build chat completion request: %v", err)
 	}
@@ -1367,11 +1349,9 @@ func TestBuildChatCompletionRequestNormalizesOpenAIResponsesReasoningAlias(t *te
 		"openai/gpt-5.4-none": modelParameters,
 	}
 
-	request, err := buildChatCompletionRequest(
-		loadedConfig,
+	request, err := buildChatCompletionRequest(loadedConfig,
 		"openai/gpt-5.4-none",
-		[]chatMessage{{Role: messageRoleUser, Content: "hello"}},
-	)
+		[]chatMessage{{Role: messageRoleUser, Content: "hello"}}, false)
 	if err != nil {
 		t.Fatalf("build chat completion request: %v", err)
 	}
@@ -1438,11 +1418,9 @@ func TestBuildChatCompletionRequestNormalizesOpenAIResponsesReasoningEffort(t *t
 		"openai/gpt-5.4": modelParameters,
 	}
 
-	request, err := buildChatCompletionRequest(
-		loadedConfig,
+	request, err := buildChatCompletionRequest(loadedConfig,
 		"openai/gpt-5.4",
-		[]chatMessage{{Role: messageRoleUser, Content: "hello"}},
-	)
+		[]chatMessage{{Role: messageRoleUser, Content: "hello"}}, false)
 	if err != nil {
 		t.Fatalf("build chat completion request: %v", err)
 	}
@@ -1487,11 +1465,9 @@ func TestBuildChatCompletionRequestNormalizesOpenAIResponsesLowAliases(t *testin
 				configuredModel: nil,
 			}
 
-			request, err := buildChatCompletionRequest(
-				loadedConfig,
+			request, err := buildChatCompletionRequest(loadedConfig,
 				configuredModel,
-				[]chatMessage{{Role: messageRoleUser, Content: "hello"}},
-			)
+				[]chatMessage{{Role: messageRoleUser, Content: "hello"}}, false)
 			if err != nil {
 				t.Fatalf("build chat completion request: %v", err)
 			}
@@ -1538,11 +1514,9 @@ func TestBuildChatCompletionRequestNormalizesOpenAIChatCompletionsLowAliases(t *
 				configuredModel: nil,
 			}
 
-			request, err := buildChatCompletionRequest(
-				loadedConfig,
+			request, err := buildChatCompletionRequest(loadedConfig,
 				configuredModel,
-				[]chatMessage{{Role: messageRoleUser, Content: "hello"}},
-			)
+				[]chatMessage{{Role: messageRoleUser, Content: "hello"}}, false)
 			if err != nil {
 				t.Fatalf("build chat completion request: %v", err)
 			}
