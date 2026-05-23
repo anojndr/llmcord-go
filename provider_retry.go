@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"regexp"
 	"strings"
@@ -76,6 +77,18 @@ func waitForRetryDelay(ctx context.Context, delay time.Duration) error {
 }
 
 func retryDelayForProvider(apiKind providerAPIKind, err error) (time.Duration, bool) {
+	if delay, ok := explicitRetryDelayForProvider(apiKind, err); ok {
+		return delay, true
+	}
+
+	if isTransientError(apiKind, err) {
+		return time.Second, true
+	}
+
+	return 0, false
+}
+
+func explicitRetryDelayForProvider(apiKind providerAPIKind, err error) (time.Duration, bool) {
 	switch apiKind {
 	case providerAPIKindGemini:
 		return geminiRetryDelay(err)
@@ -84,6 +97,36 @@ func retryDelayForProvider(apiKind providerAPIKind, err error) (time.Duration, b
 	default:
 		return 0, false
 	}
+}
+
+func isTransientError(apiKind providerAPIKind, err error) bool {
+	if err == nil {
+		return false
+	}
+
+	// 1. Check for network errors.
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return true
+	}
+
+	// 2. Check for specific common transient error messages.
+	errText := err.Error()
+	for _, text := range []string{
+		"connection refused",
+		"connection reset",
+		"connection dead",
+		"broken pipe",
+		"EOF",
+		"unexpected EOF",
+		"context deadline exceeded",
+	} {
+		if strings.Contains(errText, text) {
+			return true
+		}
+	}
+
+	return false
 }
 
 func openAIRetryDelay(err error) (time.Duration, bool) {
