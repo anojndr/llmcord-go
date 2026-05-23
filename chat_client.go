@@ -78,11 +78,30 @@ func (client chatCompletionRouter) streamChatCompletionForKey(
 	for {
 		streamStarted := false
 
-		err := client.streamChatCompletionOnce(ctx, request, func(delta streamDelta) error {
+		attemptCtx, attemptCancel := context.WithCancel(ctx)
+		if deadline, ok := ctx.Deadline(); ok {
+			remaining := time.Until(deadline)
+			attemptTimeout := remaining / 2
+			if attemptTimeout < 20*time.Second {
+				attemptTimeout = 20 * time.Second
+			}
+			if attemptTimeout > 90*time.Second {
+				attemptTimeout = 90 * time.Second
+			}
+			if attemptTimeout < remaining {
+				var cancel context.CancelFunc
+				attemptCtx, cancel = context.WithTimeout(ctx, attemptTimeout)
+				attemptCancel = cancel
+			}
+		}
+
+		err := client.streamChatCompletionOnce(attemptCtx, request, func(delta streamDelta) error {
 			streamStarted = true
 
 			return handle(delta)
 		})
+		attemptCancel()
+
 		if err == nil {
 			return streamStarted, nil
 		}
