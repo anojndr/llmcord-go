@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -752,8 +753,8 @@ func facebookVideoIdentifier(rawURL string) string {
 	}
 
 	segments := strings.Split(trimmedPath, "/")
-	for index := len(segments) - 1; index >= 0; index-- {
-		segment := strings.TrimSpace(segments[index])
+	for _, segment := range slices.Backward(segments) {
+		segment = strings.TrimSpace(segment)
 		if segment == "" {
 			continue
 		}

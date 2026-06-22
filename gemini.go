@@ -477,6 +477,7 @@ func buildGeminiClientHTTPOptions(
 
 	return genai.HTTPOptions{
 		BaseURL:               baseURL,
+		BaseURLResourceScope:  "",
 		APIVersion:            apiVersion,
 		Headers:               headers,
 		Timeout:               nil,

@@ -6,7 +6,7 @@ It turns Discord reply chains into a frontend for:
 - OpenAI-compatible chat-completions APIs
 - Exa Research Pro through Exa's OpenAI-compatible API
 - OpenAI Codex Responses providers
-- native Gemini models through `google.golang.org/genai`
+- native Gemini models through `google.golang.org/genai` (upgraded to `v1.61.0`)
 
 It also works with local backends such as Ollama, LM Studio, and vLLM.
 
