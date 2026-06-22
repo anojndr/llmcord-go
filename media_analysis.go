@@ -427,7 +427,7 @@ func (instance *bot) analyzeMediaWithGemini(
 			{
 				Role: messageRoleUser,
 				Content: []contentPart{
-					{"type": contentTypeText, "text": prompt},
+					{messageTypeKey: contentTypeText, messageTextKey: prompt},
 					mediaPart,
 				},
 			},

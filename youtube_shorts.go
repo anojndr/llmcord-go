@@ -261,7 +261,7 @@ func (client youtubeShortsClient) fetch(
 		ResolvedURL: resolvedURL,
 		DownloadURL: downloadURL,
 		MediaPart: contentPart{
-			"type":               contentTypeVideoData,
+			messageTypeKey:      contentTypeVideoData,
 			contentFieldBytes:    videoBytes,
 			contentFieldMIMEType: mimeType,
 			contentFieldFilename: filename,

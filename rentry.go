@@ -128,7 +128,7 @@ func (client *httpRentryClient) submitEntry(
 ) (string, error) {
 	formValues := url.Values{
 		"csrfmiddlewaretoken": {csrfToken},
-		"text":                {text},
+		messageTextKey:       {text},
 	}
 
 	httpRequest, err := http.NewRequestWithContext(

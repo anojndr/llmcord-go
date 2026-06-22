@@ -166,7 +166,7 @@ func attachmentMIMETypeIsTextLike(contentType string) bool {
 	case "application/ecmascript",
 		"application/graphql-response+json",
 		"application/javascript",
-		"application/json",
+		applicationJSONContentType,
 		"application/ld+json",
 		"application/sql",
 		"application/toml",

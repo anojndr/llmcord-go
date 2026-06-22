@@ -316,12 +316,12 @@ func appendContextToMessageContent(
 
 		updatedContent := make([]contentPart, 0, len(typedContent)+1)
 		updatedContent = append(updatedContent, contentPart{
-			"type": contentTypeText,
-			"text": prompt.render(),
+			messageTypeKey: contentTypeText,
+			messageTextKey: prompt.render(),
 		})
 
 		for _, part := range typedContent {
-			if partType, _ := part["type"].(string); partType == contentTypeText {
+			if partType, _ := part[messageTypeKey].(string); partType == contentTypeText {
 				continue
 			}
 
@@ -349,8 +349,8 @@ func appendMediaPartsToMessageContent(
 	case string:
 		updatedContent := make([]contentPart, 0, len(clonedMediaParts)+1)
 		updatedContent = append(updatedContent, contentPart{
-			"type": contentTypeText,
-			"text": typedContent,
+			messageTypeKey: contentTypeText,
+			messageTextKey: typedContent,
 		})
 		updatedContent = append(updatedContent, clonedMediaParts...)
 

@@ -125,7 +125,8 @@ type exaSearchRequest struct {
 }
 
 type exaSearchRequestContents struct {
-	Text exaSearchTextRequest
+	Text       exaSearchTextRequest
+	Highlights bool
 }
 
 type exaSearchTextRequest struct {
@@ -156,6 +157,8 @@ func normalizeExaSearchType(searchType string) (string, bool) {
 		return exaSearchTypeFast, true
 	case exaSearchTypeInstant:
 		return exaSearchTypeInstant, true
+	case exaSearchTypeDeepLite:
+		return exaSearchTypeDeepLite, true
 	case exaSearchTypeDeep:
 		return exaSearchTypeDeep, true
 	case exaSearchTypeDeepReasoning:
@@ -457,7 +460,7 @@ func (instance *bot) decideWebSearch(
 	}
 
 	searchDeciderMessages = append(
-		[]chatMessage{{Role: "system", Content: searchDeciderPrompt(time.Now())}},
+		[]chatMessage{{Role: messageRoleSystem, Content: searchDeciderPrompt(time.Now())}},
 		searchDeciderMessages...,
 	)
 	searchDeciderMessages = append(searchDeciderMessages, chatMessage{
@@ -704,8 +707,8 @@ func sanitizeMessageContentForModel(
 
 		if strings.TrimSpace(textContent) != "" {
 			clonedContent = append(clonedContent, contentPart{
-				"type": contentTypeText,
-				"text": textContent,
+				messageTypeKey: contentTypeText,
+				messageTextKey: textContent,
 			})
 		}
 
@@ -1366,13 +1369,14 @@ func (client exaSearchClient) searchAPIQuery(
 func marshalExaSearchRequest(requestBody exaSearchRequest) ([]byte, error) {
 	requestBytes, err := json.Marshal(map[string]any{
 		"query":      requestBody.Query,
-		"type":       requestBody.Type,
-		"numResults": requestBody.NumResults,
+		messageTypeKey: requestBody.Type,
+		"numResults":   requestBody.NumResults,
 		"contents": map[string]any{
-			"text": map[string]any{
+			messageTextKey: map[string]any{
 				"maxCharacters": requestBody.Contents.Text.MaxCharacters,
 				"verbosity":     requestBody.Contents.Text.Verbosity,
 			},
+			"highlights": requestBody.Contents.Highlights,
 		},
 	})
 	if err != nil {
@@ -1398,6 +1402,7 @@ func (client exaSearchClient) searchAPIQueryOnce(
 				MaxCharacters: textMaxCharacters,
 				Verbosity:     "full",
 			},
+			Highlights: true,
 		},
 		NumResults: maxURLs,
 	}
@@ -1516,7 +1521,7 @@ func (client tavilySearchClient) searchQueryOnce(
 		Query:             query,
 		SearchDepth:       "advanced",
 		MaxResults:        maxURLs,
-		IncludeRawContent: "text",
+		IncludeRawContent: messageTextKey,
 	}
 
 	requestBytes, err := json.Marshal(requestBody)

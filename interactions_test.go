@@ -210,6 +210,7 @@ func TestHandleSearchTypeAutocompleteListsAllOptions(t *testing.T) {
 		"* auto (current)",
 		"o fast",
 		"o instant",
+		"o deep-lite",
 		"o deep",
 		"o deep-reasoning",
 	}

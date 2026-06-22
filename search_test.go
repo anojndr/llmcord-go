@@ -185,6 +185,10 @@ func assertExaAPISearchRequest(
 	if request.Contents.Text.Verbosity != "full" {
 		t.Fatalf("unexpected Exa text verbosity: %q", request.Contents.Text.Verbosity)
 	}
+
+	if !request.Contents.Highlights {
+		t.Fatal("expected Exa API highlights to be true")
+	}
 }
 
 func assertExaAPIAuthHeaders(t *testing.T, authHeaders []string) {
@@ -232,13 +236,18 @@ func decodeExaSearchRequest(t *testing.T, requestBody io.Reader) exaSearchReques
 		Type:       mapStringValue(rawRequest, "type"),
 		NumResults: mapIntValue(rawRequest, "numResults"),
 		Contents: exaSearchRequestContents{
-			Text: exaSearchTextRequest{MaxCharacters: 0, Verbosity: ""},
+			Text:       exaSearchTextRequest{MaxCharacters: 0, Verbosity: ""},
+			Highlights: false,
 		},
 	}
 
 	rawContents, hasContents := rawRequest["contents"].(map[string]any)
 	if !hasContents {
 		return request
+	}
+
+	if highlightsVal, ok := rawContents["highlights"].(bool); ok {
+		request.Contents.Highlights = highlightsVal
 	}
 
 	rawText, hasText := rawContents["text"].(map[string]any)

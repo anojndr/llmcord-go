@@ -1073,11 +1073,11 @@ func (snapshot contentPartSnapshot) contentPart() (contentPart, bool) {
 		return nil, false
 	}
 
-	part := contentPart{"type": snapshot.Type}
+	part := contentPart{messageTypeKey: snapshot.Type}
 
 	switch snapshot.Type {
 	case contentTypeText:
-		part["text"] = snapshot.Text
+		part[messageTextKey] = snapshot.Text
 	case contentTypeImageURL:
 		part["image_url"] = map[string]string{"url": snapshot.ImageURL}
 	case contentTypeAudioData, contentTypeDocument, contentTypeFileData, contentTypeVideoData:
