@@ -474,9 +474,9 @@ func attachmentPayloadToContentPart(payload attachmentPayload) (contentPart, boo
 	switch partType {
 	case contentTypeImageURL:
 		part := make(contentPart)
-		part["type"] = contentTypeImageURL
+		part[messageTypeKey] = contentTypeImageURL
 		part["image_url"] = map[string]string{
-			"url": fmt.Sprintf(
+			messageURLKey: fmt.Sprintf(
 				"data:%s;base64,%s",
 				contentType,
 				base64.StdEncoding.EncodeToString(payload.body),

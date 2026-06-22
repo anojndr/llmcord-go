@@ -76,9 +76,21 @@ const (
 	exaSearchTypeAuto                    = "auto"
 	exaSearchTypeFast                    = "fast"
 	exaSearchTypeInstant                 = "instant"
+	exaSearchTypeDeepLite                = "deep-lite"
 	exaSearchTypeDeep                    = "deep"
 	exaSearchTypeDeepReasoning           = "deep-reasoning"
 	defaultExaSearchType                 = exaSearchTypeAuto
+	messageRoleSystem                    = "system"
+	messageContentKey                    = "content"
+	messageRoleKey                       = "role"
+	messageTypeKey                       = "type"
+	messageTextKey                       = "text"
+	messageURLKey                        = "url"
+	messagePlatformKey                   = "platform"
+	messageVideoIDKey                    = "video_id"
+	messageCookieHeader                  = "Cookie"
+	messageDetailKey                     = "detail"
+	messageKindValue                     = "message"
 	defaultExaSearchTextMaxCharacters    = 15000
 	exaContentsLivecrawlTimeoutMS        = 12000
 	maxYouTubeComments                   = 50
@@ -135,6 +147,7 @@ func exaSearchTypes() []string {
 		exaSearchTypeAuto,
 		exaSearchTypeFast,
 		exaSearchTypeInstant,
+		exaSearchTypeDeepLite,
 		exaSearchTypeDeep,
 		exaSearchTypeDeepReasoning,
 	}

@@ -509,9 +509,9 @@ func pdfImagePart(extractedImage model.Image) (contentPart, error) {
 	}
 
 	part := make(contentPart)
-	part["type"] = contentTypeImageURL
+	part[messageTypeKey] = contentTypeImageURL
 	part["image_url"] = map[string]string{
-		"url": fmt.Sprintf(
+		messageURLKey: fmt.Sprintf(
 			"data:%s;base64,%s",
 			mimeType,
 			base64.StdEncoding.EncodeToString(imageBytes),

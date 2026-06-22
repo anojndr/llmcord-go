@@ -307,7 +307,7 @@ func assertRetainedSearchHistory(t *testing.T, history []chatMessage) {
 		youtubeSectionName,
 		redditSectionName,
 		webSearchSectionName,
-		"Sword Art Online",
+		testVisualSearchTitle,
 		"https://example.com",
 		"https://www.youtube.com/watch?v=dQw4w9WgXcQ",
 		"https://www.reddit.com/r/testing/comments/abc123/thread-title/",

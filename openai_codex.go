@@ -386,9 +386,9 @@ func openAICodexUserMessage(content any) (map[string]any, bool, error) {
 	}
 
 	return map[string]any{
-		"type":    "message",
-		"role":    messageRoleUser,
-		"content": parts,
+		messageTypeKey:    messageKindValue,
+		messageRoleKey:    messageRoleUser,
+		messageContentKey: parts,
 	}, true, nil
 }
 
@@ -425,17 +425,17 @@ func openAICodexUserTextParts(text string) []map[string]any {
 	}
 
 	return []map[string]any{{
-		"type": "input_text",
-		"text": text,
+		messageTypeKey: "input_text",
+		messageTextKey: text,
 	}}
 }
 
 func openAICodexUserPart(part contentPart) (map[string]any, bool, error) {
-	partType, _ := part["type"].(string)
+	partType, _ := part[messageTypeKey].(string)
 
 	switch partType {
 	case contentTypeText:
-		textValue, _ := part["text"].(string)
+		textValue, _ := part[messageTextKey].(string)
 
 		textParts := openAICodexUserTextParts(textValue)
 		if len(textParts) == 0 {
@@ -454,9 +454,9 @@ func openAICodexUserPart(part contentPart) (map[string]any, bool, error) {
 		}
 
 		return map[string]any{
-			"type":      "input_image",
-			"image_url": imageURL,
-			"detail":    openAICodexAuto,
+			messageTypeKey:      "input_image",
+			"image_url":         imageURL,
+			messageDetailKey:    openAICodexAuto,
 		}, true, nil
 	default:
 		return nil, false, fmt.Errorf(
@@ -478,12 +478,12 @@ func openAICodexAssistantMessage(content any) (map[string]any, bool, error) {
 	}
 
 	return map[string]any{
-		"type":   "message",
-		"role":   messageRoleAssistant,
-		"status": "completed",
-		"content": []map[string]any{{
-			"type": "output_text",
-			"text": text,
+		messageTypeKey:   messageKindValue,
+		messageRoleKey:   messageRoleAssistant,
+		"status":         xAIResponsesStatusCompleted,
+		messageContentKey: []map[string]any{{
+			messageTypeKey: "output_text",
+			messageTextKey: text,
 		}},
 	}, true, nil
 }

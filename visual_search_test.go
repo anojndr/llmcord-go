@@ -682,7 +682,7 @@ func TestParseYandexVisualSearchHTMLExtractsStructuredResults(t *testing.T) {
 		t.Fatalf("parse yandex visual search html: %v", err)
 	}
 
-	if result.TopMatch.Title != "Sword Art Online" {
+	if result.TopMatch.Title != testVisualSearchTitle {
 		t.Fatalf("unexpected top match title: %#v", result.TopMatch)
 	}
 

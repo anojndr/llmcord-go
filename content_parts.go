@@ -55,14 +55,14 @@ func messageContentWithFileOrImageOnlyQueryPlaceholder(role string, content any)
 
 		normalizedParts := make([]contentPart, 0, len(typedContent)+1)
 		normalizedParts = append(normalizedParts, contentPart{
-			"type": contentTypeText,
-			"text": fileOrImageOnlyQueryPlaceholder,
+			messageTypeKey: contentTypeText,
+			messageTextKey: fileOrImageOnlyQueryPlaceholder,
 		})
 
 		for _, part := range typedContent {
-			partType, _ := part["type"].(string)
+			partType, _ := part[messageTypeKey].(string)
 			if partType == contentTypeText {
-				textValue, _ := part["text"].(string)
+				textValue, _ := part[messageTextKey].(string)
 				if strings.TrimSpace(textValue) == "" {
 					continue
 				}
