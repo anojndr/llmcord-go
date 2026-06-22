@@ -1342,3 +1342,92 @@ func testOpenAICodexJWTWithSignature(t *testing.T, signature string) string {
 
 	return fmt.Sprintf("%s.%s.%s", encode(headerBytes), encode(payloadBytes), signature)
 }
+
+func TestChatCompletionRouterRetriesGeminiOnMalformedFunctionCall(t *testing.T) {
+	t.Parallel()
+
+	attemptCapture := new(stringCapture)
+
+	var (
+		streamDeltasMu sync.Mutex
+		streamDeltas   []streamDelta
+	)
+
+	router := newGeminiRetryRouterWithFactory(
+		attemptCapture,
+		nil,
+		func(apiKey string, attempt int) func(
+			context.Context,
+			string,
+			[]*genai.Content,
+			*genai.GenerateContentConfig,
+		) iter.Seq2[*genai.GenerateContentResponse, error] {
+			return func(
+				_ context.Context,
+				_ string,
+				_ []*genai.Content,
+				_ *genai.GenerateContentConfig,
+			) iter.Seq2[*genai.GenerateContentResponse, error] {
+				return func(yield func(*genai.GenerateContentResponse, error) bool) {
+					if apiKey == testRetryPrimaryAPIKey && attempt == 0 {
+						response := newGeminiGenerateContentResponseWithParts(
+							[]*genai.Part{
+								{Text: "thought...", Thought: true},
+							},
+							genai.FinishReasonMalformedFunctionCall,
+						)
+
+						_ = yield(response, nil)
+
+						return
+					}
+
+					if !yield(newGeminiGenerateContentResponse("Hel", genai.FinishReasonUnspecified), nil) {
+						return
+					}
+
+					_ = yield(newGeminiGenerateContentResponse("lo", genai.FinishReasonStop), nil)
+				}
+			}
+		},
+	)
+
+	err := router.streamChatCompletion(context.Background(), newGeminiRetryRequest(), func(delta streamDelta) error {
+		streamDeltasMu.Lock()
+		defer streamDeltasMu.Unlock()
+
+		streamDeltas = append(streamDeltas, delta)
+
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("stream gemini completion: %v", err)
+	}
+
+	if !slices.Equal(attemptCapture.snapshot(), []string{testRetryPrimaryAPIKey, testRetryPrimaryAPIKey}) {
+		t.Fatalf("unexpected API key attempts: %#v", attemptCapture.snapshot())
+	}
+
+	var (
+		hasReset     bool
+		contentTexts []string
+	)
+
+	for _, delta := range streamDeltas {
+		if delta.FinishReason == finishReasonRetryReset {
+			hasReset = true
+		}
+
+		if delta.Content != "" {
+			contentTexts = append(contentTexts, delta.Content)
+		}
+	}
+
+	if !hasReset {
+		t.Error("expected reset delta to be emitted on retry")
+	}
+
+	if strings.Join(contentTexts, "") != "Hello" {
+		t.Errorf("expected content to be 'Hello', got %q", strings.Join(contentTexts, ""))
+	}
+}

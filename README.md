@@ -197,6 +197,7 @@ Model notes:
 - Generic website fetching rejects localhost, private, link-local, and unsafe redirect targets.
 - OpenRouter providers automatically send `transforms: ["middle-out"]` unless overridden.
 - Multi-key Gemini, OpenAI, and OpenAI Codex providers honor retry delays and rotate keys when needed.
+- Gemini malformed function call errors (e.g. from Google Search grounding) are automatically handled as transient and retried.
 
 ## Development
 

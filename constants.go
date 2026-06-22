@@ -71,6 +71,7 @@ const (
 	messageRoleAssistant                 = "assistant"
 	finishReasonStop                     = "stop"
 	finishReasonLength                   = "length"
+	finishReasonRetryReset               = "retry_reset"
 	maxSearchQueries                     = 500
 	defaultWebSearchMaxURLs              = 5
 	exaSearchTypeAuto                    = "auto"
