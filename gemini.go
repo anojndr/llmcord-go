@@ -272,8 +272,24 @@ func buildGeminiGenerateContentRequest(
 	}
 
 	config := new(genai.GenerateContentConfig)
-	if systemInstruction != "" {
-		config.SystemInstruction = genai.NewContentFromText(systemInstruction, "")
+
+	geminiSystemInstruction := systemInstruction
+
+	if request.Provider.EnableGrounding {
+		const functionCallingInstruction = "Ensure all string values in function call arguments " +
+			"are properly JSON-escaped (newlines as \\n, quotes as \\\", backslashes as \\\\). " +
+			"When calling functions or tools, output the function/tool name exactly as defined. " +
+			"Do not prepend any namespaces."
+
+		if geminiSystemInstruction == "" {
+			geminiSystemInstruction = functionCallingInstruction
+		} else {
+			geminiSystemInstruction += "\n\n" + functionCallingInstruction
+		}
+	}
+
+	if geminiSystemInstruction != "" {
+		config.SystemInstruction = genai.NewContentFromText(geminiSystemInstruction, "")
 	}
 
 	if thinkingConfig != nil {

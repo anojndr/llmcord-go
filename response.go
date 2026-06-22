@@ -338,6 +338,19 @@ func (instance *bot) handleGeneratedStreamDelta(
 	state *generatedStreamState,
 	delta streamDelta,
 ) error {
+	if delta.FinishReason == finishReasonRetryReset {
+		state.answerAccumulator.segments = []string{""}
+		state.thinkingAccumulator.segments = []string{""}
+		state.rawAnswerText = ""
+		state.renderedAnswerText = ""
+		*state.finishReason = ""
+		tracker.usage = nil
+		tracker.providerResponseID = ""
+		tracker.searchMetadata = nil
+
+		return nil
+	}
+
 	splitOccurred := false
 	if delta.Thinking != "" {
 		splitOccurred = state.thinkingAccumulator.appendText(delta.Thinking) || splitOccurred
