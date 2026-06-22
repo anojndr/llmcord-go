@@ -1084,6 +1084,7 @@ func newGeminiBuildTestRequest() chatCompletionRequest {
 			APIKey:          "",
 			APIKeys:         nil,
 			UseResponsesAPI: false,
+			EnableGrounding: false,
 			ExtraHeaders: map[string]any{
 				"X-Test": testHeaderPresent,
 			},
@@ -1124,6 +1125,7 @@ func newSimpleGeminiStreamRequest() chatCompletionRequest {
 			APIKey:          "gemini-key",
 			APIKeys:         nil,
 			UseResponsesAPI: false,
+			EnableGrounding: false,
 			ExtraHeaders:    nil,
 			ExtraQuery:      nil,
 			ExtraBody:       nil,
@@ -1289,6 +1291,7 @@ func newGeminiGenerateContentResponseWithParts(
 		PromptFeedback:  nil,
 		ResponseID:      "",
 		UsageMetadata:   nil,
+		ModelStatus:     nil,
 	}
 }
 

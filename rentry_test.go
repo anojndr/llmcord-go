@@ -27,6 +27,9 @@ func TestRentryClientCreateEntryPostsFormAndReturnsLocation(t *testing.T) {
 			cookie.Name = "csrftoken"
 			cookie.Value = csrfCookie
 			cookie.Path = "/"
+			cookie.HttpOnly = true
+			cookie.Secure = true
+			cookie.SameSite = http.SameSiteStrictMode
 
 			http.SetCookie(responseWriter, cookie)
 
@@ -106,6 +109,9 @@ func TestRentryClientCreateEntryReturnsStatusErrors(t *testing.T) {
 			cookie.Name = "csrftoken"
 			cookie.Value = "cookie-token"
 			cookie.Path = "/"
+			cookie.HttpOnly = true
+			cookie.Secure = true
+			cookie.SameSite = http.SameSiteStrictMode
 
 			http.SetCookie(responseWriter, cookie)
 

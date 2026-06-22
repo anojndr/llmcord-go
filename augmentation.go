@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 )
 
@@ -276,8 +277,8 @@ func appendContextToConversation(
 }
 
 func latestUserMessageIndex(conversation []chatMessage) (int, error) {
-	for index := len(conversation) - 1; index >= 0; index-- {
-		if conversation[index].Role == messageRoleUser {
+	for index, msg := range slices.Backward(conversation) {
+		if msg.Role == messageRoleUser {
 			return index, nil
 		}
 	}
