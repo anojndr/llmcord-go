@@ -16,7 +16,12 @@ type chatCompletionRouter struct {
 	waitForRetry func(context.Context, time.Duration) error
 }
 
-const sameKeyRetryDelayLimit = time.Minute
+const (
+	sameKeyRetryDelayLimit = time.Minute
+	attemptTimeoutDivisor  = 2
+	minAttemptTimeout      = 20 * time.Second
+	maxAttemptTimeout      = 90 * time.Second
+)
 
 func newChatCompletionRouter(httpClient *http.Client) chatCompletionRouter {
 	return chatCompletionRouter{
@@ -77,19 +82,17 @@ func (client chatCompletionRouter) streamChatCompletionForKey(
 
 	for {
 		streamStarted := false
-
 		attemptCtx, attemptCancel := context.WithCancel(ctx)
+
 		if deadline, ok := ctx.Deadline(); ok {
 			remaining := time.Until(deadline)
-			attemptTimeout := remaining / 2
-			if attemptTimeout < 20*time.Second {
-				attemptTimeout = 20 * time.Second
-			}
-			if attemptTimeout > 90*time.Second {
-				attemptTimeout = 90 * time.Second
-			}
+			attemptTimeout := remaining / attemptTimeoutDivisor
+			attemptTimeout = max(attemptTimeout, minAttemptTimeout)
+			attemptTimeout = min(attemptTimeout, maxAttemptTimeout)
+
 			if attemptTimeout < remaining {
 				var cancel context.CancelFunc
+
 				attemptCtx, cancel = context.WithTimeout(ctx, attemptTimeout)
 				attemptCancel = cancel
 			}
@@ -100,6 +103,7 @@ func (client chatCompletionRouter) streamChatCompletionForKey(
 
 			return handle(delta)
 		})
+
 		attemptCancel()
 
 		if err == nil {

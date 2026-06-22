@@ -9,7 +9,7 @@ require (
 	github.com/modelcontextprotocol/go-sdk v1.4.0
 	github.com/pdfcpu/pdfcpu v0.11.1
 	golang.org/x/net v0.45.0
-	google.golang.org/genai v1.49.0
+	google.golang.org/genai v1.61.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 

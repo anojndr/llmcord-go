@@ -15,6 +15,7 @@ import (
 	"os"
 	"path"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/bwmarrin/discordgo"
@@ -252,8 +253,8 @@ func xAIContinuationMessages(messages []chatMessage) ([]chatMessage, bool) {
 
 	lastAssistantIndex := -1
 
-	for index := len(conversationMessages) - 1; index >= 0; index-- {
-		if conversationMessages[index].Role != messageRoleAssistant {
+	for index, msg := range slices.Backward(conversationMessages) {
+		if msg.Role != messageRoleAssistant {
 			continue
 		}
 

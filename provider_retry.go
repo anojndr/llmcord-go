@@ -99,7 +99,7 @@ func explicitRetryDelayForProvider(apiKind providerAPIKind, err error) (time.Dur
 	}
 }
 
-func isTransientError(apiKind providerAPIKind, err error) bool {
+func isTransientError(_ providerAPIKind, err error) bool {
 	if err == nil {
 		return false
 	}
