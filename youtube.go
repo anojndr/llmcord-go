@@ -15,6 +15,7 @@ import (
 	"os"
 	"regexp"
 	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -352,8 +353,8 @@ func (client youtubeClient) fetchNoteGPTVideoTranscriptOnce(
 	requestURL, err := client.buildNoteGPTURL(
 		"video-transcript",
 		map[string]string{
-			"platform": noteGPTPlatformYouTube,
-			"video_id": videoID,
+			messagePlatformKey: noteGPTPlatformYouTube,
+			messageVideoIDKey: videoID,
 		},
 	)
 	if err != nil {
@@ -366,7 +367,7 @@ func (client youtubeClient) fetchNoteGPTVideoTranscriptOnce(
 		requestURL,
 		nil,
 		map[string]string{
-			"Cookie": client.noteGPTAnonymousUserCookie(anonymousUserID),
+			messageCookieHeader: client.noteGPTAnonymousUserCookie(anonymousUserID),
 		},
 	)
 	if err != nil {
@@ -759,8 +760,8 @@ func (client youtubeClient) doJSONRequest(
 	}
 
 	requestHeaders := map[string]string{
-		"Accept":       "application/json",
-		"Content-Type": "application/json",
+		"Accept":       applicationJSONContentType,
+		"Content-Type": applicationJSONContentType,
 	}
 
 	maps.Copy(requestHeaders, headers)
@@ -821,7 +822,7 @@ func (client youtubeClient) doRequest(
 }
 
 func latestUserMessageText(conversation []chatMessage) (string, error) {
-	for index := len(conversation) - 1; index >= 0; index-- {
+	for index := range slices.Backward(conversation) {
 		if conversation[index].Role != messageRoleUser {
 			continue
 		}

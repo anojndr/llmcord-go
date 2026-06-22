@@ -268,7 +268,7 @@ func (client facebookClient) downloadFacebookVideo(
 			ResolvedURL: normalizedURL,
 			DownloadURL: downloadURL,
 			MediaPart: contentPart{
-				"type":               contentTypeVideoData,
+				messageTypeKey:      contentTypeVideoData,
 				contentFieldBytes:    videoBytes,
 				contentFieldMIMEType: mimeType,
 				contentFieldFilename: filename,

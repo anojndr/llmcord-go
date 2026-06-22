@@ -656,7 +656,7 @@ func geminiContentsAndSystemInstruction(
 
 	for index, message := range messages {
 		role := strings.ToLower(strings.TrimSpace(message.Role))
-		if role == "system" {
+		if role == messageRoleSystem {
 			text, err := geminiSystemInstructionText(message.Content)
 			if err != nil {
 				return nil, "", fmt.Errorf(

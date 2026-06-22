@@ -479,8 +479,8 @@ func xAIResponsesMessage(message chatMessage) (map[string]any, bool, error) {
 		}
 
 		return map[string]any{
-			"role":    role,
-			"content": content,
+			messageRoleKey:    role,
+			messageContentKey: content,
 		}, true, nil
 	case messageRoleAssistant:
 		content, ok, err := xAIResponsesTextContent(message.Content)
@@ -590,14 +590,14 @@ func xAIResponsesUserPart(part contentPart) (map[string]any, bool, error) {
 
 	switch partType {
 	case contentTypeText:
-		textValue, _ := part["text"].(string)
+		textValue, _ := part[messageTextKey].(string)
 		if strings.TrimSpace(textValue) == "" {
 			return nil, false, nil
 		}
 
 		return map[string]any{
-			"type": xAIResponsesInputTextType,
-			"text": textValue,
+			messageTypeKey: xAIResponsesInputTextType,
+			messageTextKey: textValue,
 		}, true, nil
 	case contentTypeImageURL:
 		imageURL, fileID, err := xAIResponsesImageReference(part)
@@ -607,9 +607,9 @@ func xAIResponsesUserPart(part contentPart) (map[string]any, bool, error) {
 
 		if fileID != "" {
 			return map[string]any{
-				"type":    xAIResponsesInputImageType,
-				"file_id": fileID,
-				"detail":  xAIResponsesImageDetailAuto,
+				messageTypeKey:    xAIResponsesInputImageType,
+				"file_id":         fileID,
+				messageDetailKey:  xAIResponsesImageDetailAuto,
 			}, true, nil
 		}
 
@@ -618,9 +618,9 @@ func xAIResponsesUserPart(part contentPart) (map[string]any, bool, error) {
 		}
 
 		return map[string]any{
-			"type":      xAIResponsesInputImageType,
-			"image_url": imageURL,
-			"detail":    xAIResponsesImageDetailAuto,
+			messageTypeKey:      xAIResponsesInputImageType,
+			"image_url":         imageURL,
+			messageDetailKey:    xAIResponsesImageDetailAuto,
 		}, true, nil
 	case contentTypeDocument, contentTypeFileData:
 		documentBytes, mimeType, filename, err := attachmentBinaryData(part)

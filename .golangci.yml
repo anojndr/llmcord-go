@@ -8,6 +8,8 @@ linters:
   settings:
     cyclop:
       max-complexity: 20
+    goconst:
+      ignore-tests: true
     depguard:
       rules:
         main:

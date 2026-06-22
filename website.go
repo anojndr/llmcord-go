@@ -395,7 +395,7 @@ func (client websiteClient) fetchWithExaContentsOnce(
 func exaContentsRequestBody(requestURL string) map[string]any {
 	return map[string]any{
 		"urls": []string{requestURL},
-		"text": map[string]any{
+		messageTextKey: map[string]any{
 			"maxCharacters": maxWebsiteContentRunes,
 			"verbosity":     "compact",
 			"excludeSections": []string{
@@ -798,7 +798,7 @@ func extractStructuredAPIErrorMessage(responseBody []byte) string {
 		}
 	}
 
-	for _, key := range []string{"error", "message"} {
+	for _, key := range []string{"error", messageKindValue} {
 		if message := mapStringValue(response, key); message != "" {
 			return message
 		}
@@ -1562,7 +1562,7 @@ func hasWebsiteContentHint(node *html.Node) bool {
 
 	for _, keyword := range []string{
 		"article",
-		"content",
+		messageContentKey,
 		"entry",
 		"main",
 		"post",

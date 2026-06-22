@@ -958,7 +958,7 @@ func prependSystemPrompt(
 	}
 
 	return append([]chatMessage{{
-		Role:    "system",
+		Role:    messageRoleSystem,
 		Content: systemPromptNow(systemPrompt, now),
 	}}, messages...)
 }
