@@ -40,27 +40,48 @@ func (client chatCompletionRouter) streamChatCompletion(
 	apiKeys := request.Provider.apiKeysForAttempts()
 	attemptErrors := make([]error, 0, len(apiKeys))
 
+	globalStreamStarted := false
+
 	for index, apiKey := range apiKeys {
 		keyedRequest := request
 		keyedRequest.Provider = request.Provider.withSingleAPIKey(apiKey)
+
+		if index > 0 {
+			_ = handle(streamDelta{
+				Thinking:           "",
+				Content:            "",
+				FinishReason:       finishReasonRetryReset,
+				Usage:              nil,
+				ProviderResponseID: "",
+				SearchMetadata:     nil,
+			})
+		}
+
+		wrappedHandle := func(delta streamDelta) error {
+			if delta.Content != "" {
+				globalStreamStarted = true
+			}
+
+			return handle(delta)
+		}
 
 		streamStarted, err := client.streamChatCompletionForKey(
 			ctx,
 			keyedRequest,
 			index < len(apiKeys)-1,
-			handle,
+			wrappedHandle,
 		)
 		if err == nil {
 			return nil
 		}
 
 		attemptErrors = append(attemptErrors, err)
-		if streamStarted || ctx.Err() != nil || index == len(apiKeys)-1 {
+		if globalStreamStarted || streamStarted || ctx.Err() != nil || index == len(apiKeys)-1 {
 			if len(attemptErrors) == 1 {
 				return err
 			}
 
-			if streamStarted || ctx.Err() != nil {
+			if globalStreamStarted || streamStarted || ctx.Err() != nil {
 				return err
 			}
 
@@ -79,9 +100,11 @@ func (client chatCompletionRouter) streamChatCompletionForKey(
 ) (bool, error) {
 	waitForRetry := client.retryDelayWaiter()
 	retrySameKey := true
+	attemptNumber := 0
 
 	for {
 		streamStarted := false
+		attemptNumber++
 		attemptCtx, attemptCancel := context.WithCancel(ctx)
 
 		if deadline, ok := ctx.Deadline(); ok {
@@ -98,8 +121,21 @@ func (client chatCompletionRouter) streamChatCompletionForKey(
 			}
 		}
 
+		if attemptNumber > 1 {
+			_ = handle(streamDelta{
+				Thinking:           "",
+				Content:            "",
+				FinishReason:       finishReasonRetryReset,
+				Usage:              nil,
+				ProviderResponseID: "",
+				SearchMetadata:     nil,
+			})
+		}
+
 		err := client.streamChatCompletionOnce(attemptCtx, request, func(delta streamDelta) error {
-			streamStarted = true
+			if delta.Content != "" {
+				streamStarted = true
+			}
 
 			return handle(delta)
 		})

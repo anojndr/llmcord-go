@@ -120,6 +120,7 @@ func isTransientError(_ providerAPIKind, err error) bool {
 		"EOF",
 		"unexpected EOF",
 		"context deadline exceeded",
+		"malformed_function_call",
 	} {
 		if strings.Contains(errText, text) {
 			return true
