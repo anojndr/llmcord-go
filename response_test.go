@@ -1418,8 +1418,6 @@ func newPartialFailureResponseBot(session *discordgo.Session, partialText string
 	return instance
 }
 
-
-
 var errPartialStreamFailure = errors.New("partial stream failure")
 
 var errUnexpectedTestRequest = errors.New("unexpected test request")
@@ -2139,10 +2137,10 @@ func assertConversationHistory(
 }
 
 var (
-	errPrimaryModelFailed      = errors.New("primary model failed")
+	errPrimaryModelFailed       = errors.New("primary model failed")
 	errFirstFallbackModelFailed = errors.New("first fallback model failed")
 	errUnknownModel             = errors.New("unknown model")
-	errGeminiSearchFailed      = errors.New("gemini search failed")
+	errGeminiSearchFailed       = errors.New("gemini search failed")
 )
 
 func writeTestConfig(t *testing.T, dir, text string) string {
@@ -2163,6 +2161,7 @@ func setupFallbackTestBot(
 	configPath string,
 	assistantMessage *discordgo.Message,
 	client *stubChatCompletionClient,
+	recordRequest func([]byte),
 ) *bot {
 	t.Helper()
 
@@ -2171,6 +2170,7 @@ func setupFallbackTestBot(
 		assistantMessage.ChannelID,
 		assistantMessage.Author.ID,
 		assistantMessage,
+		recordRequest,
 	)
 
 	instance := new(bot)
@@ -2187,6 +2187,7 @@ func newResponseFallbackTestSession(
 	channelID string,
 	botUserID string,
 	sentMessage *discordgo.Message,
+	recordRequest func([]byte),
 ) *discordgo.Session {
 	t.Helper()
 
@@ -2219,6 +2220,17 @@ func newResponseFallbackTestSession(
 			return newJSONResponse(t, request, sentMessage), nil
 		case request.Method == http.MethodPatch &&
 			strings.HasPrefix(request.URL.Path, "/api/v9/channels/"+channelID+"/messages/"):
+			bodyBytes, err := io.ReadAll(request.Body)
+			if err != nil {
+				t.Fatalf("read request body: %v", err)
+			}
+
+			request.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+
+			if recordRequest != nil {
+				recordRequest(bodyBytes)
+			}
+
 			return newJSONResponse(t, request, sentMessage), nil
 		default:
 			t.Fatalf("unexpected request: %s %s", request.Method, request.URL.Path)
@@ -2232,14 +2244,7 @@ func newResponseFallbackTestSession(
 	return session
 }
 
-func runFallbackTest(
-	t *testing.T,
-	initialModel string,
-	stubFunc func(context.Context, chatCompletionRequest, func(streamDelta) error) error,
-) {
-	t.Helper()
-
-	configText := `
+const fallbackTestConfigText = `
 bot_token: fake-bot-token
 max_text: 1000
 max_messages: 100
@@ -2260,7 +2265,27 @@ models:
   gemini-search/gemini-3.1-flash-lite-high:vision:
   openrouter/openrouter/free:vision:
 `
-	configPath := writeTestConfig(t, t.TempDir(), configText)
+
+func runFallbackTest(
+	t *testing.T,
+	initialModel string,
+	stubFunc func(context.Context, chatCompletionRequest, func(streamDelta) error) error,
+) [][]byte {
+	t.Helper()
+
+	var (
+		recordedRequests   [][]byte
+		recordedRequestsMu sync.Mutex
+	)
+
+	recordRequest := func(body []byte) {
+		recordedRequestsMu.Lock()
+		defer recordedRequestsMu.Unlock()
+
+		recordedRequests = append(recordedRequests, body)
+	}
+
+	configPath := writeTestConfig(t, t.TempDir(), fallbackTestConfigText)
 
 	const (
 		botUserID          = "bot-user"
@@ -2279,7 +2304,7 @@ models:
 	assistantMessage.Type = discordgo.MessageTypeReply
 
 	client := newStubChatClient(stubFunc)
-	instance := setupFallbackTestBot(t, configPath, assistantMessage, client)
+	instance := setupFallbackTestBot(t, configPath, assistantMessage, client, recordRequest)
 
 	loadedConfig, err := loadConfig(configPath)
 	if err != nil {
@@ -2310,6 +2335,63 @@ models:
 	if err != nil {
 		t.Fatalf("generateAndSendResponse failed: %v", err)
 	}
+
+	recordedRequestsMu.Lock()
+	defer recordedRequestsMu.Unlock()
+
+	return recordedRequests
+}
+
+func assertFallbackWarnings(
+	t *testing.T,
+	recordedRequests [][]byte,
+	expectedWarnings []string,
+) {
+	t.Helper()
+
+	if len(recordedRequests) == 0 {
+		t.Fatalf("no requests recorded")
+	}
+
+	var payload map[string]any
+
+	err := json.Unmarshal(recordedRequests[len(recordedRequests)-1], &payload)
+	if err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+
+	embeds, embedsOK := payload["embeds"].([]any)
+	if !embedsOK || len(embeds) == 0 {
+		t.Fatalf("no embeds found in request payload: %#v", payload)
+	}
+
+	embed, embedOK := embeds[0].(map[string]any)
+	if !embedOK {
+		t.Fatalf("embed not a map: %#v", embeds[0])
+	}
+
+	fields, fieldsOK := embed["fields"].([]any)
+	if !fieldsOK {
+		t.Fatalf("no fields in embed: %#v", embed)
+	}
+
+	var warnings []string
+
+	for _, fieldVal := range fields {
+		field, fieldOK := fieldVal.(map[string]any)
+		if !fieldOK {
+			continue
+		}
+
+		name, nameOK := field["name"].(string)
+		if nameOK {
+			warnings = append(warnings, name)
+		}
+	}
+
+	if !slices.Equal(warnings, expectedWarnings) {
+		t.Fatalf("unexpected warnings: %v", warnings)
+	}
 }
 
 func TestGenerateAndSendResponseFallback_Success(t *testing.T) {
@@ -2320,7 +2402,7 @@ func TestGenerateAndSendResponseFallback_Success(t *testing.T) {
 		requestedModelsMu sync.Mutex
 	)
 
-	runFallbackTest(
+	recordedRequests := runFallbackTest(
 		t,
 		"some-provider/some-model",
 		func(
@@ -2329,10 +2411,9 @@ func TestGenerateAndSendResponseFallback_Success(t *testing.T) {
 			handle func(streamDelta) error,
 		) error {
 			requestedModelsMu.Lock()
+			defer requestedModelsMu.Unlock()
 
 			requestedModels = append(requestedModels, req.ConfiguredModel)
-
-			requestedModelsMu.Unlock()
 
 			if req.ConfiguredModel == "some-provider/some-model" {
 				return errPrimaryModelFailed
@@ -2364,6 +2445,13 @@ func TestGenerateAndSendResponseFallback_Success(t *testing.T) {
 	if !slices.Equal(requestedModels, expectedModels) {
 		t.Fatalf("unexpected requested models: %v", requestedModels)
 	}
+
+	expectedWarnings := []string{
+		"Warning: fell back to gemini-search/gemini-3.1-flash-lite-high:vision due to generation error",
+		"Warning: fell back to openrouter/openrouter/free:vision due to generation error",
+	}
+
+	assertFallbackWarnings(t, recordedRequests, expectedWarnings)
 }
 
 func TestGenerateAndSendResponseFallback_StartAtGeminiSearch(t *testing.T) {
@@ -2374,7 +2462,7 @@ func TestGenerateAndSendResponseFallback_StartAtGeminiSearch(t *testing.T) {
 		requestedModelsMu sync.Mutex
 	)
 
-	runFallbackTest(
+	recordedRequests := runFallbackTest(
 		t,
 		"gemini-search/gemini-3.1-flash-lite-high:vision",
 		func(
@@ -2383,10 +2471,9 @@ func TestGenerateAndSendResponseFallback_StartAtGeminiSearch(t *testing.T) {
 			handle func(streamDelta) error,
 		) error {
 			requestedModelsMu.Lock()
+			defer requestedModelsMu.Unlock()
 
 			requestedModels = append(requestedModels, req.ConfiguredModel)
-
-			requestedModelsMu.Unlock()
 
 			if req.ConfiguredModel == "gemini-search/gemini-3.1-flash-lite-high:vision" {
 				return errGeminiSearchFailed
@@ -2413,4 +2500,10 @@ func TestGenerateAndSendResponseFallback_StartAtGeminiSearch(t *testing.T) {
 	if !slices.Equal(requestedModels, expectedModels) {
 		t.Fatalf("unexpected requested models: %v", requestedModels)
 	}
+
+	expectedWarnings := []string{
+		"Warning: fell back to openrouter/openrouter/free:vision due to generation error",
+	}
+
+	assertFallbackWarnings(t, recordedRequests, expectedWarnings)
 }
