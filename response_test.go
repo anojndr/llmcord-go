@@ -8,7 +8,10 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1415,29 +1418,7 @@ func newPartialFailureResponseBot(session *discordgo.Session, partialText string
 	return instance
 }
 
-func emptyChatCompletionRequest() chatCompletionRequest {
-	return chatCompletionRequest{
-		Provider: providerRequestConfig{
-			APIKind:         "",
-			BaseURL:         "",
-			APIKey:          "",
-			APIKeys:         nil,
-			UseResponsesAPI: false,
-			EnableGrounding: false,
-			ExtraHeaders:    nil,
-			ExtraQuery:      nil,
-			ExtraBody:       nil,
-		},
-		Model:                       "",
-		ConfiguredModel:             "",
-		ContextWindow:               0,
-		AutoCompactThresholdPercent: 0,
-		SessionID:                   "",
-		PreviousResponseID:          "",
-		RequestID:                   "",
-		Messages:                    nil,
-	}
-}
+
 
 var errPartialStreamFailure = errors.New("partial stream failure")
 
@@ -2154,5 +2135,282 @@ func assertConversationHistory(
 	if conversation[2].Role != messageRoleUser ||
 		conversation[2].Content != "repeat the 10-digit number that you just generated" {
 		t.Fatalf("unexpected follow-up message: %#v", conversation[2])
+	}
+}
+
+var (
+	errPrimaryModelFailed      = errors.New("primary model failed")
+	errFirstFallbackModelFailed = errors.New("first fallback model failed")
+	errUnknownModel             = errors.New("unknown model")
+	errGeminiSearchFailed      = errors.New("gemini search failed")
+)
+
+func writeTestConfig(t *testing.T, dir, text string) string {
+	t.Helper()
+
+	configPath := filepath.Join(dir, "config.yaml")
+
+	err := os.WriteFile(configPath, []byte(text), 0o600)
+	if err != nil {
+		t.Fatalf("write temp config: %v", err)
+	}
+
+	return configPath
+}
+
+func setupFallbackTestBot(
+	t *testing.T,
+	configPath string,
+	assistantMessage *discordgo.Message,
+	client *stubChatCompletionClient,
+) *bot {
+	t.Helper()
+
+	session := newResponseFallbackTestSession(
+		t,
+		assistantMessage.ChannelID,
+		assistantMessage.Author.ID,
+		assistantMessage,
+	)
+
+	instance := new(bot)
+	instance.configPath = configPath
+	instance.session = session
+	instance.nodes = newMessageNodeStore(10)
+	instance.chatCompletions = client
+
+	return instance
+}
+
+func newResponseFallbackTestSession(
+	t *testing.T,
+	channelID string,
+	botUserID string,
+	sentMessage *discordgo.Message,
+) *discordgo.Session {
+	t.Helper()
+
+	session, err := discordgo.New("Bot discord-token")
+	if err != nil {
+		t.Fatalf("create discord session: %v", err)
+	}
+
+	session.State.User = newDiscordUser(botUserID, true)
+
+	channel := new(discordgo.Channel)
+	channel.ID = channelID
+	channel.Type = discordgo.ChannelTypeDM
+
+	err = session.State.ChannelAdd(channel)
+	if err != nil {
+		t.Fatalf("add channel to state: %v", err)
+	}
+
+	client := new(http.Client)
+	client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		t.Helper()
+
+		switch {
+		case request.Method == http.MethodPost &&
+			request.URL.Path == "/api/v9/channels/"+channelID+"/typing":
+			return newNoContentResponse(request), nil
+		case request.Method == http.MethodPost &&
+			request.URL.Path == "/api/v9/channels/"+channelID+"/messages":
+			return newJSONResponse(t, request, sentMessage), nil
+		case request.Method == http.MethodPatch &&
+			strings.HasPrefix(request.URL.Path, "/api/v9/channels/"+channelID+"/messages/"):
+			return newJSONResponse(t, request, sentMessage), nil
+		default:
+			t.Fatalf("unexpected request: %s %s", request.Method, request.URL.Path)
+
+			return nil, errUnexpectedTestRequest
+		}
+	})
+
+	session.Client = client
+
+	return session
+}
+
+func runFallbackTest(
+	t *testing.T,
+	initialModel string,
+	stubFunc func(context.Context, chatCompletionRequest, func(streamDelta) error) error,
+) {
+	t.Helper()
+
+	configText := `
+bot_token: fake-bot-token
+max_text: 1000
+max_messages: 100
+providers:
+  some-provider:
+    type: openai
+    base_url: http://localhost:8080
+    api_key: some-key
+  gemini-search:
+    type: gemini
+    api_key: gemini-api-key
+  openrouter:
+    type: openai
+    base_url: https://openrouter.ai/api/v1
+    api_key: openrouter-api-key
+models:
+  some-provider/some-model:
+  gemini-search/gemini-3.1-flash-lite-high:vision:
+  openrouter/openrouter/free:vision:
+`
+	configPath := writeTestConfig(t, t.TempDir(), configText)
+
+	const (
+		botUserID          = "bot-user"
+		channelID          = "channel-1"
+		userID             = "user-1"
+		sourceMessageID    = "user-message-1"
+		assistantMessageID = "assistant-message-1"
+	)
+
+	sourceMessage := newPromptMessage(sourceMessageID, channelID, userID, botUserID)
+	assistantMessage := new(discordgo.Message)
+	assistantMessage.ID = assistantMessageID
+	assistantMessage.ChannelID = channelID
+	assistantMessage.Author = newDiscordUser(botUserID, true)
+	assistantMessage.MessageReference = sourceMessage.Reference()
+	assistantMessage.Type = discordgo.MessageTypeReply
+
+	client := newStubChatClient(stubFunc)
+	instance := setupFallbackTestBot(t, configPath, assistantMessage, client)
+
+	loadedConfig, err := loadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	request, err := buildChatCompletionRequest(
+		loadedConfig,
+		initialModel,
+		[]chatMessage{{Role: messageRoleUser, Content: "hello"}},
+		false,
+	)
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+
+	tracker := newResponseTracker(sourceMessage, initialModel)
+	tracker.responseMessages = append(tracker.responseMessages, assistantMessage)
+	tracker.progressActive = true
+
+	err = instance.generateAndSendResponse(
+		context.Background(),
+		request,
+		tracker,
+		nil,
+		false,
+	)
+	if err != nil {
+		t.Fatalf("generateAndSendResponse failed: %v", err)
+	}
+}
+
+func TestGenerateAndSendResponseFallback_Success(t *testing.T) {
+	t.Parallel()
+
+	var (
+		requestedModels   []string
+		requestedModelsMu sync.Mutex
+	)
+
+	runFallbackTest(
+		t,
+		"some-provider/some-model",
+		func(
+			_ context.Context,
+			req chatCompletionRequest,
+			handle func(streamDelta) error,
+		) error {
+			requestedModelsMu.Lock()
+
+			requestedModels = append(requestedModels, req.ConfiguredModel)
+
+			requestedModelsMu.Unlock()
+
+			if req.ConfiguredModel == "some-provider/some-model" {
+				return errPrimaryModelFailed
+			}
+
+			if req.ConfiguredModel == "gemini-search/gemini-3.1-flash-lite-high:vision" {
+				return errFirstFallbackModelFailed
+			}
+
+			if req.ConfiguredModel == "openrouter/openrouter/free:vision" {
+				_ = handle(newStreamDelta("fallback success response", ""))
+
+				return nil
+			}
+
+			return errUnknownModel
+		},
+	)
+
+	requestedModelsMu.Lock()
+	defer requestedModelsMu.Unlock()
+
+	expectedModels := []string{
+		"some-provider/some-model",
+		"gemini-search/gemini-3.1-flash-lite-high:vision",
+		"openrouter/openrouter/free:vision",
+	}
+
+	if !slices.Equal(requestedModels, expectedModels) {
+		t.Fatalf("unexpected requested models: %v", requestedModels)
+	}
+}
+
+func TestGenerateAndSendResponseFallback_StartAtGeminiSearch(t *testing.T) {
+	t.Parallel()
+
+	var (
+		requestedModels   []string
+		requestedModelsMu sync.Mutex
+	)
+
+	runFallbackTest(
+		t,
+		"gemini-search/gemini-3.1-flash-lite-high:vision",
+		func(
+			_ context.Context,
+			req chatCompletionRequest,
+			handle func(streamDelta) error,
+		) error {
+			requestedModelsMu.Lock()
+
+			requestedModels = append(requestedModels, req.ConfiguredModel)
+
+			requestedModelsMu.Unlock()
+
+			if req.ConfiguredModel == "gemini-search/gemini-3.1-flash-lite-high:vision" {
+				return errGeminiSearchFailed
+			}
+
+			if req.ConfiguredModel == "openrouter/openrouter/free:vision" {
+				_ = handle(newStreamDelta("fallback success response", ""))
+
+				return nil
+			}
+
+			return errUnknownModel
+		},
+	)
+
+	requestedModelsMu.Lock()
+	defer requestedModelsMu.Unlock()
+
+	expectedModels := []string{
+		"gemini-search/gemini-3.1-flash-lite-high:vision",
+		"openrouter/openrouter/free:vision",
+	}
+
+	if !slices.Equal(requestedModels, expectedModels) {
+		t.Fatalf("unexpected requested models: %v", requestedModels)
 	}
 }
