@@ -198,7 +198,7 @@ Model notes:
 - OpenRouter providers automatically send `transforms: ["middle-out"]` unless overridden.
 - Multi-key Gemini, OpenAI, and OpenAI Codex providers honor retry delays and rotate keys when needed.
 - Gemini malformed function call errors (e.g. from Google Search grounding) are automatically handled as transient and retried.
-- If a model completely fails to generate a response (even in exclusive/locked channels), the bot automatically falls back to `gemini-search/gemini-3.1-flash-lite-high:vision`. If that fails (or if the current model is `gemini-search/gemini-3.1-flash-lite-high:vision`), it falls back to `openrouter/openrouter/free:vision`.
+- If a model completely fails to generate a response (even in exclusive/locked channels), the bot automatically falls back to `gemini-search/gemini-3.1-flash-lite-high:vision`. If that fails (or if the current model is `gemini-search/gemini-3.1-flash-lite-high:vision`), it falls back to `openrouter/openrouter/free:vision`. When a fallback occurs, a warning message is included in the response to inform the user.
 
 ## Development
 
