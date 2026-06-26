@@ -403,7 +403,6 @@ func (instance *bot) attemptFallback(
 	}
 }
 
-
 func (instance *bot) runGenerationAttempt(
 	ctx context.Context,
 	request chatCompletionRequest,
@@ -526,6 +525,11 @@ func (instance *bot) generateAndSendResponse(
 		currentRequest, hasFallback = instance.attemptFallback(ctx, currentRequest, tracker)
 
 		if hasFallback {
+			warnings = append(
+				warnings,
+				fmt.Sprintf("Warning: fell back to %s due to generation error", currentRequest.ConfiguredModel),
+			)
+
 			continue
 		}
 
