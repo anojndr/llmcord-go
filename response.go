@@ -226,26 +226,199 @@ func (tracker *responseTracker) release(store *messageNodeStore, fullText string
 	}
 }
 
-func (instance *bot) generateAndSendResponse(
+func getFallbackModel(currentModel string) (string, bool) {
+	normalized := strings.ToLower(strings.TrimSpace(currentModel))
+
+	if normalized == "gemini-search/gemini-3.1-flash-lite-high:vision" ||
+		normalized == "gemini-search/gemini-3.1-flash-lite-high" {
+		return "openrouter/openrouter/free:vision", true
+	}
+
+	if normalized == "openrouter/openrouter/free:vision" ||
+		normalized == "openrouter/openrouter/free" {
+		return "", false
+	}
+
+	return "gemini-search/gemini-3.1-flash-lite-high:vision", true
+}
+
+func emptyChatCompletionRequest() chatCompletionRequest {
+	return chatCompletionRequest{
+		Provider: providerRequestConfig{
+			APIKind:         "",
+			BaseURL:         "",
+			APIKey:          "",
+			APIKeys:         nil,
+			UseResponsesAPI: false,
+			EnableGrounding: false,
+			ExtraHeaders:    nil,
+			ExtraQuery:      nil,
+			ExtraBody:       nil,
+		},
+		Model:                       "",
+		ConfiguredModel:             "",
+		ContextWindow:               0,
+		AutoCompactThresholdPercent: 0,
+		SessionID:                   "",
+		PreviousResponseID:          "",
+		RequestID:                   "",
+		Messages:                    nil,
+	}
+}
+
+func (instance *bot) validateFallbackModel(
+	loadedConfig config,
+	fallbackModel string,
+) (providerConfig, bool) {
+	fallbackProviderName, _, splitErr := splitConfiguredModel(fallbackModel)
+	if splitErr != nil {
+		return providerConfig{
+			Type:            "",
+			BaseURL:         "",
+			APIKey:          "",
+			APIKeys:         nil,
+			EnableGrounding: false,
+			ExtraHeaders:    nil,
+			ExtraQuery:      nil,
+			ExtraBody:       nil,
+		}, false
+	}
+
+	provider, providerExists := loadedConfig.Providers[fallbackProviderName]
+	if !providerExists {
+		return providerConfig{
+			Type:            "",
+			BaseURL:         "",
+			APIKey:          "",
+			APIKeys:         nil,
+			EnableGrounding: false,
+			ExtraHeaders:    nil,
+			ExtraQuery:      nil,
+			ExtraBody:       nil,
+		}, false
+	}
+
+	return provider, true
+}
+
+func (instance *bot) prepareFallbackRequest(
+	ctx context.Context,
+	loadedConfig config,
+	provider providerConfig,
+	fallbackModel string,
+	currentRequest chatCompletionRequest,
+	tracker *responseTracker,
+) (chatCompletionRequest, error) {
+	groundingEnabled := instance.currentGroundingEnabled(provider)
+
+	newReq, buildErr := buildChatCompletionRequest(
+		loadedConfig,
+		fallbackModel,
+		currentRequest.Messages,
+		groundingEnabled,
+	)
+	if buildErr != nil {
+		return emptyChatCompletionRequest(), buildErr
+	}
+
+	newReq.RequestID = currentRequest.RequestID
+	newReq.SessionID = currentRequest.SessionID
+	newReq.PreviousResponseID = currentRequest.PreviousResponseID
+
+	newReq, _ = instance.autoCompactRequest(ctx, newReq)
+
+	if len(tracker.responseMessages) > 0 && tracker.progressActive {
+		progressMessage := tracker.responseMessages[0]
+
+		if progressMessage != nil {
+			embed := buildRequestProgressEmbed(
+				requestProgressStageGeneratingResponse,
+				strings.TrimSpace(fallbackModel),
+			)
+
+			_ = instance.editEmbedMessage(progressMessage, embed, nil)
+		}
+	}
+
+	if len(tracker.responseMessages) > 1 {
+		_ = instance.trimExtraEmbedResponses(ctx, tracker, 1)
+	}
+
+	tracker.usage = nil
+	tracker.providerResponseID = ""
+	tracker.renderedSpecs = nil
+	tracker.progressActive = true
+
+	return newReq, nil
+}
+
+func (instance *bot) attemptFallback(
+	ctx context.Context,
+	currentRequest chatCompletionRequest,
+	tracker *responseTracker,
+) (chatCompletionRequest, bool) {
+	fallbackModel := currentRequest.ConfiguredModel
+
+	for {
+		var hasFallback bool
+
+		fallbackModel, hasFallback = getFallbackModel(fallbackModel)
+		if !hasFallback {
+			return emptyChatCompletionRequest(), false
+		}
+
+		if instance.configPath == "" {
+			return emptyChatCompletionRequest(), false
+		}
+
+		loadedConfig, configErr := loadConfig(instance.configPath)
+		if configErr != nil {
+			slog.Error("failed to load config for fallback", "error", configErr)
+
+			return emptyChatCompletionRequest(), false
+		}
+
+		provider, providerExists := instance.validateFallbackModel(loadedConfig, fallbackModel)
+		if !providerExists {
+			continue
+		}
+
+		newReq, buildErr := instance.prepareFallbackRequest(
+			ctx,
+			loadedConfig,
+			provider,
+			fallbackModel,
+			currentRequest,
+			tracker,
+		)
+		if buildErr != nil {
+			slog.Error("failed to prepare fallback request", "model", fallbackModel, "error", buildErr)
+
+			continue
+		}
+
+		slog.Info("Falling back to model", "from", tracker.modelName, "to", fallbackModel)
+
+		return newReq, true
+	}
+}
+
+
+func (instance *bot) runGenerationAttempt(
 	ctx context.Context,
 	request chatCompletionRequest,
 	tracker *responseTracker,
 	warnings []string,
+	maxLength int,
 	usePlainResponses bool,
-) error {
-	maxLength := embedResponseMaxLength
-	if usePlainResponses {
-		maxLength = plainResponseMaxLength
-	}
-
+) (string, string, *searchMetadata, error) {
 	accumulator := newSegmentAccumulator(maxLength)
 	thinkingAccumulator := newSegmentAccumulator(maxLength)
-	tracker.modelName = strings.TrimSpace(request.ConfiguredModel)
-	tracker.contextWindow = request.ContextWindow
 
 	var finishReason string
 
 	lastRenderTime := time.Time{}
+
 	streamState := generatedStreamState{
 		request:             request,
 		warnings:            warnings,
@@ -260,29 +433,32 @@ func (instance *bot) generateAndSendResponse(
 	}
 
 	streamContext, cancelStream := streamChatCompletionContext(ctx, request)
-	defer cancelStream()
+	streamErr := instance.chatCompletions.streamChatCompletion(
+		streamContext,
+		request,
+		func(delta streamDelta) error {
+			return instance.handleGeneratedStreamDelta(ctx, tracker, &streamState, delta)
+		},
+	)
 
-	streamErr := instance.chatCompletions.streamChatCompletion(streamContext, request, func(delta streamDelta) error {
-		return instance.handleGeneratedStreamDelta(ctx, tracker, &streamState, delta)
-	})
+	cancelStream()
+
 	if streamErr != nil && finishReason == "" {
 		finishReason = "error"
 	}
 
 	finalAnswerText := streamState.rawAnswerText
-
 	cleanedAnswerText, parsedSearchMetadata := finalizeXAIResponseAnswer(
 		request,
 		finalAnswerText,
 		tracker.searchMetadata,
 	)
-	if parsedSearchMetadata != nil {
-		tracker.searchMetadata = mergeSearchMetadata(tracker.searchMetadata, parsedSearchMetadata)
-	}
 
 	finalAccumulator := accumulator
+
 	if cleanedAnswerText != finalAnswerText {
 		finalAccumulator = newSegmentAccumulator(maxLength)
+
 		_ = finalAccumulator.appendText(cleanedAnswerText)
 	}
 
@@ -296,27 +472,85 @@ func (instance *bot) generateAndSendResponse(
 		finishReason,
 		usePlainResponses,
 	)
+
 	if responseErr == nil && streamErr != nil {
 		responseErr = fmt.Errorf("stream response: %w", streamErr)
 	}
 
-	finalText := visibleResponseText(thinkingAccumulator.joined(), cleanedAnswerText)
+	return cleanedAnswerText, thinkingAccumulator.joined(), parsedSearchMetadata, responseErr
+}
 
-	if responseErr != nil {
+func (instance *bot) generateAndSendResponse(
+	ctx context.Context,
+	request chatCompletionRequest,
+	tracker *responseTracker,
+	warnings []string,
+	usePlainResponses bool,
+) error {
+	maxLength := embedResponseMaxLength
+
+	if usePlainResponses {
+		maxLength = plainResponseMaxLength
+	}
+
+	currentRequest := request
+
+	for {
+		tracker.modelName = strings.TrimSpace(currentRequest.ConfiguredModel)
+		tracker.contextWindow = currentRequest.ContextWindow
+
+		cleanedText, thinkingText, parsedMetadata, responseErr := instance.runGenerationAttempt(
+			ctx,
+			currentRequest,
+			tracker,
+			warnings,
+			maxLength,
+			usePlainResponses,
+		)
+		if responseErr == nil {
+			if parsedMetadata != nil {
+				tracker.searchMetadata = mergeSearchMetadata(tracker.searchMetadata, parsedMetadata)
+			}
+
+			finalText := visibleResponseText(thinkingText, cleanedText)
+
+			tracker.release(instance.nodes, finalText, thinkingText)
+
+			instance.nodes.persistBestEffort()
+
+			return nil
+		}
+
+		var hasFallback bool
+
+		currentRequest, hasFallback = instance.attemptFallback(ctx, currentRequest, tracker)
+
+		if hasFallback {
+			continue
+		}
+
 		errorText := userFacingResponseError(responseErr)
 
 		renderErr := instance.renderFailureResponse(ctx, tracker, errorText, usePlainResponses)
+
+		var finalText string
+
 		if renderErr != nil {
 			responseErr = errors.Join(responseErr, fmt.Errorf("render failure response: %w", renderErr))
+			finalText = visibleResponseText(thinkingText, cleanedText)
 		} else {
-			finalText = responseTextWithError(finalText, errorText)
+			finalText = responseTextWithError(
+				visibleResponseText(thinkingText, cleanedText),
+				errorText,
+			)
 		}
+
+		tracker.release(instance.nodes, finalText, thinkingText)
+
+		instance.nodes.persistBestEffort()
+
+		return responseErr
 	}
-
-	tracker.release(instance.nodes, finalText, thinkingAccumulator.joined())
-	instance.nodes.persistBestEffort()
-
-	return responseErr
 }
 
 type generatedStreamState struct {
