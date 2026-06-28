@@ -607,9 +607,9 @@ func xAIResponsesUserPart(part contentPart) (map[string]any, bool, error) {
 
 		if fileID != "" {
 			return map[string]any{
-				messageTypeKey:    xAIResponsesInputImageType,
-				"file_id":         fileID,
-				messageDetailKey:  xAIResponsesImageDetailAuto,
+				messageTypeKey:   xAIResponsesInputImageType,
+				"file_id":        fileID,
+				messageDetailKey: xAIResponsesImageDetailAuto,
 			}, true, nil
 		}
 
@@ -618,9 +618,9 @@ func xAIResponsesUserPart(part contentPart) (map[string]any, bool, error) {
 		}
 
 		return map[string]any{
-			messageTypeKey:      xAIResponsesInputImageType,
-			"image_url":         imageURL,
-			messageDetailKey:    xAIResponsesImageDetailAuto,
+			messageTypeKey:   xAIResponsesInputImageType,
+			"image_url":      imageURL,
+			messageDetailKey: xAIResponsesImageDetailAuto,
 		}, true, nil
 	case contentTypeDocument, contentTypeFileData:
 		documentBytes, mimeType, filename, err := attachmentBinaryData(part)

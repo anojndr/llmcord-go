@@ -14,8 +14,8 @@ import (
 	"net/url"
 	"os"
 	"regexp"
-	"sort"
 	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -354,7 +354,7 @@ func (client youtubeClient) fetchNoteGPTVideoTranscriptOnce(
 		"video-transcript",
 		map[string]string{
 			messagePlatformKey: noteGPTPlatformYouTube,
-			messageVideoIDKey: videoID,
+			messageVideoIDKey:  videoID,
 		},
 	)
 	if err != nil {

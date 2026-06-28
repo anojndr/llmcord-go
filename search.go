@@ -1368,7 +1368,7 @@ func (client exaSearchClient) searchAPIQuery(
 
 func marshalExaSearchRequest(requestBody exaSearchRequest) ([]byte, error) {
 	requestBytes, err := json.Marshal(map[string]any{
-		"query":      requestBody.Query,
+		"query":        requestBody.Query,
 		messageTypeKey: requestBody.Type,
 		"numResults":   requestBody.NumResults,
 		"contents": map[string]any{

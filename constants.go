@@ -125,6 +125,7 @@ const (
 	youtubeShortsLoaderPollInterval      = 500 * time.Millisecond
 	youtubeShortsRequestTimeout          = 2 * time.Minute
 	typingRefreshInterval                = 8 * time.Second
+	discordClientTimeout                 = 20 * time.Second
 	editDelay                            = time.Second
 	publicHTTPReadHeaderTimeout          = 5 * time.Second
 	publicHTTPIdleTimeout                = 30 * time.Second
