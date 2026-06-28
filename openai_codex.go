@@ -454,9 +454,9 @@ func openAICodexUserPart(part contentPart) (map[string]any, bool, error) {
 		}
 
 		return map[string]any{
-			messageTypeKey:      "input_image",
-			"image_url":         imageURL,
-			messageDetailKey:    openAICodexAuto,
+			messageTypeKey:   "input_image",
+			"image_url":      imageURL,
+			messageDetailKey: openAICodexAuto,
 		}, true, nil
 	default:
 		return nil, false, fmt.Errorf(
@@ -478,9 +478,9 @@ func openAICodexAssistantMessage(content any) (map[string]any, bool, error) {
 	}
 
 	return map[string]any{
-		messageTypeKey:   messageKindValue,
-		messageRoleKey:   messageRoleAssistant,
-		"status":         xAIResponsesStatusCompleted,
+		messageTypeKey: messageKindValue,
+		messageRoleKey: messageRoleAssistant,
+		"status":       xAIResponsesStatusCompleted,
 		messageContentKey: []map[string]any{{
 			messageTypeKey: "output_text",
 			messageTextKey: text,

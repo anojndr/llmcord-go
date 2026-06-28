@@ -50,6 +50,19 @@ func newBot(ctx context.Context, configPath string, loadedConfig config) (*bot, 
 		return nil, fmt.Errorf("create discord session: %w", err)
 	}
 
+	if discordSession.Client == nil {
+		discordSession.Client = &http.Client{
+			Transport:     nil,
+			CheckRedirect: nil,
+			Jar:           nil,
+			Timeout:       discordClientTimeout,
+		}
+	}
+
+	discordSession.Client.Transport = &resilientTransport{
+		transport: discordSession.Client.Transport,
+	}
+
 	httpClient := new(http.Client)
 
 	instance := new(bot)
