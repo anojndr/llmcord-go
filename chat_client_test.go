@@ -90,10 +90,11 @@ func TestChatCompletionRouterRetriesOpenAIAPIKeys(t *testing.T) {
 	defer server.Close()
 
 	router := chatCompletionRouter{
-		openAI:       newOpenAIClient(server.Client()),
-		openAICodex:  newOpenAICodexClient(nil),
-		gemini:       newGeminiClient(nil),
-		waitForRetry: nil,
+		openAI:               newOpenAIClient(server.Client()),
+		openAICodex:          newOpenAICodexClient(nil),
+		gemini:               newGeminiClient(nil),
+		waitForRetry:         nil,
+		firstResponseTimeout: 0,
 	}
 
 	content, err := collectStreamedContent(
@@ -139,10 +140,11 @@ func TestChatCompletionRouterRetriesOpenAIAPIKeysOnInternalServerError(t *testin
 	defer server.Close()
 
 	router := chatCompletionRouter{
-		openAI:       newOpenAIClient(server.Client()),
-		openAICodex:  newOpenAICodexClient(nil),
-		gemini:       newGeminiClient(nil),
-		waitForRetry: nil,
+		openAI:               newOpenAIClient(server.Client()),
+		openAICodex:          newOpenAICodexClient(nil),
+		gemini:               newGeminiClient(nil),
+		waitForRetry:         nil,
+		firstResponseTimeout: 0,
 	}
 
 	content, err := collectStreamedContent(
@@ -210,6 +212,7 @@ func TestChatCompletionRouterWaitsForOpenAIRetryDelayBeforeFallbackKey(t *testin
 
 			return nil
 		},
+		firstResponseTimeout: 0,
 	}
 
 	content, err := collectStreamedContent(
@@ -274,6 +277,7 @@ func TestChatCompletionRouterSkipsLongOpenAIRetryDelayBeforeFallbackKey(t *testi
 
 			return nil
 		},
+		firstResponseTimeout: 0,
 	}
 
 	content, err := collectStreamedContent(
@@ -323,10 +327,11 @@ func TestChatCompletionRouterDoesNotRetryOpenAIAPIKeysAfterPartialStream(t *test
 	defer server.Close()
 
 	router := chatCompletionRouter{
-		openAI:       newOpenAIClient(server.Client()),
-		openAICodex:  newOpenAICodexClient(nil),
-		gemini:       newGeminiClient(nil),
-		waitForRetry: nil,
+		openAI:               newOpenAIClient(server.Client()),
+		openAICodex:          newOpenAICodexClient(nil),
+		gemini:               newGeminiClient(nil),
+		waitForRetry:         nil,
+		firstResponseTimeout: 0,
 	}
 
 	var joinedContent strings.Builder
@@ -367,10 +372,11 @@ func TestChatCompletionRouterRetriesOpenAICodexAPIKeys(t *testing.T) {
 	defer server.Close()
 
 	router := chatCompletionRouter{
-		openAI:       newOpenAIClient(nil),
-		openAICodex:  newOpenAICodexClient(server.Client()),
-		gemini:       newGeminiClient(nil),
-		waitForRetry: nil,
+		openAI:               newOpenAIClient(nil),
+		openAICodex:          newOpenAICodexClient(server.Client()),
+		gemini:               newGeminiClient(nil),
+		waitForRetry:         nil,
+		firstResponseTimeout: 0,
 	}
 
 	content, err := collectStreamedContent(
@@ -446,6 +452,7 @@ func TestChatCompletionRouterWaitsForOpenAICodexRetryDelayBeforeFallbackKey(t *t
 
 			return nil
 		},
+		firstResponseTimeout: 0,
 	}
 
 	request := newOpenAICodexRetryRequest(server.URL+"/backend-api", primaryAPIKey)
@@ -521,6 +528,7 @@ func TestChatCompletionRouterSkipsLongOpenAICodexRetryDelayBeforeFallbackKey(t *
 
 			return nil
 		},
+		firstResponseTimeout: 0,
 	}
 
 	request := newOpenAICodexRetryRequest(server.URL+"/backend-api", primaryAPIKey)
@@ -561,10 +569,11 @@ func TestChatCompletionRouterStreamsOpenAICodexImmediately(t *testing.T) {
 	defer release()
 
 	router := chatCompletionRouter{
-		openAI:       newOpenAIClient(nil),
-		openAICodex:  newOpenAICodexClient(server.Client()),
-		gemini:       newGeminiClient(nil),
-		waitForRetry: nil,
+		openAI:               newOpenAIClient(nil),
+		openAICodex:          newOpenAICodexClient(server.Client()),
+		gemini:               newGeminiClient(nil),
+		waitForRetry:         nil,
+		firstResponseTimeout: 0,
 	}
 
 	request := newOpenAICodexRetryRequest(server.URL+"/backend-api", validAPIKey)
@@ -898,6 +907,7 @@ func newBlockingGeminiStreamRouter(releaseStream <-chan struct{}) chatCompletion
 		waitForRetry: func(context.Context, time.Duration) error {
 			return nil
 		},
+		firstResponseTimeout: 0,
 		gemini: geminiClient{
 			httpClient: new(http.Client),
 			newClient: func(
@@ -1224,6 +1234,7 @@ func newGeminiRetryRouterWithFactory(
 
 			return nil
 		},
+		firstResponseTimeout: 0,
 		gemini: geminiClient{
 			httpClient: new(http.Client),
 			newClient: func(
@@ -1429,5 +1440,100 @@ func TestChatCompletionRouterRetriesGeminiOnMalformedFunctionCall(t *testing.T) 
 
 	if strings.Join(contentTexts, "") != "Hello" {
 		t.Errorf("expected content to be 'Hello', got %q", strings.Join(contentTexts, ""))
+	}
+}
+
+func TestChatCompletionRouterFirstResponseTimeout_Triggered(t *testing.T) {
+	t.Parallel()
+
+	attemptCapture := new(stringCapture)
+	router := newGeminiRetryRouterWithFactory(
+		attemptCapture,
+		nil,
+		func(_ string, _ int) func(
+			context.Context,
+			string,
+			[]*genai.Content,
+			*genai.GenerateContentConfig,
+		) iter.Seq2[*genai.GenerateContentResponse, error] {
+			return func(
+				ctx context.Context,
+				_ string,
+				_ []*genai.Content,
+				_ *genai.GenerateContentConfig,
+			) iter.Seq2[*genai.GenerateContentResponse, error] {
+				return func(yield func(*genai.GenerateContentResponse, error) bool) {
+					// Sleep for 50ms to exceed the 5ms timeout.
+					select {
+					case <-ctx.Done():
+						return
+					case <-time.After(50 * time.Millisecond):
+					}
+
+					_ = yield(newGeminiGenerateContentResponse("Hello", genai.FinishReasonStop), nil)
+				}
+			}
+		},
+	)
+	router.firstResponseTimeout = 5 * time.Millisecond
+
+	req := newGeminiRetryRequest()
+	// Single API key so it doesn't try backup keys
+	req.Provider.APIKeys = []string{"test-api-key"}
+
+	_, err := collectStreamedContent(context.Background(), router, req)
+	if err == nil {
+		t.Fatal("expected error, but got nil")
+	}
+
+	if !strings.Contains(err.Error(), "model did not respond within") {
+		t.Fatalf("unexpected error message: %v", err)
+	}
+}
+
+func TestChatCompletionRouterFirstResponseTimeout_Succeeds(t *testing.T) {
+	t.Parallel()
+
+	attemptCapture := new(stringCapture)
+	router := newGeminiRetryRouterWithFactory(
+		attemptCapture,
+		nil,
+		func(_ string, _ int) func(
+			context.Context,
+			string,
+			[]*genai.Content,
+			*genai.GenerateContentConfig,
+		) iter.Seq2[*genai.GenerateContentResponse, error] {
+			return func(
+				ctx context.Context,
+				_ string,
+				_ []*genai.Content,
+				_ *genai.GenerateContentConfig,
+			) iter.Seq2[*genai.GenerateContentResponse, error] {
+				return func(yield func(*genai.GenerateContentResponse, error) bool) {
+					// Sleep for 5ms, which is less than the 100ms timeout
+					select {
+					case <-ctx.Done():
+						return
+					case <-time.After(5 * time.Millisecond):
+					}
+
+					_ = yield(newGeminiGenerateContentResponse("Hello", genai.FinishReasonStop), nil)
+				}
+			}
+		},
+	)
+	router.firstResponseTimeout = 100 * time.Millisecond
+
+	req := newGeminiRetryRequest()
+	req.Provider.APIKeys = []string{"test-api-key"}
+
+	content, err := collectStreamedContent(context.Background(), router, req)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	if content != "Hello" {
+		t.Fatalf("expected content 'Hello', got: %q", content)
 	}
 }
