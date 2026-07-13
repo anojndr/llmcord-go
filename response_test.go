@@ -2507,3 +2507,187 @@ func TestGenerateAndSendResponseFallback_StartAtGeminiSearch(t *testing.T) {
 
 	assertFallbackWarnings(t, recordedRequests, expectedWarnings)
 }
+
+func setupGrokFallbackSearchTestContext(
+	t *testing.T,
+	stubFunc func(context.Context, chatCompletionRequest, func(streamDelta) error) error,
+	webSearchStub func(context.Context, config, []string) ([]webSearchResult, error),
+) (*bot, chatCompletionRequest, *responseTracker, *discordgo.Message) {
+	t.Helper()
+
+	configText := `
+bot_token: fake-bot-token
+max_text: 1000
+max_messages: 100
+providers:
+  x-ai:
+    type: openai
+    base_url: https://api.x.ai
+    api_key: grok-key
+  some-provider:
+    type: openai
+    base_url: http://localhost:8080
+    api_key: some-key
+  gemini-search:
+    type: gemini
+    api_key: gemini-api-key
+  openrouter:
+    type: openai
+    base_url: https://openrouter.ai/api/v1
+    api_key: openrouter-api-key
+models:
+  x-ai/grok:
+  some-provider/some-model:
+  gemini-search/gemini-3.1-flash-lite-high:vision:
+  openrouter/openrouter/free:vision:
+search_decider_model: some-provider/some-model
+`
+
+	configPath := writeTestConfig(t, t.TempDir(), configText)
+
+	const (
+		botUserID          = "bot-user"
+		channelID          = "channel-1"
+		userID             = "user-1"
+		sourceMessageID    = "user-message-1"
+		assistantMessageID = "assistant-message-1"
+	)
+
+	sourceMessage := newPromptMessage(sourceMessageID, channelID, userID, botUserID)
+	assistantMessage := new(discordgo.Message)
+	assistantMessage.ID = assistantMessageID
+	assistantMessage.ChannelID = channelID
+	assistantMessage.Author = newDiscordUser(botUserID, true)
+	assistantMessage.MessageReference = sourceMessage.Reference()
+	assistantMessage.Type = discordgo.MessageTypeReply
+
+	client := newStubChatClient(stubFunc)
+	instance := setupFallbackTestBot(t, configPath, assistantMessage, client, nil)
+
+	instance.webSearch = newStubWebSearchClient(webSearchStub)
+
+	loadedConfig, err := loadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	request, err := buildChatCompletionRequest(
+		loadedConfig,
+		"x-ai/grok",
+		[]chatMessage{{Role: messageRoleUser, Content: "hello"}},
+		false,
+	)
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+
+	tracker := newResponseTracker(sourceMessage, "x-ai/grok")
+	tracker.responseMessages = append(tracker.responseMessages, assistantMessage)
+	tracker.progressActive = true
+
+	return instance, request, tracker, assistantMessage
+}
+
+type fallbackSearchTestState struct {
+	requestedModels     []string
+	requestedModelsMu   sync.Mutex
+	searchDeciderCalled bool
+	webSearchCalled     bool
+	fallbackReqReceived chatCompletionRequest
+}
+
+func (s *fallbackSearchTestState) stubFunc(
+	_ context.Context,
+	req chatCompletionRequest,
+	handle func(streamDelta) error,
+) error {
+	s.requestedModelsMu.Lock()
+
+	s.requestedModels = append(s.requestedModels, req.ConfiguredModel)
+	s.requestedModelsMu.Unlock()
+
+	if req.ConfiguredModel == "x-ai/grok" {
+		return errPrimaryModelFailed
+	}
+
+	if req.ConfiguredModel == "some-provider/some-model" {
+		s.searchDeciderCalled = true
+		_ = handle(newStreamDelta(`{"needs_search": true, "queries": ["fallback search query"]}`, ""))
+
+		return nil
+	}
+
+	if req.ConfiguredModel == "gemini-search/gemini-3.1-flash-lite-high:vision" {
+		s.fallbackReqReceived = req
+		_ = handle(newStreamDelta("success response", ""))
+
+		return nil
+	}
+
+	return errUnknownModel
+}
+
+func (s *fallbackSearchTestState) webSearchStub(
+	_ context.Context,
+	_ config,
+	queries []string,
+) ([]webSearchResult, error) {
+	if len(queries) > 0 && queries[0] == "fallback search query" {
+		s.webSearchCalled = true
+	}
+
+	return []webSearchResult{
+		{
+			Query: "fallback search query",
+			Text:  "This is the fallback search result content.",
+		},
+	}, nil
+}
+
+func TestGenerateAndSendResponseFallback_RunsSearchDeciderIfOriginalModelSkipped(t *testing.T) {
+	t.Parallel()
+
+	state := new(fallbackSearchTestState)
+	instance, request, tracker, assistantMessage := setupGrokFallbackSearchTestContext(
+		t,
+		state.stubFunc,
+		state.webSearchStub,
+	)
+
+	err := instance.generateAndSendResponse(
+		context.Background(),
+		request,
+		tracker,
+		nil,
+		false,
+	)
+	if err != nil {
+		t.Fatalf("generateAndSendResponse failed: %v", err)
+	}
+
+	if !state.searchDeciderCalled {
+		t.Fatal("expected search decider to be called during fallback")
+	}
+
+	if !state.webSearchCalled {
+		t.Fatal("expected web search to be called during fallback")
+	}
+
+	var containsSearchResult bool
+
+	for _, msg := range state.fallbackReqReceived.Messages {
+		msgStr, ok := msg.Content.(string)
+		if ok && strings.Contains(msgStr, "This is the fallback search result content.") {
+			containsSearchResult = true
+
+			break
+		}
+	}
+
+	if !containsSearchResult {
+		t.Fatalf("expected fallback request to contain search result, messages: %#v", state.fallbackReqReceived.Messages)
+	}
+
+	_ = assistantMessage
+}
+

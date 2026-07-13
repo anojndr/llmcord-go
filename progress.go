@@ -176,6 +176,7 @@ func (progress *requestProgress) run(ctx context.Context) {
 			}
 		case handoff := <-progress.handoffs:
 			tracker.modelName = strings.TrimSpace(handoff.modelName)
+			tracker.originalModel = tracker.modelName
 
 			tracker.searchMetadata = cloneSearchMetadata(handoff.searchMetadata)
 			handoff.result <- tracker
