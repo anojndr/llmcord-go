@@ -254,6 +254,7 @@ func (instance *bot) prepareMessageResponse(
 	}
 
 	messages = prependSystemPrompt(messages, loadedConfig.SystemPrompt, time.Now())
+	unmutatedMessages := append([]chatMessage(nil), messages...)
 
 	provider, err := configuredModelProvider(loadedConfig, providerSlashModel)
 	if err != nil {
@@ -282,7 +283,11 @@ func (instance *bot) prepareMessageResponse(
 	}
 
 	progress.advance(requestProgressStageGeneratingResponse)
+
 	tracker := progress.handoff(request.ConfiguredModel, searchMetadata)
+	if tracker != nil {
+		tracker.originalMessages = unmutatedMessages
+	}
 
 	return request, tracker, warnings, nil
 }

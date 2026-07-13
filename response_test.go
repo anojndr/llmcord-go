@@ -2512,7 +2512,7 @@ func setupGrokFallbackSearchTestContext(
 	t *testing.T,
 	stubFunc func(context.Context, chatCompletionRequest, func(streamDelta) error) error,
 	webSearchStub func(context.Context, config, []string) ([]webSearchResult, error),
-) (*bot, chatCompletionRequest, *responseTracker, *discordgo.Message) {
+) (*bot, chatCompletionRequest, *responseTracker) {
 	t.Helper()
 
 	configText := `
@@ -2585,7 +2585,7 @@ search_decider_model: some-provider/some-model
 	tracker.responseMessages = append(tracker.responseMessages, assistantMessage)
 	tracker.progressActive = true
 
-	return instance, request, tracker, assistantMessage
+	return instance, request, tracker
 }
 
 type fallbackSearchTestState struct {
@@ -2648,7 +2648,7 @@ func TestGenerateAndSendResponseFallback_RunsSearchDeciderIfOriginalModelSkipped
 	t.Parallel()
 
 	state := new(fallbackSearchTestState)
-	instance, request, tracker, assistantMessage := setupGrokFallbackSearchTestContext(
+	instance, request, tracker := setupGrokFallbackSearchTestContext(
 		t,
 		state.stubFunc,
 		state.webSearchStub,
@@ -2687,7 +2687,59 @@ func TestGenerateAndSendResponseFallback_RunsSearchDeciderIfOriginalModelSkipped
 	if !containsSearchResult {
 		t.Fatalf("expected fallback request to contain search result, messages: %#v", state.fallbackReqReceived.Messages)
 	}
+}
 
-	_ = assistantMessage
+func TestGenerateAndSendResponseFallback_PreservesChatHistoryFromMainModel(t *testing.T) {
+	t.Parallel()
+
+	state := new(fallbackSearchTestState)
+	instance, request, tracker := setupGrokFallbackSearchTestContext(
+		t,
+		state.stubFunc,
+		state.webSearchStub,
+	)
+
+	// Simulate xAI responses API mutation:
+	// request.Messages is truncated to only continuation messages,
+	// but tracker.originalMessages has the full conversation.
+	historyMessages := []chatMessage{
+		{Role: messageRoleSystem, Content: "You are a helpful assistant."},
+		{Role: messageRoleUser, Content: "Hello, what is Go?"},
+		{Role: messageRoleAssistant, Content: "Go is a programming language."},
+		{Role: messageRoleUser, Content: "Tell me more."},
+	}
+	tracker.originalMessages = historyMessages
+	request.Messages = []chatMessage{
+		{Role: messageRoleUser, Content: "Tell me more."},
+	}
+
+	err := instance.generateAndSendResponse(
+		context.Background(),
+		request,
+		tracker,
+		nil,
+		false,
+	)
+	if err != nil {
+		t.Fatalf("generateAndSendResponse failed: %v", err)
+	}
+
+	// Verify that the fallback request received has the full chat history
+	foundAssistantMsg := false
+
+	for _, msg := range state.fallbackReqReceived.Messages {
+		msgStr, ok := msg.Content.(string)
+		if ok && strings.Contains(msgStr, "Go is a programming language.") {
+			foundAssistantMsg = true
+
+			break
+		}
+	}
+
+	if !foundAssistantMsg {
+		t.Errorf("expected fallback request to contain full chat history, "+
+			"but assistant message was not found. Messages: %#v",
+			state.fallbackReqReceived.Messages)
+	}
 }
 
