@@ -41,6 +41,7 @@ type responseTracker struct {
 	sourceMessage      *discordgo.Message
 	searchMetadata     *searchMetadata
 	modelName          string
+	originalModel      string
 	contextWindow      int
 	usage              *tokenUsage
 	contextUsage       *tokenUsage
@@ -173,6 +174,7 @@ func newResponseTracker(
 	tracker := new(responseTracker)
 	tracker.sourceMessage = sourceMessage
 	tracker.modelName = strings.TrimSpace(modelName)
+	tracker.originalModel = tracker.modelName
 
 	return tracker
 }
@@ -308,17 +310,56 @@ func (instance *bot) prepareFallbackRequest(
 	fallbackModel string,
 	currentRequest chatCompletionRequest,
 	tracker *responseTracker,
-) (chatCompletionRequest, error) {
+) (chatCompletionRequest, []string, error) {
 	groundingEnabled := instance.currentGroundingEnabled(provider)
+
+	// Determine if the original model skipped the web search decider
+	originalSkipped := false
+
+	if tracker.originalModel != "" {
+		originalProvider, originalErr := configuredModelProvider(loadedConfig, tracker.originalModel)
+		if originalErr == nil {
+			originalSkipped = providerHandlesGeneralURLsDirectly(tracker.originalModel) ||
+				instance.currentGroundingEnabled(originalProvider)
+		}
+	}
+
+	fallbackSkipped := providerHandlesGeneralURLsDirectly(fallbackModel) || groundingEnabled
+
+	var searchWarnings []string
+
+	messages := currentRequest.Messages
+
+	if originalSkipped && !fallbackSkipped {
+		var (
+			webSearchMetadata *searchMetadata
+			err               error
+		)
+
+		messages, webSearchMetadata, searchWarnings, err = instance.maybeAugmentConversationWithWebSearch(
+			ctx,
+			loadedConfig,
+			fallbackModel,
+			tracker.sourceMessage,
+			messages,
+		)
+		if err != nil {
+			return emptyChatCompletionRequest(), nil, fmt.Errorf("augment fallback request with web search: %w", err)
+		}
+
+		if webSearchMetadata != nil {
+			tracker.searchMetadata = mergeSearchMetadata(tracker.searchMetadata, webSearchMetadata)
+		}
+	}
 
 	newReq, buildErr := buildChatCompletionRequest(
 		loadedConfig,
 		fallbackModel,
-		currentRequest.Messages,
+		messages,
 		groundingEnabled,
 	)
 	if buildErr != nil {
-		return emptyChatCompletionRequest(), buildErr
+		return emptyChatCompletionRequest(), nil, buildErr
 	}
 
 	newReq.RequestID = currentRequest.RequestID
@@ -349,14 +390,14 @@ func (instance *bot) prepareFallbackRequest(
 	tracker.renderedSpecs = nil
 	tracker.progressActive = true
 
-	return newReq, nil
+	return newReq, searchWarnings, nil
 }
 
 func (instance *bot) attemptFallback(
 	ctx context.Context,
 	currentRequest chatCompletionRequest,
 	tracker *responseTracker,
-) (chatCompletionRequest, bool) {
+) (chatCompletionRequest, []string, bool) {
 	fallbackModel := currentRequest.ConfiguredModel
 
 	for {
@@ -364,18 +405,18 @@ func (instance *bot) attemptFallback(
 
 		fallbackModel, hasFallback = getFallbackModel(fallbackModel)
 		if !hasFallback {
-			return emptyChatCompletionRequest(), false
+			return emptyChatCompletionRequest(), nil, false
 		}
 
 		if instance.configPath == "" {
-			return emptyChatCompletionRequest(), false
+			return emptyChatCompletionRequest(), nil, false
 		}
 
 		loadedConfig, configErr := loadConfig(instance.configPath)
 		if configErr != nil {
 			slog.Error("failed to load config for fallback", "error", configErr)
 
-			return emptyChatCompletionRequest(), false
+			return emptyChatCompletionRequest(), nil, false
 		}
 
 		provider, providerExists := instance.validateFallbackModel(loadedConfig, fallbackModel)
@@ -383,7 +424,7 @@ func (instance *bot) attemptFallback(
 			continue
 		}
 
-		newReq, buildErr := instance.prepareFallbackRequest(
+		newReq, searchWarnings, buildErr := instance.prepareFallbackRequest(
 			ctx,
 			loadedConfig,
 			provider,
@@ -399,7 +440,7 @@ func (instance *bot) attemptFallback(
 
 		slog.Info("Falling back to model", "from", tracker.modelName, "to", fallbackModel)
 
-		return newReq, true
+		return newReq, searchWarnings, true
 	}
 }
 
@@ -520,15 +561,19 @@ func (instance *bot) generateAndSendResponse(
 			return nil
 		}
 
-		var hasFallback bool
+		var (
+			hasFallback      bool
+			fallbackWarnings []string
+		)
 
-		currentRequest, hasFallback = instance.attemptFallback(ctx, currentRequest, tracker)
+		currentRequest, fallbackWarnings, hasFallback = instance.attemptFallback(ctx, currentRequest, tracker)
 
 		if hasFallback {
 			warnings = append(
 				warnings,
 				fmt.Sprintf("Warning: fell back to %s due to generation error", currentRequest.ConfiguredModel),
 			)
+			warnings = append(warnings, fallbackWarnings...)
 
 			continue
 		}
@@ -1104,6 +1149,7 @@ func (instance *bot) sendFallbackFailureResponse(
 	renderErr error,
 ) error {
 	fallbackTracker := newResponseTracker(tracker.sourceMessage, tracker.modelName)
+	fallbackTracker.originalModel = tracker.originalModel
 	fallbackTracker.searchMetadata = cloneSearchMetadata(tracker.searchMetadata)
 	fallbackTracker.responseMessages = append(fallbackTracker.responseMessages, tracker.responseMessages...)
 
