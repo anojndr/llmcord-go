@@ -51,6 +51,7 @@ type responseTracker struct {
 	renderedSpecs      []renderSpec
 	progressActive     bool
 	responseVisible    bool
+	originalMessages   []chatMessage
 }
 
 const (
@@ -317,8 +318,8 @@ func (instance *bot) prepareFallbackRequest(
 	originalSkipped := false
 
 	if tracker.originalModel != "" {
-		originalProvider, originalErr := configuredModelProvider(loadedConfig, tracker.originalModel)
-		if originalErr == nil {
+		originalProvider, err := configuredModelProvider(loadedConfig, tracker.originalModel)
+		if err == nil {
 			originalSkipped = providerHandlesGeneralURLsDirectly(tracker.originalModel) ||
 				instance.currentGroundingEnabled(originalProvider)
 		}
@@ -328,27 +329,25 @@ func (instance *bot) prepareFallbackRequest(
 
 	var searchWarnings []string
 
-	messages := currentRequest.Messages
+	var messages []chatMessage
+	if tracker != nil && len(tracker.originalMessages) > 0 {
+		messages = tracker.originalMessages
+	} else {
+		messages = currentRequest.Messages
+	}
 
 	if originalSkipped && !fallbackSkipped {
-		var (
-			webSearchMetadata *searchMetadata
-			err               error
-		)
-
-		messages, webSearchMetadata, searchWarnings, err = instance.maybeAugmentConversationWithWebSearch(
-			ctx,
-			loadedConfig,
-			fallbackModel,
-			tracker.sourceMessage,
-			messages,
+		msgs, metadata, warnings, err := instance.maybeAugmentConversationWithWebSearch(
+			ctx, loadedConfig, fallbackModel, tracker.sourceMessage, messages,
 		)
 		if err != nil {
 			return emptyChatCompletionRequest(), nil, fmt.Errorf("augment fallback request with web search: %w", err)
 		}
 
-		if webSearchMetadata != nil {
-			tracker.searchMetadata = mergeSearchMetadata(tracker.searchMetadata, webSearchMetadata)
+		messages, searchWarnings = msgs, warnings
+
+		if metadata != nil {
+			tracker.searchMetadata = mergeSearchMetadata(tracker.searchMetadata, metadata)
 		}
 	}
 
@@ -362,20 +361,14 @@ func (instance *bot) prepareFallbackRequest(
 		return emptyChatCompletionRequest(), nil, buildErr
 	}
 
-	newReq.RequestID = currentRequest.RequestID
-	newReq.SessionID = currentRequest.SessionID
-	newReq.PreviousResponseID = currentRequest.PreviousResponseID
+	newReq.RequestID, newReq.SessionID, newReq.PreviousResponseID =
+		currentRequest.RequestID, currentRequest.SessionID, currentRequest.PreviousResponseID
 
 	newReq, _ = instance.autoCompactRequest(ctx, newReq)
 
 	if len(tracker.responseMessages) > 0 && tracker.progressActive {
-		progressMessage := tracker.responseMessages[0]
-
-		if progressMessage != nil {
-			embed := buildRequestProgressEmbed(
-				requestProgressStageGeneratingResponse,
-				strings.TrimSpace(fallbackModel),
-			)
+		if progressMessage := tracker.responseMessages[0]; progressMessage != nil {
+			embed := buildRequestProgressEmbed(requestProgressStageGeneratingResponse, strings.TrimSpace(fallbackModel))
 
 			_ = instance.editEmbedMessage(progressMessage, embed, nil)
 		}
