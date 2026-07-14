@@ -1057,7 +1057,7 @@ func assertExaContentsRequest(t *testing.T, request map[string]any, requestURL s
 		t.Fatalf("unexpected Exa contents max characters: %d", mapIntValue(rawText, "maxCharacters"))
 	}
 
-	if mapStringValue(rawText, "verbosity") != "compact" {
+	if mapStringValue(rawText, "verbosity") != "full" {
 		t.Fatalf("unexpected Exa contents verbosity: %q", mapStringValue(rawText, "verbosity"))
 	}
 
