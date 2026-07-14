@@ -397,7 +397,7 @@ func exaContentsRequestBody(requestURL string) map[string]any {
 		"urls": []string{requestURL},
 		messageTextKey: map[string]any{
 			"maxCharacters": maxWebsiteContentRunes,
-			"verbosity":     "compact",
+			"verbosity":     "full",
 			"excludeSections": []string{
 				"header",
 				"navigation",
