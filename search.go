@@ -509,7 +509,8 @@ func searchDeciderDisabledForModel(configuredModel string) bool {
 		return false
 	}
 
-	if strings.EqualFold(providerName, "x-ai") {
+	trimmedProviderName := strings.ToLower(strings.TrimSpace(providerName))
+	if trimmedProviderName == "x-ai" || strings.Contains(trimmedProviderName, "grok") {
 		return true
 	}
 

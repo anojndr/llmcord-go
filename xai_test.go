@@ -1782,3 +1782,131 @@ func setProviderResponseOnNode(
 	instance.nodes.cacheLockedNode(messageID, node)
 	node.mu.Unlock()
 }
+
+func TestGrokVisionModels(t *testing.T) {
+	t.Parallel()
+
+	grokModels := []string{
+		"x-ai/grok-4.5-auto",
+		"x-ai/grok-4.5-fast",
+		"x-ai/grok-4.5-expert",
+		"x-ai/grok-4.5-heavy",
+		"x-ai/grok-4.5-beta",
+		"x-ai/grok-latest",
+		"x-ai/grok 4.5 (beta)",
+		"x-ai/grok-420-computer-use-sa",
+	}
+
+	for _, model := range grokModels {
+		if !isVisionModel(model) {
+			t.Errorf("expected isVisionModel(%q) to be true", model)
+		}
+	}
+}
+
+func TestGrokBridgeCustomProvider(t *testing.T) {
+	t.Parallel()
+
+	provider := providerConfig{
+		Type:            "openai",
+		BaseURL:         "http://127.0.0.1:8787/v1",
+		APIKey:          "test-key",
+		APIKeys:         nil,
+		EnableGrounding: false,
+		ExtraHeaders:    nil,
+		ExtraQuery:      nil,
+		ExtraBody:       nil,
+	}
+
+	if !providerUsesResponsesAPI("grok-bridge", provider) {
+		t.Error("expected provider 'grok-bridge' to use Responses API")
+	}
+
+	if !xAIConfiguredModel("grok-bridge/grok-4.5-auto") {
+		t.Error("expected xAIConfiguredModel('grok-bridge/grok-4.5-auto') to be true")
+	}
+
+	if !searchDeciderDisabledForModel("grok-bridge/grok-4.5-auto") {
+		t.Error("expected searchDeciderDisabledForModel('grok-bridge/grok-4.5-auto') to be true")
+	}
+}
+
+func TestGrokReasoningEffortNormalization(t *testing.T) {
+	t.Parallel()
+
+	var loadedConfig config
+
+	loadedConfig.Providers = map[string]providerConfig{
+		"x-ai": {
+			Type:            "openai",
+			BaseURL:         "http://127.0.0.1:8787/v1",
+			APIKey:          "test-key",
+			APIKeys:         nil,
+			EnableGrounding: false,
+			ExtraHeaders:    nil,
+			ExtraQuery:      nil,
+			ExtraBody:       nil,
+		},
+		"grok-bridge": {
+			Type:            "openai",
+			BaseURL:         "http://127.0.0.1:8787/v1",
+			APIKey:          "test-key",
+			APIKeys:         nil,
+			EnableGrounding: false,
+			ExtraHeaders:    nil,
+			ExtraQuery:      nil,
+			ExtraBody:       nil,
+		},
+	}
+	loadedConfig.Models = map[string]map[string]any{
+		"x-ai/grok-4.5-auto": {
+			"reasoning_effort": "high",
+		},
+		"grok-bridge/gpt-5-high": nil,
+	}
+
+	reqXAI, err := buildChatCompletionRequest(
+		loadedConfig,
+		"x-ai/grok-4.5-auto",
+		[]chatMessage{{Role: messageRoleUser, Content: "hello"}},
+		false,
+	)
+	if err != nil {
+		t.Fatalf("build x-ai request: %v", err)
+	}
+
+	reasoningXAI, hasReasoningXAI := reqXAI.Provider.ExtraBody["reasoning"].(map[string]any)
+	if !hasReasoningXAI {
+		t.Fatalf("missing reasoning config on x-ai request, got %#v", reqXAI.Provider.ExtraBody)
+	}
+
+	if effort, ok := reasoningXAI["effort"]; !ok || effort != "high" {
+		t.Errorf("expected reasoning effort to be normalized on x-ai, got %#v", effort)
+	}
+
+	reqGrok, err := buildChatCompletionRequest(
+		loadedConfig,
+		"grok-bridge/gpt-5-high",
+		[]chatMessage{{Role: messageRoleUser, Content: "hello"}},
+		false,
+	)
+	if err != nil {
+		t.Fatalf("build grok-bridge request: %v", err)
+	}
+
+	reasoningGrok, hasReasoningGrok := reqGrok.Provider.ExtraBody["reasoning"].(map[string]any)
+	if !hasReasoningGrok {
+		t.Fatalf("missing reasoning config on grok-bridge request, got %#v", reqGrok.Provider.ExtraBody)
+	}
+
+	if effort, ok := reasoningGrok["effort"]; !ok || effort != "high" {
+		t.Errorf(
+			"expected reasoning effort to be normalized on grok-bridge, got %#v",
+			effort,
+		)
+	}
+
+	if reqGrok.Model != "gpt-5" {
+		t.Errorf("expected model to be normalized to gpt-5, got %q", reqGrok.Model)
+	}
+}
