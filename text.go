@@ -175,7 +175,7 @@ func visionModelTags() []string {
 		"gemma",
 		"gpt-4",
 		"gpt-5",
-		"grok-4",
+		"grok",
 		"llama",
 		"llava",
 		"mistral",

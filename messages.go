@@ -1126,7 +1126,9 @@ func buildChatCompletionRequest(
 	}
 
 	if providerAPIKind == providerAPIKindOpenAI {
-		if useResponsesAPI && usesBuiltInOpenAIProvider(providerName, providerAPIKind) {
+		isXAIOrGrok := strings.EqualFold(providerName, xAIProviderName) ||
+			strings.Contains(strings.ToLower(providerName), "grok")
+		if useResponsesAPI && (usesBuiltInOpenAIProvider(providerName, providerAPIKind) || isXAIOrGrok) {
 			modelName, extraBody = normalizeOpenAIResponsesModelAlias(modelName, extraBody)
 			extraBody = normalizeOpenAIResponsesExtraBody(modelName, extraBody)
 		} else {

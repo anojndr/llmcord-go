@@ -143,7 +143,8 @@ func providerUsesResponsesAPI(providerName string, provider providerConfig) bool
 		return true
 	}
 
-	if strings.EqualFold(strings.TrimSpace(providerName), xAIProviderName) {
+	trimmedProviderName := strings.ToLower(strings.TrimSpace(providerName))
+	if trimmedProviderName == xAIProviderName || strings.Contains(trimmedProviderName, "grok") {
 		return true
 	}
 
@@ -421,7 +422,7 @@ func buildXAIResponsesRequestBody(request chatCompletionRequest) (map[string]any
 
 	extraBody := request.Provider.ExtraBody
 	if request.Provider.APIKind == providerAPIKindOpenAI &&
-		openAIConfiguredModel(request.ConfiguredModel) {
+		(openAIConfiguredModel(request.ConfiguredModel) || xAIConfiguredModel(request.ConfiguredModel)) {
 		extraBody = normalizeOpenAIResponsesExtraBody(request.Model, extraBody)
 	}
 
@@ -960,7 +961,9 @@ func xAIConfiguredModel(configuredModel string) bool {
 		return false
 	}
 
-	return strings.EqualFold(providerName, xAIProviderName)
+	trimmedProviderName := strings.ToLower(strings.TrimSpace(providerName))
+
+	return trimmedProviderName == xAIProviderName || strings.Contains(trimmedProviderName, "grok")
 }
 
 func shouldDefaultXAIBridgeSourceAttribution(request chatCompletionRequest) bool {
