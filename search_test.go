@@ -915,7 +915,7 @@ func assertSearchDeciderRequestIncludesInstruction(
 	}
 
 	requestMessages := requests[0].Messages
-	if len(requestMessages) != 4 {
+	if len(requestMessages) != 3 {
 		t.Fatalf("unexpected decider message count: %d", len(requestMessages))
 	}
 
@@ -937,20 +937,17 @@ func assertSearchDeciderRequestIncludesInstruction(
 	}
 
 	if requestMessages[2].Role != messageRoleUser {
-		t.Fatalf("expected latest query before decider instruction, got role %q", requestMessages[2].Role)
+		t.Fatalf("expected latest query and decider instruction, got role %q", requestMessages[2].Role)
 	}
 
-	if requestMessages[3].Role != messageRoleUser {
-		t.Fatalf("expected decider instruction user role, got %q", requestMessages[3].Role)
-	}
-
-	instruction, instructionOK := requestMessages[3].Content.(string)
+	instruction, instructionOK := requestMessages[2].Content.(string)
 	if !instructionOK {
-		t.Fatalf("unexpected decider instruction content type: %T", requestMessages[3].Content)
+		t.Fatalf("unexpected decider instruction content type: %T", requestMessages[2].Content)
 	}
 
-	if instruction != searchDeciderDecisionInstruction {
-		t.Fatalf("unexpected decider instruction: %q", instruction)
+	expectedInstructionSuffix := "\n\n" + searchDeciderDecisionInstruction
+	if !strings.HasSuffix(instruction, expectedInstructionSuffix) {
+		t.Fatalf("expected decider instruction suffix: %q, got %q", expectedInstructionSuffix, instruction)
 	}
 }
 

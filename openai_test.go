@@ -1635,3 +1635,139 @@ func assertOpenAIResponsesUserMessage(t *testing.T, rawMessage any) {
 		t.Fatalf("unexpected image detail: %#v", secondPart["detail"])
 	}
 }
+
+func TestOpenAIClientStreamChatCompletionRetriesWithoutStreamingUsageOnEOF(t *testing.T) {
+	t.Parallel()
+
+	callCount := 0
+
+	server := httptest.NewServer(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		request *http.Request,
+	) {
+		callCount++
+
+		var body map[string]any
+
+		err := json.NewDecoder(request.Body).Decode(&body)
+		if err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+
+		if callCount == 1 {
+			streamOpts, hasStreamOpts := body["stream_options"].(map[string]any)
+			if !hasStreamOpts || streamOpts["include_usage"] != true {
+				t.Fatalf("expected stream_options with include_usage in first call, got body: %+v", body)
+			}
+
+			responseWriter.Header().Set("Content-Type", "text/event-stream")
+			responseWriter.WriteHeader(http.StatusOK)
+
+			return
+		}
+
+		if _, hasStreamOpts := body["stream_options"]; hasStreamOpts {
+			t.Fatalf("unexpected stream_options in second call, got body: %+v", body)
+		}
+
+		responseWriter.Header().Set("Content-Type", "text/event-stream")
+		responseWriter.WriteHeader(http.StatusOK)
+		writeStreamChunk(t, responseWriter, "data: {\"choices\":[{\"delta\":{\"content\":\"success\"}}]}\n\n")
+		writeStreamChunk(t, responseWriter, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	client := newOpenAIClient(server.Client())
+	request := chatCompletionRequest{
+		Provider: providerRequestConfig{
+			APIKind:         providerAPIKindOpenAI,
+			BaseURL:         server.URL,
+			APIKey:          "test-key",
+			APIKeys:         nil,
+			UseResponsesAPI: false,
+			EnableGrounding: false,
+			ExtraHeaders:    nil,
+			ExtraQuery:      nil,
+			ExtraBody:       nil,
+		},
+		Model:                       "gpt-test",
+		ConfiguredModel:             "",
+		ContextWindow:               0,
+		AutoCompactThresholdPercent: 0,
+		SessionID:                   "",
+		PreviousResponseID:          "",
+		RequestID:                   "",
+		Messages:                    nil,
+	}
+
+	var responseText strings.Builder
+
+	err := client.streamChatCompletion(context.Background(), request, func(delta streamDelta) error {
+		responseText.WriteString(delta.Content)
+
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("expected success, got error: %v", err)
+	}
+
+	if responseText.String() != "success" {
+		t.Fatalf("expected response 'success', got: %q", responseText.String())
+	}
+
+	if callCount != 2 {
+		t.Fatalf("expected 2 calls, got %d", callCount)
+	}
+}
+
+func TestOpenAIClientStreamChatCompletionSucceedsWithoutDoneIfChoicesSeen(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		_ *http.Request,
+	) {
+		responseWriter.Header().Set("Content-Type", "text/event-stream")
+		responseWriter.WriteHeader(http.StatusOK)
+		writeStreamChunk(t, responseWriter, "data: {\"choices\":[{\"delta\":{\"content\":\"success\"}}]}\n\n")
+	}))
+	defer server.Close()
+
+	client := newOpenAIClient(server.Client())
+	request := chatCompletionRequest{
+		Provider: providerRequestConfig{
+			APIKind:         providerAPIKindOpenAI,
+			BaseURL:         server.URL,
+			APIKey:          "test-key",
+			APIKeys:         nil,
+			UseResponsesAPI: false,
+			EnableGrounding: false,
+			ExtraHeaders:    nil,
+			ExtraQuery:      nil,
+			ExtraBody:       nil,
+		},
+		Model:                       "gpt-test",
+		ConfiguredModel:             "9router/unli_free",
+		ContextWindow:               0,
+		AutoCompactThresholdPercent: 0,
+		SessionID:                   "",
+		PreviousResponseID:          "",
+		RequestID:                   "",
+		Messages:                    nil,
+	}
+
+	var responseText strings.Builder
+
+	err := client.streamChatCompletion(context.Background(), request, func(delta streamDelta) error {
+		responseText.WriteString(delta.Content)
+
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("expected success, got error: %v", err)
+	}
+
+	if responseText.String() != "success" {
+		t.Fatalf("expected response 'success', got: %q", responseText.String())
+	}
+}
