@@ -463,10 +463,8 @@ func (instance *bot) decideWebSearch(
 		[]chatMessage{{Role: messageRoleSystem, Content: searchDeciderPrompt(time.Now())}},
 		searchDeciderMessages...,
 	)
-	searchDeciderMessages = append(searchDeciderMessages, chatMessage{
-		Role:    messageRoleUser,
-		Content: searchDeciderDecisionInstruction,
-	})
+
+	searchDeciderMessages = appendSearchDeciderInstruction(searchDeciderMessages)
 
 	request, err := buildChatCompletionRequest(
 		loadedConfig,
@@ -501,6 +499,46 @@ func (instance *bot) decideWebSearch(
 	}
 
 	return decision, warnings, nil
+}
+
+func appendSearchDeciderInstruction(messages []chatMessage) []chatMessage {
+	if len(messages) == 0 {
+		return []chatMessage{{
+			Role:    messageRoleUser,
+			Content: searchDeciderDecisionInstruction,
+		}}
+	}
+
+	lastIdx := len(messages) - 1
+	if messages[lastIdx].Role != messageRoleUser {
+		return append(messages, chatMessage{
+			Role:    messageRoleUser,
+			Content: searchDeciderDecisionInstruction,
+		})
+	}
+
+	switch content := messages[lastIdx].Content.(type) {
+	case string:
+		messages[lastIdx].Content = content + "\n\n" + searchDeciderDecisionInstruction
+	case []contentPart:
+		clonedParts := make([]contentPart, 0, len(content)+1)
+		for _, p := range content {
+			clonedParts = append(clonedParts, cloneContentPart(p))
+		}
+
+		clonedParts = append(clonedParts, contentPart{
+			messageTypeKey: contentTypeText,
+			messageTextKey: "\n\n" + searchDeciderDecisionInstruction,
+		})
+		messages[lastIdx].Content = clonedParts
+	default:
+		messages = append(messages, chatMessage{
+			Role:    messageRoleUser,
+			Content: searchDeciderDecisionInstruction,
+		})
+	}
+
+	return messages
 }
 
 func searchDeciderDisabledForModel(configuredModel string) bool {
