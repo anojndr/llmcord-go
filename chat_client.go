@@ -23,7 +23,7 @@ const (
 	attemptTimeoutDivisor       = 2
 	minAttemptTimeout           = 20 * time.Second
 	maxAttemptTimeout           = 90 * time.Second
-	defaultFirstResponseTimeout = 20 * time.Second
+	defaultFirstResponseTimeout = 60 * time.Second
 )
 
 func newChatCompletionRouter(httpClient *http.Client) chatCompletionRouter {
@@ -217,7 +217,7 @@ func (client chatCompletionRouter) streamChatCompletionOnce(
 	err := client.streamChatCompletionOnceNoTimeout(timeoutCtx, request, wrappedHandle)
 	if err != nil {
 		if ctx.Err() == nil && timeoutCtx.Err() != nil && !responded.Load() {
-			return fmt.Errorf("model did not respond within 20 seconds: %w", context.DeadlineExceeded)
+			return fmt.Errorf("model did not respond within 60 seconds: %w", context.DeadlineExceeded)
 		}
 
 		return err

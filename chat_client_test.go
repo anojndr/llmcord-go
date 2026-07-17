@@ -1537,3 +1537,12 @@ func TestChatCompletionRouterFirstResponseTimeout_Succeeds(t *testing.T) {
 		t.Fatalf("expected content 'Hello', got: %q", content)
 	}
 }
+
+func TestChatCompletionRouterDefaultFirstResponseTimeout(t *testing.T) {
+	t.Parallel()
+
+	router := newChatCompletionRouter(nil)
+	if router.firstResponseTimeout != 60*time.Second {
+		t.Errorf("expected default firstResponseTimeout to be 60 seconds, got: %v", router.firstResponseTimeout)
+	}
+}

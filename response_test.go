@@ -2742,4 +2742,3 @@ func TestGenerateAndSendResponseFallback_PreservesChatHistoryFromMainModel(t *te
 			state.fallbackReqReceived.Messages)
 	}
 }
-
