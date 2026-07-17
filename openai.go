@@ -99,6 +99,15 @@ func (client openAIClient) streamChatCompletion(
 	excludedFunctionIDs := make(map[string]struct{})
 	includeStreamingUsage := true
 
+	contentYielded := false
+	wrappedHandle := func(delta streamDelta) error {
+		if delta.Content != "" {
+			contentYielded = true
+		}
+
+		return handle(delta)
+	}
+
 	for {
 		requestBody := openAIStreamRequestBody(request, includeStreamingUsage, excludedFunctionIDs)
 
@@ -107,9 +116,15 @@ func (client openAIClient) streamChatCompletion(
 			request,
 			requestURL,
 			requestBody,
-			handle,
+			wrappedHandle,
 		)
 		if err != nil {
+			if includeStreamingUsage && !contentYielded && isOpenAIStreamEndedBeforeDoneError(err) {
+				includeStreamingUsage = false
+
+				continue
+			}
+
 			return err
 		}
 
@@ -141,6 +156,17 @@ func (client openAIClient) streamChatCompletion(
 			false,
 		)
 	}
+}
+
+func isOpenAIStreamEndedBeforeDoneError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	errText := err.Error()
+
+	return strings.Contains(errText, "ended before [DONE]") ||
+		strings.Contains(errText, "unexpected EOF")
 }
 
 func openAIStreamRequestBody(
@@ -253,8 +279,16 @@ func (client openAIClient) streamChatCompletionAttempt(
 		return httpResponse.StatusCode, httpResponse.Status, httpResponse.Header.Clone(), responseBody, nil
 	}
 
+	choicesSeen := false
+
+	wrappedHandle := func(delta streamDelta) error {
+		choicesSeen = true
+
+		return handle(delta)
+	}
+
 	doneSeen, err := consumeServerSentEvents(httpResponse.Body, func(payload []byte) error {
-		return handleStreamPayload(payload, handle)
+		return handleStreamPayload(payload, wrappedHandle)
 	})
 
 	_ = httpResponse.Body.Close()
@@ -264,10 +298,25 @@ func (client openAIClient) streamChatCompletionAttempt(
 	}
 
 	if !doneSeen {
+		if choicesSeen && openAIProviderOmitDoneMarker(request) {
+			return 0, "", nil, nil, nil
+		}
+
 		return 0, "", nil, nil, fmt.Errorf("chat completion stream ended before [DONE]: %w", io.ErrUnexpectedEOF)
 	}
 
 	return 0, "", nil, nil, nil
+}
+
+func openAIProviderOmitDoneMarker(request chatCompletionRequest) bool {
+	configuredModel := strings.ToLower(strings.TrimSpace(request.ConfiguredModel))
+	if strings.HasPrefix(configuredModel, "9router/") {
+		return true
+	}
+
+	baseURL := strings.ToLower(strings.TrimSpace(request.Provider.BaseURL))
+
+	return strings.Contains(baseURL, "abc-tunnel") || strings.Contains(baseURL, "9router")
 }
 
 func buildChatCompletionRequestBody(request chatCompletionRequest) map[string]any {
