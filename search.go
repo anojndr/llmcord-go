@@ -43,7 +43,11 @@ const (
 	mimeTypeZIP                      = "application/zip"
 	mimeTypeWEBP                     = "image/webp"
 	searchDeciderDecisionInstruction = "Based on the conversation above, analyze the last user query " +
-		"and respond with your JSON decision."
+		"and respond ONLY with your JSON decision. " +
+		"Do not answer the query itself, " +
+		"and do not include any conversational filler, explanation, " +
+		"introductory text, or markdown code fences. " +
+		"Your response must be a single valid JSON object."
 	searchAnswerTemplate = `Answer the user's query based on the web search results.
 
 User query:
@@ -882,6 +886,13 @@ func collectChatCompletionText(
 
 func parseSearchDecision(responseText string) (searchDecision, error) {
 	trimmedResponse := trimCodeFence(responseText)
+
+	start := strings.Index(trimmedResponse, "{")
+	end := strings.LastIndex(trimmedResponse, "}")
+
+	if start >= 0 && end > start {
+		trimmedResponse = trimmedResponse[start : end+1]
+	}
 
 	var decision searchDecision
 
