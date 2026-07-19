@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"slices"
 	"strings"
 	"sync"
@@ -1769,5 +1770,123 @@ func TestOpenAIClientStreamChatCompletionSucceedsWithoutDoneIfChoicesSeen(t *tes
 
 	if responseText.String() != "success" {
 		t.Fatalf("expected response 'success', got: %q", responseText.String())
+	}
+}
+
+type authHeaderTestCase struct {
+	name            string
+	baseURL         string
+	configuredModel string
+	apiKey          string
+	expectedAuth    string
+	expectAuthSent  bool
+}
+
+func TestOpenAIClientAuthorizationHeaderFor9Router(t *testing.T) {
+	t.Parallel()
+
+	tests := []authHeaderTestCase{
+		{
+			name:            "9router request with empty API key",
+			baseURL:         "http://localhost:20128/v1",
+			configuredModel: "9router/openai/gpt-5",
+			apiKey:          "",
+			expectedAuth:    "",
+			expectAuthSent:  false,
+		},
+		{
+			name:            "9router request with non-empty API key",
+			baseURL:         "http://localhost:20128/v1",
+			configuredModel: "9router/openai/gpt-5",
+			apiKey:          "sk-test-key",
+			expectedAuth:    "Bearer sk-test-key",
+			expectAuthSent:  true,
+		},
+		{
+			name:            "Non-9router request with empty API key",
+			baseURL:         "https://api.openai.com/v1",
+			configuredModel: "openai/gpt-4",
+			apiKey:          "",
+			expectedAuth:    "Bearer sk-no-key-required",
+			expectAuthSent:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			runOpenAIClientAuthorizationHeaderFor9RouterSubtest(t, tt)
+		})
+	}
+}
+
+func runOpenAIClientAuthorizationHeaderFor9RouterSubtest(t *testing.T, testCase authHeaderTestCase) {
+	t.Helper()
+
+	var (
+		capturedAuth string
+		authSent     bool
+	)
+
+	server := httptest.NewServer(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		httpRequest *http.Request,
+	) {
+		capturedAuth = httpRequest.Header.Get("Authorization")
+		_, authSent = httpRequest.Header["Authorization"]
+
+		responseWriter.Header().Set("Content-Type", "text/event-stream")
+		responseWriter.WriteHeader(http.StatusOK)
+		writeStreamChunk(t, responseWriter, "data: {\"choices\":[{\"delta\":{\"content\":\"success\"}}]}\n\n")
+		writeStreamChunk(t, responseWriter, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	client := newOpenAIClient(server.Client())
+	baseURL := testCase.baseURL
+
+	u, err := url.Parse(testCase.baseURL)
+	if err == nil {
+		serverURL, _ := url.Parse(server.URL)
+		serverURL.Path = u.Path
+		baseURL = serverURL.String()
+	}
+
+	request := chatCompletionRequest{
+		Provider: providerRequestConfig{
+			APIKind:         providerAPIKindOpenAI,
+			BaseURL:         baseURL,
+			APIKey:          testCase.apiKey,
+			APIKeys:         nil,
+			UseResponsesAPI: false,
+			EnableGrounding: false,
+			ExtraHeaders:    nil,
+			ExtraQuery:      nil,
+			ExtraBody:       nil,
+		},
+		Model:                       "gpt-test",
+		ConfiguredModel:             testCase.configuredModel,
+		ContextWindow:               0,
+		AutoCompactThresholdPercent: 0,
+		SessionID:                   "",
+		PreviousResponseID:          "",
+		RequestID:                   "",
+		Messages:                    nil,
+	}
+
+	err = client.streamChatCompletion(context.Background(), request, func(_ streamDelta) error {
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("expected success, got error: %v", err)
+	}
+
+	if authSent != testCase.expectAuthSent {
+		t.Fatalf("expected auth sent to be %t, got %t", testCase.expectAuthSent, authSent)
+	}
+
+	if testCase.expectAuthSent && capturedAuth != testCase.expectedAuth {
+		t.Fatalf("expected auth header %q, got %q", testCase.expectedAuth, capturedAuth)
 	}
 }
