@@ -2,6 +2,11 @@ package main
 
 import (
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -13,9 +18,7 @@ import (
 )
 
 const (
-	testSnaptikDownloadPath = "/abc2.php"
-	testSnaptikLandingPath  = "/en2"
-	testTikTokResolvedPath  = "/@mikemhan/video/7614735539660442893"
+	testTikTokResolvedPath = "/@mikemhan/video/7614735539660442893"
 )
 
 type stubTikTokContentClient struct {
@@ -102,21 +105,88 @@ func TestExtractTikTokURLsIgnoresURLsInAugmentedPromptSections(t *testing.T) {
 	}
 }
 
-func TestDecodeSnaptikPackedScript(t *testing.T) {
-	t.Parallel()
-
-	expectedScript := `$("#download").innerHTML = "<a href=\"https://example.com/video.mp4\" ` +
-		`class=\"button download-file\">Download Video</a>";`
-
-	decodedScript, err := decodeSnaptikPackedScript(
-		encodeSnaptikPackedScriptForTest(expectedScript),
-	)
+func encryptAES(key []byte, plaintext []byte) ([]byte, error) {
+	block, err := aes.NewCipher(key)
 	if err != nil {
-		t.Fatalf("decode snaptik packed script: %v", err)
+		return nil, fmt.Errorf("aes new cipher: %w", err)
 	}
 
-	if decodedScript != expectedScript {
-		t.Fatalf("unexpected decoded script: %q", decodedScript)
+	padding := aes.BlockSize - len(plaintext)%aes.BlockSize
+	padded := make([]byte, len(plaintext)+padding)
+	copy(padded, plaintext)
+
+	for i := len(plaintext); i < len(padded); i++ {
+		padded[i] = byte(padding)
+	}
+
+	initializationVector := make([]byte, aes.BlockSize)
+	mode := cipher.NewCBCEncrypter(block, initializationVector)
+	ciphertext := make([]byte, len(padded))
+	mode.CryptBlocks(ciphertext, padded)
+
+	result := make([]byte, aes.BlockSize+len(ciphertext))
+	copy(result[:aes.BlockSize], initializationVector)
+	copy(result[aes.BlockSize:], ciphertext)
+
+	return result, nil
+}
+
+func TestDecryptAESAndSolveSnaptikChallenge(t *testing.T) {
+	t.Parallel()
+
+	challengeObj := snaptikChallenge{
+		T: "b",
+		A: 10,
+		B: 20,
+		S: 2,
+		C: 0,
+		I: 0,
+		M: 0,
+		W: "",
+		N: nil,
+		E: 1784475685,
+		H: "test-hash",
+	}
+
+	plaintext, err := json.Marshal(challengeObj)
+	if err != nil {
+		t.Fatalf("marshal challenge: %v", err)
+	}
+
+	h := sha256.New()
+	h.Write([]byte("sn4pt1k_v3r1fy2026:test-id"))
+	key := h.Sum(nil)
+
+	cipherText, err := encryptAES(key, plaintext)
+	if err != nil {
+		t.Fatalf("encrypt: %v", err)
+	}
+
+	decrypted, err := decryptAES(key, cipherText)
+	if err != nil {
+		t.Fatalf("decrypt: %v", err)
+	}
+
+	var decryptedChallenge snaptikChallenge
+
+	err = json.Unmarshal(decrypted, &decryptedChallenge)
+	if err != nil {
+		t.Fatalf("unmarshal decrypted: %v", err)
+	}
+
+	if decryptedChallenge.T != challengeObj.T ||
+		decryptedChallenge.A != challengeObj.A ||
+		decryptedChallenge.B != challengeObj.B {
+		t.Fatalf("decrypted challenge mismatch: %+v", decryptedChallenge)
+	}
+
+	ans, err := solveSnaptikChallenge(decryptedChallenge)
+	if err != nil {
+		t.Fatalf("solve challenge: %v", err)
+	}
+
+	if ans != 7 {
+		t.Fatalf("unexpected challenge answer: got %d, want 7", ans)
 	}
 }
 
@@ -124,6 +194,98 @@ type directTikTokServerState struct {
 	landingRequests int
 	submittedURLs   []string
 	submittedURLsMu sync.Mutex
+}
+
+func handleDirectAPIToken(t *testing.T, writer http.ResponseWriter) {
+	t.Helper()
+
+	challengeObj := snaptikChallenge{
+		T: "b",
+		A: 10,
+		B: 20,
+		S: 2,
+		C: 0,
+		I: 0,
+		M: 0,
+		W: "",
+		N: nil,
+		E: 1784475685,
+		H: "test-hash",
+	}
+
+	plaintext, err := json.Marshal(challengeObj)
+	if err != nil {
+		t.Fatalf("marshal challenge: %v", err)
+	}
+
+	h := sha256.New()
+	h.Write([]byte("sn4pt1k_v3r1fy2026:test-id"))
+	key := h.Sum(nil)
+
+	cipherText, err := encryptAES(key, plaintext)
+	if err != nil {
+		t.Fatalf("encrypt challenge: %v", err)
+	}
+
+	respObj := snaptikChallengeResponse{
+		ID: "test-id",
+		P:  base64.StdEncoding.EncodeToString(cipherText),
+	}
+
+	respBytes, err := json.Marshal(respObj)
+	if err != nil {
+		t.Fatalf("marshal challenge response: %v", err)
+	}
+
+	writer.Header().Set("Content-Type", "application/json")
+
+	_, _ = writer.Write(respBytes)
+}
+
+func handleDirectAPIExtract(
+	t *testing.T,
+	writer http.ResponseWriter,
+	request *http.Request,
+	state *directTikTokServerState,
+	serverURL string,
+) {
+	t.Helper()
+
+	xVerify := request.Header.Get("X-Verify")
+	expectedCode := "test-id:7:1784475685:test-hash"
+
+	if xVerify != expectedCode {
+		t.Fatalf("unexpected X-Verify token: got %q, want %q", xVerify, expectedCode)
+	}
+
+	targetURL := request.URL.Query().Get("url")
+
+	state.submittedURLsMu.Lock()
+	state.submittedURLs = append(state.submittedURLs, targetURL)
+	state.submittedURLsMu.Unlock()
+
+	downloadURL := serverURL + "/downloads/video.mp4"
+	resp := snaptikExtractResponse{
+		Success: true,
+		Data: snaptikExtractData{
+			ID:            "7482298925089574149",
+			Type:          "video",
+			Title:         "mock-title",
+			DownloadURL:   downloadURL,
+			Filename:      "",
+			Headers:       nil,
+			HDDownloadURL: "",
+		},
+	}
+
+	respBytes, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatalf("marshal extract response: %v", err)
+	}
+
+	writer.Header().Set("Content-Type", "application/json")
+
+	_, _ = writer.Write(respBytes)
 }
 
 func newDirectTikTokTestServer(
@@ -148,35 +310,12 @@ func newDirectTikTokTestServer(
 			http.Redirect(writer, request, testTikTokResolvedPath, http.StatusFound)
 		case testTikTokResolvedPath:
 			writer.WriteHeader(http.StatusOK)
-		case testSnaptikLandingPath:
+		case "/api/token":
 			state.landingRequests++
-			_, _ = writer.Write([]byte(`<input name="token" value="test-token" type="hidden">`))
-		case testSnaptikDownloadPath:
-			request.Body = http.MaxBytesReader(writer, request.Body, 1024)
 
-			err := request.ParseForm()
-			if err != nil {
-				t.Fatalf("parse form: %v", err)
-			}
-
-			state.submittedURLsMu.Lock()
-			state.submittedURLs = append(state.submittedURLs, request.PostForm.Get("url"))
-			state.submittedURLsMu.Unlock()
-
-			if request.PostForm.Get("lang") != tikTokLanguage {
-				t.Fatalf("unexpected lang: %q", request.PostForm.Get("lang"))
-			}
-
-			if request.PostForm.Get("token") != "test-token" {
-				t.Fatalf("unexpected token: %q", request.PostForm.Get("token"))
-			}
-
-			downloadURL := server.URL + "/downloads/video.mp4"
-			script := fmt.Sprintf(
-				`$("#download").innerHTML = "<a href=\"%s\" class=\"button download-file\">Download Video</a>";`,
-				downloadURL,
-			)
-			_, _ = writer.Write([]byte(encodeSnaptikPackedScriptForTest(script)))
+			handleDirectAPIToken(t, writer)
+		case "/api/extract":
+			handleDirectAPIExtract(t, writer, request, state, server.URL)
 		case "/downloads/video.mp4":
 			writer.Header().Set("Content-Type", videoContentType)
 
@@ -193,10 +332,95 @@ func newDirectTikTokTestServer(
 	return server, state
 }
 
+func handleRenderedAPIToken(t *testing.T, writer http.ResponseWriter) {
+	t.Helper()
+
+	challengeObj := snaptikChallenge{
+		T: "r",
+		A: 0,
+		B: 0,
+		S: 0,
+		C: 0,
+		I: 0,
+		M: 0,
+		W: "",
+		N: []int{10, 20, 30},
+		E: 1784475685,
+		H: "render-hash",
+	}
+
+	plaintext, err := json.Marshal(challengeObj)
+	if err != nil {
+		t.Fatalf("marshal challenge: %v", err)
+	}
+
+	h := sha256.New()
+	h.Write([]byte("sn4pt1k_v3r1fy2026:render-id"))
+	key := h.Sum(nil)
+
+	cipherText, err := encryptAES(key, plaintext)
+	if err != nil {
+		t.Fatalf("encrypt challenge: %v", err)
+	}
+
+	respObj := snaptikChallengeResponse{
+		ID: "render-id",
+		P:  base64.StdEncoding.EncodeToString(cipherText),
+	}
+
+	respBytes, err := json.Marshal(respObj)
+	if err != nil {
+		t.Fatalf("marshal challenge response: %v", err)
+	}
+
+	writer.Header().Set("Content-Type", "application/json")
+
+	_, _ = writer.Write(respBytes)
+}
+
+func handleRenderedAPIExtract(
+	t *testing.T,
+	writer http.ResponseWriter,
+	request *http.Request,
+	serverURL string,
+) {
+	t.Helper()
+
+	xVerify := request.Header.Get("X-Verify")
+	expectedCode := "render-id:121:1784475685:render-hash"
+
+	if xVerify != expectedCode {
+		t.Fatalf("unexpected X-Verify token: got %q, want %q", xVerify, expectedCode)
+	}
+
+	downloadURL := serverURL + "/downloads/rendered.mp4"
+	resp := snaptikExtractResponse{
+		Success: true,
+		Data: snaptikExtractData{
+			ID:            "7482298925089574149",
+			Type:          "slideshow",
+			Title:         "mock-slideshow",
+			DownloadURL:   downloadURL,
+			Filename:      "",
+			Headers:       nil,
+			HDDownloadURL: "",
+		},
+	}
+
+	respBytes, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatalf("marshal extract response: %v", err)
+	}
+
+	writer.Header().Set("Content-Type", "application/json")
+
+	_, _ = writer.Write(respBytes)
+}
+
 func newRenderedTikTokTestServer(t *testing.T) (*httptest.Server, *int) {
 	t.Helper()
 
-	taskCalls := 0
+	extractCalls := 0
 
 	var server *httptest.Server
 
@@ -209,56 +433,31 @@ func newRenderedTikTokTestServer(t *testing.T) (*httptest.Server, *int) {
 			http.Redirect(writer, request, testTikTokResolvedPath, http.StatusFound)
 		case testTikTokResolvedPath:
 			writer.WriteHeader(http.StatusOK)
-		case testSnaptikLandingPath:
-			_, _ = writer.Write([]byte(`<input name="token" value="test-token" type="hidden">`))
-		case testSnaptikDownloadPath:
-			script := `$("#download").innerHTML = "` +
-				`<button class=\"button btn-render\" data-token=\"render-token\">Render</button>";`
-			_, _ = writer.Write([]byte(encodeSnaptikPackedScriptForTest(script)))
-		case "/render.php":
-			if request.URL.Query().Get("token") != "render-token" {
-				t.Fatalf("unexpected render token: %q", request.URL.Query().Get("token"))
-			}
+		case "/api/token":
+			handleRenderedAPIToken(t, writer)
+		case "/api/extract":
+			extractCalls++
 
-			writer.Header().Set("Content-Type", "application/json")
-			_, _ = writer.Write([]byte(`{"task_id":"task-123"}`))
-		case "/task.php":
-			if request.URL.Query().Get("token") != "task-123" {
-				t.Fatalf("unexpected task token: %q", request.URL.Query().Get("token"))
-			}
-
-			taskCalls++
-
-			writer.Header().Set("Content-Type", "application/json")
-
-			if taskCalls == 1 {
-				_, _ = writer.Write([]byte(`{"status":0,"progress":50}`))
-
-				return
-			}
-
-			_, _ = writer.Write([]byte(
-				`{"status":0,"progress":100,"download_url":"` + server.URL + `/downloads/rendered.mp4"}`,
-			))
+			handleRenderedAPIExtract(t, writer, request, server.URL)
 		case "/downloads/rendered.mp4":
 			writer.Header().Set("Content-Type", "video/mp4")
+
 			_, _ = writer.Write([]byte("rendered-video"))
 		default:
 			t.Fatalf("unexpected path: %s", request.URL.Path)
 		}
 	}))
 
-	return server, &taskCalls
+	return server, &extractCalls
 }
 
 func newTestTikTokClient(server *httptest.Server) tiktokClient {
 	return tiktokClient{
-		httpClient:  server.Client(),
-		landingURL:  server.URL + testSnaptikLandingPath,
-		downloadURL: server.URL + testSnaptikDownloadPath,
-		renderURL:   server.URL + "/render.php",
-		taskURL:     server.URL + "/task.php",
-		userAgent:   youtubeUserAgent,
+		httpClient:   server.Client(),
+		landingURL:   server.URL,
+		challengeURL: server.URL + "/api/token",
+		extractURL:   server.URL + "/api/extract",
+		userAgent:    youtubeUserAgent,
 	}
 }
 
@@ -467,8 +666,8 @@ func TestTikTokClientFetchRendersSlideshowsWhenNeeded(t *testing.T) {
 		t.Fatalf("unexpected rendered bytes: %#v", result.MediaPart[contentFieldBytes])
 	}
 
-	if *taskCalls != 2 {
-		t.Fatalf("unexpected task poll count: %d", *taskCalls)
+	if *taskCalls != 1 {
+		t.Fatalf("unexpected extract call count: %d", *taskCalls)
 	}
 }
 

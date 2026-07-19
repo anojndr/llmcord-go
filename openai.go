@@ -250,7 +250,14 @@ func (client openAIClient) streamChatCompletionAttempt(
 	}
 
 	httpRequest.Header.Set("Accept", "text/event-stream")
-	httpRequest.Header.Set("Authorization", "Bearer "+openAIAPIKey(request.Provider.primaryAPIKey()))
+
+	apiKey := request.Provider.primaryAPIKey()
+	if apiKey != "" {
+		httpRequest.Header.Set("Authorization", "Bearer "+apiKey)
+	} else if !isOpenAIRouterRequest(request) {
+		httpRequest.Header.Set("Authorization", "Bearer sk-no-key-required")
+	}
+
 	httpRequest.Header.Set("Content-Type", "application/json")
 	setOpenAIClientRequestIDHeader(httpRequest, request)
 
@@ -309,6 +316,16 @@ func (client openAIClient) streamChatCompletionAttempt(
 }
 
 func openAIProviderOmitDoneMarker(request chatCompletionRequest) bool {
+	if isOpenAIRouterRequest(request) {
+		return true
+	}
+
+	baseURL := strings.ToLower(strings.TrimSpace(request.Provider.BaseURL))
+
+	return strings.Contains(baseURL, "abc-tunnel")
+}
+
+func isOpenAIRouterRequest(request chatCompletionRequest) bool {
 	configuredModel := strings.ToLower(strings.TrimSpace(request.ConfiguredModel))
 	if strings.HasPrefix(configuredModel, "9router/") {
 		return true
@@ -316,7 +333,7 @@ func openAIProviderOmitDoneMarker(request chatCompletionRequest) bool {
 
 	baseURL := strings.ToLower(strings.TrimSpace(request.Provider.BaseURL))
 
-	return strings.Contains(baseURL, "abc-tunnel") || strings.Contains(baseURL, "9router")
+	return strings.Contains(baseURL, "9router")
 }
 
 func buildChatCompletionRequestBody(request chatCompletionRequest) map[string]any {

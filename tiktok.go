@@ -3,6 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,41 +15,23 @@ import (
 	"net/url"
 	"os"
 	"regexp"
-	"strconv"
 	"strings"
-	"time"
-	"unicode/utf8"
 )
 
 const (
-	defaultTikTokDownloadURL = "https://snaptik.app/abc2.php"
-	defaultTikTokLandingURL  = "https://snaptik.app/en2"
-	defaultTikTokRenderURL   = "https://snaptik.app/render.php"
-	defaultTikTokTaskURL     = "https://snaptik.app/task.php"
-	tikTokDefaultFilename    = "tiktok.mp4"
-	tikTokDefaultMIMEType    = "video/mp4"
-	tikTokFilenamePrefix     = "tiktok_"
-	tikTokLanguage           = "en2"
-	tikTokWarningText        = "Warning: TikTok content unavailable"
-	oneCaptureMatchCount     = 2
-	packedScriptMatchCount   = 5
-	twoCaptureMatchCount     = 3
+	defaultTikTokLandingURL   = "https://snaptik.app"
+	defaultTikTokChallengeURL = "https://snaptik.app/api/token"
+	defaultTikTokExtractURL   = "https://snaptik.app/api/extract"
+	tikTokDefaultFilename     = "tiktok.mp4"
+	tikTokDefaultMIMEType     = "video/mp4"
+	tikTokFilenamePrefix      = "tiktok_"
+	tikTokWarningText         = "Warning: TikTok content unavailable"
+	oneCaptureMatchCount      = 2
+	challengeMask             = 255
 )
 
 var (
-	snaptikDownloadURLRegexp = regexp.MustCompile(
-		`href=\\"([^"]+)\\" class=\\"button download-file\\"`,
-	)
-	snaptikErrorRegexp        = regexp.MustCompile(`showAlert\("([^"]+)"`)
-	snaptikPackedScriptRegexp = regexp.MustCompile(
-		`eval\(function\(h,u,n,t,e,r\)\{[\s\S]*?\}\("((?:\\.|[^"])*)",\d+,"((?:\\.|[^"])*)",(\d+),(\d+),\d+\)\)`,
-	)
-	snaptikRenderTokenRegexp = regexp.MustCompile(
-		`(?:class=\\"button btn-render[^"]*\\"[^>]*data-token=\\"([^"]+)\\"|` +
-			`data-token=\\"([^"]+)\\"[^>]*class=\\"button btn-render[^"]*\\")`,
-	)
-	snaptikTokenRegexp = regexp.MustCompile(`name="token"\s+value="([^"]+)"`)
-	tikTokURLRegexp    = regexp.MustCompile(
+	tikTokURLRegexp = regexp.MustCompile(
 		`(?i)\b(?:https?://)?(?:[\w-]+\.)?(?:tiktok\.com|tnktok\.com)/[^\s<>()]+`,
 	)
 	tikTokVideoIDRegexp = regexp.MustCompile(`/video/([0-9]+)`)
@@ -56,23 +42,11 @@ type tiktokFetcher interface {
 }
 
 type tiktokClient struct {
-	httpClient  *http.Client
-	landingURL  string
-	downloadURL string
-	renderURL   string
-	taskURL     string
-	userAgent   string
-}
-
-type tiktokRenderResponse struct {
-	TaskID string `json:"task_id"`
-}
-
-type tiktokTaskResponse struct {
-	Status      int    `json:"status"`
-	Progress    int    `json:"progress"`
-	DownloadURL string `json:"download_url"`
-	Message     string `json:"message"`
+	httpClient   *http.Client
+	landingURL   string
+	challengeURL string
+	extractURL   string
+	userAgent    string
 }
 
 type tiktokVideoContent struct {
@@ -89,14 +63,159 @@ func (content tiktokVideoContent) mediaPart() contentPart {
 	return content.MediaPart
 }
 
+type snaptikChallengeResponse struct {
+	ID string `json:"id"`
+	P  string `json:"p"`
+}
+
+type snaptikChallenge struct {
+	T string `json:"t"`
+	A int    `json:"a"`
+	B int    `json:"b"`
+	S int    `json:"s"`
+	C int    `json:"c"`
+	I int    `json:"i"`
+	M int    `json:"m"`
+	W string `json:"w"`
+	N []int  `json:"n"`
+	E int    `json:"e"`
+	H string `json:"h"`
+}
+
+func lookupKey(raw map[string]json.RawMessage, keys ...string) (json.RawMessage, bool) {
+	for _, key := range keys {
+		if val, ok := raw[key]; ok {
+			return val, true
+		}
+	}
+
+	for _, key := range keys {
+		for rawKey, val := range raw {
+			if strings.EqualFold(rawKey, key) {
+				return val, true
+			}
+		}
+	}
+
+	return nil, false
+}
+
+func (challenge *snaptikChallenge) UnmarshalJSON(data []byte) error {
+	var raw map[string]json.RawMessage
+
+	err := json.Unmarshal(data, &raw)
+	if err != nil {
+		return fmt.Errorf("unmarshal challenge raw JSON: %w", err)
+	}
+
+	if val, ok := lookupKey(raw, "t"); ok {
+		_ = json.Unmarshal(val, &challenge.T)
+	}
+
+	if val, ok := lookupKey(raw, "a"); ok {
+		_ = json.Unmarshal(val, &challenge.A)
+	}
+
+	if val, ok := lookupKey(raw, "b"); ok {
+		_ = json.Unmarshal(val, &challenge.B)
+	}
+
+	if val, ok := lookupKey(raw, "s"); ok {
+		_ = json.Unmarshal(val, &challenge.S)
+	}
+
+	if val, ok := lookupKey(raw, "c"); ok {
+		_ = json.Unmarshal(val, &challenge.C)
+	}
+
+	if val, ok := lookupKey(raw, "i"); ok {
+		_ = json.Unmarshal(val, &challenge.I)
+	}
+
+	if val, ok := lookupKey(raw, "m"); ok {
+		_ = json.Unmarshal(val, &challenge.M)
+	}
+
+	if val, ok := lookupKey(raw, "w"); ok {
+		_ = json.Unmarshal(val, &challenge.W)
+	}
+
+	if val, ok := lookupKey(raw, "n"); ok {
+		_ = json.Unmarshal(val, &challenge.N)
+	}
+
+	if val, ok := lookupKey(raw, "_e", "e"); ok {
+		_ = json.Unmarshal(val, &challenge.E)
+	}
+
+	if val, ok := lookupKey(raw, "_h", "h"); ok {
+		_ = json.Unmarshal(val, &challenge.H)
+	}
+
+	return nil
+}
+
+type snaptikExtractResponse struct {
+	Success bool               `json:"success"`
+	Data    snaptikExtractData `json:"data"`
+}
+
+type snaptikExtractData struct {
+	ID            string            `json:"id"`
+	Type          string            `json:"type"`
+	Title         string            `json:"title"`
+	DownloadURL   string            `json:"download_url"`
+	Filename      string            `json:"filename"`
+	Headers       map[string]string `json:"headers"`
+	HDDownloadURL string            `json:"hd_download_url"`
+}
+
+func (data *snaptikExtractData) UnmarshalJSON(bytesVal []byte) error {
+	var raw map[string]json.RawMessage
+
+	err := json.Unmarshal(bytesVal, &raw)
+	if err != nil {
+		return fmt.Errorf("unmarshal extract data raw JSON: %w", err)
+	}
+
+	if val, ok := lookupKey(raw, "id"); ok {
+		_ = json.Unmarshal(val, &data.ID)
+	}
+
+	if val, ok := lookupKey(raw, "type"); ok {
+		_ = json.Unmarshal(val, &data.Type)
+	}
+
+	if val, ok := lookupKey(raw, "title"); ok {
+		_ = json.Unmarshal(val, &data.Title)
+	}
+
+	if val, ok := lookupKey(raw, "downloadUrl", "download_url"); ok {
+		_ = json.Unmarshal(val, &data.DownloadURL)
+	}
+
+	if val, ok := lookupKey(raw, "filename"); ok {
+		_ = json.Unmarshal(val, &data.Filename)
+	}
+
+	if val, ok := lookupKey(raw, "headers"); ok {
+		_ = json.Unmarshal(val, &data.Headers)
+	}
+
+	if val, ok := lookupKey(raw, "hdDownloadUrl", "hd_download_url"); ok {
+		_ = json.Unmarshal(val, &data.HDDownloadURL)
+	}
+
+	return nil
+}
+
 func newTikTokClient(httpClient *http.Client) tiktokClient {
 	return tiktokClient{
-		httpClient:  httpClient,
-		landingURL:  defaultTikTokLandingURL,
-		downloadURL: defaultTikTokDownloadURL,
-		renderURL:   defaultTikTokRenderURL,
-		taskURL:     defaultTikTokTaskURL,
-		userAgent:   youtubeUserAgent,
+		httpClient:   httpClient,
+		landingURL:   defaultTikTokLandingURL,
+		challengeURL: defaultTikTokChallengeURL,
+		extractURL:   defaultTikTokExtractURL,
+		userAgent:    youtubeUserAgent,
 	}
 }
 
@@ -180,34 +299,29 @@ func (client tiktokClient) fetch(
 		return tiktokVideoContent{}, fmt.Errorf("resolve tiktok url %q: %w", rawURL, err)
 	}
 
-	token, err := client.fetchToken(requestContext)
+	verifyCode, err := client.fetchToken(requestContext)
 	if err != nil {
 		return tiktokVideoContent{}, fmt.Errorf("fetch snaptik token: %w", err)
 	}
 
-	responseScript, err := client.fetchDownloadScript(requestContext, resolvedURL, token)
+	extractData, err := client.extractMedia(requestContext, resolvedURL, verifyCode)
 	if err != nil {
-		return tiktokVideoContent{}, fmt.Errorf("fetch snaptik download script: %w", err)
+		return tiktokVideoContent{}, fmt.Errorf("extract snaptik media: %w", err)
 	}
 
-	decodedScript, err := decodeSnaptikPackedScript(responseScript)
-	if err != nil {
-		return tiktokVideoContent{}, fmt.Errorf("decode snaptik response: %w", err)
-	}
-
-	downloadURL, err := client.extractDownloadURL(requestContext, decodedScript)
-	if err != nil {
-		return tiktokVideoContent{}, fmt.Errorf("extract snaptik download url: %w", err)
-	}
-
-	videoBytes, mimeType, filename, err := client.downloadVideo(requestContext, downloadURL, resolvedURL)
+	videoBytes, mimeType, filename, err := client.downloadVideo(
+		requestContext,
+		extractData.DownloadURL,
+		resolvedURL,
+		extractData.Headers,
+	)
 	if err != nil {
 		return tiktokVideoContent{}, fmt.Errorf("download tiktok video: %w", err)
 	}
 
 	return tiktokVideoContent{
 		ResolvedURL: resolvedURL,
-		DownloadURL: downloadURL,
+		DownloadURL: extractData.DownloadURL,
 		MediaPart: contentPart{
 			messageTypeKey:       contentTypeVideoData,
 			contentFieldBytes:    videoBytes,
@@ -307,48 +421,96 @@ func (client tiktokClient) resolveURL(
 	return httpResponse.Request.URL.String(), nil
 }
 
-func (client tiktokClient) fetchToken(ctx context.Context) (string, error) {
-	htmlText, err := client.fetchText(ctx, client.landingURL)
-	if err != nil {
-		return "", err
-	}
+func solveSnaptikChallenge(challenge snaptikChallenge) (int, error) {
+	switch challenge.T {
+	case "b":
+		return (challenge.A ^ challenge.B) >> challenge.S & challengeMask, nil
 
-	match := snaptikTokenRegexp.FindStringSubmatch(htmlText)
-	if len(match) != oneCaptureMatchCount {
-		return "", fmt.Errorf("extract snaptik token: %w", os.ErrInvalid)
-	}
+	case "r":
+		sum := 0
+		for _, value := range challenge.N {
+			sum += value
+		}
 
-	return strings.TrimSpace(match[1]), nil
+		return sum*2 + 1, nil
+
+	case "c":
+		runes := []rune(challenge.W)
+		if challenge.I < 0 || challenge.I >= len(runes) {
+			return 0, fmt.Errorf("index out of bounds in string challenge: %w", os.ErrInvalid)
+		}
+
+		return int(runes[challenge.I]) * challenge.M, nil
+
+	case "m":
+		return (challenge.A + challenge.B) % 100 * challenge.C, nil
+
+	case "n":
+		return challenge.A*challenge.B + challenge.B*challenge.C + challenge.C*challenge.A - challenge.A, nil
+
+	default:
+		return 0, fmt.Errorf("unknown challenge type %q: %w", challenge.T, os.ErrInvalid)
+	}
 }
 
-func (client tiktokClient) fetchDownloadScript(
-	ctx context.Context,
-	resolvedURL string,
-	token string,
-) (string, error) {
-	formValues := url.Values{
-		"url":   {resolvedURL},
-		"lang":  {tikTokLanguage},
-		"token": {token},
+func decryptAES(key []byte, ciphertext []byte) ([]byte, error) {
+	if len(ciphertext) < aes.BlockSize {
+		return nil, fmt.Errorf("ciphertext too short: %w", os.ErrInvalid)
 	}
 
+	initializationVector := ciphertext[:aes.BlockSize]
+	data := ciphertext[aes.BlockSize:]
+
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, fmt.Errorf("create aes cipher: %w", err)
+	}
+
+	if len(data)%aes.BlockSize != 0 {
+		return nil, fmt.Errorf("ciphertext not a multiple of block size: %w", os.ErrInvalid)
+	}
+
+	mode := cipher.NewCBCDecrypter(block, initializationVector)
+	decrypted := make([]byte, len(data))
+	mode.CryptBlocks(decrypted, data)
+
+	if len(decrypted) == 0 {
+		return nil, fmt.Errorf("decrypted data is empty: %w", os.ErrInvalid)
+	}
+
+	padding := int(decrypted[len(decrypted)-1])
+
+	if padding < 1 || padding > aes.BlockSize {
+		return decrypted, nil
+	}
+
+	for i := len(decrypted) - padding; i < len(decrypted); i++ {
+		if int(decrypted[i]) != padding {
+			return decrypted, nil
+		}
+	}
+
+	return decrypted[:len(decrypted)-padding], nil
+}
+
+func (client tiktokClient) fetchToken(ctx context.Context) (string, error) {
 	httpRequest, err := http.NewRequestWithContext(
 		ctx,
 		http.MethodPost,
-		client.downloadURL,
-		strings.NewReader(formValues.Encode()),
+		client.challengeURL,
+		bytes.NewBufferString("{}"),
 	)
 	if err != nil {
-		return "", fmt.Errorf("create snaptik download request: %w", err)
+		return "", fmt.Errorf("create snaptik token request: %w", err)
 	}
 
-	httpRequest.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	httpRequest.Header.Set(userAgentHeader, client.userAgent)
 	httpRequest.Header.Set("X-Requested-With", "XMLHttpRequest")
+	httpRequest.Header.Set("Content-Type", "application/json")
+	httpRequest.Header.Set(userAgentHeader, client.userAgent)
 
 	httpResponse, err := client.httpClient.Do(httpRequest)
 	if err != nil {
-		return "", fmt.Errorf("send snaptik download request: %w", err)
+		return "", fmt.Errorf("send snaptik token request: %w", err)
 	}
 
 	defer func() {
@@ -357,236 +519,130 @@ func (client tiktokClient) fetchDownloadScript(
 
 	responseBody, err := io.ReadAll(httpResponse.Body)
 	if err != nil {
-		return "", fmt.Errorf("read snaptik download response: %w", err)
+		return "", fmt.Errorf("read snaptik token response: %w", err)
 	}
 
 	if httpResponse.StatusCode < http.StatusOK || httpResponse.StatusCode >= http.StatusMultipleChoices {
 		return "", fmt.Errorf(
-			"snaptik download request failed with status %d: %s: %w",
+			"snaptik token request failed with status %d: %s: %w",
 			httpResponse.StatusCode,
 			strings.TrimSpace(string(responseBody)),
 			os.ErrInvalid,
 		)
 	}
 
-	return string(responseBody), nil
+	var response snaptikChallengeResponse
+
+	err = json.Unmarshal(responseBody, &response)
+	if err != nil {
+		return "", fmt.Errorf("parse snaptik token response: %w", err)
+	}
+
+	decodedBytes, err := base64.StdEncoding.DecodeString(response.P)
+	if err != nil {
+		return "", fmt.Errorf("decode snaptik encrypted token payload: %w", err)
+	}
+
+	h := sha256.New()
+	h.Write([]byte("sn4pt1k_v3r1fy2026:" + response.ID))
+	key := h.Sum(nil)
+
+	decryptedBytes, err := decryptAES(key, decodedBytes)
+	if err != nil {
+		return "", fmt.Errorf("decrypt snaptik token payload: %w", err)
+	}
+
+	var challenge snaptikChallenge
+
+	err = json.Unmarshal(decryptedBytes, &challenge)
+	if err != nil {
+		return "", fmt.Errorf("parse snaptik challenge: %w", err)
+	}
+
+	ans, err := solveSnaptikChallenge(challenge)
+	if err != nil {
+		return "", fmt.Errorf("solve snaptik challenge: %w", err)
+	}
+
+	verifyCode := fmt.Sprintf("%s:%d:%d:%s", response.ID, ans, challenge.E, challenge.H)
+
+	return verifyCode, nil
 }
 
-func decodeSnaptikPackedScript(responseScript string) (string, error) {
-	matches := snaptikPackedScriptRegexp.FindStringSubmatch(responseScript)
-	if len(matches) != packedScriptMatchCount {
-		return "", fmt.Errorf("parse snaptik packed script: %w", os.ErrInvalid)
-	}
-
-	payload, err := strconv.Unquote(`"` + matches[1] + `"`)
-	if err != nil {
-		return "", fmt.Errorf("unquote snaptik payload: %w", err)
-	}
-
-	alphabet, err := strconv.Unquote(`"` + matches[2] + `"`)
-	if err != nil {
-		return "", fmt.Errorf("unquote snaptik alphabet: %w", err)
-	}
-
-	offset, err := strconv.Atoi(matches[3])
-	if err != nil {
-		return "", fmt.Errorf("parse snaptik offset %q: %w", matches[3], err)
-	}
-
-	base, err := strconv.Atoi(matches[4])
-	if err != nil {
-		return "", fmt.Errorf("parse snaptik base %q: %w", matches[4], err)
-	}
-
-	if base <= 0 || base >= len(alphabet) {
-		return "", fmt.Errorf("invalid snaptik base %d: %w", base, os.ErrInvalid)
-	}
-
-	separator := alphabet[base]
-	chunks := strings.Split(payload, string(separator))
-
-	var builder strings.Builder
-
-	for _, chunk := range chunks {
-		if chunk == "" {
-			continue
-		}
-
-		value, err := decodeSnaptikChunk(chunk, alphabet[:base], base)
-		if err != nil {
-			return "", fmt.Errorf("decode snaptik chunk %q: %w", chunk, err)
-		}
-
-		decodedValue := value - offset
-		if decodedValue < 0 || decodedValue > utf8.MaxRune {
-			return "", fmt.Errorf("decode snaptik rune %d: %w", decodedValue, os.ErrInvalid)
-		}
-
-		builder.WriteRune(rune(decodedValue))
-	}
-
-	return builder.String(), nil
-}
-
-func decodeSnaptikChunk(
-	chunk string,
-	alphabet string,
-	base int,
-) (int, error) {
-	value := 0
-	multiplier := 1
-
-	for index := len(chunk) - 1; index >= 0; index-- {
-		digit := strings.IndexByte(alphabet, chunk[index])
-		if digit == -1 {
-			return 0, fmt.Errorf("invalid digit %q: %w", string(chunk[index]), os.ErrInvalid)
-		}
-
-		value += digit * multiplier
-		multiplier *= base
-	}
-
-	return value, nil
-}
-
-func (client tiktokClient) extractDownloadURL(
+func (client tiktokClient) extractMedia(
 	ctx context.Context,
-	decodedScript string,
-) (string, error) {
-	match := snaptikDownloadURLRegexp.FindStringSubmatch(decodedScript)
-	if len(match) == oneCaptureMatchCount {
-		return strings.TrimSpace(match[1]), nil
-	}
-
-	renderToken := snaptikRenderToken(decodedScript)
-	if renderToken != "" {
-		return client.renderDownloadURL(ctx, renderToken)
-	}
-
-	errorMatch := snaptikErrorRegexp.FindStringSubmatch(decodedScript)
-	if len(errorMatch) == oneCaptureMatchCount {
-		return "", fmt.Errorf("%s: %w", strings.TrimSpace(errorMatch[1]), os.ErrInvalid)
-	}
-
-	return "", fmt.Errorf("find snaptik download url: %w", os.ErrInvalid)
-}
-
-func snaptikRenderToken(decodedScript string) string {
-	match := snaptikRenderTokenRegexp.FindStringSubmatch(decodedScript)
-	if len(match) != twoCaptureMatchCount {
-		return ""
-	}
-
-	if strings.TrimSpace(match[1]) != "" {
-		return strings.TrimSpace(match[1])
-	}
-
-	return strings.TrimSpace(match[2])
-}
-
-func (client tiktokClient) renderDownloadURL(
-	ctx context.Context,
-	renderToken string,
-) (string, error) {
-	renderRequestURL, err := urlWithToken(client.renderURL, renderToken)
+	resolvedURL string,
+	verifyCode string,
+) (snaptikExtractData, error) {
+	extractURL, err := url.Parse(client.extractURL)
 	if err != nil {
-		return "", fmt.Errorf("build snaptik render url: %w", err)
+		return snaptikExtractData{}, fmt.Errorf("parse snaptik extract url: %w", err)
 	}
 
-	responseBody, err := client.fetchText(ctx, renderRequestURL)
+	queryValues := extractURL.Query()
+	queryValues.Set("url", resolvedURL)
+	extractURL.RawQuery = queryValues.Encode()
+
+	httpRequest, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodGet,
+		extractURL.String(),
+		nil,
+	)
 	if err != nil {
-		return "", fmt.Errorf("fetch snaptik render task: %w", err)
+		return snaptikExtractData{}, fmt.Errorf("create snaptik extract request: %w", err)
 	}
 
-	var renderResponse tiktokRenderResponse
+	httpRequest.Header.Set("X-Requested-With", "XMLHttpRequest")
+	httpRequest.Header.Set("X-Verify", verifyCode)
+	httpRequest.Header.Set(userAgentHeader, client.userAgent)
 
-	err = json.Unmarshal([]byte(responseBody), &renderResponse)
+	httpResponse, err := client.httpClient.Do(httpRequest)
 	if err != nil {
-		return "", fmt.Errorf("parse snaptik render response: %w", err)
+		return snaptikExtractData{}, fmt.Errorf("send snaptik extract request: %w", err)
 	}
 
-	if strings.TrimSpace(renderResponse.TaskID) == "" {
-		return "", fmt.Errorf("missing snaptik render task id: %w", os.ErrInvalid)
-	}
+	defer func() {
+		_ = httpResponse.Body.Close()
+	}()
 
-	waitContext, cancel := context.WithTimeout(ctx, tikTokRenderTimeout)
-	defer cancel()
-
-	ticker := time.NewTicker(tikTokRenderPollInterval)
-	defer ticker.Stop()
-
-	for {
-		downloadURL, done, err := client.pollRenderTask(waitContext, renderResponse.TaskID)
-		if err != nil {
-			return "", err
-		}
-
-		if done {
-			return downloadURL, nil
-		}
-
-		select {
-		case <-waitContext.Done():
-			return "", fmt.Errorf("wait for snaptik render task: %w", waitContext.Err())
-		case <-ticker.C:
-		}
-	}
-}
-
-func (client tiktokClient) pollRenderTask(
-	ctx context.Context,
-	taskID string,
-) (string, bool, error) {
-	taskRequestURL, err := urlWithToken(client.taskURL, taskID)
+	responseBody, err := io.ReadAll(httpResponse.Body)
 	if err != nil {
-		return "", false, fmt.Errorf("build snaptik task url: %w", err)
+		return snaptikExtractData{}, fmt.Errorf("read snaptik extract response: %w", err)
 	}
 
-	responseBody, err := client.fetchText(ctx, taskRequestURL)
+	if httpResponse.StatusCode < http.StatusOK || httpResponse.StatusCode >= http.StatusMultipleChoices {
+		return snaptikExtractData{}, fmt.Errorf(
+			"snaptik extract request failed with status %d: %s: %w",
+			httpResponse.StatusCode,
+			strings.TrimSpace(string(responseBody)),
+			os.ErrInvalid,
+		)
+	}
+
+	var response snaptikExtractResponse
+
+	err = json.Unmarshal(responseBody, &response)
 	if err != nil {
-		return "", false, fmt.Errorf("fetch snaptik task status: %w", err)
+		return snaptikExtractData{}, fmt.Errorf("parse snaptik extract response: %w", err)
 	}
 
-	var taskResponse tiktokTaskResponse
-
-	err = json.Unmarshal([]byte(responseBody), &taskResponse)
-	if err != nil {
-		return "", false, fmt.Errorf("parse snaptik task response: %w", err)
+	if !response.Success {
+		return snaptikExtractData{}, fmt.Errorf("snaptik extract failed: success=false: %w", os.ErrInvalid)
 	}
 
-	if taskResponse.Status != 0 {
-		message := strings.TrimSpace(taskResponse.Message)
-		if message == "" {
-			message = "render failed"
-		}
-
-		return "", false, fmt.Errorf("snaptik render failed: %s: %w", message, os.ErrInvalid)
+	if strings.TrimSpace(response.Data.DownloadURL) == "" {
+		return snaptikExtractData{}, fmt.Errorf("missing download url in snaptik extract response: %w", os.ErrInvalid)
 	}
 
-	if taskResponse.Progress < 100 || strings.TrimSpace(taskResponse.DownloadURL) == "" {
-		return "", false, nil
-	}
-
-	return strings.TrimSpace(taskResponse.DownloadURL), true, nil
-}
-
-func urlWithToken(baseURL, token string) (string, error) {
-	parsedURL, err := url.Parse(baseURL)
-	if err != nil {
-		return "", fmt.Errorf("parse url %q: %w", baseURL, err)
-	}
-
-	queryValues := parsedURL.Query()
-	queryValues.Set("token", token)
-	parsedURL.RawQuery = queryValues.Encode()
-
-	return parsedURL.String(), nil
+	return response.Data, nil
 }
 
 func (client tiktokClient) downloadVideo(
 	ctx context.Context,
 	downloadURL string,
 	resolvedURL string,
+	headers map[string]string,
 ) ([]byte, string, string, error) {
 	httpRequest, err := http.NewRequestWithContext(
 		ctx,
@@ -598,7 +654,13 @@ func (client tiktokClient) downloadVideo(
 		return nil, "", "", fmt.Errorf("create tiktok video request: %w", err)
 	}
 
-	httpRequest.Header.Set(userAgentHeader, client.userAgent)
+	for key, value := range headers {
+		httpRequest.Header.Set(key, value)
+	}
+
+	if httpRequest.Header.Get(userAgentHeader) == "" {
+		httpRequest.Header.Set(userAgentHeader, client.userAgent)
+	}
 
 	httpResponse, err := client.httpClient.Do(httpRequest)
 	if err != nil {
@@ -672,78 +734,4 @@ func tikTokFilename(resolvedURL, contentDisposition string) string {
 	}
 
 	return tikTokDefaultFilename
-}
-
-func (client tiktokClient) fetchText(
-	ctx context.Context,
-	requestURL string,
-) (string, error) {
-	httpRequest, err := http.NewRequestWithContext(
-		ctx,
-		http.MethodGet,
-		requestURL,
-		nil,
-	)
-	if err != nil {
-		return "", fmt.Errorf("create request for %q: %w", requestURL, err)
-	}
-
-	httpRequest.Header.Set(userAgentHeader, client.userAgent)
-
-	httpResponse, err := client.httpClient.Do(httpRequest)
-	if err != nil {
-		return "", fmt.Errorf("send request for %q: %w", requestURL, err)
-	}
-
-	defer func() {
-		_ = httpResponse.Body.Close()
-	}()
-
-	responseBody, err := io.ReadAll(httpResponse.Body)
-	if err != nil {
-		return "", fmt.Errorf("read response for %q: %w", requestURL, err)
-	}
-
-	if httpResponse.StatusCode < http.StatusOK || httpResponse.StatusCode >= http.StatusMultipleChoices {
-		return "", fmt.Errorf(
-			"request for %q failed with status %d: %s: %w",
-			requestURL,
-			httpResponse.StatusCode,
-			strings.TrimSpace(string(responseBody)),
-			os.ErrInvalid,
-		)
-	}
-
-	return string(responseBody), nil
-}
-
-func encodeSnaptikPackedScriptForTest(decodedScript string) string {
-	const (
-		offset   = 11
-		base     = 6
-		alphabet = "abcdefghi"
-	)
-
-	separator := alphabet[base]
-
-	var payload bytes.Buffer
-
-	for index, currentRune := range decodedScript {
-		if index > 0 {
-			payload.WriteByte(separator)
-		}
-
-		encodedValue := strconv.FormatInt(int64(currentRune+offset), base)
-		for _, digit := range encodedValue {
-			payload.WriteByte(alphabet[digit-'0'])
-		}
-	}
-
-	return fmt.Sprintf(
-		`var packed = true;eval(function(h,u,n,t,e,r){return h}("%s",76,"%s",%d,%d,60))`,
-		payload.String(),
-		alphabet,
-		offset,
-		base,
-	)
 }
