@@ -409,6 +409,57 @@ func TestParseSearchDecisionNormalizesQueries(t *testing.T) {
 	}
 }
 
+func TestParseSearchDecisionRobustness(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name         string
+		responseText string
+		expectSearch bool
+		expectQuery  string
+	}{
+		{
+			name:         "conversational prefix",
+			responseText: "Sure! Here is the JSON decision:\n```json\n{\"needs_search\":true,\"queries\":[\"test query\"]}\n```",
+			expectSearch: true,
+			expectQuery:  "test query",
+		},
+		{
+			name:         "conversational suffix",
+			responseText: "{\"needs_search\":true,\"queries\":[\"test query\"]} -- hope this helps!",
+			expectSearch: true,
+			expectQuery:  "test query",
+		},
+		{
+			name:         "conversational prefix and suffix",
+			responseText: "Here it is:\n{\"needs_search\":false}\nLet me know if you need more help.",
+			expectSearch: false,
+			expectQuery:  "",
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			decision, err := parseSearchDecision(testCase.responseText)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if decision.NeedsSearch != testCase.expectSearch {
+				t.Fatalf("expected NeedsSearch to be %v, got %v", testCase.expectSearch, decision.NeedsSearch)
+			}
+
+			if testCase.expectSearch {
+				if len(decision.Queries) != 1 || decision.Queries[0] != testCase.expectQuery {
+					t.Fatalf("expected query %q, got %#v", testCase.expectQuery, decision.Queries)
+				}
+			}
+		})
+	}
+}
+
 func TestSearchDeciderPromptMatchesTextFile(t *testing.T) {
 	t.Parallel()
 
