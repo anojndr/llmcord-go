@@ -1546,3 +1546,92 @@ func TestChatCompletionRouterDefaultFirstResponseTimeout(t *testing.T) {
 		t.Errorf("expected default firstResponseTimeout to be 60 seconds, got: %v", router.firstResponseTimeout)
 	}
 }
+
+func TestChatCompletionRouterAttemptTimeoutWithAndWithoutFallbackKey(t *testing.T) {
+	t.Parallel()
+
+	var (
+		capturedDeadlinesMu sync.Mutex
+		capturedDeadlines   []time.Time
+	)
+
+	attemptCapture := new(stringCapture)
+	router := newGeminiRetryRouterWithFactory(
+		attemptCapture,
+		nil,
+		func(_ string, _ int) func(
+			context.Context,
+			string,
+			[]*genai.Content,
+			*genai.GenerateContentConfig,
+		) iter.Seq2[*genai.GenerateContentResponse, error] {
+			return func(
+				ctx context.Context,
+				_ string,
+				_ []*genai.Content,
+				_ *genai.GenerateContentConfig,
+			) iter.Seq2[*genai.GenerateContentResponse, error] {
+				return func(yield func(*genai.GenerateContentResponse, error) bool) {
+					if dl, ok := ctx.Deadline(); ok {
+						capturedDeadlinesMu.Lock()
+
+						capturedDeadlines = append(capturedDeadlines, dl)
+
+						capturedDeadlinesMu.Unlock()
+					}
+
+					_ = yield(newGeminiGenerateContentResponse("Hello", genai.FinishReasonStop), nil)
+				}
+			}
+		},
+	)
+	router.firstResponseTimeout = 10 * time.Second
+
+	// Case 1: Multiple keys (meaning we have fallback keys)
+	reqWithFallback := newGeminiRetryRequest()
+	reqWithFallback.Provider.APIKeys = []string{"key1", "key2"}
+
+	parentCtx, cancel := context.WithDeadline(context.Background(), time.Now().Add(60*time.Second))
+	defer cancel()
+
+	_, err := collectStreamedContent(parentCtx, router, reqWithFallback)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	// Case 2: Single key (meaning no fallback key)
+	reqWithoutFallback := newGeminiRetryRequest()
+	reqWithoutFallback.Provider.APIKeys = []string{"key3"}
+
+	_, err = collectStreamedContent(parentCtx, router, reqWithoutFallback)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	capturedDeadlinesMu.Lock()
+	deadlines := capturedDeadlines
+	capturedDeadlinesMu.Unlock()
+
+	if len(deadlines) != 2 {
+		t.Fatalf("expected 2 captured deadlines, got %d", len(deadlines))
+	}
+
+	parentDeadline, _ := parentCtx.Deadline()
+
+	diffWithFallback := parentDeadline.Sub(deadlines[0])
+	diffWithoutFallback := parentDeadline.Sub(deadlines[1])
+
+	if diffWithFallback > 40*time.Second || diffWithFallback < 20*time.Second {
+		t.Errorf(
+			"expected first attempt (with fallback) deadline to be roughly 30s before parent deadline, got diff of %v",
+			diffWithFallback,
+		)
+	}
+
+	if diffWithoutFallback > time.Second {
+		t.Errorf(
+			"expected second attempt (without fallback) deadline to be close to parent deadline, got diff of %v",
+			diffWithoutFallback,
+		)
+	}
+}

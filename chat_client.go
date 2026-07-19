@@ -113,7 +113,12 @@ func (client chatCompletionRouter) streamChatCompletionForKey(
 
 		if deadline, ok := ctx.Deadline(); ok {
 			remaining := time.Until(deadline)
-			attemptTimeout := remaining / attemptTimeoutDivisor
+			attemptTimeout := remaining
+
+			if hasFallbackKey {
+				attemptTimeout = remaining / attemptTimeoutDivisor
+			}
+
 			attemptTimeout = max(attemptTimeout, minAttemptTimeout)
 			attemptTimeout = min(attemptTimeout, maxAttemptTimeout)
 
