@@ -232,8 +232,8 @@ func (tracker *responseTracker) release(store *messageNodeStore, fullText string
 func getFallbackModel(currentModel string) (string, bool) {
 	normalized := strings.ToLower(strings.TrimSpace(currentModel))
 
-	if normalized == "gemini-search/gemini-3.1-flash-lite-high:vision" ||
-		normalized == "gemini-search/gemini-3.1-flash-lite-high" {
+	if normalized == "gemini-search/gemini-3.5-flash-lite-high:vision" ||
+		normalized == "gemini-search/gemini-3.5-flash-lite-high" {
 		return "openrouter/openrouter/free:vision", true
 	}
 
@@ -242,7 +242,7 @@ func getFallbackModel(currentModel string) (string, bool) {
 		return "", false
 	}
 
-	return "gemini-search/gemini-3.1-flash-lite-high:vision", true
+	return "gemini-search/gemini-3.5-flash-lite-high:vision", true
 }
 
 func emptyChatCompletionRequest() chatCompletionRequest {
