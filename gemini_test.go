@@ -272,11 +272,11 @@ func TestBuildGeminiGenerateContentRequestIncludesThinkingAliasLevel(t *testing.
 		"google": *provider,
 	}
 	loadedConfig.Models = map[string]map[string]any{
-		"google/gemini-3.5-flash-lite-preview-minimal": nil,
+		"google/gemini-3.5-flash-lite-minimal": nil,
 	}
 
 	request, err := buildChatCompletionRequest(loadedConfig,
-		"google/gemini-3.5-flash-lite-preview-minimal",
+		"google/gemini-3.5-flash-lite-minimal",
 		[]chatMessage{{Role: messageRoleUser, Content: testGeminiHelloPrompt}}, false)
 	if err != nil {
 		t.Fatalf("build chat completion request: %v", err)
@@ -518,6 +518,91 @@ func TestGeminiClientStreamChatCompletionEmitsThoughtsSeparately(t *testing.T) {
 
 	if answerText.String() != "Answer." {
 		t.Fatalf("unexpected answer text: %q", answerText.String())
+	}
+}
+
+func TestGeminiClientStreamChatCompletionEmitsGroundingMetadata(t *testing.T) {
+	t.Parallel()
+
+	client := geminiClient{
+		httpClient: new(http.Client),
+		newClient: func(
+			_ context.Context,
+			_ *genai.ClientConfig,
+		) (geminiAPIClient, error) {
+			var stubClient stubGeminiAPIClient
+
+			stubClient.generateContentStream = func(
+				_ context.Context,
+				_ string,
+				_ []*genai.Content,
+				_ *genai.GenerateContentConfig,
+			) iter.Seq2[*genai.GenerateContentResponse, error] {
+				return func(yield func(*genai.GenerateContentResponse, error) bool) {
+					resp := newGeminiGenerateContentResponse("Answer text", genai.FinishReasonStop)
+					resp.Candidates[0].GroundingMetadata = &genai.GroundingMetadata{
+						ImageSearchQueries: nil,
+						GroundingChunks: []*genai.GroundingChunk{
+							{
+								Image:            nil,
+								Maps:             nil,
+								RetrievedContext: nil,
+								Web: &genai.GroundingChunkWeb{
+									Domain: "",
+									Title:  "Tokyo Weather",
+									URI:    "https://weather.com/tokyo",
+								},
+							},
+						},
+						GroundingSupports:            nil,
+						RetrievalMetadata:            nil,
+						SearchEntryPoint:             nil,
+						WebSearchQueries:             []string{"current weather Tokyo"},
+						GoogleMapsWidgetContextToken: "",
+						RetrievalQueries:             nil,
+						SourceFlaggingUris:           nil,
+					}
+
+					_ = yield(resp, nil)
+				}
+			}
+
+			return stubClient, nil
+		},
+	}
+
+	var metadata *searchMetadata
+
+	err := client.streamChatCompletion(
+		context.Background(),
+		newSimpleGeminiStreamRequest(),
+		func(delta streamDelta) error {
+			if delta.SearchMetadata != nil {
+				metadata = mergeSearchMetadata(metadata, delta.SearchMetadata)
+			}
+
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("stream chat completion: %v", err)
+	}
+
+	if metadata == nil {
+		t.Fatal("expected non-nil SearchMetadata")
+	}
+
+	if len(metadata.Queries) != 1 || metadata.Queries[0] != "current weather Tokyo" {
+		t.Fatalf("unexpected search queries: %#v", metadata.Queries)
+	}
+
+	if len(metadata.Results) != 1 {
+		t.Fatalf("unexpected search results count: %d", len(metadata.Results))
+	}
+
+	sources := extractSearchSources(metadata.Results[0].Text)
+	if len(sources) != 1 || sources[0].Title != "Tokyo Weather" || sources[0].URL != "https://weather.com/tokyo" {
+		t.Fatalf("unexpected search sources: %#v", sources)
 	}
 }
 
