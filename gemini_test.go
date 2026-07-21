@@ -272,11 +272,11 @@ func TestBuildGeminiGenerateContentRequestIncludesThinkingAliasLevel(t *testing.
 		"google": *provider,
 	}
 	loadedConfig.Models = map[string]map[string]any{
-		"google/gemini-3.1-flash-lite-preview-minimal": nil,
+		"google/gemini-3.5-flash-lite-preview-minimal": nil,
 	}
 
 	request, err := buildChatCompletionRequest(loadedConfig,
-		"google/gemini-3.1-flash-lite-preview-minimal",
+		"google/gemini-3.5-flash-lite-preview-minimal",
 		[]chatMessage{{Role: messageRoleUser, Content: testGeminiHelloPrompt}}, false)
 	if err != nil {
 		t.Fatalf("build chat completion request: %v", err)
