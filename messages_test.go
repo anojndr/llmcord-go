@@ -411,21 +411,21 @@ func TestBuildChatCompletionRequestNormalizesGeminiThinkingAlias(t *testing.T) {
 		"google": *provider,
 	}
 	loadedConfig.Models = map[string]map[string]any{
-		"google/gemini-3.5-flash-lite-preview-minimal": modelParameters,
+		"google/gemini-3.5-flash-lite-minimal": modelParameters,
 	}
 
 	request, err := buildChatCompletionRequest(loadedConfig,
-		"google/gemini-3.5-flash-lite-preview-minimal",
+		"google/gemini-3.5-flash-lite-minimal",
 		[]chatMessage{{Role: messageRoleUser, Content: "hello"}}, false)
 	if err != nil {
 		t.Fatalf("build chat completion request: %v", err)
 	}
 
-	if request.Model != "gemini-3.5-flash-lite-preview" {
+	if request.Model != "gemini-3.5-flash-lite" {
 		t.Fatalf("unexpected request model: %q", request.Model)
 	}
 
-	if request.ConfiguredModel != "google/gemini-3.5-flash-lite-preview-minimal" {
+	if request.ConfiguredModel != "google/gemini-3.5-flash-lite-minimal" {
 		t.Fatalf("unexpected configured model: %q", request.ConfiguredModel)
 	}
 
@@ -472,13 +472,13 @@ func TestBuildChatCompletionRequestRejectsGeminiThinkingAliasWithInvalidThinking
 		"google": *provider,
 	}
 	loadedConfig.Models = map[string]map[string]any{
-		"google/gemini-3.5-flash-lite-preview-minimal": {
+		"google/gemini-3.5-flash-lite-minimal": {
 			"thinkingConfig": "invalid",
 		},
 	}
 
 	_, err := buildChatCompletionRequest(loadedConfig,
-		"google/gemini-3.5-flash-lite-preview-minimal",
+		"google/gemini-3.5-flash-lite-minimal",
 		[]chatMessage{{Role: messageRoleUser, Content: "hello"}}, false)
 	if err == nil {
 		t.Fatal("expected invalid thinkingConfig to fail")
