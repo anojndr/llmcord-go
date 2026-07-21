@@ -191,14 +191,14 @@ func processGeminiStreamResponse(
 }
 
 func geminiHandleStreamUpdate(handle func(streamDelta) error, delta streamDelta) error {
-	if delta.Thinking != "" || delta.Content != "" {
+	if delta.Thinking != "" || delta.Content != "" || delta.SearchMetadata != nil {
 		err := handle(streamDelta{
 			Thinking:           delta.Thinking,
 			Content:            delta.Content,
 			FinishReason:       "",
 			Usage:              nil,
 			ProviderResponseID: "",
-			SearchMetadata:     nil,
+			SearchMetadata:     delta.SearchMetadata,
 		})
 		if err != nil {
 			return fmt.Errorf(handleStreamDeltaErrorFormat, err)
@@ -1189,6 +1189,7 @@ func geminiStreamDelta(response *genai.GenerateContentResponse) (streamDelta, er
 		delta.Thinking = geminiThoughtText(candidate)
 		delta.Content = geminiCandidateText(candidate)
 		delta.FinishReason = normalizedGeminiFinishReason(candidate.FinishReason)
+		delta.SearchMetadata = geminiSearchMetadata(candidate)
 
 		err = geminiFinishReasonError(candidate)
 		if err != nil {
@@ -1206,6 +1207,57 @@ func geminiStreamDelta(response *genai.GenerateContentResponse) (streamDelta, er
 	delta.Usage = geminiStreamUsage(response.UsageMetadata)
 
 	return delta, nil
+}
+
+func geminiSearchMetadata(candidate *genai.Candidate) *searchMetadata {
+	if candidate == nil || candidate.GroundingMetadata == nil {
+		return nil
+	}
+
+	groundingMetadata := candidate.GroundingMetadata
+	if len(groundingMetadata.WebSearchQueries) == 0 && len(groundingMetadata.GroundingChunks) == 0 {
+		return nil
+	}
+
+	var resultsText strings.Builder
+
+	for _, chunk := range groundingMetadata.GroundingChunks {
+		if chunk == nil || chunk.Web == nil {
+			continue
+		}
+
+		uri := strings.TrimSpace(chunk.Web.URI)
+		if uri == "" {
+			continue
+		}
+
+		title := strings.TrimSpace(chunk.Web.Title)
+		if title != "" {
+			resultsText.WriteString("Title: " + title + "\n")
+		}
+
+		resultsText.WriteString("URL: " + uri + "\n\n")
+	}
+
+	text := strings.TrimSpace(resultsText.String())
+	if text == "" && len(groundingMetadata.WebSearchQueries) == 0 {
+		return nil
+	}
+
+	results := make([]webSearchResult, 0, 1)
+	if text != "" {
+		results = append(results, webSearchResult{
+			Query: "",
+			Text:  text,
+		})
+	}
+
+	return &searchMetadata{
+		Queries:             groundingMetadata.WebSearchQueries,
+		Results:             results,
+		MaxURLs:             defaultWebSearchMaxURLs,
+		VisualSearchSources: nil,
+	}
 }
 
 func geminiStreamUsage(metadata *genai.GenerateContentResponseUsageMetadata) *tokenUsage {

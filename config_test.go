@@ -12,7 +12,7 @@ import (
 const (
 	firstTestModel         = "openai/first-model"
 	secondTestModel        = "openai/second-model"
-	testMediaAnalysisModel = "google/gemini-3.5-flash-lite-preview"
+	testMediaAnalysisModel = "google/gemini-3.5-flash-lite"
 )
 
 func TestLoadConfigAppliesDefaultsAndPreservesModelOrder(t *testing.T) {
@@ -899,9 +899,9 @@ providers:
     type: gemini
     api_key: test-token
 models:
-  google/gemini-3.5-flash-lite-preview:
+  google/gemini-3.5-flash-lite:
     context_window: 1000000
-  google/gemini-3.5-flash-lite-preview-minimal:
+  google/gemini-3.5-flash-lite-minimal:
 `
 
 	err := os.WriteFile(configPath, []byte(configText), 0o600)
@@ -914,10 +914,10 @@ models:
 		t.Fatalf("load config: %v", err)
 	}
 
-	if loadedConfig.modelContextWindow("google/gemini-3.5-flash-lite-preview-minimal") != 1_000_000 {
+	if loadedConfig.modelContextWindow("google/gemini-3.5-flash-lite-minimal") != 1_000_000 {
 		t.Fatalf(
 			"unexpected gemini alias context window: %d",
-			loadedConfig.modelContextWindow("google/gemini-3.5-flash-lite-preview-minimal"),
+			loadedConfig.modelContextWindow("google/gemini-3.5-flash-lite-minimal"),
 		)
 	}
 }
