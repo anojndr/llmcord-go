@@ -2262,7 +2262,7 @@ providers:
     api_key: openrouter-api-key
 models:
   some-provider/some-model:
-  gemini-search/gemini-3.5-flash-lite-high:vision:
+  gemini-search/gemini-3.5-flash-lite-medium:vision:
   openrouter/openrouter/free:vision:
 `
 
@@ -2419,7 +2419,7 @@ func TestGenerateAndSendResponseFallback_Success(t *testing.T) {
 				return errPrimaryModelFailed
 			}
 
-			if req.ConfiguredModel == "gemini-search/gemini-3.5-flash-lite-high:vision" {
+			if req.ConfiguredModel == "gemini-search/gemini-3.5-flash-lite-medium:vision" {
 				return errFirstFallbackModelFailed
 			}
 
@@ -2438,7 +2438,7 @@ func TestGenerateAndSendResponseFallback_Success(t *testing.T) {
 
 	expectedModels := []string{
 		"some-provider/some-model",
-		"gemini-search/gemini-3.5-flash-lite-high:vision",
+		"gemini-search/gemini-3.5-flash-lite-medium:vision",
 		"openrouter/openrouter/free:vision",
 	}
 
@@ -2447,7 +2447,7 @@ func TestGenerateAndSendResponseFallback_Success(t *testing.T) {
 	}
 
 	expectedWarnings := []string{
-		"Warning: fell back to gemini-search/gemini-3.5-flash-lite-high:vision due to generation error",
+		"Warning: fell back to gemini-search/gemini-3.5-flash-lite-medium:vision due to generation error",
 		"Warning: fell back to openrouter/openrouter/free:vision due to generation error",
 	}
 
@@ -2464,7 +2464,7 @@ func TestGenerateAndSendResponseFallback_StartAtGeminiSearch(t *testing.T) {
 
 	recordedRequests := runFallbackTest(
 		t,
-		"gemini-search/gemini-3.5-flash-lite-high:vision",
+		"gemini-search/gemini-3.5-flash-lite-medium:vision",
 		func(
 			_ context.Context,
 			req chatCompletionRequest,
@@ -2475,7 +2475,7 @@ func TestGenerateAndSendResponseFallback_StartAtGeminiSearch(t *testing.T) {
 
 			requestedModels = append(requestedModels, req.ConfiguredModel)
 
-			if req.ConfiguredModel == "gemini-search/gemini-3.5-flash-lite-high:vision" {
+			if req.ConfiguredModel == "gemini-search/gemini-3.5-flash-lite-medium:vision" {
 				return errGeminiSearchFailed
 			}
 
@@ -2493,7 +2493,7 @@ func TestGenerateAndSendResponseFallback_StartAtGeminiSearch(t *testing.T) {
 	defer requestedModelsMu.Unlock()
 
 	expectedModels := []string{
-		"gemini-search/gemini-3.5-flash-lite-high:vision",
+		"gemini-search/gemini-3.5-flash-lite-medium:vision",
 		"openrouter/openrouter/free:vision",
 	}
 
@@ -2538,7 +2538,7 @@ providers:
 models:
   x-ai/grok:
   some-provider/some-model:
-  gemini-search/gemini-3.5-flash-lite-high:vision:
+  gemini-search/gemini-3.5-flash-lite-medium:vision:
   openrouter/openrouter/free:vision:
 search_decider_model: some-provider/some-model
 `
@@ -2617,7 +2617,7 @@ func (s *fallbackSearchTestState) stubFunc(
 		return nil
 	}
 
-	if req.ConfiguredModel == "gemini-search/gemini-3.5-flash-lite-high:vision" {
+	if req.ConfiguredModel == "gemini-search/gemini-3.5-flash-lite-medium:vision" {
 		s.fallbackReqReceived = req
 		_ = handle(newStreamDelta("success response", ""))
 
