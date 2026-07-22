@@ -161,7 +161,7 @@ Model notes:
 - `context_window` is local-only metadata used for retained-context reply-footers and automatic context compaction. The footer estimates the conversation that will be carried into the next turn, so provider-only generation tokens such as hidden reasoning output are not counted as retained context. CSV, numeric logs, and other punctuation-heavy text are budgeted more conservatively than prose because they often tokenize more densely.
 - OpenAI GPT-5 aliases such as `openai/gpt-5.4-low` control reasoning effort. For GPT-5.4 that alias resolves to `gpt-5.4` with `reasoning.effort=low` on the built-in `openai` provider, or `reasoning_effort=low` on other OpenAI-compatible providers; `-minimal` is normalized to `low` to match current model support.
 - `openai/...` models can send a stable `prompt_cache_key` regardless of the configured `base_url`. You can also request extended prompt-cache retention by setting `prompt_cache_retention: 24h` in the provider or model `extra_body`.
-- Gemini aliases such as `-minimal`, `-low`, `-medium`, and `-high` control thought effort.
+- Gemini aliases such as `-minimal`, `-low`, `-medium`, and `-high` control thought effort (`thinkingLevel`). Thought summaries (`includeThoughts`) are disabled by default so thinking models perform internal reasoning without emitting visible thinking blocks, but can be enabled in `thinkingConfig` when desired.
 - Codex aliases such as `-none`, `-minimal`, `-low`, `-medium`, `-high`, and `-xhigh` control reasoning effort.
 
 ### Search and Visual Search

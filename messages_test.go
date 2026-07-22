@@ -485,6 +485,8 @@ func TestBuildChatCompletionRequestRejectsGeminiThinkingAliasWithInvalidThinking
 	}
 }
 
+
+
 func TestMessageContentOptionsForModelRestrictsGeminiDocumentsToPDF(t *testing.T) {
 	t.Parallel()
 

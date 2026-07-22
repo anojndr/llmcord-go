@@ -437,7 +437,7 @@ func defaultGeminiThoughtSummaries(extraBody map[string]any) (map[string]any, er
 	existingThinkingConfig, thinkingConfigExists := normalizedExtraBody["thinkingConfig"]
 	if !thinkingConfigExists || existingThinkingConfig == nil {
 		normalizedExtraBody["thinkingConfig"] = map[string]any{
-			"includeThoughts": true,
+			"includeThoughts": false,
 		}
 
 		return normalizedExtraBody, nil
@@ -453,7 +453,7 @@ func defaultGeminiThoughtSummaries(extraBody map[string]any) (map[string]any, er
 
 	clonedThinkingConfig := maps.Clone(thinkingConfig)
 	if _, exists := clonedThinkingConfig["includeThoughts"]; !exists {
-		clonedThinkingConfig["includeThoughts"] = true
+		clonedThinkingConfig["includeThoughts"] = false
 	}
 
 	normalizedExtraBody["thinkingConfig"] = clonedThinkingConfig

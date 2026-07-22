@@ -49,10 +49,10 @@ providers:
     #   - backup-key
     api_key: 
     # enable_grounding: true
-    # Thought summaries are enabled by default. To turn them off:
+    # Thought summaries are disabled by default. To turn them on:
     # extra_body:
     #   thinkingConfig:
-    #     includeThoughts: false
+    #     includeThoughts: true
 
   groq:
     base_url: https://api.groq.com/openai/v1
