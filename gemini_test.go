@@ -372,8 +372,8 @@ func TestBuildGeminiGenerateContentRequestDefaultsThoughtSummaries(t *testing.T)
 		t.Fatalf("unexpected gemini config: %#v", config)
 	}
 
-	if !config.ThinkingConfig.IncludeThoughts {
-		t.Fatalf("expected includeThoughts to default on: %#v", config.ThinkingConfig)
+	if config.ThinkingConfig.IncludeThoughts {
+		t.Fatalf("expected includeThoughts to default off: %#v", config.ThinkingConfig)
 	}
 }
 
@@ -1292,8 +1292,8 @@ func assertGeminiGenerateContentConfig(
 		t.Fatalf("unexpected gemini extra body: %#v", config.HTTPOptions.ExtraBody)
 	}
 
-	if config.ThinkingConfig == nil || !config.ThinkingConfig.IncludeThoughts {
-		t.Fatalf("expected gemini thought summaries to be enabled: %#v", config.ThinkingConfig)
+	if config.ThinkingConfig == nil || config.ThinkingConfig.IncludeThoughts {
+		t.Fatalf("expected gemini thought summaries to be disabled by default: %#v", config.ThinkingConfig)
 	}
 }
 
@@ -1329,8 +1329,8 @@ func streamGeminiTestChunks(
 			t.Fatalf("unexpected gemini config contents: %#v", config)
 		}
 
-		if config.ThinkingConfig == nil || !config.ThinkingConfig.IncludeThoughts {
-			t.Fatalf("expected gemini thought summaries to be enabled: %#v", config)
+		if config.ThinkingConfig == nil || config.ThinkingConfig.IncludeThoughts {
+			t.Fatalf("expected gemini thought summaries to be disabled by default: %#v", config)
 		}
 
 		return func(yield func(*genai.GenerateContentResponse, error) bool) {
@@ -1442,3 +1442,6 @@ func TestBuildGeminiClientConfigUsesProviderHTTPOptions(t *testing.T) {
 		t.Fatalf("unexpected gemini extra header: %q", clientConfig.HTTPOptions.Headers.Get("X-Test"))
 	}
 }
+
+
+
