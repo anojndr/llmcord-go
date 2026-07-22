@@ -2742,3 +2742,42 @@ func TestGenerateAndSendResponseFallback_PreservesChatHistoryFromMainModel(t *te
 			state.fallbackReqReceived.Messages)
 	}
 }
+
+func TestPrepareFallbackRequest_SkipsSearchDeciderWhenDisabledForFallback(t *testing.T) {
+	t.Parallel()
+
+	state := new(fallbackSearchTestState)
+	instance, currentRequest, tracker := setupGrokFallbackSearchTestContext(
+		t,
+		state.stubFunc,
+		state.webSearchStub,
+	)
+
+	loadedConfig, err := loadConfig(instance.configPath)
+	if err != nil {
+		t.Fatalf("loadConfig failed: %v", err)
+	}
+
+	provider := loadedConfig.Providers["x-ai"]
+
+	// Fallback to x-ai/grok (search decider disabled for x-ai models)
+	newReq, warnings, err := instance.prepareFallbackRequest(
+		context.Background(),
+		loadedConfig,
+		provider,
+		"x-ai/grok",
+		currentRequest,
+		tracker,
+	)
+	if err != nil {
+		t.Fatalf("prepareFallbackRequest failed: %v", err)
+	}
+
+	if newReq.ConfiguredModel != "x-ai/grok" {
+		t.Fatalf("unexpected configured model: %q", newReq.ConfiguredModel)
+	}
+
+	if len(warnings) != 0 {
+		t.Fatalf("unexpected warnings: %#v", warnings)
+	}
+}
