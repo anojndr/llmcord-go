@@ -852,6 +852,37 @@ func TestAssignOpenAIPromptCacheKeyUsesConversationAnchorForOpenAIProvider(t *te
 	}
 }
 
+func TestAssignOpenAIPromptCacheKeyWithScopeIsolatesDecider(t *testing.T) {
+	t.Parallel()
+
+	store := newMessageNodeStore(8)
+	assistantMessage := new(discordgo.Message)
+	assistantMessage.ID = "100"
+	assistantMessage.ChannelID = "ch-1"
+	assistantMessage.Content = "hello"
+
+	store.getOrCreate(assistantMessage.ID)
+
+	var mainRequest chatCompletionRequest
+
+	mainRequest.Provider.APIKind = providerAPIKindOpenAI
+	mainRequest.Provider.BaseURL = testOpenAIBaseURL
+	mainRequest.ConfiguredModel = "openai/gpt-5.4"
+
+	deciderRequest := mainRequest
+
+	assignOpenAIPromptCacheKey(&mainRequest, assistantMessage, store, 10)
+	assignOpenAIPromptCacheKeyWithScope(&deciderRequest, assistantMessage, store, 10, "search-decider")
+
+	if mainRequest.SessionID == "" || deciderRequest.SessionID == "" {
+		t.Fatal("expected non-empty session ids")
+	}
+
+	if mainRequest.SessionID == deciderRequest.SessionID {
+		t.Fatalf("expected isolated session ids between main and decider, got %q", mainRequest.SessionID)
+	}
+}
+
 func TestAssignOpenAIPromptCacheKeySkipsNonOpenAIProvider(t *testing.T) {
 	t.Parallel()
 

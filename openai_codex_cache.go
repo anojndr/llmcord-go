@@ -19,6 +19,16 @@ func assignOpenAIPromptCacheKey(
 	store *messageNodeStore,
 	maxMessages int,
 ) {
+	assignOpenAIPromptCacheKeyWithScope(request, sourceMessage, store, maxMessages, "")
+}
+
+func assignOpenAIPromptCacheKeyWithScope(
+	request *chatCompletionRequest,
+	sourceMessage *discordgo.Message,
+	store *messageNodeStore,
+	maxMessages int,
+	scope string,
+) {
 	if request == nil {
 		return
 	}
@@ -34,6 +44,7 @@ func assignOpenAIPromptCacheKey(
 		sourceMessage,
 		store,
 		maxMessages,
+		scope,
 	)
 }
 
@@ -68,13 +79,21 @@ func openAIConversationPromptCacheKey(
 	sourceMessage *discordgo.Message,
 	store *messageNodeStore,
 	maxMessages int,
+	scope string,
 ) string {
 	anchorMessageID := openAIConversationAnchorMessageID(sourceMessage, store, maxMessages)
 	if cacheKeyPrefix == "" || anchorMessageID == "" {
 		return ""
 	}
 
-	hash := sha256.Sum256([]byte(strings.TrimSpace(configuredModel) + "\n" + anchorMessageID))
+	hashInput := strings.TrimSpace(configuredModel)
+	if trimmedScope := strings.TrimSpace(scope); trimmedScope != "" {
+		hashInput += "\n" + trimmedScope
+	}
+
+	hashInput += "\n" + anchorMessageID
+
+	hash := sha256.Sum256([]byte(hashInput))
 
 	return fmt.Sprintf("%s-%x", cacheKeyPrefix, hash[:12])
 }

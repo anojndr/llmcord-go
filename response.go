@@ -321,11 +321,14 @@ func (instance *bot) prepareFallbackRequest(
 		originalProvider, err := configuredModelProvider(loadedConfig, tracker.originalModel)
 		if err == nil {
 			originalSkipped = providerHandlesGeneralURLsDirectly(tracker.originalModel) ||
-				instance.currentGroundingEnabled(originalProvider)
+				instance.currentGroundingEnabled(originalProvider) ||
+				searchDeciderDisabledForModel(tracker.originalModel)
 		}
 	}
 
-	fallbackSkipped := providerHandlesGeneralURLsDirectly(fallbackModel) || groundingEnabled
+	fallbackSkipped := providerHandlesGeneralURLsDirectly(fallbackModel) ||
+		groundingEnabled ||
+		searchDeciderDisabledForModel(fallbackModel)
 
 	var searchWarnings []string
 
@@ -337,12 +340,9 @@ func (instance *bot) prepareFallbackRequest(
 	}
 
 	if originalSkipped && !fallbackSkipped {
-		msgs, metadata, warnings, err := instance.maybeAugmentConversationWithWebSearch(
+		msgs, metadata, warnings := instance.maybeAugmentConversationWithWebSearch(
 			ctx, loadedConfig, fallbackModel, tracker.sourceMessage, messages,
 		)
-		if err != nil {
-			return emptyChatCompletionRequest(), nil, fmt.Errorf("augment fallback request with web search: %w", err)
-		}
 
 		messages, searchWarnings = msgs, warnings
 
