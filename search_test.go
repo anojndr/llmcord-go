@@ -851,16 +851,13 @@ func TestMaybeAugmentConversationWithWebSearchAddsResultsWhenNeeded(t *testing.T
 		{Role: messageRoleUser, Content: "<@123>: what changed?"},
 	}
 
-	augmentedConversation, searchMetadata, warnings, err := instance.maybeAugmentConversationWithWebSearch(
+	augmentedConversation, searchMetadata, warnings := instance.maybeAugmentConversationWithWebSearch(
 		context.Background(),
 		testSearchConfig(),
 		"openai/main-model",
 		nil,
 		conversation,
 	)
-	if err != nil {
-		t.Fatalf("maybe augment conversation with web search: %v", err)
-	}
 
 	if len(warnings) != 0 {
 		t.Fatalf("unexpected warnings: %#v", warnings)
@@ -927,16 +924,13 @@ func TestMaybeAugmentConversationWithWebSearchPassesCurrentExaSearchType(t *test
 	instance := newSearchTestBot(openAI, webSearch)
 	instance.setCurrentExaSearchType(exaSearchTypeDeep)
 
-	augmentedConversation, searchMetadata, warnings, err := instance.maybeAugmentConversationWithWebSearch(
+	augmentedConversation, searchMetadata, warnings := instance.maybeAugmentConversationWithWebSearch(
 		context.Background(),
 		testExaAPIWebSearchConfig(),
 		"openai/main-model",
 		nil,
 		[]chatMessage{{Role: messageRoleUser, Content: "<@123>: what changed?"}},
 	)
-	if err != nil {
-		t.Fatalf("maybe augment conversation with web search: %v", err)
-	}
 
 	if len(augmentedConversation) != 1 {
 		t.Fatalf("unexpected augmented conversation length: %d", len(augmentedConversation))
@@ -1030,16 +1024,13 @@ func TestMaybeAugmentConversationWithWebSearchSkipsWhenNotNeeded(t *testing.T) {
 
 	conversation := []chatMessage{{Role: messageRoleUser, Content: "<@123>: explain closures"}}
 
-	augmentedConversation, searchMetadata, warnings, err := instance.maybeAugmentConversationWithWebSearch(
+	augmentedConversation, searchMetadata, warnings := instance.maybeAugmentConversationWithWebSearch(
 		context.Background(),
 		testSearchConfig(),
 		"openai/main-model",
 		nil,
 		conversation,
 	)
-	if err != nil {
-		t.Fatalf("maybe augment conversation with web search: %v", err)
-	}
 
 	if len(warnings) != 0 {
 		t.Fatalf("unexpected warnings: %#v", warnings)
@@ -1095,16 +1086,13 @@ func TestMaybeAugmentConversationWithWebSearchSkipsDeciderForExaResearchPro(t *t
 
 	conversation := []chatMessage{{Role: messageRoleUser, Content: "<@123>: latest ai news"}}
 
-	augmentedConversation, searchMetadata, warnings, err := instance.maybeAugmentConversationWithWebSearch(
+	augmentedConversation, searchMetadata, warnings := instance.maybeAugmentConversationWithWebSearch(
 		context.Background(),
 		loadedConfig,
 		"exa/exa-research-pro",
 		nil,
 		conversation,
 	)
-	if err != nil {
-		t.Fatalf("maybe augment conversation with web search: %v", err)
-	}
 
 	if len(warnings) != 0 {
 		t.Fatalf("unexpected warnings: %#v", warnings)
@@ -1168,16 +1156,13 @@ func TestMaybeAugmentConversationWithWebSearchSkipsDeciderForXAIProvider(t *test
 
 	conversation := []chatMessage{{Role: messageRoleUser, Content: "<@123>: latest ai news"}}
 
-	augmentedConversation, searchMetadata, warnings, err := instance.maybeAugmentConversationWithWebSearch(
+	augmentedConversation, searchMetadata, warnings := instance.maybeAugmentConversationWithWebSearch(
 		context.Background(),
 		loadedConfig,
 		"x-ai/grok-4",
 		nil,
 		conversation,
 	)
-	if err != nil {
-		t.Fatalf("maybe augment conversation with web search: %v", err)
-	}
 
 	if len(warnings) != 0 {
 		t.Fatalf("unexpected warnings: %#v", warnings)
@@ -1226,16 +1211,13 @@ func TestMaybeAugmentConversationWithWebSearchFallsBackOnSearchError(t *testing.
 
 	conversation := []chatMessage{{Role: messageRoleUser, Content: "<@123>: latest ai news"}}
 
-	augmentedConversation, searchMetadata, warnings, err := instance.maybeAugmentConversationWithWebSearch(
+	augmentedConversation, searchMetadata, warnings := instance.maybeAugmentConversationWithWebSearch(
 		context.Background(),
 		testSearchConfig(),
 		"openai/main-model",
 		nil,
 		conversation,
 	)
-	if err != nil {
-		t.Fatalf("maybe augment conversation with web search: %v", err)
-	}
 
 	if len(warnings) != 1 || warnings[0] != searchWarningText {
 		t.Fatalf("unexpected warnings: %#v", warnings)
@@ -1247,6 +1229,54 @@ func TestMaybeAugmentConversationWithWebSearchFallsBackOnSearchError(t *testing.
 
 	if augmentedConversation[0].Content != conversation[0].Content {
 		t.Fatal("expected original conversation when web search fails")
+	}
+}
+
+func TestMaybeAugmentConversationWithWebSearchFallsBackOnAppendError(t *testing.T) {
+	t.Parallel()
+
+	openAI := newStubChatClient(func(
+		_ context.Context,
+		_ chatCompletionRequest,
+		handle func(streamDelta) error,
+	) error {
+		delta := new(streamDelta)
+		delta.Content = `{"needs_search":true,"queries":["latest ai news"]}`
+
+		return handle(*delta)
+	})
+
+	webSearch := newStubWebSearchClient(func(
+		_ context.Context,
+		_ config,
+		_ []string,
+	) ([]webSearchResult, error) {
+		return []webSearchResult{{Query: "latest ai news", Text: "some news"}}, nil
+	})
+
+	instance := newSearchTestBot(openAI, webSearch)
+
+	// Empty conversation has no user message, so appending web search results fails.
+	emptyConversation := []chatMessage{}
+
+	augmentedConversation, searchMetadata, warnings := instance.maybeAugmentConversationWithWebSearch(
+		context.Background(),
+		testSearchConfig(),
+		"openai/main-model",
+		nil,
+		emptyConversation,
+	)
+
+	if len(warnings) != 1 || warnings[0] != searchWarningText {
+		t.Fatalf("unexpected warnings: %#v", warnings)
+	}
+
+	if searchMetadata != nil {
+		t.Fatalf("expected search metadata to be nil: %#v", searchMetadata)
+	}
+
+	if len(augmentedConversation) != 0 {
+		t.Fatalf("expected empty conversation on append fallback, got: %#v", augmentedConversation)
 	}
 }
 

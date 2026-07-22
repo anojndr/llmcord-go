@@ -263,7 +263,7 @@ func (instance *bot) maybeAugmentConversationWithWebSearch(
 	providerSlashModel string,
 	sourceMessage *discordgo.Message,
 	conversation []chatMessage,
-) ([]chatMessage, *searchMetadata, []string, error) {
+) ([]chatMessage, *searchMetadata, []string) {
 	decision, decisionWarnings, err := instance.decideWebSearch(
 		ctx,
 		loadedConfig,
@@ -274,11 +274,11 @@ func (instance *bot) maybeAugmentConversationWithWebSearch(
 	if err != nil {
 		slog.Warn("decide web search", "error", err)
 
-		return conversation, nil, append(decisionWarnings, searchWarningText), nil
+		return conversation, nil, append(decisionWarnings, searchWarningText)
 	}
 
 	if !decision.NeedsSearch {
-		return conversation, nil, decisionWarnings, nil
+		return conversation, nil, decisionWarnings
 	}
 
 	searchConfig := loadedConfig
@@ -288,7 +288,7 @@ func (instance *bot) maybeAugmentConversationWithWebSearch(
 	if err != nil {
 		slog.Warn("run web search", "queries", decision.Queries, "error", err)
 
-		return conversation, nil, append(decisionWarnings, searchWarningText), nil
+		return conversation, nil, append(decisionWarnings, searchWarningText)
 	}
 
 	augmentedConversation, err := appendWebSearchResultsToConversation(
@@ -296,13 +296,14 @@ func (instance *bot) maybeAugmentConversationWithWebSearch(
 		formatWebSearchResults(results),
 	)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("append web search results to conversation: %w", err)
+		slog.Warn("append web search results to conversation", "error", err)
+
+		return conversation, nil, append(decisionWarnings, searchWarningText)
 	}
 
 	return augmentedConversation,
 		newSearchMetadata(decision.Queries, results, loadedConfig.WebSearch.maxURLs()),
-		decisionWarnings,
-		nil
+		decisionWarnings
 }
 
 func newSearchMetadata(queries []string, results []webSearchResult, maxURLs int) *searchMetadata {
@@ -480,7 +481,13 @@ func (instance *bot) decideWebSearch(
 		return searchDecision{}, nil, fmt.Errorf("build search decider request: %w", err)
 	}
 
-	assignOpenAIPromptCacheKey(&request, sourceMessage, instance.nodes, loadedConfig.MaxMessages)
+	assignOpenAIPromptCacheKeyWithScope(
+		&request,
+		sourceMessage,
+		instance.nodes,
+		loadedConfig.MaxMessages,
+		"search-decider",
+	)
 
 	searchContext, cancel := context.WithTimeout(ctx, searchDeciderTimeout)
 	defer cancel()

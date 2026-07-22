@@ -892,16 +892,13 @@ func (instance *bot) augmentConversation(
 		return augmentedMessages, searchMetadata, warnings, nil
 	}
 
-	augmentedMessages, webSearchMetadata, searchWarnings, err := instance.maybeAugmentConversationWithWebSearch(
+	augmentedMessages, webSearchMetadata, searchWarnings := instance.maybeAugmentConversationWithWebSearch(
 		ctx,
 		loadedConfig,
 		providerSlashModel,
 		sourceMessage,
 		augmentedMessages,
 	)
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("augment conversation with web search: %w", err)
-	}
 
 	warnings = append(warnings, searchWarnings...)
 
