@@ -1555,6 +1555,37 @@ func TestExaSearchClientSearchUsesConfiguredTextMaxCharacters(t *testing.T) {
 	)
 }
 
+func TestExaSearchClientSearchSendsAuthorizationBearerHeader(t *testing.T) {
+	t.Parallel()
+
+	var authHeader string
+
+	client, closeServer := newExaAPISearchTestClient(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		request *http.Request,
+	) {
+		authHeader = request.Header.Get("Authorization")
+
+		responseWriter.Header().Set("Content-Type", "application/json")
+
+		err := json.NewEncoder(responseWriter).Encode(testExaAPISearchSuccessResponse())
+		if err != nil {
+			t.Errorf("encode Exa response: %v", err)
+		}
+	}))
+	defer closeServer()
+
+	_, err := client.search(context.Background(), testExaAPIWebSearchConfig(), []string{"latest ai news"})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+
+	expectedAuthHeader := "Bearer " + testExaPrimaryValue
+	if authHeader != expectedAuthHeader {
+		t.Fatalf("unexpected Authorization header: got %q, want %q", authHeader, expectedAuthHeader)
+	}
+}
+
 func TestRoutedWebSearchClientFallsBackToTavilyWhenMCPFails(t *testing.T) {
 	t.Parallel()
 

@@ -144,11 +144,14 @@ type exaSearchResponse struct {
 }
 
 type exaSearchResponseResult struct {
+	ID            *string
 	Title         string
 	URL           string
-	Highlights    []string
 	PublishedDate *string
 	Author        *string
+	Image         *string
+	Favicon       *string
+	Highlights    []string
 	Summary       *string
 	Text          *string
 }
@@ -1424,17 +1427,26 @@ func (client exaSearchClient) searchAPIQuery(
 }
 
 func marshalExaSearchRequest(requestBody exaSearchRequest) ([]byte, error) {
+	contentsMap := map[string]any{
+		"highlights": requestBody.Contents.Highlights,
+	}
+
+	if requestBody.Contents.Text.MaxCharacters > 0 {
+		textMap := map[string]any{
+			"maxCharacters": requestBody.Contents.Text.MaxCharacters,
+		}
+		if requestBody.Contents.Text.Verbosity != "" {
+			textMap["verbosity"] = requestBody.Contents.Text.Verbosity
+		}
+
+		contentsMap["text"] = textMap
+	}
+
 	requestBytes, err := json.Marshal(map[string]any{
-		"query":        requestBody.Query,
-		messageTypeKey: requestBody.Type,
-		"numResults":   requestBody.NumResults,
-		"contents": map[string]any{
-			messageTextKey: map[string]any{
-				"maxCharacters": requestBody.Contents.Text.MaxCharacters,
-				"verbosity":     requestBody.Contents.Text.Verbosity,
-			},
-			"highlights": requestBody.Contents.Highlights,
-		},
+		"query":      requestBody.Query,
+		"type":       requestBody.Type,
+		"numResults": requestBody.NumResults,
+		"contents":   contentsMap,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("marshal Exa search request payload: %w", err)
@@ -1481,6 +1493,7 @@ func (client exaSearchClient) searchAPIQueryOnce(
 
 	httpRequest.Header.Set("Accept", applicationJSONContentType)
 	httpRequest.Header.Set(contentTypeHeader, applicationJSONContentType)
+	httpRequest.Header.Set("Authorization", "Bearer "+strings.TrimSpace(apiKey))
 	httpRequest.Header.Set("X-Api-Key", strings.TrimSpace(apiKey))
 
 	httpResponse, err := client.httpClient.Do(httpRequest)
@@ -1948,11 +1961,14 @@ func parseExaSearchResponse(rawResponse map[string]any) (exaSearchResponse, erro
 		}
 
 		response.Results = append(response.Results, exaSearchResponseResult{
+			ID:            mapOptionalStringValue(resultMap, "id"),
 			Title:         mapStringValue(resultMap, "title"),
 			URL:           mapStringValue(resultMap, "url"),
-			Highlights:    mapStringSliceValue(resultMap, "highlights"),
 			PublishedDate: mapOptionalStringValue(resultMap, "publishedDate"),
 			Author:        mapOptionalStringValue(resultMap, "author"),
+			Image:         mapOptionalStringValue(resultMap, "image"),
+			Favicon:       mapOptionalStringValue(resultMap, "favicon"),
+			Highlights:    mapStringSliceValue(resultMap, "highlights"),
 			Summary:       mapOptionalStringValue(resultMap, "summary"),
 			Text:          mapOptionalStringValue(resultMap, "text"),
 		})
