@@ -327,6 +327,7 @@ func (client websiteClient) fetchWithExaContentsOnce(
 
 	httpRequest.Header.Set("Accept", applicationJSONContentType)
 	httpRequest.Header.Set(contentTypeHeader, applicationJSONContentType)
+	httpRequest.Header.Set("Authorization", "Bearer "+strings.TrimSpace(apiKey))
 	httpRequest.Header.Set("X-Api-Key", strings.TrimSpace(apiKey))
 
 	httpResponse, err := client.httpClient.Do(httpRequest)
