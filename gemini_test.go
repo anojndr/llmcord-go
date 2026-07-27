@@ -1442,6 +1442,3 @@ func TestBuildGeminiClientConfigUsesProviderHTTPOptions(t *testing.T) {
 		t.Fatalf("unexpected gemini extra header: %q", clientConfig.HTTPOptions.Headers.Get("X-Test"))
 	}
 }
-
-
-

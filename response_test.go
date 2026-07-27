@@ -1646,6 +1646,84 @@ func TestGenerateAndSendResponseDoesNotStreamXAISourceAppendix(t *testing.T) {
 	assertStoredXAISourceAppendixResponse(t, tracker, answerText, sourceURL)
 }
 
+func TestGenerateAndSendResponseShowsSourcesButtonForNonGrokModelWithBridgeSources(t *testing.T) {
+	t.Parallel()
+
+	const (
+		botUserID          = "bot-user"
+		channelID          = "channel-1"
+		userID             = "user-1"
+		sourceMessageID    = "user-message-1"
+		assistantMessageID = "assistant-message-1"
+		answerText         = "Answer paragraph for non-grok model."
+		sourceURL          = "https://example.com/source"
+	)
+
+	sourceMessage := newPromptMessage(sourceMessageID, channelID, userID, botUserID)
+	assistantMessage := new(discordgo.Message)
+	assistantMessage.ID = assistantMessageID
+	assistantMessage.ChannelID = channelID
+	assistantMessage.Author = newDiscordUser(botUserID, true)
+
+	messageDescriptions := make([]string, 0, 2)
+	patchDescriptions := make([]string, 0, 2)
+	messageSendCount := 0
+	instance := newXAISourceAppendixStreamingTestBot(
+		t,
+		channelID,
+		botUserID,
+		assistantMessage,
+		&messageDescriptions,
+		&patchDescriptions,
+		&messageSendCount,
+		answerText,
+		sourceURL,
+	)
+
+	request := chatCompletionRequest{
+		Provider: providerRequestConfig{
+			APIKind:         providerAPIKindOpenAI,
+			BaseURL:         "http://127.0.0.1:8787/v1",
+			APIKey:          "test-key",
+			APIKeys:         nil,
+			UseResponsesAPI: true,
+			EnableGrounding: false,
+			ExtraHeaders:    nil,
+			ExtraQuery:      nil,
+			ExtraBody:       nil,
+		},
+		Model:                       "gpt-4o",
+		ConfiguredModel:             "openai/gpt-4o",
+		ContextWindow:               0,
+		AutoCompactThresholdPercent: 0,
+		SessionID:                   "",
+		PreviousResponseID:          "",
+		RequestID:                   "",
+		Messages:                    nil,
+	}
+	tracker := newResponseTracker(sourceMessage, "")
+
+	err := instance.generateAndSendResponse(
+		context.Background(),
+		request,
+		tracker,
+		nil,
+		false,
+	)
+	if err != nil {
+		t.Fatalf("generate and send response: %v", err)
+	}
+
+	if tracker.searchMetadata == nil {
+		t.Fatal("expected search metadata to be set on tracker for non-grok model")
+	}
+
+	totalSources := countSearchSources(tracker.searchMetadata)
+	if totalSources != 1 {
+		t.Fatalf("expected 1 parsed source for non-grok model, got %d", totalSources)
+	}
+}
+
 func newXAISourceAppendixStreamingTestBot(
 	t *testing.T,
 	channelID string,

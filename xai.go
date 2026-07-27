@@ -1574,7 +1574,7 @@ func finalizeXAIResponseAnswer(
 	answerText string,
 	existingMetadata *searchMetadata,
 ) (string, *searchMetadata) {
-	if !xAIConfiguredModel(request.ConfiguredModel) || xAIBaseURLUsesOfficialAPI(request.Provider.BaseURL) {
+	if xAIBaseURLUsesOfficialAPI(request.Provider.BaseURL) {
 		return answerText, nil
 	}
 
@@ -1591,7 +1591,7 @@ func finalizeXAIResponseAnswer(
 }
 
 func xAIStreamingVisibleAnswerText(request chatCompletionRequest, answerText string) string {
-	if !xAIConfiguredModel(request.ConfiguredModel) || xAIBaseURLUsesOfficialAPI(request.Provider.BaseURL) {
+	if xAIBaseURLUsesOfficialAPI(request.Provider.BaseURL) {
 		return answerText
 	}
 

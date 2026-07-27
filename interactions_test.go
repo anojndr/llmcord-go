@@ -208,11 +208,19 @@ func TestHandleSearchTypeAutocompleteListsAllOptions(t *testing.T) {
 
 	expectedNames := []string{
 		"* auto (current)",
-		"o fast",
 		"o instant",
+		"o fast",
 		"o deep-lite",
 		"o deep",
 		"o deep-reasoning",
+	}
+	expectedValues := []string{
+		exaSearchTypeAuto,
+		exaSearchTypeInstant,
+		exaSearchTypeFast,
+		exaSearchTypeDeepLite,
+		exaSearchTypeDeep,
+		exaSearchTypeDeepReasoning,
 	}
 
 	for index, choice := range response.Data.Choices {
@@ -220,10 +228,43 @@ func TestHandleSearchTypeAutocompleteListsAllOptions(t *testing.T) {
 			t.Fatalf("unexpected choice name at %d: got %q want %q", index, choice.Name, expectedNames[index])
 		}
 
-		expectedValue := searchTypes[index]
-		if choice.Value != expectedValue {
-			t.Fatalf("unexpected choice value at %d: got %#v want %q", index, choice.Value, expectedValue)
+		if choice.Value != expectedValues[index] {
+			t.Fatalf("unexpected choice value at %d: got %#v want %q", index, choice.Value, expectedValues[index])
 		}
+	}
+}
+
+func TestHandleSearchTypeCommandRejectsUnknownTypeWithLatencyOrderMessage(t *testing.T) {
+	t.Parallel()
+
+	configPath := writeModelConfigWithExtra(
+		t,
+		`
+web_search:
+  exa:
+    api_key: exa-key
+`,
+	)
+
+	var response discordgo.InteractionResponse
+
+	session := newInteractionTestSession(t, &response)
+	instance := newModelTestBot(configPath)
+	interaction := newSearchTypeCommandInteraction("member-user", "invalid-type")
+
+	err := instance.handleSearchTypeCommand(session, interaction)
+	if err != nil {
+		t.Fatalf("handle search type command: %v", err)
+	}
+
+	if response.Data == nil {
+		t.Fatal("expected interaction response data")
+	}
+
+	expectedContent := "Unknown Exa search type. Available options " +
+		"(ordered lowest to highest latency): `instant`, `fast`, `auto`, `deep-lite`, `deep`, `deep-reasoning`."
+	if response.Data.Content != expectedContent {
+		t.Fatalf("unexpected response content: got %q want %q", response.Data.Content, expectedContent)
 	}
 }
 

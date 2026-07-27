@@ -158,12 +158,12 @@ type exaSearchResponseResult struct {
 
 func normalizeExaSearchType(searchType string) (string, bool) {
 	switch strings.ToLower(strings.TrimSpace(searchType)) {
-	case exaSearchTypeAuto:
-		return exaSearchTypeAuto, true
-	case exaSearchTypeFast:
-		return exaSearchTypeFast, true
 	case exaSearchTypeInstant:
 		return exaSearchTypeInstant, true
+	case exaSearchTypeFast:
+		return exaSearchTypeFast, true
+	case exaSearchTypeAuto:
+		return exaSearchTypeAuto, true
 	case exaSearchTypeDeepLite:
 		return exaSearchTypeDeepLite, true
 	case exaSearchTypeDeep:

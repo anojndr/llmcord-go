@@ -626,7 +626,8 @@ func (instance *bot) handleSearchTypeCommand(
 		return respondInteractionText(
 			session,
 			interaction.Interaction,
-			"Unknown Exa search type. Available options: "+formattedExaSearchTypeOptions()+".",
+			"Unknown Exa search type. Available options (ordered lowest to highest latency): "+
+				formattedExaSearchTypeOptions()+".",
 		)
 	}
 
