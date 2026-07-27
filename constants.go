@@ -58,6 +58,13 @@ const (
 	groundingCommandDescription          = "View or switch Gemini grounding (native search)"
 	groundingOptionName                  = "enabled"
 	groundingOptionDescription           = "Whether grounding should be enabled"
+	optimizedHTTPDialTimeout             = 30 * time.Second
+	optimizedHTTPDialKeepAlive           = 30 * time.Second
+	optimizedHTTPMaxIdleConns            = 100
+	optimizedHTTPMaxIdleConnsPerHost     = 100
+	optimizedHTTPIdleConnTimeout         = 90 * time.Second
+	optimizedHTTPTLSHandshakeTimeout     = 10 * time.Second
+	optimizedHTTPExpectContinueTimeout   = 1 * time.Second
 	showSourcesButtonCustomID            = "show_sources"
 	showSourcesPageButtonCustomIDPrefix  = "show_sources_page:"
 	showSourcesButtonLabel               = "Show Sources"
