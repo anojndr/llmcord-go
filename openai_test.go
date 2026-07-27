@@ -2124,3 +2124,58 @@ func TestOpenAINormalizeRequestMessages(t *testing.T) {
 	}
 }
 
+func TestBuildChatCompletionRequestBodyNormalizesImagesForOpenAICompatible(t *testing.T) {
+	t.Parallel()
+
+	request := chatCompletionRequest{
+		Provider: providerRequestConfig{
+			APIKind:         providerAPIKindOpenAI,
+			BaseURL:         "https://api.openrouter.ai/api/v1",
+			APIKey:          "test-key",
+			APIKeys:         nil,
+			UseResponsesAPI: false,
+			EnableGrounding: false,
+			ExtraHeaders:    nil,
+			ExtraQuery:      nil,
+			ExtraBody:       nil,
+		},
+		Model:                       "anthropic/claude-3.5-sonnet",
+		ConfiguredModel:             "",
+		ContextWindow:               0,
+		AutoCompactThresholdPercent: 0,
+		SessionID:                   "",
+		PreviousResponseID:          "",
+		RequestID:                   "",
+		Messages: []chatMessage{
+			{
+				Role: messageRoleUser,
+				Content: []contentPart{
+					{"type": contentTypeText, "text": "Analyze image:"},
+					{
+						"type":      contentTypeImageURL,
+						"image_url": map[string]string{"url": "data:image/png;base64,abc"},
+					},
+				},
+			},
+		},
+	}
+
+	body := buildChatCompletionRequestBody(request)
+
+	messages, ok := body["messages"].([]chatMessage)
+	if !ok || len(messages) != 1 {
+		t.Fatalf("unexpected messages in body: %#v", body["messages"])
+	}
+
+	parts, partsOK := messages[0].Content.([]contentPart)
+	if !partsOK || len(parts) != 2 {
+		t.Fatalf("unexpected parts in content: %#v", messages[0].Content)
+	}
+
+	imagePart, imageOK := parts[1]["image_url"].(map[string]string)
+	if !imageOK || imagePart["url"] != "data:image/png;base64,abc" || imagePart["detail"] != "auto" {
+		t.Fatalf("expected OpenAI-compatible provider request to include detail: auto, got: %#v", parts[1]["image_url"])
+	}
+}
+
+
