@@ -2070,3 +2070,57 @@ func TestOpenAIClientStreamChatCompletionRetriesWithoutServiceTierOnUnsupportedP
 		t.Fatalf("expected output 'hello', got %q", output.String())
 	}
 }
+
+func TestOpenAINormalizeRequestMessages(t *testing.T) {
+	t.Parallel()
+
+	messages := []chatMessage{
+		{
+			Role: messageRoleUser,
+			Content: []contentPart{
+				{"type": contentTypeText, "text": "Describe this image:"},
+				{
+					"type":      contentTypeImageURL,
+					"image_url": map[string]string{"url": "https://example.com/test.png"},
+				},
+				{
+					"type": contentTypeImageURL,
+					"image_url": map[string]string{
+						"url":    "https://example.com/test2.png",
+						"detail": "high",
+					},
+				},
+				{
+					"type":      contentTypeImageURL,
+					"image_url": "https://example.com/test3.png",
+				},
+			},
+		},
+	}
+
+	normalized := openAINormalizeRequestMessages(messages)
+	if len(normalized) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(normalized))
+	}
+
+	parts, partsOK := normalized[0].Content.([]contentPart)
+	if !partsOK || len(parts) != 4 {
+		t.Fatalf("unexpected content parts: %#v", normalized[0].Content)
+	}
+
+	image1, ok1 := parts[1]["image_url"].(map[string]string)
+	if !ok1 || image1["url"] != "https://example.com/test.png" || image1["detail"] != "auto" {
+		t.Fatalf("unexpected image 1 normalized image_url: %#v", parts[1]["image_url"])
+	}
+
+	image2, ok2 := parts[2]["image_url"].(map[string]string)
+	if !ok2 || image2["url"] != "https://example.com/test2.png" || image2["detail"] != "high" {
+		t.Fatalf("unexpected image 2 normalized image_url: %#v", parts[2]["image_url"])
+	}
+
+	image3, ok3 := parts[3]["image_url"].(map[string]string)
+	if !ok3 || image3["url"] != "https://example.com/test3.png" || image3["detail"] != "auto" {
+		t.Fatalf("unexpected image 3 normalized image_url: %#v", parts[3]["image_url"])
+	}
+}
+

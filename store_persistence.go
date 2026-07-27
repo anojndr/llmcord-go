@@ -1079,7 +1079,7 @@ func (snapshot contentPartSnapshot) contentPart() (contentPart, bool) {
 	case contentTypeText:
 		part[messageTextKey] = snapshot.Text
 	case contentTypeImageURL:
-		part["image_url"] = map[string]string{"url": snapshot.ImageURL}
+		part["image_url"] = map[string]string{messageURLKey: snapshot.ImageURL}
 	case contentTypeAudioData, contentTypeDocument, contentTypeFileData, contentTypeVideoData:
 		attachmentBytes := make([]byte, len(snapshot.Data))
 		copy(attachmentBytes, snapshot.Data)

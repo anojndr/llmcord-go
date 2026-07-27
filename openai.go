@@ -374,7 +374,9 @@ func buildChatCompletionRequestBodyWithUsageOption(
 	includeStreamingUsage bool,
 ) map[string]any {
 	requestBody := make(map[string]any, len(request.Provider.ExtraBody)+requestBodyBaseFields)
-	requestBody["messages"] = requestMessagesWithFileOrImageOnlyQueryPlaceholder(request.Messages)
+	requestBody["messages"] = openAINormalizeRequestMessages(
+		requestMessagesWithFileOrImageOnlyQueryPlaceholder(request.Messages),
+	)
 	requestBody["model"] = request.Model
 	requestBody["stream"] = true
 	addOpenAIPromptCacheKey(requestBody, request)
@@ -390,6 +392,176 @@ func buildChatCompletionRequestBodyWithUsageOption(
 	}
 
 	return requestBody
+}
+
+func openAINormalizeRequestMessages(messages []chatMessage) []chatMessage {
+	if len(messages) == 0 {
+		return messages
+	}
+
+	normalizedMessages := make([]chatMessage, len(messages))
+	changed := false
+
+	for index, message := range messages {
+		normalizedContent, contentChanged := openAINormalizeMessageContent(message.Content)
+		if contentChanged {
+			changed = true
+		}
+
+		normalizedMessages[index] = chatMessage{
+			Role:    message.Role,
+			Content: normalizedContent,
+		}
+	}
+
+	if !changed {
+		return messages
+	}
+
+	return normalizedMessages
+}
+
+func openAINormalizeMessageContent(content any) (any, bool) {
+	switch typedContent := content.(type) {
+	case []contentPart:
+		normalizedParts := make([]contentPart, len(typedContent))
+		changed := false
+
+		for index, part := range typedContent {
+			normalizedPart, partChanged := openAINormalizeContentPart(part)
+			if partChanged {
+				changed = true
+			}
+
+			normalizedParts[index] = normalizedPart
+		}
+
+		if !changed {
+			return content, false
+		}
+
+		return normalizedParts, true
+
+	case []map[string]any:
+		normalizedParts := make([]map[string]any, len(typedContent))
+		changed := false
+
+		for index, part := range typedContent {
+			normalizedPart, partChanged := openAINormalizeContentPartMap(part)
+			if partChanged {
+				changed = true
+			}
+
+			normalizedParts[index] = normalizedPart
+		}
+
+		if !changed {
+			return content, false
+		}
+
+		return normalizedParts, true
+
+	default:
+		return content, false
+	}
+}
+
+func openAINormalizeContentPart(part contentPart) (contentPart, bool) {
+	partType, _ := part["type"].(string)
+	if partType != contentTypeImageURL {
+		return part, false
+	}
+
+	normalizedPart := cloneContentPart(part)
+
+	imageURLVal, exists := normalizedPart["image_url"]
+	if !exists || imageURLVal == nil {
+		return part, false
+	}
+
+	switch typed := imageURLVal.(type) {
+	case string:
+		normalizedPart["image_url"] = map[string]string{
+			messageURLKey:    typed,
+			messageDetailKey: openAICodexAuto,
+		}
+
+		return normalizedPart, true
+
+	case map[string]string:
+		if _, hasDetail := typed[messageDetailKey]; !hasDetail {
+			clonedMap := maps.Clone(typed)
+			clonedMap[messageDetailKey] = openAICodexAuto
+			normalizedPart["image_url"] = clonedMap
+
+			return normalizedPart, true
+		}
+
+		return part, false
+
+	case map[string]any:
+		if _, hasDetail := typed[messageDetailKey]; !hasDetail {
+			clonedMap := maps.Clone(typed)
+			clonedMap[messageDetailKey] = openAICodexAuto
+			normalizedPart["image_url"] = clonedMap
+
+			return normalizedPart, true
+		}
+
+		return part, false
+
+	default:
+		return part, false
+	}
+}
+
+func openAINormalizeContentPartMap(part map[string]any) (map[string]any, bool) {
+	partType, _ := part["type"].(string)
+	if partType != contentTypeImageURL {
+		return part, false
+	}
+
+	normalizedPart := maps.Clone(part)
+
+	imageURLVal, exists := normalizedPart["image_url"]
+	if !exists || imageURLVal == nil {
+		return part, false
+	}
+
+	switch typed := imageURLVal.(type) {
+	case string:
+		normalizedPart["image_url"] = map[string]string{
+			messageURLKey:    typed,
+			messageDetailKey: openAICodexAuto,
+		}
+
+		return normalizedPart, true
+
+	case map[string]string:
+		if _, hasDetail := typed[messageDetailKey]; !hasDetail {
+			clonedMap := maps.Clone(typed)
+			clonedMap[messageDetailKey] = openAICodexAuto
+			normalizedPart["image_url"] = clonedMap
+
+			return normalizedPart, true
+		}
+
+		return part, false
+
+	case map[string]any:
+		if _, hasDetail := typed[messageDetailKey]; !hasDetail {
+			clonedMap := maps.Clone(typed)
+			clonedMap[messageDetailKey] = openAICodexAuto
+			normalizedPart["image_url"] = clonedMap
+
+			return normalizedPart, true
+		}
+
+		return part, false
+
+	default:
+		return part, false
+	}
 }
 
 func defaultOpenAIServiceTier(requestBody map[string]any) {
