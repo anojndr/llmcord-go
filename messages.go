@@ -190,7 +190,7 @@ func (instance *bot) respondToMessage(
 		progress,
 	)
 	if err != nil {
-		progress.fail(err)
+		progress.fail(ctx, err)
 
 		return err
 	}

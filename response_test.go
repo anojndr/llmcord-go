@@ -2859,3 +2859,85 @@ func TestPrepareFallbackRequest_SkipsSearchDeciderWhenDisabledForFallback(t *tes
 		t.Fatalf("unexpected warnings: %#v", warnings)
 	}
 }
+
+func TestGenerateAndSendResponseRendersFailureOnEmptyModelResponse(t *testing.T) {
+	t.Parallel()
+
+	const (
+		botUserID          = "bot-user"
+		channelID          = "channel-1"
+		userID             = "user-1"
+		sourceMessageID    = "user-message-1"
+		assistantMessageID = "assistant-message-1"
+		expectedError      = "The model returned an empty response. Try again."
+	)
+
+	sourceMessage := newPromptMessage(sourceMessageID, channelID, userID, botUserID)
+	assistantMessage := newAssistantReplyMessage(
+		assistantMessageID,
+		newDiscordUser(botUserID, true),
+		sourceMessage,
+	)
+
+	messageDescriptions := make([]string, 0, 1)
+	patchDescriptions := make([]string, 0, 1)
+	messageSendCount := 0
+	session := newPartialFailureResponseSession(
+		t,
+		channelID,
+		botUserID,
+		assistantMessage,
+		&messageDescriptions,
+		&patchDescriptions,
+		&messageSendCount,
+	)
+
+	instance := new(bot)
+	instance.session = session
+	instance.nodes = newMessageNodeStore(10)
+	instance.chatCompletions = newStubChatClient(func(
+		_ context.Context,
+		_ chatCompletionRequest,
+		_ func(streamDelta) error,
+	) error {
+		return nil
+	})
+
+	tracker := newResponseTracker(sourceMessage, "test-model")
+	tracker.responseMessages = append(tracker.responseMessages, assistantMessage)
+	tracker.progressActive = true
+
+	err := instance.generateAndSendResponse(
+		context.Background(),
+		emptyChatCompletionRequest(),
+		tracker,
+		nil,
+		false,
+	)
+	if err == nil {
+		t.Fatal("expected error for empty model response")
+	}
+
+	if !errors.Is(err, errEmptyModelResponse) {
+		t.Fatalf("unexpected error: %v, expected errEmptyModelResponse", err)
+	}
+
+	if len(patchDescriptions) == 0 {
+		t.Fatal("expected failure embed edit on progress message")
+	}
+
+	if !containsFold(patchDescriptions[len(patchDescriptions)-1], expectedError) {
+		t.Fatalf("unexpected patch description: %q", patchDescriptions[len(patchDescriptions)-1])
+	}
+}
+
+func TestUserFacingResponseError_EmptyModelResponse(t *testing.T) {
+	t.Parallel()
+
+	expected := "The model returned an empty response. Try again."
+	errText := userFacingResponseError(errEmptyModelResponse)
+
+	if errText != expected {
+		t.Fatalf("userFacingResponseError(errEmptyModelResponse) = %q, expected %q", errText, expected)
+	}
+}
