@@ -266,6 +266,8 @@ func buildGeminiGenerateContentRequest(
 		return nil, nil, err
 	}
 
+	extraBody = defaultGeminiServiceTier(extraBody)
+
 	thinkingConfig, extraBody, err := geminiThinkingConfig(extraBody)
 	if err != nil {
 		return nil, nil, err
@@ -461,6 +463,22 @@ func defaultGeminiThoughtSummaries(extraBody map[string]any) (map[string]any, er
 	return normalizedExtraBody, nil
 }
 
+func defaultGeminiServiceTier(extraBody map[string]any) map[string]any {
+	normalizedExtraBody := maps.Clone(extraBody)
+	if normalizedExtraBody == nil {
+		normalizedExtraBody = make(map[string]any, 1)
+	}
+
+	_, hasServiceTierSnake := normalizedExtraBody["service_tier"]
+	_, hasServiceTierCamel := normalizedExtraBody["serviceTier"]
+
+	if !hasServiceTierSnake && !hasServiceTierCamel {
+		normalizedExtraBody["service_tier"] = "priority"
+	}
+
+	return normalizedExtraBody
+}
+
 func buildGeminiClientConfig(
 	provider providerRequestConfig,
 	httpClient *http.Client,
@@ -470,13 +488,18 @@ func buildGeminiClientConfig(
 		return nil, err
 	}
 
+	clientHTTPClient := httpClient
+	if clientHTTPClient == nil {
+		clientHTTPClient = newOptimizedHTTPClient()
+	}
+
 	return &genai.ClientConfig{
 		APIKey:      provider.primaryAPIKey(),
 		Backend:     genai.BackendGeminiAPI,
 		Project:     "",
 		Location:    "",
 		Credentials: nil,
-		HTTPClient:  httpClient,
+		HTTPClient:  clientHTTPClient,
 		HTTPOptions: httpOptions,
 	}, nil
 }

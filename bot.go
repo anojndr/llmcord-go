@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -44,6 +45,31 @@ type bot struct {
 	onlineOutput                 io.Writer
 }
 
+func newOptimizedHTTPTransport() *http.Transport {
+	dialer := new(net.Dialer)
+	dialer.Timeout = optimizedHTTPDialTimeout
+	dialer.KeepAlive = optimizedHTTPDialKeepAlive
+
+	transport := new(http.Transport)
+	transport.Proxy = http.ProxyFromEnvironment
+	transport.DialContext = dialer.DialContext
+	transport.ForceAttemptHTTP2 = true
+	transport.MaxIdleConns = optimizedHTTPMaxIdleConns
+	transport.MaxIdleConnsPerHost = optimizedHTTPMaxIdleConnsPerHost
+	transport.IdleConnTimeout = optimizedHTTPIdleConnTimeout
+	transport.TLSHandshakeTimeout = optimizedHTTPTLSHandshakeTimeout
+	transport.ExpectContinueTimeout = optimizedHTTPExpectContinueTimeout
+
+	return transport
+}
+
+func newOptimizedHTTPClient() *http.Client {
+	client := new(http.Client)
+	client.Transport = newOptimizedHTTPTransport()
+
+	return client
+}
+
 func newBot(ctx context.Context, configPath string, loadedConfig config) (*bot, error) {
 	discordSession, err := discordgo.New("Bot " + loadedConfig.BotToken)
 	if err != nil {
@@ -63,7 +89,7 @@ func newBot(ctx context.Context, configPath string, loadedConfig config) (*bot, 
 		transport: discordSession.Client.Transport,
 	}
 
-	httpClient := new(http.Client)
+	httpClient := newOptimizedHTTPClient()
 
 	instance := new(bot)
 	instance.configPath = configPath

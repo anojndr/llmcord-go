@@ -305,8 +305,8 @@ func TestBuildGeminiGenerateContentRequestIncludesThinkingAliasLevel(t *testing.
 		t.Fatalf("unexpected thinking level: %#v", config.ThinkingConfig.ThinkingLevel)
 	}
 
-	if config.HTTPOptions != nil {
-		t.Fatalf("unexpected gemini HTTP options: %#v", config.HTTPOptions)
+	if config.HTTPOptions == nil || config.HTTPOptions.ExtraBody["service_tier"] != "priority" {
+		t.Fatalf("expected priority service tier in gemini HTTP options: %#v", config.HTTPOptions)
 	}
 }
 
@@ -1292,6 +1292,10 @@ func assertGeminiGenerateContentConfig(
 		t.Fatalf("unexpected gemini extra body: %#v", config.HTTPOptions.ExtraBody)
 	}
 
+	if got, ok := config.HTTPOptions.ExtraBody["service_tier"].(string); !ok || got != "priority" {
+		t.Fatalf("expected priority service tier in extra body: %#v", config.HTTPOptions.ExtraBody)
+	}
+
 	if config.ThinkingConfig == nil || config.ThinkingConfig.IncludeThoughts {
 		t.Fatalf("expected gemini thought summaries to be disabled by default: %#v", config.ThinkingConfig)
 	}
@@ -1325,8 +1329,12 @@ func streamGeminiTestChunks(
 			t.Fatal("expected gemini config")
 		}
 
-		if config.SystemInstruction != nil || config.HTTPOptions != nil {
+		if config.SystemInstruction != nil {
 			t.Fatalf("unexpected gemini config contents: %#v", config)
+		}
+
+		if config.HTTPOptions == nil || config.HTTPOptions.ExtraBody["service_tier"] != "priority" {
+			t.Fatalf("expected priority service tier in HTTP options: %#v", config.HTTPOptions)
 		}
 
 		if config.ThinkingConfig == nil || config.ThinkingConfig.IncludeThoughts {
@@ -1440,5 +1448,48 @@ func TestBuildGeminiClientConfigUsesProviderHTTPOptions(t *testing.T) {
 
 	if clientConfig.HTTPOptions.Headers.Get("X-Test") != testHeaderPresent {
 		t.Fatalf("unexpected gemini extra header: %q", clientConfig.HTTPOptions.Headers.Get("X-Test"))
+	}
+}
+
+func TestBuildGeminiGenerateContentRequestDefaultsServiceTierToPriority(t *testing.T) {
+	t.Parallel()
+
+	request := newSimpleGeminiStreamRequest()
+
+	_, config, err := buildGeminiGenerateContentRequest(context.Background(), request, nil)
+	if err != nil {
+		t.Fatalf("build gemini generate content request: %v", err)
+	}
+
+	if config == nil || config.HTTPOptions == nil {
+		t.Fatalf("expected HTTPOptions in config: %#v", config)
+	}
+
+	got, ok := config.HTTPOptions.ExtraBody["service_tier"].(string)
+	if !ok || got != "priority" {
+		t.Fatalf("expected default service_tier to be priority, got %#v", config.HTTPOptions.ExtraBody)
+	}
+}
+
+func TestBuildGeminiGenerateContentRequestPreservesCustomServiceTier(t *testing.T) {
+	t.Parallel()
+
+	request := newSimpleGeminiStreamRequest()
+	request.Provider.ExtraBody = map[string]any{
+		"service_tier": "standard",
+	}
+
+	_, config, err := buildGeminiGenerateContentRequest(context.Background(), request, nil)
+	if err != nil {
+		t.Fatalf("build gemini generate content request: %v", err)
+	}
+
+	if config == nil || config.HTTPOptions == nil {
+		t.Fatalf("expected HTTPOptions in config: %#v", config)
+	}
+
+	got, ok := config.HTTPOptions.ExtraBody["service_tier"].(string)
+	if !ok || got != "standard" {
+		t.Fatalf("expected custom service_tier to be preserved as standard, got %#v", config.HTTPOptions.ExtraBody)
 	}
 }
