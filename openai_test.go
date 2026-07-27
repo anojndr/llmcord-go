@@ -1890,3 +1890,183 @@ func runOpenAIClientAuthorizationHeaderFor9RouterSubtest(t *testing.T, testCase 
 		t.Fatalf("expected auth header %q, got %q", testCase.expectedAuth, capturedAuth)
 	}
 }
+
+func TestOpenAIClientStreamChatCompletionDefaultsServiceTierToPriority(t *testing.T) {
+	t.Parallel()
+
+	var capturedServiceTier string
+
+	server := httptest.NewServer(http.HandlerFunc(func(responseWriter http.ResponseWriter, httpRequest *http.Request) {
+		var payload map[string]any
+
+		_ = json.NewDecoder(httpRequest.Body).Decode(&payload)
+
+		if st, ok := payload["service_tier"].(string); ok {
+			capturedServiceTier = st
+		}
+
+		responseWriter.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(responseWriter, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n")
+	}))
+	t.Cleanup(server.Close)
+
+	client := newOpenAIClient(server.Client())
+	request := chatCompletionRequest{
+		Provider: providerRequestConfig{
+			APIKind:         providerAPIKindOpenAI,
+			BaseURL:         server.URL,
+			APIKey:          "",
+			APIKeys:         nil,
+			UseResponsesAPI: false,
+			EnableGrounding: false,
+			ExtraHeaders:    nil,
+			ExtraQuery:      nil,
+			ExtraBody:       nil,
+		},
+		Model:                       "gpt-4o",
+		ConfiguredModel:             "",
+		ContextWindow:               0,
+		AutoCompactThresholdPercent: 0,
+		SessionID:                   "",
+		PreviousResponseID:          "",
+		RequestID:                   "",
+		Messages:                    nil,
+	}
+
+	err := client.streamChatCompletion(context.Background(), request, func(_ streamDelta) error {
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("unexpected stream error: %v", err)
+	}
+
+	if capturedServiceTier != "priority" {
+		t.Fatalf("expected service_tier priority, got %q", capturedServiceTier)
+	}
+}
+
+func TestOpenAIClientStreamChatCompletionPreservesCustomServiceTier(t *testing.T) {
+	t.Parallel()
+
+	var capturedServiceTier string
+
+	server := httptest.NewServer(http.HandlerFunc(func(responseWriter http.ResponseWriter, httpRequest *http.Request) {
+		var payload map[string]any
+
+		_ = json.NewDecoder(httpRequest.Body).Decode(&payload)
+
+		if st, ok := payload["service_tier"].(string); ok {
+			capturedServiceTier = st
+		}
+
+		responseWriter.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(responseWriter, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n")
+	}))
+	t.Cleanup(server.Close)
+
+	client := newOpenAIClient(server.Client())
+	request := chatCompletionRequest{
+		Provider: providerRequestConfig{
+			APIKind:         providerAPIKindOpenAI,
+			BaseURL:         server.URL,
+			APIKey:          "",
+			APIKeys:         nil,
+			UseResponsesAPI: false,
+			EnableGrounding: false,
+			ExtraHeaders:    nil,
+			ExtraQuery:      nil,
+			ExtraBody: map[string]any{
+				"service_tier": "standard",
+			},
+		},
+		Model:                       "gpt-4o",
+		ConfiguredModel:             "",
+		ContextWindow:               0,
+		AutoCompactThresholdPercent: 0,
+		SessionID:                   "",
+		PreviousResponseID:          "",
+		RequestID:                   "",
+		Messages:                    nil,
+	}
+
+	err := client.streamChatCompletion(context.Background(), request, func(_ streamDelta) error {
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("unexpected stream error: %v", err)
+	}
+
+	if capturedServiceTier != "standard" {
+		t.Fatalf("expected service_tier standard, got %q", capturedServiceTier)
+	}
+}
+
+func TestOpenAIClientStreamChatCompletionRetriesWithoutServiceTierOnUnsupportedParameter(t *testing.T) {
+	t.Parallel()
+
+	attemptCount := 0
+
+	server := httptest.NewServer(http.HandlerFunc(func(responseWriter http.ResponseWriter, httpRequest *http.Request) {
+		attemptCount++
+
+		var payload map[string]any
+
+		_ = json.NewDecoder(httpRequest.Body).Decode(&payload)
+
+		if _, hasServiceTier := payload["service_tier"]; hasServiceTier && attemptCount == 1 {
+			responseWriter.WriteHeader(http.StatusBadRequest)
+
+			unsupportedErr := `{"error":{"message":"Unsupported parameter: 'service_tier' is not supported.",` +
+				`"type":"invalid_request_error","param":"service_tier","code":"unsupported_parameter"}}`
+			_, _ = fmt.Fprint(responseWriter, unsupportedErr)
+
+			return
+		}
+
+		responseWriter.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(responseWriter, "data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\ndata: [DONE]\n\n")
+	}))
+	t.Cleanup(server.Close)
+
+	client := newOpenAIClient(server.Client())
+	request := chatCompletionRequest{
+		Provider: providerRequestConfig{
+			APIKind:         providerAPIKindOpenAI,
+			BaseURL:         server.URL,
+			APIKey:          "",
+			APIKeys:         nil,
+			UseResponsesAPI: false,
+			EnableGrounding: false,
+			ExtraHeaders:    nil,
+			ExtraQuery:      nil,
+			ExtraBody:       nil,
+		},
+		Model:                       "gpt-4o",
+		ConfiguredModel:             "",
+		ContextWindow:               0,
+		AutoCompactThresholdPercent: 0,
+		SessionID:                   "",
+		PreviousResponseID:          "",
+		RequestID:                   "",
+		Messages:                    nil,
+	}
+
+	var output strings.Builder
+
+	err := client.streamChatCompletion(context.Background(), request, func(delta streamDelta) error {
+		output.WriteString(delta.Content)
+
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("unexpected stream error: %v", err)
+	}
+
+	if attemptCount != 2 {
+		t.Fatalf("expected 2 attempts, got %d", attemptCount)
+	}
+
+	if output.String() != "hello" {
+		t.Fatalf("expected output 'hello', got %q", output.String())
+	}
+}
