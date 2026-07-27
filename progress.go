@@ -118,15 +118,85 @@ func (progress *requestProgress) handoff(
 	return <-result
 }
 
-func (progress *requestProgress) fail(err error) {
+func (progress *requestProgress) fail(ctx context.Context, err error) {
 	if progress == nil {
 		return
 	}
 
 	done := make(chan struct{})
-	progress.failures <- requestProgressFailure{err: err, done: done}
+	failure := requestProgressFailure{err: err, done: done}
 
-	<-done
+	select {
+	case progress.failures <- failure:
+		<-done
+	default:
+		errorText := userFacingResponseError(err)
+
+		renderErr := progress.instance.renderFailureResponse(
+			ctx,
+			progress.tracker,
+			errorText,
+			false,
+		)
+		if renderErr != nil {
+			slog.Warn(
+				"render fallback request progress failure response",
+				"source_message_id",
+				progress.tracker.sourceMessage.ID,
+				"error",
+				renderErr,
+			)
+		}
+
+		progress.tracker.release(progress.instance.nodes, errorText, "")
+		progress.instance.nodes.persistBestEffort()
+	}
+}
+
+func (progress *requestProgress) renderStageUpdate(ctx context.Context, stage requestProgressStage) {
+	if progress.message == nil {
+		return
+	}
+
+	waitErr := progress.instance.waitForEditSlotForMessage(
+		ctx,
+		progress.message.ID,
+	)
+	if waitErr != nil {
+		slog.Warn(
+			"wait before request progress embed edit",
+			"message_id",
+			progress.message.ID,
+			"error",
+			waitErr,
+		)
+	}
+
+	editErr := progress.instance.editEmbedMessage(
+		progress.message,
+		buildRequestProgressEmbed(stage, progress.tracker.modelName),
+		nil,
+	)
+	if editErr != nil {
+		slog.Warn(
+			"edit request progress embed",
+			"message_id",
+			progress.message.ID,
+			"error",
+			editErr,
+		)
+	}
+}
+
+func (progress *requestProgress) handlePendingHandoffStage(ctx context.Context, currentStage *requestProgressStage) {
+	select {
+	case stage := <-progress.stageUpdates:
+		if stage > *currentStage && progress.message != nil {
+			*currentStage = stage
+			progress.renderStageUpdate(ctx, stage)
+		}
+	default:
+	}
 }
 
 func (progress *requestProgress) run(ctx context.Context) {
@@ -141,44 +211,14 @@ func (progress *requestProgress) run(ctx context.Context) {
 			}
 
 			currentStage = stage
-
-			if progress.message == nil {
-				continue
-			}
-
-			waitErr := progress.instance.waitForEditSlotForMessage(
-				ctx,
-				progress.message.ID,
-			)
-			if waitErr != nil {
-				slog.Warn(
-					"wait before request progress embed edit",
-					"message_id",
-					progress.message.ID,
-					"error",
-					waitErr,
-				)
-			}
-
-			editErr := progress.instance.editEmbedMessage(
-				progress.message,
-				buildRequestProgressEmbed(currentStage, tracker.modelName),
-				nil,
-			)
-			if editErr != nil {
-				slog.Warn(
-					"edit request progress embed",
-					"message_id",
-					progress.message.ID,
-					"error",
-					editErr,
-				)
-			}
+			progress.renderStageUpdate(ctx, stage)
 		case handoff := <-progress.handoffs:
+			progress.handlePendingHandoffStage(ctx, &currentStage)
+
 			tracker.modelName = strings.TrimSpace(handoff.modelName)
 			tracker.originalModel = tracker.modelName
-
 			tracker.searchMetadata = cloneSearchMetadata(handoff.searchMetadata)
+
 			handoff.result <- tracker
 
 			return

@@ -123,7 +123,11 @@ const (
 	compactTokenCountMediumCutoff = 100
 )
 
-var errStreamedAnswerVisibilityRegressed = errors.New("streamed answer visibility regressed")
+var (
+	errStreamedAnswerVisibilityRegressed = errors.New("streamed answer visibility regressed")
+	errEmptyModelResponse                = errors.New("model returned an empty response")
+	errNilSession                        = errors.New("session is nil")
+)
 
 func extractThinkingText(fullText string) string {
 	trimmedText := strings.TrimSpace(fullText)
@@ -514,6 +518,11 @@ func (instance *bot) runGenerationAttempt(
 		responseErr = fmt.Errorf("stream response: %w", streamErr)
 	}
 
+	if responseErr == nil &&
+		strings.TrimSpace(visibleResponseText(thinkingAccumulator.joined(), cleanedAnswerText)) == "" {
+		responseErr = errEmptyModelResponse
+	}
+
 	return cleanedAnswerText, thinkingAccumulator.joined(), parsedSearchMetadata, responseErr
 }
 
@@ -782,6 +791,10 @@ func userFacingResponseError(err error) string {
 		return genericResponseErrorText
 	}
 
+	if errors.Is(err, errEmptyModelResponse) {
+		return "The model returned an empty response. Try again."
+	}
+
 	if errors.Is(err, context.DeadlineExceeded) {
 		return timedOutResponseErrorText
 	}
@@ -813,7 +826,7 @@ func (instance *bot) renderFailureResponse(
 	errorText string,
 	usePlainResponses bool,
 ) error {
-	if tracker == nil {
+	if instance == nil || instance.session == nil || tracker == nil {
 		return nil
 	}
 
@@ -1433,6 +1446,10 @@ func (instance *bot) sendReplyMessage(
 	tracker *responseTracker,
 	send *discordgo.MessageSend,
 ) (*discordgo.Message, pendingResponse, error) {
+	if instance == nil || instance.session == nil {
+		return nil, pendingResponse{}, errNilSession
+	}
+
 	target := referenceTarget(tracker)
 
 	sentMessage, err := instance.session.ChannelMessageSendComplex(target.ChannelID, send)
@@ -1454,6 +1471,10 @@ func (instance *bot) editEmbedMessage(
 	embed *discordgo.MessageEmbed,
 	components []discordgo.MessageComponent,
 ) error {
+	if instance == nil || instance.session == nil {
+		return errNilSession
+	}
+
 	edit := discordgo.NewMessageEdit(message.ChannelID, message.ID)
 	edit.SetEmbeds([]*discordgo.MessageEmbed{embed})
 	edit.Components = &components
@@ -1471,6 +1492,10 @@ func (instance *bot) editPlainMessage(
 	content string,
 	actions responseActions,
 ) error {
+	if instance == nil || instance.session == nil {
+		return errNilSession
+	}
+
 	edit := discordgo.NewMessageEdit(message.ChannelID, message.ID)
 	edit.SetEmbeds([]*discordgo.MessageEmbed{})
 
