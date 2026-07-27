@@ -487,6 +487,10 @@ func (instance *bot) runGenerationAttempt(
 		tracker.searchMetadata,
 	)
 
+	if parsedSearchMetadata != nil {
+		tracker.searchMetadata = mergeSearchMetadata(tracker.searchMetadata, parsedSearchMetadata)
+	}
+
 	finalAccumulator := accumulator
 
 	if cleanedAnswerText != finalAnswerText {
@@ -532,7 +536,7 @@ func (instance *bot) generateAndSendResponse(
 		tracker.modelName = strings.TrimSpace(currentRequest.ConfiguredModel)
 		tracker.contextWindow = currentRequest.ContextWindow
 
-		cleanedText, thinkingText, parsedMetadata, responseErr := instance.runGenerationAttempt(
+		cleanedText, thinkingText, _, responseErr := instance.runGenerationAttempt(
 			ctx,
 			currentRequest,
 			tracker,
@@ -541,10 +545,6 @@ func (instance *bot) generateAndSendResponse(
 			usePlainResponses,
 		)
 		if responseErr == nil {
-			if parsedMetadata != nil {
-				tracker.searchMetadata = mergeSearchMetadata(tracker.searchMetadata, parsedMetadata)
-			}
-
 			finalText := visibleResponseText(thinkingText, cleanedText)
 
 			tracker.release(instance.nodes, finalText, thinkingText)

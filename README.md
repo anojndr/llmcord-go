@@ -181,7 +181,7 @@ Model notes:
 - Reply to a message to continue the conversation
 - Use `/model` to switch the main reply model
 - Use `/searchdecidermodel` to switch the search-decider model
-- Use `/searchtype` to switch the Exa Search API mode when `web_search.exa.api_key` is configured
+- Use `/searchtype` to switch the Exa Search API mode when `web_search.exa.api_key` is configured (ordered from lowest to highest latency: `instant`, `fast`, `auto`, `deep-lite`, `deep`, `deep-reasoning`)
 - Attach files or images for multimodal context
   Text-like files such as JSON, CSV, logs, Markdown, and source code are inlined when the target provider cannot read raw files directly.
   Other files are still preserved as explicit attachments and fall back to metadata summaries, including ZIP manifests for archive uploads.

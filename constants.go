@@ -47,9 +47,9 @@ const (
 	modelOptionName                      = "model"
 	modelOptionDescription               = "Model to view or use"
 	searchTypeCommandName                = "searchtype"
-	searchTypeCommandDescription         = "View or switch the current Exa search type"
+	searchTypeCommandDescription         = "View or switch current Exa search type (ordered lowest to highest latency)"
 	searchTypeOptionName                 = "type"
-	searchTypeOptionDescription          = "Exa search type to view or use"
+	searchTypeOptionDescription          = "Exa search type to view or use (ordered lowest to highest latency)"
 	searchDeciderModelCommandName        = "searchdecidermodel"
 	searchDeciderModelCommandDescription = "View or switch the current search decider model"
 	searchDeciderModelOptionName         = "model"
@@ -74,9 +74,9 @@ const (
 	finishReasonRetryReset               = "retry_reset"
 	maxSearchQueries                     = 500
 	defaultWebSearchMaxURLs              = 5
-	exaSearchTypeAuto                    = "auto"
-	exaSearchTypeFast                    = "fast"
 	exaSearchTypeInstant                 = "instant"
+	exaSearchTypeFast                    = "fast"
+	exaSearchTypeAuto                    = "auto"
 	exaSearchTypeDeepLite                = "deep-lite"
 	exaSearchTypeDeep                    = "deep"
 	exaSearchTypeDeepReasoning           = "deep-reasoning"
@@ -146,9 +146,9 @@ const (
 
 func exaSearchTypes() []string {
 	return []string{
-		exaSearchTypeAuto,
-		exaSearchTypeFast,
 		exaSearchTypeInstant,
+		exaSearchTypeFast,
+		exaSearchTypeAuto,
 		exaSearchTypeDeepLite,
 		exaSearchTypeDeep,
 		exaSearchTypeDeepReasoning,

@@ -974,6 +974,53 @@ func TestFinalizeXAIResponseAnswerParsesBridgeSourcesAndStripsAppendix(t *testin
 	}
 }
 
+func TestFinalizeXAIResponseAnswerParsesBridgeSourcesForNonGrokModels(t *testing.T) {
+	t.Parallel()
+
+	request := chatCompletionRequest{
+		Provider: providerRequestConfig{
+			APIKind:         providerAPIKindOpenAI,
+			BaseURL:         "http://127.0.0.1:8787/v1",
+			APIKey:          "test-key",
+			APIKeys:         nil,
+			UseResponsesAPI: true,
+			EnableGrounding: false,
+			ExtraHeaders:    nil,
+			ExtraQuery:      nil,
+			ExtraBody:       nil,
+		},
+		Model:                       "gpt-4o",
+		ConfiguredModel:             "openai/gpt-4o",
+		ContextWindow:               0,
+		AutoCompactThresholdPercent: 0,
+		SessionID:                   "",
+		PreviousResponseID:          "",
+		RequestID:                   "",
+		Messages:                    nil,
+	}
+	answerText := "Answer paragraph.\n\nSources\n" +
+		"1. [Example Source](https://example.com/source) (example.com/source) via `latest ai news`\n"
+
+	cleanedText, metadata := finalizeXAIResponseAnswer(request, answerText, nil)
+
+	if cleanedText != "Answer paragraph." {
+		t.Fatalf("unexpected cleaned answer text: %q", cleanedText)
+	}
+
+	if metadata == nil {
+		t.Fatal("expected parsed search metadata for non-grok model")
+	}
+
+	if len(metadata.Results) != 1 {
+		t.Fatalf("unexpected parsed result groups: %#v", metadata.Results)
+	}
+
+	sources := extractSearchSources(metadata.Results[0].Text)
+	if len(sources) != 1 || sources[0].URL != "https://example.com/source" {
+		t.Fatalf("unexpected source parsing for non-grok model: %#v", sources)
+	}
+}
+
 func TestXAIStreamingVisibleAnswerTextHidesBridgeSourceAppendix(t *testing.T) {
 	t.Parallel()
 
