@@ -1066,11 +1066,11 @@ func reorderGeminiSingleImagePromptParts(parts []*genai.Part) []*genai.Part {
 	firstIsImage := geminiPartIsImage(parts[0])
 	secondIsImage := geminiPartIsImage(parts[1])
 
-	if firstIsText && secondIsImage {
+	if firstIsImage && secondIsText {
 		return []*genai.Part{parts[1], parts[0]}
 	}
 
-	if firstIsImage && secondIsText {
+	if firstIsText && secondIsImage {
 		return parts
 	}
 
