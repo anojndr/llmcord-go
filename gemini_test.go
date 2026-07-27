@@ -130,27 +130,27 @@ func TestBuildGeminiGenerateContentRequestAddsPlaceholderForImageOnlyUserMessage
 		t.Fatalf("unexpected gemini contents: %#v", contents)
 	}
 
-	if contents[0].Parts[0].InlineData == nil {
-		t.Fatalf("expected inline image data first: %#v", contents[0].Parts[0])
+	if contents[0].Parts[0].Text != fileOrImageOnlyQueryPlaceholder {
+		t.Fatalf("expected placeholder text part first: %#v", contents[0].Parts[0])
 	}
 
-	if contents[0].Parts[1].Text != fileOrImageOnlyQueryPlaceholder {
-		t.Fatalf("unexpected placeholder text part: %#v", contents[0].Parts[1])
+	if contents[0].Parts[1].InlineData == nil {
+		t.Fatalf("expected inline image data after placeholder: %#v", contents[0].Parts[1])
 	}
 }
 
-func TestBuildGeminiGenerateContentRequestPlacesSingleImageBeforePrompt(t *testing.T) {
+func TestBuildGeminiGenerateContentRequestPlacesTextPromptBeforeSingleImage(t *testing.T) {
 	t.Parallel()
 
 	request := newSimpleGeminiStreamRequest()
 	request.Messages = []chatMessage{{
 		Role: messageRoleUser,
 		Content: []contentPart{
-			{"type": contentTypeText, "text": testGeminiImagePrompt},
 			{
 				"type":      contentTypeImageURL,
 				"image_url": map[string]string{"url": "data:image/png;base64,aGVsbG8="},
 			},
+			{"type": contentTypeText, "text": testGeminiImagePrompt},
 		},
 	}}
 
@@ -163,12 +163,12 @@ func TestBuildGeminiGenerateContentRequestPlacesSingleImageBeforePrompt(t *testi
 		t.Fatalf("unexpected gemini contents: %#v", contents)
 	}
 
-	if contents[0].Parts[0].InlineData == nil {
-		t.Fatalf("expected image part first: %#v", contents[0].Parts[0])
+	if contents[0].Parts[0].Text != testGeminiImagePrompt {
+		t.Fatalf("expected prompt text part first: %#v", contents[0].Parts[0])
 	}
 
-	if contents[0].Parts[1].Text != testGeminiImagePrompt {
-		t.Fatalf("expected prompt after image: %#v", contents[0].Parts[1])
+	if contents[0].Parts[1].InlineData == nil {
+		t.Fatalf("expected image part after prompt: %#v", contents[0].Parts[1])
 	}
 }
 
@@ -251,12 +251,12 @@ func TestBuildGeminiGenerateContentRequestUploadsLargeImages(t *testing.T) {
 		t.Fatalf("unexpected gemini contents: %#v", contents)
 	}
 
-	if contents[0].Parts[0].FileData == nil || contents[0].Parts[0].FileData.FileURI != testGeminiMediaURI {
-		t.Fatalf("expected uploaded image file part first: %#v", contents[0].Parts[0])
+	if contents[0].Parts[0].Text != "Summarize this image." {
+		t.Fatalf("expected prompt text part first: %#v", contents[0].Parts[0])
 	}
 
-	if contents[0].Parts[1].Text != "Summarize this image." {
-		t.Fatalf("expected prompt after uploaded image: %#v", contents[0].Parts[1])
+	if contents[0].Parts[1].FileData == nil || contents[0].Parts[1].FileData.FileURI != testGeminiMediaURI {
+		t.Fatalf("expected uploaded image file part after prompt: %#v", contents[0].Parts[1])
 	}
 }
 
@@ -1241,20 +1241,20 @@ func assertGeminiConvertedContents(t *testing.T, contents []*genai.Content) {
 		t.Fatalf("unexpected first part count: %d", len(contents[0].Parts))
 	}
 
-	if contents[0].Parts[0].InlineData == nil {
-		t.Fatal("expected inline image data")
+	if contents[0].Parts[0].Text != "<@123>: what is this?" {
+		t.Fatalf("unexpected prompt text part: %q", contents[0].Parts[0].Text)
 	}
 
-	if contents[0].Parts[0].InlineData.MIMEType != mimeTypePNG {
-		t.Fatalf("unexpected image MIME type: %q", contents[0].Parts[0].InlineData.MIMEType)
+	if contents[0].Parts[1].InlineData == nil {
+		t.Fatal("expected inline image data second")
 	}
 
-	if string(contents[0].Parts[0].InlineData.Data) != testGeminiHelloPrompt {
-		t.Fatalf("unexpected image bytes: %q", string(contents[0].Parts[0].InlineData.Data))
+	if contents[0].Parts[1].InlineData.MIMEType != mimeTypePNG {
+		t.Fatalf("unexpected image MIME type: %q", contents[0].Parts[1].InlineData.MIMEType)
 	}
 
-	if contents[0].Parts[1].Text != "<@123>: what is this?" {
-		t.Fatalf("unexpected prompt text part: %q", contents[0].Parts[1].Text)
+	if string(contents[0].Parts[1].InlineData.Data) != testGeminiHelloPrompt {
+		t.Fatalf("unexpected image bytes: %q", string(contents[0].Parts[1].InlineData.Data))
 	}
 
 	if contents[1].Role != string(genai.RoleModel) {

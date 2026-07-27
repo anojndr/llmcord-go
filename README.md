@@ -185,7 +185,7 @@ Model notes:
 - Attach files or images for multimodal context
   Text-like files such as JSON, CSV, logs, Markdown, and source code are inlined when the target provider cannot read raw files directly.
   Other files are still preserved as explicit attachments and fall back to metadata summaries, including ZIP manifests for archive uploads.
-  Gemini single-image prompts are sent image-first, and images larger than 4 MiB are uploaded through the Gemini Files API instead of being inlined. With the default `max_images: 5`, that keeps inline Gemini image payloads within the documented 20 MB request guidance.
+  Gemini single-image prompts are sent text-first (placing the prompt before the image per official Gemini API guidance), and images larger than 4 MiB are uploaded through the Gemini Files API instead of being inlined. With the default `max_images: 5`, that keeps inline Gemini image payloads within the documented 20 MB request guidance.
   xAI and Grok-compatible Responses requests automatically switch inline image data URLs to uploaded file references when targeting a non-official xAI/Grok bridge, so Grok bridge deployments do not have to carry Base64 image JSON through the final `/v1/responses` call. Official `api.x.ai` keeps small inline images and still uploads oversized ones.
 - Start a prompt with `vsearch` to run reverse-image lookup
 - Use `Show Sources` on searched replies to inspect the cited URLs, including the total source count and pagination when needed
