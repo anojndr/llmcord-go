@@ -67,6 +67,10 @@ type openAICodexStreamEnvelope struct {
 }
 
 func newOpenAICodexClient(httpClient *http.Client) openAICodexClient {
+	if httpClient == nil {
+		httpClient = newOptimizedHTTPClient()
+	}
+
 	return openAICodexClient{httpClient: httpClient}
 }
 

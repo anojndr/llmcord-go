@@ -79,6 +79,10 @@ var openAIDegradedFunctionIDPattern = regexp.MustCompile(
 )
 
 func newOpenAIClient(httpClient *http.Client) openAIClient {
+	if httpClient == nil {
+		httpClient = newOptimizedHTTPClient()
+	}
+
 	return openAIClient{httpClient: httpClient}
 }
 
@@ -98,6 +102,7 @@ func (client openAIClient) streamChatCompletion(
 
 	excludedFunctionIDs := make(map[string]struct{})
 	includeStreamingUsage := true
+	includeServiceTier := true
 
 	contentYielded := false
 	wrappedHandle := func(delta streamDelta) error {
@@ -109,7 +114,12 @@ func (client openAIClient) streamChatCompletion(
 	}
 
 	for {
-		requestBody := openAIStreamRequestBody(request, includeStreamingUsage, excludedFunctionIDs)
+		requestBody := openAIStreamRequestBody(
+			request,
+			includeStreamingUsage,
+			includeServiceTier,
+			excludedFunctionIDs,
+		)
 
 		statusCode, statusText, responseHeaders, responseBody, err := client.streamChatCompletionAttempt(
 			ctx,
@@ -132,16 +142,18 @@ func (client openAIClient) streamChatCompletion(
 			return nil
 		}
 
-		retry, nextIncludeStreamingUsage := openAIShouldRetryChatCompletion(
+		retry, nextIncludeStreamingUsage, nextIncludeServiceTier := openAIShouldRetryChatCompletion(
 			statusCode,
 			statusText,
 			responseHeaders,
 			responseBody,
 			requestBody,
 			includeStreamingUsage,
+			includeServiceTier,
 			excludedFunctionIDs,
 		)
 		includeStreamingUsage = nextIncludeStreamingUsage
+		includeServiceTier = nextIncludeServiceTier
 
 		if retry {
 			continue
@@ -172,9 +184,15 @@ func isOpenAIStreamEndedBeforeDoneError(err error) bool {
 func openAIStreamRequestBody(
 	request chatCompletionRequest,
 	includeStreamingUsage bool,
+	includeServiceTier bool,
 	excludedFunctionIDs map[string]struct{},
 ) map[string]any {
 	requestBody := buildChatCompletionRequestBodyWithUsageOption(request, includeStreamingUsage)
+	if !includeServiceTier {
+		delete(requestBody, "service_tier")
+		delete(requestBody, "serviceTier")
+	}
+
 	if len(excludedFunctionIDs) == 0 {
 		return requestBody
 	}
@@ -197,10 +215,21 @@ func openAIShouldRetryChatCompletion(
 	responseBody []byte,
 	requestBody map[string]any,
 	includeStreamingUsage bool,
+	includeServiceTier bool,
 	excludedFunctionIDs map[string]struct{},
-) (bool, bool) {
+) (bool, bool, bool) {
 	if statusCode != http.StatusBadRequest {
-		return false, includeStreamingUsage
+		return false, includeStreamingUsage, includeServiceTier
+	}
+
+	if includeServiceTier &&
+		openAIShouldRetryWithoutServiceTier(
+			statusCode,
+			statusText,
+			responseHeaders,
+			responseBody,
+		) {
+		return true, includeStreamingUsage, false
 	}
 
 	if includeStreamingUsage &&
@@ -210,7 +239,7 @@ func openAIShouldRetryChatCompletion(
 			responseHeaders,
 			responseBody,
 		) {
-		return true, false
+		return true, false, includeServiceTier
 	}
 
 	degradedFunctionIDs := openAIDegradedFunctionIDs(responseBody)
@@ -220,11 +249,11 @@ func openAIShouldRetryChatCompletion(
 			excludedFunctionIDs,
 		)
 		if changed {
-			return true, includeStreamingUsage
+			return true, includeStreamingUsage, includeServiceTier
 		}
 	}
 
-	return false, includeStreamingUsage
+	return false, includeStreamingUsage, includeServiceTier
 }
 
 func (client openAIClient) streamChatCompletionAttempt(
@@ -352,11 +381,28 @@ func buildChatCompletionRequestBodyWithUsageOption(
 
 	maps.Copy(requestBody, request.Provider.ExtraBody)
 
+	if request.Provider.APIKind == providerAPIKindOpenAI {
+		defaultOpenAIServiceTier(requestBody)
+	}
+
 	if includeStreamingUsage {
 		ensureOpenAIStreamingUsageOption(requestBody)
 	}
 
 	return requestBody
+}
+
+func defaultOpenAIServiceTier(requestBody map[string]any) {
+	if requestBody == nil {
+		return
+	}
+
+	_, hasServiceTierSnake := requestBody["service_tier"]
+	_, hasServiceTierCamel := requestBody["serviceTier"]
+
+	if !hasServiceTierSnake && !hasServiceTierCamel {
+		requestBody["service_tier"] = "priority"
+	}
 }
 
 func ensureOpenAIStreamingUsageOption(requestBody map[string]any) {
@@ -375,6 +421,38 @@ func ensureOpenAIStreamingUsageOption(requestBody map[string]any) {
 	clonedStreamOptions := maps.Clone(streamOptions)
 	clonedStreamOptions["include_usage"] = true
 	requestBody["stream_options"] = clonedStreamOptions
+}
+
+func openAIShouldRetryWithoutServiceTier(
+	statusCode int,
+	statusText string,
+	responseHeaders http.Header,
+	responseBody []byte,
+) bool {
+	errorInfo := parseOpenAIHTTPErrorResponse(
+		statusCode,
+		statusText,
+		responseHeaders,
+		responseBody,
+		false,
+	)
+
+	normalizedParam := strings.ToLower(strings.TrimSpace(errorInfo.Param))
+	switch normalizedParam {
+	case "service_tier", "servicetier":
+		return true
+	}
+
+	normalizedMessage := strings.ToLower(strings.TrimSpace(errorInfo.Message))
+	if !strings.Contains(normalizedMessage, "service_tier") &&
+		!strings.Contains(normalizedMessage, "servicetier") {
+		return false
+	}
+
+	return strings.EqualFold(errorInfo.Code, "unsupported_parameter") ||
+		strings.Contains(normalizedMessage, "unknown") ||
+		strings.Contains(normalizedMessage, "unsupported") ||
+		strings.Contains(normalizedMessage, "invalid")
 }
 
 func openAIShouldRetryWithoutStreamingUsage(

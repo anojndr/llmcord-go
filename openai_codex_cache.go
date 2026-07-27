@@ -99,12 +99,17 @@ func openAIConversationPromptCacheKey(
 }
 
 func openAIRequestPromptCacheKeyPrefix(request chatCompletionRequest) string {
-	switch {
-	case request.Provider.APIKind == providerAPIKindOpenAICodex:
+	switch request.Provider.APIKind {
+	case providerAPIKindOpenAICodex:
 		return openAICodexPromptCacheKeyPrefix
-	case request.Provider.APIKind == providerAPIKindOpenAI &&
-		openAIConfiguredModel(request.ConfiguredModel):
-		return openAIProviderPromptCacheKeyPrefix
+	case providerAPIKindOpenAI:
+		if openAIConfiguredModel(request.ConfiguredModel) {
+			return openAIProviderPromptCacheKeyPrefix
+		}
+
+		return ""
+	case providerAPIKindGemini:
+		return ""
 	default:
 		return ""
 	}
