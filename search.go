@@ -467,9 +467,9 @@ func (instance *bot) decideWebSearch(
 		return searchDecision{}, nil, fmt.Errorf("prepare search decider conversation: %w", err)
 	}
 
-	searchDeciderMessages = append(
-		[]chatMessage{{Role: messageRoleSystem, Content: searchDeciderPrompt(time.Now())}},
-		searchDeciderMessages...,
+	searchDeciderMessages = prependSearchDeciderPrompt(
+		searchDeciderMessages,
+		searchDeciderPrompt(time.Now()),
 	)
 
 	searchDeciderMessages = appendSearchDeciderInstruction(searchDeciderMessages)
@@ -513,6 +513,57 @@ func (instance *bot) decideWebSearch(
 	}
 
 	return decision, warnings, nil
+}
+
+func prependSearchDeciderPrompt(messages []chatMessage, prompt string) []chatMessage {
+	prompt = strings.TrimSpace(prompt)
+	if prompt == "" {
+		return messages
+	}
+
+	clonedMessages := append([]chatMessage(nil), messages...)
+	if len(clonedMessages) == 0 {
+		return []chatMessage{{
+			Role:    messageRoleUser,
+			Content: prompt,
+		}}
+	}
+
+	lastIdx := len(clonedMessages) - 1
+	if clonedMessages[lastIdx].Role != messageRoleUser {
+		return append(clonedMessages, chatMessage{
+			Role:    messageRoleUser,
+			Content: prompt,
+		})
+	}
+
+	switch content := clonedMessages[lastIdx].Content.(type) {
+	case string:
+		if strings.TrimSpace(content) == "" {
+			clonedMessages[lastIdx].Content = prompt
+		} else {
+			clonedMessages[lastIdx].Content = prompt + "\n\n" + content
+		}
+	case []contentPart:
+		clonedParts := make([]contentPart, 0, len(content)+1)
+		clonedParts = append(clonedParts, contentPart{
+			messageTypeKey: contentTypeText,
+			messageTextKey: prompt + "\n\n",
+		})
+
+		for _, p := range content {
+			clonedParts = append(clonedParts, cloneContentPart(p))
+		}
+
+		clonedMessages[lastIdx].Content = clonedParts
+	default:
+		return append(clonedMessages, chatMessage{
+			Role:    messageRoleUser,
+			Content: prompt,
+		})
+	}
+
+	return clonedMessages
 }
 
 func appendSearchDeciderInstruction(messages []chatMessage) []chatMessage {
