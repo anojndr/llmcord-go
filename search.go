@@ -665,7 +665,17 @@ func searchDeciderDisabledForModel(configuredModel string) bool {
 	}
 
 	trimmedProviderName := strings.ToLower(strings.TrimSpace(providerName))
-	if trimmedProviderName == "x-ai" || strings.Contains(trimmedProviderName, "grok") {
+	trimmedModelName := strings.ToLower(strings.TrimSpace(modelName))
+
+	if trimmedProviderName == "x-ai" ||
+		strings.Contains(trimmedProviderName, "grok") ||
+		strings.Contains(trimmedProviderName, "perplexity") {
+		return true
+	}
+
+	if strings.HasSuffix(trimmedModelName, ":online") ||
+		strings.Contains(trimmedModelName, "online") ||
+		strings.Contains(trimmedModelName, "perplexity") {
 		return true
 	}
 
