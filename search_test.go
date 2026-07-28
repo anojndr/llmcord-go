@@ -590,17 +590,17 @@ func TestPrependSearchDeciderPrompt(t *testing.T) {
 			t.Fatalf("unexpected content type: %T", res[0].Content)
 		}
 
-		if len(resParts) != 3 {
-			t.Fatalf("expected 3 parts, got %d", len(resParts))
+		if len(resParts) != 2 {
+			t.Fatalf("expected 2 parts, got %d", len(resParts))
 		}
 
-		expectedPartHeader := deciderPrompt + "\n\nLatest user query:\n"
+		expectedPartText := deciderPrompt + "\n\nLatest user query:\nCheck this image"
 
-		if resParts[0][messageTypeKey] != contentTypeText || resParts[0][messageTextKey] != expectedPartHeader {
+		if resParts[0][messageTypeKey] != contentTypeText || resParts[0][messageTextKey] != expectedPartText {
 			t.Fatalf("unexpected first part: %#v", resParts[0])
 		}
 
-		if resParts[1][messageTextKey] != "Check this image" {
+		if resParts[1][messageTypeKey] != contentTypeImageURL {
 			t.Fatalf("unexpected second part: %#v", resParts[1])
 		}
 	})

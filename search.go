@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -537,22 +538,48 @@ func prependSearchDeciderPrompt(messages []chatMessage, prompt string) []chatMes
 		})
 	}
 
+	headerText := prompt + "\n\nLatest user query:\n"
+
 	switch content := clonedMessages[lastIdx].Content.(type) {
 	case string:
 		if strings.TrimSpace(content) == "" {
 			clonedMessages[lastIdx].Content = prompt
 		} else {
-			clonedMessages[lastIdx].Content = prompt + "\n\nLatest user query:\n" + content
+			clonedMessages[lastIdx].Content = headerText + content
 		}
 	case []contentPart:
-		clonedParts := make([]contentPart, 0, len(content)+1)
-		clonedParts = append(clonedParts, contentPart{
-			messageTypeKey: contentTypeText,
-			messageTextKey: prompt + "\n\nLatest user query:\n",
-		})
+		if len(content) == 0 {
+			clonedMessages[lastIdx].Content = []contentPart{{
+				messageTypeKey: contentTypeText,
+				messageTextKey: prompt,
+			}}
 
+			break
+		}
+
+		clonedParts := make([]contentPart, 0, len(content)+1)
 		for _, p := range content {
 			clonedParts = append(clonedParts, cloneContentPart(p))
+		}
+
+		firstTextIdx := -1
+
+		for index, p := range clonedParts {
+			if typeVal, ok := p[messageTypeKey].(string); ok && typeVal == contentTypeText {
+				firstTextIdx = index
+
+				break
+			}
+		}
+
+		if firstTextIdx >= 0 {
+			existingText, _ := clonedParts[firstTextIdx][messageTextKey].(string)
+			clonedParts[firstTextIdx][messageTextKey] = headerText + existingText
+		} else {
+			clonedParts = append([]contentPart{{
+				messageTypeKey: contentTypeText,
+				messageTextKey: headerText,
+			}}, clonedParts...)
 		}
 
 		clonedMessages[lastIdx].Content = clonedParts
@@ -586,15 +613,40 @@ func appendSearchDeciderInstruction(messages []chatMessage) []chatMessage {
 	case string:
 		messages[lastIdx].Content = content + "\n\n" + searchDeciderDecisionInstruction
 	case []contentPart:
+		if len(content) == 0 {
+			messages[lastIdx].Content = []contentPart{{
+				messageTypeKey: contentTypeText,
+				messageTextKey: searchDeciderDecisionInstruction,
+			}}
+
+			break
+		}
+
 		clonedParts := make([]contentPart, 0, len(content)+1)
 		for _, p := range content {
 			clonedParts = append(clonedParts, cloneContentPart(p))
 		}
 
-		clonedParts = append(clonedParts, contentPart{
-			messageTypeKey: contentTypeText,
-			messageTextKey: "\n\n" + searchDeciderDecisionInstruction,
-		})
+		lastTextIdx := -1
+
+		for index, p := range slices.Backward(clonedParts) {
+			if typeVal, ok := p[messageTypeKey].(string); ok && typeVal == contentTypeText {
+				lastTextIdx = index
+
+				break
+			}
+		}
+
+		if lastTextIdx >= 0 {
+			existingText, _ := clonedParts[lastTextIdx][messageTextKey].(string)
+			clonedParts[lastTextIdx][messageTextKey] = existingText + "\n\n" + searchDeciderDecisionInstruction
+		} else {
+			clonedParts = append(clonedParts, contentPart{
+				messageTypeKey: contentTypeText,
+				messageTextKey: searchDeciderDecisionInstruction,
+			})
+		}
+
 		messages[lastIdx].Content = clonedParts
 	default:
 		messages = append(messages, chatMessage{
