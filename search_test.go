@@ -514,6 +514,96 @@ func TestSearchDeciderPromptRetainsCriticalInstructions(t *testing.T) {
 	}
 }
 
+func TestPrependSearchDeciderPrompt(t *testing.T) {
+	t.Parallel()
+
+	deciderPrompt := "Decider prompt content"
+
+	t.Run("EmptyPrompt", func(t *testing.T) {
+		t.Parallel()
+
+		msgs := []chatMessage{{Role: messageRoleUser, Content: "query"}}
+		res := prependSearchDeciderPrompt(msgs, "")
+
+		if len(res) != 1 || res[0].Content != "query" {
+			t.Fatalf("expected messages unchanged, got %#v", res)
+		}
+	})
+
+	t.Run("EmptyMessages", func(t *testing.T) {
+		t.Parallel()
+
+		res := prependSearchDeciderPrompt(nil, deciderPrompt)
+
+		if len(res) != 1 || res[0].Role != messageRoleUser || res[0].Content != deciderPrompt {
+			t.Fatalf("unexpected result for empty messages: %#v", res)
+		}
+	})
+
+	t.Run("LastMessageAssistant", func(t *testing.T) {
+		t.Parallel()
+
+		msgs := []chatMessage{{Role: messageRoleAssistant, Content: "Hello"}}
+		res := prependSearchDeciderPrompt(msgs, deciderPrompt)
+
+		if len(res) != 2 || res[1].Role != messageRoleUser || res[1].Content != deciderPrompt {
+			t.Fatalf("unexpected result for assistant last message: %#v", res)
+		}
+	})
+
+	t.Run("LastMessageUserString", func(t *testing.T) {
+		t.Parallel()
+
+		msgs := []chatMessage{
+			{Role: messageRoleAssistant, Content: "Hello"},
+			{Role: messageRoleUser, Content: "What is the capital of France?"},
+		}
+		res := prependSearchDeciderPrompt(msgs, deciderPrompt)
+
+		if len(res) != 2 {
+			t.Fatalf("unexpected message count: %d", len(res))
+		}
+
+		expectedContent := deciderPrompt + "\n\nWhat is the capital of France?"
+
+		if res[1].Content != expectedContent {
+			t.Fatalf("expected content %q, got %q", expectedContent, res[1].Content)
+		}
+	})
+
+	t.Run("LastMessageUserParts", func(t *testing.T) {
+		t.Parallel()
+
+		parts := []contentPart{
+			{messageTypeKey: contentTypeText, messageTextKey: "Check this image"},
+			{messageTypeKey: contentTypeImageURL, messageTextKey: "http://example.com/img.png"},
+		}
+		msgs := []chatMessage{{Role: messageRoleUser, Content: parts}}
+		res := prependSearchDeciderPrompt(msgs, deciderPrompt)
+
+		if len(res) != 1 {
+			t.Fatalf("unexpected message count: %d", len(res))
+		}
+
+		resParts, ok := res[0].Content.([]contentPart)
+		if !ok {
+			t.Fatalf("unexpected content type: %T", res[0].Content)
+		}
+
+		if len(resParts) != 3 {
+			t.Fatalf("expected 3 parts, got %d", len(resParts))
+		}
+
+		if resParts[0][messageTypeKey] != contentTypeText || resParts[0][messageTextKey] != deciderPrompt+"\n\n" {
+			t.Fatalf("unexpected first part: %#v", resParts[0])
+		}
+
+		if resParts[1][messageTextKey] != "Check this image" {
+			t.Fatalf("unexpected second part: %#v", resParts[1])
+		}
+	})
+}
+
 func TestSearchDeciderConversationStripsImagesForTextOnlyModels(t *testing.T) {
 	t.Parallel()
 
@@ -960,39 +1050,42 @@ func assertSearchDeciderRequestIncludesInstruction(
 	}
 
 	requestMessages := requests[0].Messages
-	if len(requestMessages) != 3 {
+	if len(requestMessages) != 2 {
 		t.Fatalf("unexpected decider message count: %d", len(requestMessages))
 	}
 
-	if requestMessages[0].Role != "system" {
-		t.Fatalf("expected search decider system prompt, got role %q", requestMessages[0].Role)
+	if requestMessages[0].Role != messageRoleAssistant {
+		t.Fatalf("expected assistant message first, got role %q", requestMessages[0].Role)
 	}
 
-	systemPrompt, systemPromptOK := requestMessages[0].Content.(string)
-	if !systemPromptOK {
-		t.Fatalf("unexpected system prompt content type: %T", requestMessages[0].Content)
+	if requestMessages[1].Role != messageRoleUser {
+		t.Fatalf("expected latest query user message second, got role %q", requestMessages[1].Role)
 	}
 
-	if !strings.Contains(systemPrompt, "Today's date is ") {
-		t.Fatalf("expected rendered date in search decider system prompt: %q", systemPrompt)
+	userContent, userContentOK := requestMessages[1].Content.(string)
+	if !userContentOK {
+		t.Fatalf("unexpected user message content type: %T", requestMessages[1].Content)
 	}
 
-	if strings.Contains(systemPrompt, "{date}") || strings.Contains(systemPrompt, "{time}") {
-		t.Fatalf("expected rendered search decider system prompt without placeholders: %q", systemPrompt)
+	if !strings.Contains(userContent, "Today's date is ") {
+		t.Fatalf("expected rendered date in prepended search decider prompt: %q", userContent)
 	}
 
-	if requestMessages[2].Role != messageRoleUser {
-		t.Fatalf("expected latest query and decider instruction, got role %q", requestMessages[2].Role)
+	if strings.Contains(userContent, "{date}") || strings.Contains(userContent, "{time}") {
+		t.Fatalf("expected rendered search decider prompt without placeholders: %q", userContent)
 	}
 
-	instruction, instructionOK := requestMessages[2].Content.(string)
-	if !instructionOK {
-		t.Fatalf("unexpected decider instruction content type: %T", requestMessages[2].Content)
+	if !strings.Contains(userContent, "You are a search-decision model.") {
+		t.Fatalf("expected search decider prompt in latest query: %q", userContent)
+	}
+
+	if !strings.Contains(userContent, "<@123>: what changed?") {
+		t.Fatalf("expected user query in latest query: %q", userContent)
 	}
 
 	expectedInstructionSuffix := "\n\n" + searchDeciderDecisionInstruction
-	if !strings.HasSuffix(instruction, expectedInstructionSuffix) {
-		t.Fatalf("expected decider instruction suffix: %q, got %q", expectedInstructionSuffix, instruction)
+	if !strings.HasSuffix(userContent, expectedInstructionSuffix) {
+		t.Fatalf("expected decider instruction suffix: %q, got %q", expectedInstructionSuffix, userContent)
 	}
 }
 
