@@ -1021,6 +1021,88 @@ func TestFinalizeXAIResponseAnswerParsesBridgeSourcesForNonGrokModels(t *testing
 	}
 }
 
+func TestFinalizeXAIResponseAnswerParsesVariousSourceAppendixFormatsForNonGrokModels(t *testing.T) {
+	t.Parallel()
+
+	request := chatCompletionRequest{
+		Provider: providerRequestConfig{
+			APIKind:         providerAPIKindOpenAI,
+			BaseURL:         "https://openrouter.ai/api/v1",
+			APIKey:          "test-key",
+			APIKeys:         nil,
+			UseResponsesAPI: false,
+			EnableGrounding: false,
+			ExtraHeaders:    nil,
+			ExtraQuery:      nil,
+			ExtraBody:       nil,
+		},
+		Model:                       "claude-3-5-sonnet",
+		ConfiguredModel:             "anthropic/claude-3-5-sonnet",
+		ContextWindow:               0,
+		AutoCompactThresholdPercent: 0,
+		SessionID:                   "",
+		PreviousResponseID:          "",
+		RequestID:                   "",
+		Messages:                    nil,
+	}
+
+	tests := []struct {
+		name         string
+		answerText   string
+		expectedText string
+		expectedURL  string
+	}{
+		{
+			name:         "markdown h3 header with bracketed index",
+			answerText:   "Main answer content.\n\n### Sources:\n[1] [Claude Reference](https://docs.anthropic.com/claude)",
+			expectedText: "Main answer content.",
+			expectedURL:  "https://docs.anthropic.com/claude",
+		},
+		{
+			name:         "bold references header with hyphen bullet and title colon url",
+			answerText:   "Main answer content.\n\n**References:**\n- DeepSeek Docs: https://docs.deepseek.com/api",
+			expectedText: "Main answer content.",
+			expectedURL:  "https://docs.deepseek.com/api",
+		},
+		{
+			name:         "citations header with asterisk bullet and title dash url",
+			answerText:   "Main answer content.\n\nCitations:\n* Llama Info - https://llama.meta.com/info",
+			expectedText: "Main answer content.",
+			expectedURL:  "https://llama.meta.com/info",
+		},
+		{
+			name:         "source urls header with bare url",
+			answerText:   "Main answer content.\n\nSource URLs:\n1. <https://example.org/bare-link>",
+			expectedText: "Main answer content.",
+			expectedURL:  "https://example.org/bare-link",
+		},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			cleanedText, metadata := finalizeXAIResponseAnswer(request, testCase.answerText, nil)
+			if cleanedText != testCase.expectedText {
+				t.Fatalf("cleaned text mismatch: got %q, want %q", cleanedText, testCase.expectedText)
+			}
+
+			if metadata == nil {
+				t.Fatalf("expected non-nil search metadata for %s", testCase.name)
+			}
+
+			if len(metadata.Results) == 0 {
+				t.Fatalf("expected search metadata results for %s", testCase.name)
+			}
+
+			sources := extractSearchSources(metadata.Results[0].Text)
+			if len(sources) != 1 || sources[0].URL != testCase.expectedURL {
+				t.Fatalf("unexpected source URL for %s: %#v (expected %q)", testCase.name, sources, testCase.expectedURL)
+			}
+		})
+	}
+}
+
 func TestXAIStreamingVisibleAnswerTextHidesBridgeSourceAppendix(t *testing.T) {
 	t.Parallel()
 
