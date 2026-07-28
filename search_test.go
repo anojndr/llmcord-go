@@ -564,7 +564,7 @@ func TestPrependSearchDeciderPrompt(t *testing.T) {
 			t.Fatalf("unexpected message count: %d", len(res))
 		}
 
-		expectedContent := deciderPrompt + "\n\nWhat is the capital of France?"
+		expectedContent := deciderPrompt + "\n\nLatest user query:\nWhat is the capital of France?"
 
 		if res[1].Content != expectedContent {
 			t.Fatalf("expected content %q, got %q", expectedContent, res[1].Content)
@@ -594,7 +594,9 @@ func TestPrependSearchDeciderPrompt(t *testing.T) {
 			t.Fatalf("expected 3 parts, got %d", len(resParts))
 		}
 
-		if resParts[0][messageTypeKey] != contentTypeText || resParts[0][messageTextKey] != deciderPrompt+"\n\n" {
+		expectedPartHeader := deciderPrompt + "\n\nLatest user query:\n"
+
+		if resParts[0][messageTypeKey] != contentTypeText || resParts[0][messageTextKey] != expectedPartHeader {
 			t.Fatalf("unexpected first part: %#v", resParts[0])
 		}
 
@@ -1077,6 +1079,10 @@ func assertSearchDeciderRequestIncludesInstruction(
 
 	if !strings.Contains(userContent, "You are a search-decision model.") {
 		t.Fatalf("expected search decider prompt in latest query: %q", userContent)
+	}
+
+	if !strings.Contains(userContent, "Latest user query:\n") {
+		t.Fatalf("expected latest user query label: %q", userContent)
 	}
 
 	if !strings.Contains(userContent, "<@123>: what changed?") {
