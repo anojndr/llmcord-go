@@ -413,28 +413,54 @@ func TestParseSearchDecisionRobustness(t *testing.T) {
 	t.Parallel()
 
 	testCases := []struct {
-		name         string
-		responseText string
-		expectSearch bool
-		expectQuery  string
+		name          string
+		responseText  string
+		expectSearch  bool
+		expectQueries []string
 	}{
 		{
-			name:         "conversational prefix",
-			responseText: "Sure! Here is the JSON decision:\n```json\n{\"needs_search\":true,\"queries\":[\"test query\"]}\n```",
-			expectSearch: true,
-			expectQuery:  "test query",
+			name: "conversational prefix",
+			responseText: "Sure! Here is the JSON decision:\n" +
+				"```json\n{\"needs_search\":true,\"queries\":[\"test query\"]}\n```",
+			expectSearch:  true,
+			expectQueries: []string{"test query"},
 		},
 		{
-			name:         "conversational suffix",
-			responseText: "{\"needs_search\":true,\"queries\":[\"test query\"]} -- hope this helps!",
-			expectSearch: true,
-			expectQuery:  "test query",
+			name:          "conversational suffix",
+			responseText:  "{\"needs_search\":true,\"queries\":[\"test query\"]} -- hope this helps!",
+			expectSearch:  true,
+			expectQueries: []string{"test query"},
 		},
 		{
-			name:         "conversational prefix and suffix",
-			responseText: "Here it is:\n{\"needs_search\":false}\nLet me know if you need more help.",
-			expectSearch: false,
-			expectQuery:  "",
+			name:          "conversational prefix and suffix",
+			responseText:  "Here it is:\n{\"needs_search\":false}\nLet me know if you need more help.",
+			expectSearch:  false,
+			expectQueries: nil,
+		},
+		{
+			name: "extra closing brace at end (ZoicWare log issue)",
+			responseText: "{\"needs_search\": true, " +
+				"\"queries\": [\"ZoicWare Windows 11 debloater\", \"ZoicWare Windows debloater comparison\"]}}",
+			expectSearch:  true,
+			expectQueries: []string{"ZoicWare Windows 11 debloater", "ZoicWare Windows debloater comparison"},
+		},
+		{
+			name:          "extra closing brace with needs_search false",
+			responseText:  "{\"needs_search\": false}}",
+			expectSearch:  false,
+			expectQueries: nil,
+		},
+		{
+			name:          "trailing text containing braces",
+			responseText:  "{\"needs_search\": true, \"queries\": [\"test query\"]} -- note: (see details {here})",
+			expectSearch:  true,
+			expectQueries: []string{"test query"},
+		},
+		{
+			name:          "camelCase needsSearch with extra trailing brace",
+			responseText:  "{\"needsSearch\": true, \"queries\": [\"test query\"]}}",
+			expectSearch:  true,
+			expectQueries: []string{"test query"},
 		},
 	}
 
@@ -452,8 +478,14 @@ func TestParseSearchDecisionRobustness(t *testing.T) {
 			}
 
 			if testCase.expectSearch {
-				if len(decision.Queries) != 1 || decision.Queries[0] != testCase.expectQuery {
-					t.Fatalf("expected query %q, got %#v", testCase.expectQuery, decision.Queries)
+				if len(decision.Queries) != len(testCase.expectQueries) {
+					t.Fatalf("expected %d queries, got %d (%#v)", len(testCase.expectQueries), len(decision.Queries), decision.Queries)
+				}
+
+				for idx, q := range testCase.expectQueries {
+					if decision.Queries[idx] != q {
+						t.Fatalf("expected query[%d] %q, got %q", idx, q, decision.Queries[idx])
+					}
 				}
 			}
 		})

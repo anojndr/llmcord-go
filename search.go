@@ -1000,6 +1000,11 @@ func collectChatCompletionText(
 func parseSearchDecision(responseText string) (searchDecision, error) {
 	trimmedResponse := trimCodeFence(responseText)
 
+	var decision searchDecision
+	if tryUnmarshalSearchDecision(trimmedResponse, &decision) {
+		return validateSearchDecision(decision)
+	}
+
 	start := strings.Index(trimmedResponse, "{")
 	end := strings.LastIndex(trimmedResponse, "}")
 
@@ -1007,13 +1012,66 @@ func parseSearchDecision(responseText string) (searchDecision, error) {
 		trimmedResponse = trimmedResponse[start : end+1]
 	}
 
-	var decision searchDecision
-
 	err := json.Unmarshal([]byte(trimmedResponse), &decision)
 	if err != nil {
 		return searchDecision{}, fmt.Errorf("decode search decision JSON: %w", err)
 	}
 
+	return validateSearchDecision(decision)
+}
+
+func tryUnmarshalSearchDecision(text string, decision *searchDecision) bool {
+	err := json.Unmarshal([]byte(text), decision)
+	if err == nil {
+		return true
+	}
+
+	for charIndex := range text {
+		if text[charIndex] != '{' {
+			continue
+		}
+
+		var rawMap map[string]json.RawMessage
+
+		dec := json.NewDecoder(strings.NewReader(text[charIndex:]))
+
+		err = dec.Decode(&rawMap)
+		if err != nil {
+			continue
+		}
+
+		_, hasSnake := rawMap["needs_search"]
+
+		valCamel, hasCamel := rawMap["needsSearch"]
+		if !hasSnake && !hasCamel {
+			continue
+		}
+
+		if !hasSnake && hasCamel {
+			rawMap["needs_search"] = valCamel
+		}
+
+		jsonBytes, err := json.Marshal(rawMap)
+		if err != nil {
+			continue
+		}
+
+		var decodedDecision searchDecision
+
+		err = json.Unmarshal(jsonBytes, &decodedDecision)
+		if err != nil {
+			continue
+		}
+
+		*decision = decodedDecision
+
+		return true
+	}
+
+	return false
+}
+
+func validateSearchDecision(decision searchDecision) (searchDecision, error) {
 	if !decision.NeedsSearch {
 		decision.Queries = nil
 
