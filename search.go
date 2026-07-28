@@ -542,13 +542,13 @@ func prependSearchDeciderPrompt(messages []chatMessage, prompt string) []chatMes
 		if strings.TrimSpace(content) == "" {
 			clonedMessages[lastIdx].Content = prompt
 		} else {
-			clonedMessages[lastIdx].Content = prompt + "\n\n" + content
+			clonedMessages[lastIdx].Content = prompt + "\n\nLatest user query:\n" + content
 		}
 	case []contentPart:
 		clonedParts := make([]contentPart, 0, len(content)+1)
 		clonedParts = append(clonedParts, contentPart{
 			messageTypeKey: contentTypeText,
-			messageTextKey: prompt + "\n\n",
+			messageTextKey: prompt + "\n\nLatest user query:\n",
 		})
 
 		for _, p := range content {
