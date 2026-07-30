@@ -14,7 +14,7 @@ It also works with local backends such as Ollama, LM Studio, and vLLM.
 
 - Reply-chain conversations in guilds, DMs, and public threads
 - Bot mentions or plain `at ai` triggers in guild channels
-- Streaming replies with progress state, `Show Thinking`, `Show Sources`, and `View on Rentry`
+- Real-time streaming replies in embed and plain-response modes, with progress state, `Show Thinking`, `Show Sources`, and `View on Rentry`
 - Multimodal input handling for images, audio, video, PDFs, DOCX, PPTX, and generic file attachments
 - URL enrichment for TikTok, Facebook, YouTube, YouTube Shorts, Reddit, and generic websites
 - Optional web-search augmentation with Exa or Tavily
@@ -28,7 +28,7 @@ It also works with local backends such as Ollama, LM Studio, and vLLM.
 1. A user mentions the bot, says `at ai`, or replies inside an existing chain.
 2. The bot rebuilds recent conversation state from the reply chain and replied message.
 3. It augments the latest user turn with attachments, supported URLs, visual-search results, and optional web-search results.
-4. The selected provider streams the response back to Discord.
+4. The selected provider streams the response back to Discord. The first visible delta replaces the progress placeholder immediately; subsequent edits are rate-limited to Discord's API cadence, and final-only controls are added after the terminal provider event.
 
 Behavior notes:
 - The built-in `openai` provider uses the Responses API regardless of its configured `base_url`, requests reasoning summaries by default, and streams Responses API reasoning deltas into the bot's thinking output when the provider emits them. OpenAI follow-ups replay the local reply-chain history with the stable `prompt_cache_key` instead of switching to server-side `previous_response_id` state. Other OpenAI-compatible providers stay on Chat Completions unless they explicitly opt into a different Responses-compatible flow such as `x-ai`.

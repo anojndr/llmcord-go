@@ -1167,6 +1167,76 @@ func TestRenderEmbedResponseDeletesExtraMessagesWhenSegmentCountShrinks(t *testi
 	}
 }
 
+func TestRenderPlainResponseDeletesExtraMessagesWhenSegmentCountShrinks(t *testing.T) {
+	t.Parallel()
+
+	const (
+		channelID     = "channel-1"
+		sourceID      = "source-message"
+		firstReplyID  = "assistant-message-1"
+		secondReplyID = "assistant-message-2"
+	)
+
+	sourceMessage := new(discordgo.Message)
+	sourceMessage.ID = sourceID
+	sourceMessage.ChannelID = channelID
+
+	postCount := 0
+	deleteCount := 0
+	session := newEmbedShrinkTestSession(
+		t,
+		channelID,
+		firstReplyID,
+		secondReplyID,
+		&postCount,
+		&deleteCount,
+	)
+
+	instance := new(bot)
+	instance.session = session
+	instance.nodes = newMessageNodeStore(10)
+
+	tracker := newResponseTracker(sourceMessage, "openai/gpt-5.1")
+
+	err := instance.renderPlainResponse(
+		context.Background(),
+		tracker,
+		[]string{"first", "second"},
+		false,
+		false,
+	)
+	if err != nil {
+		t.Fatalf("render initial plain response: %v", err)
+	}
+
+	err = instance.renderPlainResponse(
+		context.Background(),
+		tracker,
+		[]string{"first"},
+		true,
+		false,
+	)
+	if err != nil {
+		t.Fatalf("render collapsed plain response: %v", err)
+	}
+
+	if deleteCount != 1 {
+		t.Fatalf("expected one deleted extra message, got %d", deleteCount)
+	}
+
+	if len(tracker.responseMessages) != 1 {
+		t.Fatalf("unexpected response message count: %d", len(tracker.responseMessages))
+	}
+
+	if len(tracker.pendingResponses) != 1 {
+		t.Fatalf("unexpected pending response count: %d", len(tracker.pendingResponses))
+	}
+
+	if _, ok := instance.nodes.get(secondReplyID); ok {
+		t.Fatal("expected deleted extra response node to be removed from the store")
+	}
+}
+
 func newEmbedShrinkTestSession(
 	t *testing.T,
 	channelID string,
@@ -1289,6 +1359,89 @@ func TestSendPlainResponseEditsExistingProgressMessage(t *testing.T) {
 
 	if tracker.progressActive {
 		t.Fatal("expected progress placeholder to be cleared after plain response edit")
+	}
+}
+
+func TestHandleGeneratedStreamDeltaStreamsPlainResponse(t *testing.T) {
+	t.Parallel()
+
+	const (
+		channelID        = "channel-1"
+		sourceID         = "source-message"
+		progressID       = "progress-message"
+		partialContent   = "first streamed plain delta"
+		expectedPatchURL = "/api/v9/channels/" + channelID + "/messages/" + progressID
+	)
+
+	sourceMessage := new(discordgo.Message)
+	sourceMessage.ID = sourceID
+	sourceMessage.ChannelID = channelID
+
+	progressMessage := new(discordgo.Message)
+	progressMessage.ID = progressID
+	progressMessage.ChannelID = channelID
+
+	patchCount := 0
+
+	session, err := discordgo.New("Bot discord-token")
+	if err != nil {
+		t.Fatalf("create discord session: %v", err)
+	}
+
+	client := new(http.Client)
+	client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		t.Helper()
+
+		if request.Method != http.MethodPatch || request.URL.Path != expectedPatchURL {
+			t.Fatalf("unexpected request: %s %s", request.Method, request.URL.Path)
+		}
+
+		patchCount++
+
+		assertPlainEditRequestWithComponentCount(t, request, partialContent, 1)
+
+		return newJSONResponse(t, request, progressMessage), nil
+	})
+	session.Client = client
+
+	instance := new(bot)
+	instance.session = session
+
+	tracker := newResponseTracker(sourceMessage, "openai/gpt-5.1")
+	tracker.responseMessages = []*discordgo.Message{progressMessage}
+	tracker.progressActive = true
+
+	finishReason := ""
+	lastRenderTime := time.Time{}
+	state := generatedStreamState{
+		request:             emptyChatCompletionRequest(),
+		warnings:            nil,
+		answerAccumulator:   &segmentAccumulator{maxLength: plainResponseMaxLength, segments: []string{""}},
+		thinkingAccumulator: &segmentAccumulator{maxLength: plainResponseMaxLength, segments: []string{""}},
+		finishReason:        &finishReason,
+		lastRenderTime:      &lastRenderTime,
+		maxLength:           plainResponseMaxLength,
+		usePlainResponses:   true,
+		rawAnswerText:       "",
+		renderedAnswerText:  "",
+	}
+
+	err = instance.handleGeneratedStreamDelta(
+		context.Background(),
+		tracker,
+		&state,
+		newStreamDelta(partialContent, ""),
+	)
+	if err != nil {
+		t.Fatalf("handle streamed plain delta: %v", err)
+	}
+
+	if patchCount != 1 {
+		t.Fatalf("expected the first plain delta to update Discord immediately, got %d updates", patchCount)
+	}
+
+	if tracker.progressActive {
+		t.Fatal("expected the progress placeholder to become the streamed plain response")
 	}
 }
 
@@ -1907,6 +2060,9 @@ func newResponseHistoryTestSession(
 		case request.Method == http.MethodPost &&
 			request.URL.Path == "/api/v9/channels/"+channelID+"/messages":
 			return newJSONResponse(t, request, sentMessage), nil
+		case request.Method == http.MethodPatch &&
+			request.URL.Path == "/api/v9/channels/"+channelID+"/messages/"+sentMessage.ID:
+			return newJSONResponse(t, request, sentMessage), nil
 		default:
 			t.Fatalf("unexpected request: %s %s", request.Method, request.URL.Path)
 
@@ -2013,6 +2169,16 @@ func assertPlainEditRequest(
 	expectedContent string,
 ) {
 	t.Helper()
+	assertPlainEditRequestWithComponentCount(t, request, expectedContent, 2)
+}
+
+func assertPlainEditRequestWithComponentCount(
+	t *testing.T,
+	request *http.Request,
+	expectedContent string,
+	expectedComponentCount int,
+) {
+	t.Helper()
 
 	var payload map[string]any
 
@@ -2034,7 +2200,7 @@ func assertPlainEditRequest(
 	}
 
 	components, componentsOK := payload["components"].([]any)
-	if !componentsOK || len(components) != 2 {
+	if !componentsOK || len(components) != expectedComponentCount {
 		t.Fatalf("unexpected components payload: %#v", payload["components"])
 	}
 

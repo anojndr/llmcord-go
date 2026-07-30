@@ -666,30 +666,38 @@ func (instance *bot) handleGeneratedStreamDelta(
 		tracker.searchMetadata = mergeSearchMetadata(tracker.searchMetadata, delta.SearchMetadata)
 	}
 
+	var segments []string
 	if state.usePlainResponses {
-		return nil
+		segments = state.answerAccumulator.renderSegments()
+	} else {
+		segments = visibleResponseSegments(
+			state.thinkingAccumulator.joined(),
+			state.answerAccumulator.joined(),
+			state.maxLength,
+		)
 	}
 
-	segments := visibleResponseSegments(
-		state.thinkingAccumulator.joined(),
-		state.answerAccumulator.joined(),
-		state.maxLength,
-	)
 	if !shouldRenderProgress(segments, splitOccurred, *state.lastRenderTime) {
 		return nil
 	}
 
-	err := instance.renderEmbedResponse(
-		ctx,
-		tracker,
-		state.warnings,
-		segments,
-		*state.finishReason,
-		false,
-		false,
-	)
+	var err error
+	if state.usePlainResponses {
+		err = instance.renderPlainResponse(ctx, tracker, segments, false, false)
+	} else {
+		err = instance.renderEmbedResponse(
+			ctx,
+			tracker,
+			state.warnings,
+			segments,
+			*state.finishReason,
+			false,
+			false,
+		)
+	}
+
 	if err != nil {
-		return fmt.Errorf("render embed response: %w", err)
+		return fmt.Errorf("render streaming response: %w", err)
 	}
 
 	*state.lastRenderTime = time.Now()
@@ -1036,6 +1044,23 @@ func (instance *bot) trimExtraEmbedResponses(
 	tracker *responseTracker,
 	keepCount int,
 ) error {
+	err := instance.trimExtraResponseMessages(ctx, tracker, keepCount)
+	if err != nil {
+		return err
+	}
+
+	if len(tracker.renderedSpecs) > keepCount {
+		tracker.renderedSpecs = tracker.renderedSpecs[:keepCount]
+	}
+
+	return nil
+}
+
+func (instance *bot) trimExtraResponseMessages(
+	ctx context.Context,
+	tracker *responseTracker,
+	keepCount int,
+) error {
 	for len(tracker.responseMessages) > keepCount {
 		lastIndex := len(tracker.responseMessages) - 1
 		message := tracker.responseMessages[lastIndex]
@@ -1055,10 +1080,6 @@ func (instance *bot) trimExtraEmbedResponses(
 		tracker.pendingResponses = tracker.pendingResponses[:lastIndex]
 
 		discardPendingResponse(instance.nodes, pending)
-	}
-
-	if len(tracker.renderedSpecs) > keepCount {
-		tracker.renderedSpecs = tracker.renderedSpecs[:keepCount]
 	}
 
 	return nil
@@ -1087,8 +1108,26 @@ func (instance *bot) sendPlainResponse(
 	segments []string,
 	hasThinking bool,
 ) error {
+	return instance.renderPlainResponse(ctx, tracker, segments, true, hasThinking)
+}
+
+func (instance *bot) renderPlainResponse(
+	ctx context.Context,
+	tracker *responseTracker,
+	segments []string,
+	final bool,
+	hasThinking bool,
+) error {
 	for index, segment := range segments {
-		actions := plainResponseActions(tracker, index, len(segments), hasThinking)
+		actions := responseActions{
+			showSources:  false,
+			showThinking: false,
+			showRentry:   false,
+		}
+		if final {
+			actions = plainResponseActions(tracker, index, len(segments), hasThinking)
+		}
+
 		if index < len(tracker.responseMessages) {
 			err := instance.updatePlainResponseMessage(ctx, tracker, index, segment, actions)
 			if err != nil {
@@ -1105,6 +1144,11 @@ func (instance *bot) sendPlainResponse(
 
 		tracker.responseMessages = append(tracker.responseMessages, sentMessage)
 		tracker.pendingResponses = append(tracker.pendingResponses, pending)
+	}
+
+	err := instance.trimExtraResponseMessages(ctx, tracker, len(segments))
+	if err != nil {
+		return err
 	}
 
 	tracker.responseVisible = true
