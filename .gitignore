@@ -14,7 +14,7 @@
 !LICENSE.md
 !README.md
 
-# Root-level Go sources and streaming regression tests stay explicit; local scratch, request captures, token traces, and gate outputs remain ignored by default.
+# Root-level Go implementation and regression tests stay explicit; local scratch, request captures, token traces, and gate outputs remain ignored by default.
 !*.go
 !searchDeciderPrompt.txt
 !cmd/

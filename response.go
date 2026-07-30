@@ -457,16 +457,17 @@ func (instance *bot) runGenerationAttempt(
 	lastRenderTime := time.Time{}
 
 	streamState := generatedStreamState{
-		request:             request,
-		warnings:            warnings,
-		answerAccumulator:   &accumulator,
-		thinkingAccumulator: &thinkingAccumulator,
-		finishReason:        &finishReason,
-		lastRenderTime:      &lastRenderTime,
-		maxLength:           maxLength,
-		usePlainResponses:   usePlainResponses,
-		rawAnswerText:       "",
-		renderedAnswerText:  "",
+		request:               request,
+		warnings:              warnings,
+		answerAccumulator:     &accumulator,
+		thinkingAccumulator:   &thinkingAccumulator,
+		finishReason:          &finishReason,
+		lastRenderTime:        &lastRenderTime,
+		maxLength:             maxLength,
+		usePlainResponses:     usePlainResponses,
+		initialSearchMetadata: cloneSearchMetadata(tracker.searchMetadata),
+		rawAnswerText:         "",
+		renderedAnswerText:    "",
 	}
 
 	streamContext, cancelStream := streamChatCompletionContext(ctx, request)
@@ -605,16 +606,17 @@ func (instance *bot) generateAndSendResponse(
 }
 
 type generatedStreamState struct {
-	request             chatCompletionRequest
-	warnings            []string
-	answerAccumulator   *segmentAccumulator
-	thinkingAccumulator *segmentAccumulator
-	finishReason        *string
-	lastRenderTime      *time.Time
-	maxLength           int
-	usePlainResponses   bool
-	rawAnswerText       string
-	renderedAnswerText  string
+	request               chatCompletionRequest
+	warnings              []string
+	answerAccumulator     *segmentAccumulator
+	thinkingAccumulator   *segmentAccumulator
+	finishReason          *string
+	lastRenderTime        *time.Time
+	maxLength             int
+	usePlainResponses     bool
+	initialSearchMetadata *searchMetadata
+	rawAnswerText         string
+	renderedAnswerText    string
 }
 
 func (instance *bot) handleGeneratedStreamDelta(
@@ -631,7 +633,7 @@ func (instance *bot) handleGeneratedStreamDelta(
 		*state.finishReason = ""
 		tracker.usage = nil
 		tracker.providerResponseID = ""
-		tracker.searchMetadata = nil
+		tracker.searchMetadata = cloneSearchMetadata(state.initialSearchMetadata)
 
 		return nil
 	}

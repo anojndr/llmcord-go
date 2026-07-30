@@ -373,16 +373,17 @@ func TestHandleGeneratedStreamDeltaMergesSearchMetadataFromStream(t *testing.T) 
 	finishReason := ""
 	lastRenderTime := time.Time{}
 	state := generatedStreamState{
-		request:             emptyChatCompletionRequest(),
-		warnings:            nil,
-		answerAccumulator:   &segmentAccumulator{maxLength: embedResponseMaxLength, segments: []string{""}},
-		thinkingAccumulator: &segmentAccumulator{maxLength: embedResponseMaxLength, segments: []string{""}},
-		finishReason:        &finishReason,
-		lastRenderTime:      &lastRenderTime,
-		maxLength:           embedResponseMaxLength,
-		usePlainResponses:   true,
-		rawAnswerText:       "",
-		renderedAnswerText:  "",
+		request:               emptyChatCompletionRequest(),
+		warnings:              nil,
+		answerAccumulator:     &segmentAccumulator{maxLength: embedResponseMaxLength, segments: []string{""}},
+		thinkingAccumulator:   &segmentAccumulator{maxLength: embedResponseMaxLength, segments: []string{""}},
+		finishReason:          &finishReason,
+		lastRenderTime:        &lastRenderTime,
+		maxLength:             embedResponseMaxLength,
+		usePlainResponses:     true,
+		initialSearchMetadata: nil,
+		rawAnswerText:         "",
+		renderedAnswerText:    "",
 	}
 
 	err := instance.handleGeneratedStreamDelta(
@@ -425,6 +426,215 @@ func TestHandleGeneratedStreamDeltaMergesSearchMetadataFromStream(t *testing.T) 
 	if len(tracker.searchMetadata.VisualSearchSources) != 1 {
 		t.Fatalf("expected existing visual search metadata to be preserved: %#v", tracker.searchMetadata.VisualSearchSources)
 	}
+}
+
+func TestGenerateAndSendResponseKeepsSearchDeciderSourcesAfterGeminiRetryReset(t *testing.T) {
+	t.Parallel()
+
+	const (
+		botUserID          = "bot-user"
+		channelID          = "channel-1"
+		userID             = "user-1"
+		sourceMessageID    = "user-message-1"
+		assistantMessageID = "assistant-message-1"
+		query              = "latest Gemini news"
+		sourceURL          = "https://example.com/gemini-news"
+	)
+
+	sourceMessage := newPromptMessage(sourceMessageID, channelID, userID, botUserID)
+	assistantMessage := new(discordgo.Message)
+	assistantMessage.ID = assistantMessageID
+	assistantMessage.ChannelID = channelID
+	assistantMessage.Author = newDiscordUser(botUserID, true)
+
+	sourcesButtonShown := false
+	session := newDirectMessageTestSession(t, channelID, botUserID, roundTripFunc(func(
+		request *http.Request,
+	) (*http.Response, error) {
+		t.Helper()
+
+		switch {
+		case request.Method == http.MethodPost &&
+			request.URL.Path == "/api/v9/channels/"+channelID+"/messages":
+			return newJSONResponse(t, request, assistantMessage), nil
+		case request.Method == http.MethodPatch &&
+			request.URL.Path == "/api/v9/channels/"+channelID+"/messages/"+assistantMessageID:
+			sourcesButtonShown = sourcesButtonShown || requestHasResponseButton(
+				t,
+				request,
+				showSourcesButtonCustomID,
+			)
+
+			return newJSONResponse(t, request, assistantMessage), nil
+		default:
+			t.Fatalf("unexpected request: %s %s", request.Method, request.URL.Path)
+
+			return nil, errUnexpectedTestRequest
+		}
+	}))
+
+	instance, loadedConfig := newGeminiSearchDeciderRetryTestBot(t, query, sourceURL)
+	instance.session = session
+
+	conversation := []chatMessage{{Role: messageRoleUser, Content: "What is new with Gemini?"}}
+
+	augmentedConversation, searchMetadata, warnings := instance.maybeAugmentConversationWithWebSearch(
+		context.Background(),
+		loadedConfig,
+		geminiSearchDeciderRetryMainModel,
+		sourceMessage,
+		conversation,
+	)
+	if len(warnings) != 0 {
+		t.Fatalf("unexpected search warnings: %#v", warnings)
+	}
+
+	if searchMetadata == nil || countSearchSources(searchMetadata) != 1 {
+		t.Fatalf("expected Search Decider sources: %#v", searchMetadata)
+	}
+
+	request, err := buildChatCompletionRequest(
+		loadedConfig,
+		geminiSearchDeciderRetryMainModel,
+		augmentedConversation,
+		false,
+	)
+	if err != nil {
+		t.Fatalf("build Gemini request: %v", err)
+	}
+
+	tracker := newResponseTracker(sourceMessage, request.ConfiguredModel)
+	tracker.searchMetadata = searchMetadata
+
+	err = instance.generateAndSendResponse(context.Background(), request, tracker, nil, false)
+	if err != nil {
+		t.Fatalf("generate and send response: %v", err)
+	}
+
+	if !sourcesButtonShown {
+		t.Fatal("expected Show Sources button after Gemini retry reset")
+	}
+
+	if tracker.searchMetadata == nil || countSearchSources(tracker.searchMetadata) != 1 {
+		t.Fatalf("expected Search Decider sources to be retained: %#v", tracker.searchMetadata)
+	}
+}
+
+const (
+	geminiSearchDeciderRetryMainModel    = "gemini/main-model"
+	geminiSearchDeciderRetryDeciderModel = "gemini/search-decider-model"
+)
+
+func newGeminiSearchDeciderRetryTestBot(
+	t *testing.T,
+	query string,
+	sourceURL string,
+) (*bot, config) {
+	t.Helper()
+
+	loadedConfig := testSearchConfig()
+	loadedConfig.Providers = map[string]providerConfig{
+		"gemini": {
+			Type:            string(providerAPIKindGemini),
+			BaseURL:         "",
+			APIKey:          "",
+			APIKeys:         nil,
+			EnableGrounding: false,
+			ExtraHeaders:    nil,
+			ExtraQuery:      nil,
+			ExtraBody:       nil,
+		},
+	}
+	loadedConfig.Models = map[string]map[string]any{
+		geminiSearchDeciderRetryMainModel:    nil,
+		geminiSearchDeciderRetryDeciderModel: nil,
+	}
+	loadedConfig.ModelOrder = []string{
+		geminiSearchDeciderRetryMainModel,
+		geminiSearchDeciderRetryDeciderModel,
+	}
+	loadedConfig.SearchDeciderModel = geminiSearchDeciderRetryDeciderModel
+
+	instance := new(bot)
+	instance.nodes = newMessageNodeStore(10)
+	instance.chatCompletions = newStubChatClient(func(
+		_ context.Context,
+		request chatCompletionRequest,
+		handle func(streamDelta) error,
+	) error {
+		switch request.ConfiguredModel {
+		case geminiSearchDeciderRetryDeciderModel:
+			if request.Provider.EnableGrounding {
+				t.Fatal("expected native grounding to stay disabled for the Search Decider")
+			}
+
+			return handle(newStreamDelta(`{"needs_search":true,"queries":["`+query+`"]}`, ""))
+		case geminiSearchDeciderRetryMainModel:
+			if request.Provider.EnableGrounding {
+				t.Fatal("expected native grounding to stay disabled for the Gemini reply")
+			}
+
+			for _, delta := range []streamDelta{
+				newStreamDelta("", finishReasonRetryReset),
+				newStreamDelta("Gemini answer.", ""),
+				newStreamDelta("", finishReasonStop),
+			} {
+				err := handle(delta)
+				if err != nil {
+					return err
+				}
+			}
+
+			return nil
+		default:
+			t.Fatalf("unexpected model request: %q", request.ConfiguredModel)
+
+			return errUnexpectedTestRequest
+		}
+	})
+	instance.webSearch = newStubWebSearchClient(func(
+		_ context.Context,
+		_ config,
+		queries []string,
+	) ([]webSearchResult, error) {
+		if len(queries) != 1 || queries[0] != query {
+			t.Fatalf("unexpected search queries: %#v", queries)
+		}
+
+		return []webSearchResult{{
+			Query: query,
+			Text:  "Title: Gemini News\nURL: " + sourceURL + "\n",
+		}}, nil
+	})
+
+	return instance, loadedConfig
+}
+
+func requestHasResponseButton(t *testing.T, request *http.Request, customID string) bool {
+	t.Helper()
+
+	var payload struct {
+		Components []struct {
+			Components []struct {
+				CustomID string `json:"custom_id"`
+			} `json:"components"`
+		} `json:"components"`
+	}
+
+	err := json.NewDecoder(request.Body).Decode(&payload)
+	if err != nil {
+		t.Fatalf("decode response request: %v", err)
+	}
+
+	for _, row := range payload.Components {
+		for _, component := range row.Components {
+			if component.CustomID == customID {
+				return true
+			}
+		}
+	}
+
+	return false
 }
 
 func TestNewReplyMessageDisablesReplyAuthorMention(t *testing.T) {
@@ -1414,16 +1624,17 @@ func TestHandleGeneratedStreamDeltaStreamsPlainResponse(t *testing.T) {
 	finishReason := ""
 	lastRenderTime := time.Time{}
 	state := generatedStreamState{
-		request:             emptyChatCompletionRequest(),
-		warnings:            nil,
-		answerAccumulator:   &segmentAccumulator{maxLength: plainResponseMaxLength, segments: []string{""}},
-		thinkingAccumulator: &segmentAccumulator{maxLength: plainResponseMaxLength, segments: []string{""}},
-		finishReason:        &finishReason,
-		lastRenderTime:      &lastRenderTime,
-		maxLength:           plainResponseMaxLength,
-		usePlainResponses:   true,
-		rawAnswerText:       "",
-		renderedAnswerText:  "",
+		request:               emptyChatCompletionRequest(),
+		warnings:              nil,
+		answerAccumulator:     &segmentAccumulator{maxLength: plainResponseMaxLength, segments: []string{""}},
+		thinkingAccumulator:   &segmentAccumulator{maxLength: plainResponseMaxLength, segments: []string{""}},
+		finishReason:          &finishReason,
+		lastRenderTime:        &lastRenderTime,
+		maxLength:             plainResponseMaxLength,
+		usePlainResponses:     true,
+		initialSearchMetadata: nil,
+		rawAnswerText:         "",
+		renderedAnswerText:    "",
 	}
 
 	err = instance.handleGeneratedStreamDelta(
