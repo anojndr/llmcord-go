@@ -6,33 +6,29 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"sync/atomic"
 	"time"
 )
 
 type chatCompletionRouter struct {
-	openAI               openAIClient
-	openAICodex          openAICodexClient
-	gemini               geminiClient
-	waitForRetry         func(context.Context, time.Duration) error
-	firstResponseTimeout time.Duration
+	openAI       openAIClient
+	openAICodex  openAICodexClient
+	gemini       geminiClient
+	waitForRetry func(context.Context, time.Duration) error
 }
 
 const (
-	sameKeyRetryDelayLimit      = time.Minute
-	attemptTimeoutDivisor       = 2
-	minAttemptTimeout           = 20 * time.Second
-	maxAttemptTimeout           = 90 * time.Second
-	defaultFirstResponseTimeout = 60 * time.Second
+	sameKeyRetryDelayLimit = time.Minute
+	attemptTimeoutDivisor  = 2
+	minAttemptTimeout      = 20 * time.Second
+	maxAttemptTimeout      = 90 * time.Second
 )
 
 func newChatCompletionRouter(httpClient *http.Client) chatCompletionRouter {
 	return chatCompletionRouter{
-		openAI:               newOpenAIClient(httpClient),
-		openAICodex:          newOpenAICodexClient(httpClient),
-		gemini:               newGeminiClient(httpClient),
-		waitForRetry:         waitForRetryDelay,
-		firstResponseTimeout: defaultFirstResponseTimeout,
+		openAI:       newOpenAIClient(httpClient),
+		openAICodex:  newOpenAICodexClient(httpClient),
+		gemini:       newGeminiClient(httpClient),
+		waitForRetry: waitForRetryDelay,
 	}
 }
 
@@ -190,52 +186,6 @@ func (client chatCompletionRouter) streamChatCompletionOnce(
 	request chatCompletionRequest,
 	handle func(streamDelta) error,
 ) error {
-	timeoutCtx, cancelTimeout := context.WithCancel(ctx)
-	defer cancelTimeout()
-
-	var responded atomic.Bool
-
-	timeout := client.firstResponseTimeout
-	if timeout <= 0 {
-		timeout = defaultFirstResponseTimeout
-	}
-
-	go func() {
-		timer := time.NewTimer(timeout)
-		defer timer.Stop()
-
-		select {
-		case <-timer.C:
-			if !responded.Load() {
-				cancelTimeout()
-			}
-		case <-timeoutCtx.Done():
-		}
-	}()
-
-	wrappedHandle := func(delta streamDelta) error {
-		responded.Store(true)
-
-		return handle(delta)
-	}
-
-	err := client.streamChatCompletionOnceNoTimeout(timeoutCtx, request, wrappedHandle)
-	if err != nil {
-		if ctx.Err() == nil && timeoutCtx.Err() != nil && !responded.Load() {
-			return fmt.Errorf("model did not respond within 60 seconds: %w", context.DeadlineExceeded)
-		}
-
-		return err
-	}
-
-	return nil
-}
-
-func (client chatCompletionRouter) streamChatCompletionOnceNoTimeout(
-	ctx context.Context,
-	request chatCompletionRequest,
-	handle func(streamDelta) error,
-) error {
 	switch request.Provider.APIKind {
 	case providerAPIKindGemini:
 		return client.gemini.streamChatCompletion(ctx, request, handle)
@@ -251,3 +201,4 @@ func (client chatCompletionRouter) streamChatCompletionOnceNoTimeout(
 		)
 	}
 }
+

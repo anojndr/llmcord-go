@@ -44,7 +44,7 @@ Behavior notes:
 - Provider response streams are capped at 5 minutes so bad multimodal requests fail cleanly instead of hanging the bot indefinitely. Built-in `openai/...` Responses requests are capped at 30 minutes because OpenAI reasoning responses can legitimately run longer before completing.
 - Search-decider requests are isolated with dedicated prompt cache key scoping and fail-safe error handling so search query evaluation never interferes with or pollutes the main model's prompt cache or request execution. Search-decider requests are capped at 60 seconds before the bot skips web search and continues with a warning.
 - Discord REST API requests (such as editing progress embeds or sending typing indicators) utilize a resilient HTTP transport that automatically retries up to 3 times on transient network errors, connection failures, or timeouts with backoff, making the bot highly stable on unreliable internet connections.
-- Empty model completions and streaming generation failures are detected and explicitly update the request progress embed to display a user-facing failure message (and trigger fallback models when configured) instead of leaving the progress embed permanently stuck in the channel.
+- Empty model completions and streaming generation failures are detected and explicitly update the request progress embed to display a user-facing failure message instead of leaving the progress embed permanently stuck in the channel.
 
 ## Quick Start
 
@@ -201,8 +201,7 @@ Model notes:
 - OpenRouter providers automatically send `transforms: ["middle-out"]` unless overridden.
 - 9Router requests (identified by provider name or baseURL containing `9router`) will automatically omit the `Authorization` header if the provider is configured without an API key (for unauthenticated or local 9Router configurations).
 - Multi-key Gemini, OpenAI, and OpenAI Codex providers honor retry delays and rotate keys when needed.
-- Gemini malformed function call errors (e.g. from Google Search grounding) are automatically handled as transient and retried.
-- If a model completely fails to generate a response or does not respond within 60 seconds (even in exclusive/locked channels), the bot automatically falls back to `gemini-search/gemini-3.5-flash-lite-medium:vision`. If that fallback model also fails or does not respond within 60 seconds (or if the current model is `gemini-search/gemini-3.5-flash-lite-medium:vision`), it falls back to `openrouter/openrouter/free:vision`. When a fallback occurs, a warning message is included in the response to inform the user. When falling back from a model that skips the web search decider (such as `x-ai/grok` or models with native grounding enabled) to a fallback model that does not skip it, the web search decider is automatically executed for the fallback model to ensure web search results are retrieved.
+
 
 ## Development
 

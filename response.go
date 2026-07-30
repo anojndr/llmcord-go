@@ -233,22 +233,6 @@ func (tracker *responseTracker) release(store *messageNodeStore, fullText string
 	}
 }
 
-func getFallbackModel(currentModel string) (string, bool) {
-	normalized := strings.ToLower(strings.TrimSpace(currentModel))
-
-	if normalized == "gemini-search/gemini-3.5-flash-lite-medium:vision" ||
-		normalized == "gemini-search/gemini-3.5-flash-lite-medium" {
-		return "openrouter/openrouter/free:vision", true
-	}
-
-	if normalized == "openrouter/openrouter/free:vision" ||
-		normalized == "openrouter/openrouter/free" {
-		return "", false
-	}
-
-	return "gemini-search/gemini-3.5-flash-lite-medium:vision", true
-}
-
 func emptyChatCompletionRequest() chatCompletionRequest {
 	return chatCompletionRequest{
 		Provider: providerRequestConfig{
@@ -270,174 +254,6 @@ func emptyChatCompletionRequest() chatCompletionRequest {
 		PreviousResponseID:          "",
 		RequestID:                   "",
 		Messages:                    nil,
-	}
-}
-
-func (instance *bot) validateFallbackModel(
-	loadedConfig config,
-	fallbackModel string,
-) (providerConfig, bool) {
-	fallbackProviderName, _, splitErr := splitConfiguredModel(fallbackModel)
-	if splitErr != nil {
-		return providerConfig{
-			Type:            "",
-			BaseURL:         "",
-			APIKey:          "",
-			APIKeys:         nil,
-			EnableGrounding: false,
-			ExtraHeaders:    nil,
-			ExtraQuery:      nil,
-			ExtraBody:       nil,
-		}, false
-	}
-
-	provider, providerExists := loadedConfig.Providers[fallbackProviderName]
-	if !providerExists {
-		return providerConfig{
-			Type:            "",
-			BaseURL:         "",
-			APIKey:          "",
-			APIKeys:         nil,
-			EnableGrounding: false,
-			ExtraHeaders:    nil,
-			ExtraQuery:      nil,
-			ExtraBody:       nil,
-		}, false
-	}
-
-	return provider, true
-}
-
-func (instance *bot) prepareFallbackRequest(
-	ctx context.Context,
-	loadedConfig config,
-	provider providerConfig,
-	fallbackModel string,
-	currentRequest chatCompletionRequest,
-	tracker *responseTracker,
-) (chatCompletionRequest, []string, error) {
-	groundingEnabled := instance.currentGroundingEnabled(provider)
-
-	// Determine if the original model skipped the web search decider
-	originalSkipped := false
-
-	if tracker.originalModel != "" {
-		originalProvider, err := configuredModelProvider(loadedConfig, tracker.originalModel)
-		if err == nil {
-			originalSkipped = providerHandlesGeneralURLsDirectly(tracker.originalModel) ||
-				instance.currentGroundingEnabled(originalProvider) ||
-				searchDeciderDisabledForModel(tracker.originalModel)
-		}
-	}
-
-	fallbackSkipped := providerHandlesGeneralURLsDirectly(fallbackModel) ||
-		groundingEnabled ||
-		searchDeciderDisabledForModel(fallbackModel)
-
-	var searchWarnings []string
-
-	var messages []chatMessage
-	if tracker != nil && len(tracker.originalMessages) > 0 {
-		messages = tracker.originalMessages
-	} else {
-		messages = currentRequest.Messages
-	}
-
-	if originalSkipped && !fallbackSkipped {
-		msgs, metadata, warnings := instance.maybeAugmentConversationWithWebSearch(
-			ctx, loadedConfig, fallbackModel, tracker.sourceMessage, messages,
-		)
-
-		messages, searchWarnings = msgs, warnings
-
-		if metadata != nil {
-			tracker.searchMetadata = mergeSearchMetadata(tracker.searchMetadata, metadata)
-		}
-	}
-
-	newReq, buildErr := buildChatCompletionRequest(
-		loadedConfig,
-		fallbackModel,
-		messages,
-		groundingEnabled,
-	)
-	if buildErr != nil {
-		return emptyChatCompletionRequest(), nil, buildErr
-	}
-
-	newReq.RequestID, newReq.SessionID, newReq.PreviousResponseID =
-		currentRequest.RequestID, currentRequest.SessionID, currentRequest.PreviousResponseID
-
-	newReq, _ = instance.autoCompactRequest(ctx, newReq)
-
-	if len(tracker.responseMessages) > 0 && tracker.progressActive {
-		if progressMessage := tracker.responseMessages[0]; progressMessage != nil {
-			embed := buildRequestProgressEmbed(requestProgressStageGeneratingResponse, strings.TrimSpace(fallbackModel))
-
-			_ = instance.editEmbedMessage(progressMessage, embed, nil)
-		}
-	}
-
-	if len(tracker.responseMessages) > 1 {
-		_ = instance.trimExtraEmbedResponses(ctx, tracker, 1)
-	}
-
-	tracker.usage = nil
-	tracker.providerResponseID = ""
-	tracker.renderedSpecs = nil
-	tracker.progressActive = true
-
-	return newReq, searchWarnings, nil
-}
-
-func (instance *bot) attemptFallback(
-	ctx context.Context,
-	currentRequest chatCompletionRequest,
-	tracker *responseTracker,
-) (chatCompletionRequest, []string, bool) {
-	fallbackModel := currentRequest.ConfiguredModel
-
-	for {
-		var hasFallback bool
-
-		fallbackModel, hasFallback = getFallbackModel(fallbackModel)
-		if !hasFallback {
-			return emptyChatCompletionRequest(), nil, false
-		}
-
-		if instance.configPath == "" {
-			return emptyChatCompletionRequest(), nil, false
-		}
-
-		loadedConfig, configErr := loadConfig(instance.configPath)
-		if configErr != nil {
-			slog.Error("failed to load config for fallback", "error", configErr)
-
-			return emptyChatCompletionRequest(), nil, false
-		}
-
-		provider, providerExists := instance.validateFallbackModel(loadedConfig, fallbackModel)
-		if !providerExists {
-			continue
-		}
-
-		newReq, searchWarnings, buildErr := instance.prepareFallbackRequest(
-			ctx,
-			loadedConfig,
-			provider,
-			fallbackModel,
-			currentRequest,
-			tracker,
-		)
-		if buildErr != nil {
-			slog.Error("failed to prepare fallback request", "model", fallbackModel, "error", buildErr)
-
-			continue
-		}
-
-		slog.Info("Falling back to model", "from", tracker.modelName, "to", fallbackModel)
-
-		return newReq, searchWarnings, true
 	}
 }
 
@@ -540,69 +356,47 @@ func (instance *bot) generateAndSendResponse(
 		maxLength = plainResponseMaxLength
 	}
 
-	currentRequest := request
+	tracker.modelName = strings.TrimSpace(request.ConfiguredModel)
 
-	for {
-		tracker.modelName = strings.TrimSpace(currentRequest.ConfiguredModel)
-		tracker.contextWindow = currentRequest.ContextWindow
-
-		cleanedText, thinkingText, _, responseErr := instance.runGenerationAttempt(
-			ctx,
-			currentRequest,
-			tracker,
-			warnings,
-			maxLength,
-			usePlainResponses,
-		)
-		if responseErr == nil {
-			finalText := visibleResponseText(thinkingText, cleanedText)
-
-			tracker.release(instance.nodes, finalText, thinkingText)
-
-			instance.nodes.persistBestEffort()
-
-			return nil
-		}
-
-		var (
-			hasFallback      bool
-			fallbackWarnings []string
-		)
-
-		currentRequest, fallbackWarnings, hasFallback = instance.attemptFallback(ctx, currentRequest, tracker)
-
-		if hasFallback {
-			warnings = append(
-				warnings,
-				fmt.Sprintf("Warning: fell back to %s due to generation error", currentRequest.ConfiguredModel),
-			)
-			warnings = append(warnings, fallbackWarnings...)
-
-			continue
-		}
-
-		errorText := userFacingResponseError(responseErr)
-
-		renderErr := instance.renderFailureResponse(ctx, tracker, errorText, usePlainResponses)
-
-		var finalText string
-
-		if renderErr != nil {
-			responseErr = errors.Join(responseErr, fmt.Errorf("render failure response: %w", renderErr))
-			finalText = visibleResponseText(thinkingText, cleanedText)
-		} else {
-			finalText = responseTextWithError(
-				visibleResponseText(thinkingText, cleanedText),
-				errorText,
-			)
-		}
+	cleanedText, thinkingText, _, responseErr := instance.runGenerationAttempt(
+		ctx,
+		request,
+		tracker,
+		warnings,
+		maxLength,
+		usePlainResponses,
+	)
+	if responseErr == nil {
+		finalText := visibleResponseText(thinkingText, cleanedText)
 
 		tracker.release(instance.nodes, finalText, thinkingText)
 
 		instance.nodes.persistBestEffort()
 
-		return responseErr
+		return nil
 	}
+
+	errorText := userFacingResponseError(responseErr)
+
+	renderErr := instance.renderFailureResponse(ctx, tracker, errorText, usePlainResponses)
+
+	var finalText string
+
+	if renderErr != nil {
+		responseErr = errors.Join(responseErr, fmt.Errorf("render failure response: %w", renderErr))
+		finalText = visibleResponseText(thinkingText, cleanedText)
+	} else {
+		finalText = responseTextWithError(
+			visibleResponseText(thinkingText, cleanedText),
+			errorText,
+		)
+	}
+
+	tracker.release(instance.nodes, finalText, thinkingText)
+
+	instance.nodes.persistBestEffort()
+
+	return responseErr
 }
 
 type generatedStreamState struct {
@@ -852,12 +646,67 @@ func (instance *bot) renderFailureResponse(
 		return nil
 	}
 
-	return instance.sendFallbackFailureResponse(
+	return instance.sendFailureResponse(
 		tracker,
 		errorText,
 		failureEmbed,
 		usePlainResponses,
 		renderErr,
+	)
+}
+
+func (instance *bot) sendFailureResponse(
+	tracker *responseTracker,
+	errorText string,
+	failureEmbed *discordgo.MessageEmbed,
+	usePlainResponses bool,
+	renderErr error,
+) error {
+	failureTracker := newResponseTracker(tracker.sourceMessage, tracker.modelName)
+	failureTracker.originalModel = tracker.originalModel
+	failureTracker.searchMetadata = cloneSearchMetadata(tracker.searchMetadata)
+	failureTracker.responseMessages = append(failureTracker.responseMessages, tracker.responseMessages...)
+
+	sentMessage, pending, err := instance.sendFailureResponseMessage(
+		failureTracker,
+		errorText,
+		failureEmbed,
+		usePlainResponses,
+	)
+	if err != nil {
+		if renderErr != nil {
+			return errors.Join(renderErr, fmt.Errorf("send failure response: %w", err))
+		}
+
+		return fmt.Errorf("send failure response: %w", err)
+	}
+
+	tracker.progressActive = false
+	tracker.responseVisible = true
+	tracker.responseMessages = append(tracker.responseMessages, sentMessage)
+	tracker.pendingResponses = append(tracker.pendingResponses, pending)
+
+	return renderErr
+}
+
+func (instance *bot) sendFailureResponseMessage(
+	failureTracker *responseTracker,
+	errorText string,
+	failureEmbed *discordgo.MessageEmbed,
+	usePlainResponses bool,
+) (*discordgo.Message, pendingResponse, error) {
+	if usePlainResponses {
+		return instance.sendPlainMessage(
+			failureTracker,
+			errorText,
+			responseActions{showSources: false, showThinking: false, showRentry: false},
+		)
+	}
+
+	return instance.sendEmbedMessage(
+		failureTracker,
+		failureEmbed,
+		responseActions{showSources: false, showThinking: false, showRentry: false},
 	)
 }
 
@@ -1193,60 +1042,7 @@ func (instance *bot) renderFailureOnProgressMessage(
 	return true, nil
 }
 
-func (instance *bot) sendFallbackFailureResponse(
-	tracker *responseTracker,
-	errorText string,
-	failureEmbed *discordgo.MessageEmbed,
-	usePlainResponses bool,
-	renderErr error,
-) error {
-	fallbackTracker := newResponseTracker(tracker.sourceMessage, tracker.modelName)
-	fallbackTracker.originalModel = tracker.originalModel
-	fallbackTracker.searchMetadata = cloneSearchMetadata(tracker.searchMetadata)
-	fallbackTracker.responseMessages = append(fallbackTracker.responseMessages, tracker.responseMessages...)
 
-	sentMessage, pending, err := instance.sendFailureResponseMessage(
-		fallbackTracker,
-		errorText,
-		failureEmbed,
-		usePlainResponses,
-	)
-	if err != nil {
-		if renderErr != nil {
-			return errors.Join(renderErr, fmt.Errorf("send failure response: %w", err))
-		}
-
-		return fmt.Errorf("send failure response: %w", err)
-	}
-
-	tracker.progressActive = false
-	tracker.responseVisible = true
-	tracker.responseMessages = append(tracker.responseMessages, sentMessage)
-	tracker.pendingResponses = append(tracker.pendingResponses, pending)
-
-	return renderErr
-}
-
-func (instance *bot) sendFailureResponseMessage(
-	fallbackTracker *responseTracker,
-	errorText string,
-	failureEmbed *discordgo.MessageEmbed,
-	usePlainResponses bool,
-) (*discordgo.Message, pendingResponse, error) {
-	if usePlainResponses {
-		return instance.sendPlainMessage(
-			fallbackTracker,
-			errorText,
-			responseActions{showSources: false, showThinking: false, showRentry: false},
-		)
-	}
-
-	return instance.sendEmbedMessage(
-		fallbackTracker,
-		failureEmbed,
-		responseActions{showSources: false, showThinking: false, showRentry: false},
-	)
-}
 
 func plainResponseActions(
 	tracker *responseTracker,
