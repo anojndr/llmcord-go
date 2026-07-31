@@ -156,8 +156,11 @@ func sortMessageIDs(messageIDs []string) {
 }
 
 func compareMessageIDs(left, right string) int {
-	leftValue, leftErr := strconv.ParseUint(left, 10, 64)
+	if len(left) == len(right) {
+		return cmp.Compare(left, right)
+	}
 
+	leftValue, leftErr := strconv.ParseUint(left, 10, 64)
 	rightValue, rightErr := strconv.ParseUint(right, 10, 64)
 
 	if leftErr == nil && rightErr == nil {
