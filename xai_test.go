@@ -1124,6 +1124,31 @@ func TestXAIStreamingVisibleAnswerTextHidesBridgeSourceAppendix(t *testing.T) {
 			expected: "Answer paragraph.",
 		},
 		{
+			name:     "split paragraph separator is hidden",
+			answer:   "Answer paragraph.\n",
+			expected: "Answer paragraph.",
+		},
+		{
+			name:     "partial markdown appendix heading is hidden",
+			answer:   "Answer paragraph.\n\n### ",
+			expected: "Answer paragraph.",
+		},
+		{
+			name:     "complete bold appendix heading is hidden",
+			answer:   "Answer paragraph.\n\n**References:**",
+			expected: "Answer paragraph.",
+		},
+		{
+			name:     "crlf appendix heading uses original offsets",
+			answer:   "First line.\r\nSecond line.\r\n\r\n### Sources:",
+			expected: "First line.\r\nSecond line.",
+		},
+		{
+			name:     "overlapping crlf separators hide the appendix",
+			answer:   "First line.\r\nSecond line.\r\n\r\n\r\n### Sources:",
+			expected: "First line.\r\nSecond line.",
+		},
+		{
 			name:     "non appendix text stays visible",
 			answer:   "Answer paragraph.\n\nSummary",
 			expected: "Answer paragraph.\n\nSummary",
@@ -1137,6 +1162,64 @@ func TestXAIStreamingVisibleAnswerTextHidesBridgeSourceAppendix(t *testing.T) {
 			got := xAIStreamingVisibleAnswerText(request, testCase.answer)
 			if got != testCase.expected {
 				t.Fatalf("unexpected visible answer text: got %q want %q", got, testCase.expected)
+			}
+		})
+	}
+}
+
+func TestXAIStreamingVisibleAnswerTextNeverRegressesAcrossSourceAppendixChunks(t *testing.T) {
+	t.Parallel()
+
+	request := newXAIResponsesStreamingRequest("http://127.0.0.1:8787/v1")
+	tests := []struct {
+		name     string
+		answer   string
+		expected string
+	}{
+		{
+			name:     "plain header",
+			answer:   "Answer paragraph.\n\nSources\n1. [Example](https://example.com)",
+			expected: "Answer paragraph.",
+		},
+		{
+			name:     "markdown header",
+			answer:   "Answer paragraph.\n\n### Sources:\n1. [Example](https://example.com)",
+			expected: "Answer paragraph.",
+		},
+		{
+			name:     "bold header",
+			answer:   "Answer paragraph.\n\n**References:**\n- Example: https://example.com",
+			expected: "Answer paragraph.",
+		},
+		{
+			name:     "crlf header",
+			answer:   "First line.\r\nSecond line.\r\n\r\nSource URLs\r\n1. https://example.com",
+			expected: "First line.\r\nSecond line.",
+		},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			previousVisible := ""
+
+			for end := 1; end <= len(testCase.answer); end++ {
+				visible := xAIStreamingVisibleAnswerText(request, testCase.answer[:end])
+				if !strings.HasPrefix(visible, previousVisible) {
+					t.Fatalf(
+						"visibility regressed at byte %d: previous %q current %q",
+						end,
+						previousVisible,
+						visible,
+					)
+				}
+
+				previousVisible = visible
+			}
+
+			if previousVisible != testCase.expected {
+				t.Fatalf("unexpected final visible text: got %q want %q", previousVisible, testCase.expected)
 			}
 		})
 	}

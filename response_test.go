@@ -2114,7 +2114,9 @@ func newXAISourceAppendixStreamingTestBot(
 	instance.chatCompletions = fakeChatCompletionClient{
 		deltas: []streamDelta{
 			newStreamDelta(answerText, ""),
-			newStreamDelta("\n\nSources\n1. [Example Source]("+sourceURL+")", ""),
+			newStreamDelta("\n", ""),
+			newStreamDelta("\n### ", ""),
+			newStreamDelta("Sources:\n1. [Example Source]("+sourceURL+")", ""),
 			newStreamDelta(
 				" (example.com/source) via `latest ai news`\n\nSearch Queries\n1. `latest ai news`\n",
 				"",
