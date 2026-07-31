@@ -2588,8 +2588,6 @@ func assertConversationHistory(
 	}
 }
 
-
-
 func TestGenerateAndSendResponseRendersFailureOnEmptyModelResponse(t *testing.T) {
 	t.Parallel()
 

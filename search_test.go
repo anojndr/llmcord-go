@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -87,18 +88,6 @@ func writeTavilySearchResponse(
 	err := json.NewEncoder(responseWriter).Encode(response)
 	if err != nil {
 		t.Errorf("encode Tavily response: %v", err)
-	}
-}
-
-func assertTavilyAuthHeaders(t *testing.T, authHeaders []string) {
-	t.Helper()
-
-	if len(authHeaders) != 2 {
-		t.Fatalf("unexpected Tavily attempt count: %d", len(authHeaders))
-	}
-
-	if authHeaders[0] != testTavilyPrimaryAuthHeader || authHeaders[1] != testTavilyBackupAuthHeader {
-		t.Fatalf("unexpected Tavily auth headers: %#v", authHeaders)
 	}
 }
 
@@ -1503,6 +1492,9 @@ func TestExaSearchClientSearchUsesAPIWhenConfiguredAndRetriesConfiguredAPIKeys(t
 		searchBodies []exaSearchRequest
 	)
 
+	primaryKey := t.Name() + "-primary"
+	backupKey := t.Name() + "-backup"
+
 	client, closeServer := newExaAPISearchTestClient(http.HandlerFunc(func(
 		responseWriter http.ResponseWriter,
 		request *http.Request,
@@ -1518,9 +1510,9 @@ func TestExaSearchClientSearchUsesAPIWhenConfiguredAndRetriesConfiguredAPIKeys(t
 		searchBodies = append(searchBodies, body)
 
 		switch authHeader {
-		case testExaPrimaryAuthHeader:
+		case primaryKey:
 			http.Error(responseWriter, `{"error":"rate limited"}`, http.StatusTooManyRequests)
-		case testExaBackupAuthHeader:
+		case backupKey:
 			responseWriter.Header().Set("Content-Type", "application/json")
 
 			err := json.NewEncoder(responseWriter).Encode(testExaAPISearchSuccessResponse())
@@ -1533,12 +1525,23 @@ func TestExaSearchClientSearchUsesAPIWhenConfiguredAndRetriesConfiguredAPIKeys(t
 	}))
 	defer closeServer()
 
-	results, err := client.search(context.Background(), testExaAPIWebSearchConfig(), []string{"latest ai news"})
+	cfg := testSearchConfig()
+	cfg.WebSearch.MaxURLs = testWebSearchMaxURLs
+	cfg.WebSearch.Exa = exaSearchConfig{
+		APIKey:            primaryKey,
+		APIKeys:           []string{primaryKey, backupKey},
+		SearchType:        defaultExaSearchType,
+		TextMaxCharacters: defaultExaSearchTextMaxCharacters,
+	}
+
+	results, err := client.search(context.Background(), cfg, []string{"latest ai news"})
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
 
-	assertExaAPIAuthHeaders(t, authHeaders)
+	if !slices.Equal(authHeaders, []string{primaryKey, backupKey}) {
+		t.Fatalf("unexpected Exa auth headers: %#v", authHeaders)
+	}
 
 	if len(searchBodies) != 2 {
 		t.Fatalf("unexpected Exa API request count: %d", len(searchBodies))
@@ -1856,6 +1859,9 @@ func TestRoutedWebSearchClientFallsBackToMCPWhenTavilyFails(t *testing.T) {
 func TestTavilySearchClientSearchRetriesConfiguredAPIKeys(t *testing.T) {
 	t.Parallel()
 
+	primaryKey := t.Name() + "-primary"
+	backupKey := t.Name() + "-backup"
+
 	var (
 		requestsMu   sync.Mutex
 		authHeaders  []string
@@ -1886,9 +1892,9 @@ func TestTavilySearchClientSearchRetriesConfiguredAPIKeys(t *testing.T) {
 		searchBodies = append(searchBodies, body)
 
 		switch authHeader {
-		case testTavilyPrimaryAuthHeader:
+		case "Bearer " + primaryKey:
 			http.Error(responseWriter, "rate limited", http.StatusTooManyRequests)
-		case testTavilyBackupAuthHeader:
+		case "Bearer " + backupKey:
 			writeTavilySearchResponse(t, responseWriter, testTavilySearchSuccessResponse())
 		default:
 			http.Error(responseWriter, "unexpected api key", http.StatusUnauthorized)
@@ -1896,12 +1902,21 @@ func TestTavilySearchClientSearchRetriesConfiguredAPIKeys(t *testing.T) {
 	}))
 	defer closeServer()
 
-	results, err := client.search(context.Background(), testTavilySearchConfig(), []string{"latest ai news"})
+	cfg := testSearchConfig()
+	cfg.WebSearch.MaxURLs = testWebSearchMaxURLs
+	cfg.WebSearch.Tavily = tavilySearchConfig{
+		APIKey:  primaryKey,
+		APIKeys: []string{primaryKey, backupKey},
+	}
+
+	results, err := client.search(context.Background(), cfg, []string{"latest ai news"})
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
 
-	assertTavilyAuthHeaders(t, authHeaders)
+	if !slices.Equal(authHeaders, []string{"Bearer " + primaryKey, "Bearer " + backupKey}) {
+		t.Fatalf("unexpected Tavily auth headers: %#v", authHeaders)
+	}
 
 	if len(searchBodies) != 2 {
 		t.Fatalf("unexpected Tavily request count: %d", len(searchBodies))
@@ -1919,6 +1934,9 @@ func TestTavilySearchClientSearchRetriesConfiguredAPIKeys(t *testing.T) {
 func TestTavilySearchClientSearchRetriesConfiguredAPIKeysOnInternalServerError(t *testing.T) {
 	t.Parallel()
 
+	primaryKey := t.Name() + "-primary"
+	backupKey := t.Name() + "-backup"
+
 	var (
 		requestsMu   sync.Mutex
 		authHeaders  []string
@@ -1948,9 +1966,9 @@ func TestTavilySearchClientSearchRetriesConfiguredAPIKeysOnInternalServerError(t
 		searchBodies = append(searchBodies, body)
 
 		switch authHeader {
-		case testTavilyPrimaryAuthHeader:
+		case "Bearer " + primaryKey:
 			http.Error(responseWriter, "upstream failure", http.StatusInternalServerError)
-		case testTavilyBackupAuthHeader:
+		case "Bearer " + backupKey:
 			writeTavilySearchResponse(t, responseWriter, testTavilySearchSuccessResponse())
 		default:
 			http.Error(responseWriter, "unexpected api key", http.StatusUnauthorized)
@@ -1958,12 +1976,21 @@ func TestTavilySearchClientSearchRetriesConfiguredAPIKeysOnInternalServerError(t
 	}))
 	defer closeServer()
 
-	results, err := client.search(context.Background(), testTavilySearchConfig(), []string{"latest ai news"})
+	cfg := testSearchConfig()
+	cfg.WebSearch.MaxURLs = testWebSearchMaxURLs
+	cfg.WebSearch.Tavily = tavilySearchConfig{
+		APIKey:  primaryKey,
+		APIKeys: []string{primaryKey, backupKey},
+	}
+
+	results, err := client.search(context.Background(), cfg, []string{"latest ai news"})
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
 
-	assertTavilyAuthHeaders(t, authHeaders)
+	if !slices.Equal(authHeaders, []string{"Bearer " + primaryKey, "Bearer " + backupKey}) {
+		t.Fatalf("unexpected Tavily auth headers: %#v", authHeaders)
+	}
 
 	if len(searchBodies) != 2 {
 		t.Fatalf("unexpected Tavily request count: %d", len(searchBodies))
@@ -2010,6 +2037,9 @@ func runTavilySearchAttemptsAllKeysBeforeFailureTest(
 ) {
 	t.Helper()
 
+	primaryKey := t.Name() + "-primary"
+	backupKey := t.Name() + "-backup"
+
 	var (
 		requestsMu  sync.Mutex
 		authHeaders []string
@@ -2027,9 +2057,9 @@ func runTavilySearchAttemptsAllKeysBeforeFailureTest(
 		authHeaders = append(authHeaders, authHeader)
 
 		switch authHeader {
-		case testTavilyPrimaryAuthHeader:
+		case "Bearer " + primaryKey:
 			http.Error(responseWriter, primaryMessage, primaryStatusCode)
-		case testTavilyBackupAuthHeader:
+		case "Bearer " + backupKey:
 			http.Error(responseWriter, backupMessage, backupStatusCode)
 		default:
 			http.Error(responseWriter, "unexpected api key", http.StatusUnauthorized)
@@ -2037,7 +2067,14 @@ func runTavilySearchAttemptsAllKeysBeforeFailureTest(
 	}))
 	defer closeServer()
 
-	_, err := client.search(context.Background(), testTavilySearchConfig(), []string{"latest ai news"})
+	cfg := testSearchConfig()
+	cfg.WebSearch.MaxURLs = testWebSearchMaxURLs
+	cfg.WebSearch.Tavily = tavilySearchConfig{
+		APIKey:  primaryKey,
+		APIKeys: []string{primaryKey, backupKey},
+	}
+
+	_, err := client.search(context.Background(), cfg, []string{"latest ai news"})
 	if err == nil {
 		t.Fatal("expected Tavily search to fail after exhausting keys")
 	}
@@ -2046,7 +2083,9 @@ func runTavilySearchAttemptsAllKeysBeforeFailureTest(
 		t.Fatalf("unexpected Tavily error: %v", err)
 	}
 
-	assertTavilyAuthHeaders(t, authHeaders)
+	if !slices.Equal(authHeaders, []string{"Bearer " + primaryKey, "Bearer " + backupKey}) {
+		t.Fatalf("unexpected Tavily auth headers: %#v", authHeaders)
+	}
 }
 
 func TestFormatSearchSourcesMessageIncludesQueriesAndSources(t *testing.T) {

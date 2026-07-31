@@ -1000,6 +1000,9 @@ func runSerpAPIGoogleLensRetryableFailureTest(
 ) {
 	t.Helper()
 
+	primaryKey := t.Name() + "-primary-key"
+	backupKey := t.Name() + "-backup-key"
+
 	var (
 		requestedKeys []string
 		requestsMu    sync.Mutex
@@ -1014,7 +1017,7 @@ func runSerpAPIGoogleLensRetryableFailureTest(
 
 		requestsMu.Unlock()
 
-		if apiKey == testTavilyPrimaryAPIKey {
+		if apiKey == primaryKey {
 			return newTestHTTPResponse(
 				request,
 				statusCode,
@@ -1022,7 +1025,7 @@ func runSerpAPIGoogleLensRetryableFailureTest(
 			), nil
 		}
 
-		if apiKey != testTavilyBackupAPIKey {
+		if apiKey != backupKey {
 			t.Fatalf("unexpected api key: %q", apiKey)
 		}
 
@@ -1041,8 +1044,8 @@ func runSerpAPIGoogleLensRetryableFailureTest(
 	client := newSerpAPIVisualSearchClient(httpClient)
 	loadedConfig := testSearchConfig()
 	loadedConfig.VisualSearch.SerpAPI = serpAPIVisualSearchConfig{
-		APIKey:  testTavilyPrimaryAPIKey,
-		APIKeys: []string{testTavilyBackupAPIKey},
+		APIKey:  primaryKey,
+		APIKeys: []string{primaryKey, backupKey},
 	}
 
 	result, err := client.search(context.Background(), loadedConfig, testVisualSearchAttachmentURL)
@@ -1055,8 +1058,8 @@ func runSerpAPIGoogleLensRetryableFailureTest(
 	}
 
 	if len(requestedKeys) != 2 ||
-		requestedKeys[0] != testTavilyPrimaryAPIKey ||
-		requestedKeys[1] != testTavilyBackupAPIKey {
+		requestedKeys[0] != primaryKey ||
+		requestedKeys[1] != backupKey {
 		t.Fatalf("unexpected requested keys: %#v", requestedKeys)
 	}
 }

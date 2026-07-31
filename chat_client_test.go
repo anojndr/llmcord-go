@@ -81,41 +81,13 @@ func (capture *durationCapture) snapshot() []time.Duration {
 	return append([]time.Duration(nil), capture.values...)
 }
 
-func TestChatCompletionRouterRetriesOpenAIAPIKeys(t *testing.T) {
-	t.Parallel()
+func runOpenAIRetryTestWithStatusCode(t *testing.T, statusCode int, responseBody string) {
+	t.Helper()
 
-	authCapture := new(stringCapture)
-
-	server := newOpenAIRetryTestServer(t, authCapture)
-	defer server.Close()
-
-	router := chatCompletionRouter{
-		openAI:               newOpenAIClient(server.Client()),
-		openAICodex:          newOpenAICodexClient(nil),
-		gemini:               newGeminiClient(nil),
-		waitForRetry: nil,
-	}
-
-	content, err := collectStreamedContent(
-		context.Background(),
-		router,
-		newOpenAIRetryRequest(server.URL+"/v1"),
-	)
-	if err != nil {
-		t.Fatalf("stream chat completion: %v", err)
-	}
-
-	if !slices.Equal(authCapture.snapshot(), []string{testRetryPrimaryAuthHeader, testRetryBackupAuthHeader}) {
-		t.Fatalf("unexpected authorization attempts: %#v", authCapture.snapshot())
-	}
-
-	if content != testStreamedHelloText {
-		t.Fatalf("unexpected streamed content: %q", content)
-	}
-}
-
-func TestChatCompletionRouterRetriesOpenAIAPIKeysOnInternalServerError(t *testing.T) {
-	t.Parallel()
+	primaryKey := t.Name() + "-primary"
+	backupKey := t.Name() + "-backup"
+	primaryAuthHeader := "Bearer " + primaryKey
+	backupAuthHeader := "Bearer " + backupKey
 
 	authCapture := new(stringCapture)
 
@@ -128,8 +100,8 @@ func TestChatCompletionRouterRetriesOpenAIAPIKeysOnInternalServerError(t *testin
 		authHeader := request.Header.Get("Authorization")
 		authCapture.append(authHeader)
 
-		if authHeader == testRetryPrimaryAuthHeader {
-			http.Error(responseWriter, "internal server error", http.StatusInternalServerError)
+		if authHeader == primaryAuthHeader {
+			http.Error(responseWriter, responseBody, statusCode)
 
 			return
 		}
@@ -139,22 +111,22 @@ func TestChatCompletionRouterRetriesOpenAIAPIKeysOnInternalServerError(t *testin
 	defer server.Close()
 
 	router := chatCompletionRouter{
-		openAI:               newOpenAIClient(server.Client()),
-		openAICodex:          newOpenAICodexClient(nil),
-		gemini:               newGeminiClient(nil),
+		openAI:       newOpenAIClient(server.Client()),
+		openAICodex:  newOpenAICodexClient(nil),
+		gemini:       newGeminiClient(nil),
 		waitForRetry: nil,
 	}
 
 	content, err := collectStreamedContent(
 		context.Background(),
 		router,
-		newOpenAIRetryRequest(server.URL+"/v1"),
+		newOpenAIRetryRequest(server.URL+"/v1", primaryKey, backupKey),
 	)
 	if err != nil {
 		t.Fatalf("stream chat completion: %v", err)
 	}
 
-	if !slices.Equal(authCapture.snapshot(), []string{testRetryPrimaryAuthHeader, testRetryBackupAuthHeader}) {
+	if !slices.Equal(authCapture.snapshot(), []string{primaryAuthHeader, backupAuthHeader}) {
 		t.Fatalf("unexpected authorization attempts: %#v", authCapture.snapshot())
 	}
 
@@ -163,8 +135,25 @@ func TestChatCompletionRouterRetriesOpenAIAPIKeysOnInternalServerError(t *testin
 	}
 }
 
+func TestChatCompletionRouterRetriesOpenAIAPIKeys(t *testing.T) {
+	t.Parallel()
+
+	runOpenAIRetryTestWithStatusCode(t, http.StatusTooManyRequests, `{"error":{"message":"rate limited"}}`)
+}
+
+func TestChatCompletionRouterRetriesOpenAIAPIKeysOnInternalServerError(t *testing.T) {
+	t.Parallel()
+
+	runOpenAIRetryTestWithStatusCode(t, http.StatusInternalServerError, "internal server error")
+}
+
 func TestChatCompletionRouterWaitsForOpenAIRetryDelayBeforeFallbackKey(t *testing.T) {
 	t.Parallel()
+
+	primaryKey := t.Name() + "-primary"
+	backupKey := t.Name() + "-backup"
+	primaryAuthHeader := "Bearer " + primaryKey
+	backupAuthHeader := "Bearer " + backupKey
 
 	authCapture := new(stringCapture)
 	delayCapture := new(durationCapture)
@@ -189,11 +178,11 @@ func TestChatCompletionRouterWaitsForOpenAIRetryDelayBeforeFallbackKey(t *testin
 		attemptsMu.Unlock()
 
 		switch {
-		case authHeader == testRetryPrimaryAuthHeader && attempt == 1:
+		case authHeader == primaryAuthHeader && attempt == 1:
 			responseWriter.Header().Set(openAIRateLimitRemainingRequests, "0")
 			responseWriter.Header().Set(openAIRateLimitResetRequests, "1500ms")
 			http.Error(responseWriter, "rate limited", http.StatusTooManyRequests)
-		case authHeader == testRetryPrimaryAuthHeader:
+		case authHeader == primaryAuthHeader:
 			http.Error(responseWriter, "permission denied", http.StatusForbidden)
 		default:
 			streamOpenAIHello(t, responseWriter)
@@ -215,7 +204,7 @@ func TestChatCompletionRouterWaitsForOpenAIRetryDelayBeforeFallbackKey(t *testin
 	content, err := collectStreamedContent(
 		context.Background(),
 		router,
-		newOpenAIRetryRequest(server.URL+"/v1"),
+		newOpenAIRetryRequest(server.URL+"/v1", primaryKey, backupKey),
 	)
 	if err != nil {
 		t.Fatalf("stream chat completion: %v", err)
@@ -223,7 +212,7 @@ func TestChatCompletionRouterWaitsForOpenAIRetryDelayBeforeFallbackKey(t *testin
 
 	if !slices.Equal(
 		authCapture.snapshot(),
-		[]string{testRetryPrimaryAuthHeader, testRetryPrimaryAuthHeader, testRetryBackupAuthHeader},
+		[]string{primaryAuthHeader, primaryAuthHeader, backupAuthHeader},
 	) {
 		t.Fatalf("unexpected authorization attempts: %#v", authCapture.snapshot())
 	}
@@ -240,6 +229,11 @@ func TestChatCompletionRouterWaitsForOpenAIRetryDelayBeforeFallbackKey(t *testin
 func TestChatCompletionRouterSkipsLongOpenAIRetryDelayBeforeFallbackKey(t *testing.T) {
 	t.Parallel()
 
+	primaryKey := t.Name() + "-primary"
+	backupKey := t.Name() + "-backup"
+	primaryAuthHeader := "Bearer " + primaryKey
+	backupAuthHeader := "Bearer " + backupKey
+
 	authCapture := new(stringCapture)
 	delayCapture := new(durationCapture)
 	longRetryDelay := sameKeyRetryDelayLimit + time.Second
@@ -253,7 +247,7 @@ func TestChatCompletionRouterSkipsLongOpenAIRetryDelayBeforeFallbackKey(t *testi
 		authHeader := request.Header.Get("Authorization")
 		authCapture.append(authHeader)
 
-		if authHeader == testRetryPrimaryAuthHeader {
+		if authHeader == primaryAuthHeader {
 			responseWriter.Header().Set(openAIRateLimitRemainingRequests, "0")
 			responseWriter.Header().Set(openAIRateLimitResetRequests, longRetryDelay.String())
 			http.Error(responseWriter, "rate limited", http.StatusTooManyRequests)
@@ -279,13 +273,13 @@ func TestChatCompletionRouterSkipsLongOpenAIRetryDelayBeforeFallbackKey(t *testi
 	content, err := collectStreamedContent(
 		context.Background(),
 		router,
-		newOpenAIRetryRequest(server.URL+"/v1"),
+		newOpenAIRetryRequest(server.URL+"/v1", primaryKey, backupKey),
 	)
 	if err != nil {
 		t.Fatalf("stream chat completion: %v", err)
 	}
 
-	if !slices.Equal(authCapture.snapshot(), []string{testRetryPrimaryAuthHeader, testRetryBackupAuthHeader}) {
+	if !slices.Equal(authCapture.snapshot(), []string{primaryAuthHeader, backupAuthHeader}) {
 		t.Fatalf("unexpected authorization attempts: %#v", authCapture.snapshot())
 	}
 
@@ -301,6 +295,10 @@ func TestChatCompletionRouterSkipsLongOpenAIRetryDelayBeforeFallbackKey(t *testi
 func TestChatCompletionRouterDoesNotRetryOpenAIAPIKeysAfterPartialStream(t *testing.T) {
 	t.Parallel()
 
+	primaryKey := t.Name() + "-primary"
+	backupKey := t.Name() + "-backup"
+	primaryAuthHeader := "Bearer " + primaryKey
+
 	authCapture := new(stringCapture)
 
 	server := httptest.NewServer(http.HandlerFunc(func(
@@ -312,7 +310,7 @@ func TestChatCompletionRouterDoesNotRetryOpenAIAPIKeysAfterPartialStream(t *test
 		authHeader := request.Header.Get("Authorization")
 		authCapture.append(authHeader)
 
-		if authHeader == testRetryPrimaryAuthHeader {
+		if authHeader == primaryAuthHeader {
 			streamOpenAIPartialHello(t, responseWriter)
 
 			return
@@ -323,9 +321,9 @@ func TestChatCompletionRouterDoesNotRetryOpenAIAPIKeysAfterPartialStream(t *test
 	defer server.Close()
 
 	router := chatCompletionRouter{
-		openAI:               newOpenAIClient(server.Client()),
-		openAICodex:          newOpenAICodexClient(nil),
-		gemini:               newGeminiClient(nil),
+		openAI:       newOpenAIClient(server.Client()),
+		openAICodex:  newOpenAICodexClient(nil),
+		gemini:       newGeminiClient(nil),
 		waitForRetry: nil,
 	}
 
@@ -333,7 +331,7 @@ func TestChatCompletionRouterDoesNotRetryOpenAIAPIKeysAfterPartialStream(t *test
 
 	err := router.streamChatCompletion(
 		context.Background(),
-		newOpenAIRetryRequest(server.URL+"/v1"),
+		newOpenAIRetryRequest(server.URL+"/v1", primaryKey, backupKey),
 		func(delta streamDelta) error {
 			joinedContent.WriteString(delta.Content)
 
@@ -344,7 +342,7 @@ func TestChatCompletionRouterDoesNotRetryOpenAIAPIKeysAfterPartialStream(t *test
 		t.Fatal("expected partial stream failure")
 	}
 
-	if !slices.Equal(authCapture.snapshot(), []string{testRetryPrimaryAuthHeader}) {
+	if !slices.Equal(authCapture.snapshot(), []string{primaryAuthHeader}) {
 		t.Fatalf("unexpected authorization attempts: %#v", authCapture.snapshot())
 	}
 
@@ -367,9 +365,9 @@ func TestChatCompletionRouterRetriesOpenAICodexAPIKeys(t *testing.T) {
 	defer server.Close()
 
 	router := chatCompletionRouter{
-		openAI:               newOpenAIClient(nil),
-		openAICodex:          newOpenAICodexClient(server.Client()),
-		gemini:               newGeminiClient(nil),
+		openAI:       newOpenAIClient(nil),
+		openAICodex:  newOpenAICodexClient(server.Client()),
+		gemini:       newGeminiClient(nil),
 		waitForRetry: nil,
 	}
 
@@ -394,8 +392,8 @@ func TestChatCompletionRouterRetriesOpenAICodexAPIKeys(t *testing.T) {
 func TestChatCompletionRouterWaitsForOpenAICodexRetryDelayBeforeFallbackKey(t *testing.T) {
 	t.Parallel()
 
-	primaryAPIKey := testOpenAICodexJWTWithSignature(t, "primary")
-	backupAPIKey := testOpenAICodexJWTWithSignature(t, "backup")
+	primaryAPIKey := testOpenAICodexJWTWithSignature(t, t.Name()+"-primary")
+	backupAPIKey := testOpenAICodexJWTWithSignature(t, t.Name()+"-backup")
 	delayCapture := new(durationCapture)
 	authCapture := new(stringCapture)
 
@@ -561,9 +559,9 @@ func TestChatCompletionRouterStreamsOpenAICodexImmediately(t *testing.T) {
 	defer release()
 
 	router := chatCompletionRouter{
-		openAI:               newOpenAIClient(nil),
-		openAICodex:          newOpenAICodexClient(server.Client()),
-		gemini:               newGeminiClient(nil),
+		openAI:       newOpenAIClient(nil),
+		openAICodex:  newOpenAICodexClient(server.Client()),
+		gemini:       newGeminiClient(nil),
 		waitForRetry: nil,
 	}
 
@@ -662,6 +660,9 @@ func TestChatCompletionRouterRetriesSingleGeminiAPIKeyAfterRetryDelay(t *testing
 func TestChatCompletionRouterWaitsForGeminiRetryDelayBeforeFallbackKey(t *testing.T) {
 	t.Parallel()
 
+	primaryKey := t.Name() + "-primary"
+	backupKey := t.Name() + "-backup"
+
 	attemptCapture := new(stringCapture)
 	delayCapture := new(durationCapture)
 
@@ -682,9 +683,9 @@ func TestChatCompletionRouterWaitsForGeminiRetryDelayBeforeFallbackKey(t *testin
 			) iter.Seq2[*genai.GenerateContentResponse, error] {
 				return func(yield func(*genai.GenerateContentResponse, error) bool) {
 					switch {
-					case apiKey == testRetryPrimaryAPIKey && attempt == 0:
+					case apiKey == primaryKey && attempt == 0:
 						_ = yield(nil, newTestGeminiRetryDelayError("Please retry in 47.453198619s.", "47s"))
-					case apiKey == testRetryPrimaryAPIKey:
+					case apiKey == primaryKey:
 						_ = yield(nil, newTestGeminiAPIError(http.StatusForbidden, "permission denied"))
 					default:
 						if !yield(newGeminiGenerateContentResponse("Hel", genai.FinishReasonUnspecified), nil) {
@@ -701,7 +702,7 @@ func TestChatCompletionRouterWaitsForGeminiRetryDelayBeforeFallbackKey(t *testin
 	content, err := collectStreamedContent(
 		context.Background(),
 		router,
-		newGeminiRetryRequest(),
+		newGeminiRetryRequest(primaryKey, backupKey),
 	)
 	if err != nil {
 		t.Fatalf("stream gemini completion: %v", err)
@@ -709,7 +710,7 @@ func TestChatCompletionRouterWaitsForGeminiRetryDelayBeforeFallbackKey(t *testin
 
 	if !slices.Equal(
 		attemptCapture.snapshot(),
-		[]string{testRetryPrimaryAPIKey, testRetryPrimaryAPIKey, testRetryBackupAPIKey},
+		[]string{primaryKey, primaryKey, backupKey},
 	) {
 		t.Fatalf("unexpected gemini API key attempts: %#v", attemptCapture.snapshot())
 	}
@@ -725,6 +726,9 @@ func TestChatCompletionRouterWaitsForGeminiRetryDelayBeforeFallbackKey(t *testin
 
 func TestChatCompletionRouterSkipsLongGeminiRetryDelayBeforeFallbackKey(t *testing.T) {
 	t.Parallel()
+
+	primaryKey := t.Name() + "-primary"
+	backupKey := t.Name() + "-backup"
 
 	attemptCapture := new(stringCapture)
 	delayCapture := new(durationCapture)
@@ -746,7 +750,7 @@ func TestChatCompletionRouterSkipsLongGeminiRetryDelayBeforeFallbackKey(t *testi
 				_ *genai.GenerateContentConfig,
 			) iter.Seq2[*genai.GenerateContentResponse, error] {
 				return func(yield func(*genai.GenerateContentResponse, error) bool) {
-					if apiKey == testRetryPrimaryAPIKey {
+					if apiKey == primaryKey {
 						_ = yield(
 							nil,
 							newTestGeminiRetryDelayError(
@@ -771,7 +775,7 @@ func TestChatCompletionRouterSkipsLongGeminiRetryDelayBeforeFallbackKey(t *testi
 	content, err := collectStreamedContent(
 		context.Background(),
 		router,
-		newGeminiRetryRequest(),
+		newGeminiRetryRequest(primaryKey, backupKey),
 	)
 	if err != nil {
 		t.Fatalf("stream gemini completion: %v", err)
@@ -779,7 +783,7 @@ func TestChatCompletionRouterSkipsLongGeminiRetryDelayBeforeFallbackKey(t *testi
 
 	if !slices.Equal(
 		attemptCapture.snapshot(),
-		[]string{testRetryPrimaryAPIKey, testRetryBackupAPIKey},
+		[]string{primaryKey, backupKey},
 	) {
 		t.Fatalf("unexpected gemini API key attempts: %#v", attemptCapture.snapshot())
 	}
@@ -1011,38 +1015,18 @@ func collectStreamedContent(
 	return joinedContent.String(), nil
 }
 
-func newOpenAIRetryTestServer(
-	t *testing.T,
-	authCapture *stringCapture,
-) *httptest.Server {
-	t.Helper()
+func newOpenAIRetryRequest(baseURL string, keys ...string) chatCompletionRequest {
+	apiKeys := []string{testRetryPrimaryAPIKey, testRetryBackupAPIKey}
+	if len(keys) > 0 {
+		apiKeys = keys
+	}
 
-	return httptest.NewServer(http.HandlerFunc(func(
-		responseWriter http.ResponseWriter,
-		request *http.Request,
-	) {
-		t.Helper()
-
-		authHeader := request.Header.Get("Authorization")
-		authCapture.append(authHeader)
-
-		if authHeader == testRetryPrimaryAuthHeader {
-			http.Error(responseWriter, "rate limited", http.StatusTooManyRequests)
-
-			return
-		}
-
-		streamOpenAIHello(t, responseWriter)
-	}))
-}
-
-func newOpenAIRetryRequest(baseURL string) chatCompletionRequest {
 	return chatCompletionRequest{
 		Provider: providerRequestConfig{
 			APIKind:         providerAPIKindOpenAI,
 			BaseURL:         baseURL,
 			APIKey:          "",
-			APIKeys:         []string{testRetryPrimaryAPIKey, testRetryBackupAPIKey},
+			APIKeys:         apiKeys,
 			UseResponsesAPI: false,
 			EnableGrounding: false,
 			ExtraHeaders:    nil,
@@ -1247,13 +1231,18 @@ func newGeminiRetryRouterWithFactory(
 	}
 }
 
-func newGeminiRetryRequest() chatCompletionRequest {
+func newGeminiRetryRequest(keys ...string) chatCompletionRequest {
+	apiKeys := []string{testRetryPrimaryAPIKey, testRetryBackupAPIKey}
+	if len(keys) > 0 {
+		apiKeys = keys
+	}
+
 	return chatCompletionRequest{
 		Provider: providerRequestConfig{
 			APIKind:         providerAPIKindGemini,
 			BaseURL:         "",
 			APIKey:          "",
-			APIKeys:         []string{testRetryPrimaryAPIKey, testRetryBackupAPIKey},
+			APIKeys:         apiKeys,
 			UseResponsesAPI: false,
 			EnableGrounding: false,
 			ExtraHeaders:    nil,
@@ -1343,8 +1332,48 @@ func testOpenAICodexJWTWithSignature(t *testing.T, signature string) string {
 	return fmt.Sprintf("%s.%s.%s", encode(headerBytes), encode(payloadBytes), signature)
 }
 
+func newMalformedFunctionCallGeminiFactory(primaryKey string) geminiRetryStreamFactory {
+	return func(apiKey string, attempt int) func(
+		context.Context,
+		string,
+		[]*genai.Content,
+		*genai.GenerateContentConfig,
+	) iter.Seq2[*genai.GenerateContentResponse, error] {
+		return func(
+			_ context.Context,
+			_ string,
+			_ []*genai.Content,
+			_ *genai.GenerateContentConfig,
+		) iter.Seq2[*genai.GenerateContentResponse, error] {
+			return func(yield func(*genai.GenerateContentResponse, error) bool) {
+				if apiKey == primaryKey && attempt == 0 {
+					response := newGeminiGenerateContentResponseWithParts(
+						[]*genai.Part{
+							{Text: "thought...", Thought: true},
+						},
+						genai.FinishReasonMalformedFunctionCall,
+					)
+
+					_ = yield(response, nil)
+
+					return
+				}
+
+				if !yield(newGeminiGenerateContentResponse("Hel", genai.FinishReasonUnspecified), nil) {
+					return
+				}
+
+				_ = yield(newGeminiGenerateContentResponse("lo", genai.FinishReasonStop), nil)
+			}
+		}
+	}
+}
+
 func TestChatCompletionRouterRetriesGeminiOnMalformedFunctionCall(t *testing.T) {
 	t.Parallel()
+
+	primaryKey := t.Name() + "-primary"
+	backupKey := t.Name() + "-backup"
 
 	attemptCapture := new(stringCapture)
 
@@ -1356,55 +1385,28 @@ func TestChatCompletionRouterRetriesGeminiOnMalformedFunctionCall(t *testing.T) 
 	router := newGeminiRetryRouterWithFactory(
 		attemptCapture,
 		nil,
-		func(apiKey string, attempt int) func(
-			context.Context,
-			string,
-			[]*genai.Content,
-			*genai.GenerateContentConfig,
-		) iter.Seq2[*genai.GenerateContentResponse, error] {
-			return func(
-				_ context.Context,
-				_ string,
-				_ []*genai.Content,
-				_ *genai.GenerateContentConfig,
-			) iter.Seq2[*genai.GenerateContentResponse, error] {
-				return func(yield func(*genai.GenerateContentResponse, error) bool) {
-					if apiKey == testRetryPrimaryAPIKey && attempt == 0 {
-						response := newGeminiGenerateContentResponseWithParts(
-							[]*genai.Part{
-								{Text: "thought...", Thought: true},
-							},
-							genai.FinishReasonMalformedFunctionCall,
-						)
-
-						_ = yield(response, nil)
-
-						return
-					}
-
-					if !yield(newGeminiGenerateContentResponse("Hel", genai.FinishReasonUnspecified), nil) {
-						return
-					}
-
-					_ = yield(newGeminiGenerateContentResponse("lo", genai.FinishReasonStop), nil)
-				}
-			}
-		},
+		newMalformedFunctionCallGeminiFactory(primaryKey),
 	)
 
-	err := router.streamChatCompletion(context.Background(), newGeminiRetryRequest(), func(delta streamDelta) error {
-		streamDeltasMu.Lock()
-		defer streamDeltasMu.Unlock()
+	req := newGeminiRetryRequest(primaryKey, backupKey)
 
-		streamDeltas = append(streamDeltas, delta)
+	err := router.streamChatCompletion(
+		context.Background(),
+		req,
+		func(delta streamDelta) error {
+			streamDeltasMu.Lock()
+			defer streamDeltasMu.Unlock()
 
-		return nil
-	})
+			streamDeltas = append(streamDeltas, delta)
+
+			return nil
+		},
+	)
 	if err != nil {
 		t.Fatalf("stream gemini completion: %v", err)
 	}
 
-	if !slices.Equal(attemptCapture.snapshot(), []string{testRetryPrimaryAPIKey, testRetryPrimaryAPIKey}) {
+	if !slices.Equal(attemptCapture.snapshot(), []string{primaryKey, primaryKey}) {
 		t.Fatalf("unexpected API key attempts: %#v", attemptCapture.snapshot())
 	}
 
@@ -1471,7 +1473,6 @@ func TestChatCompletionRouterAttemptTimeoutWithAndWithoutFallbackKey(t *testing.
 		},
 	)
 
-
 	// Case 1: Multiple keys (meaning we have fallback keys)
 	reqWithFallback := newGeminiRetryRequest()
 	reqWithFallback.Provider.APIKeys = []string{"key1", "key2"}
@@ -1524,6 +1525,9 @@ func TestChatCompletionRouterAttemptTimeoutWithAndWithoutFallbackKey(t *testing.
 func TestChatCompletionRouter_GeminiEmptyResponseTriggersKeyFallback(t *testing.T) {
 	t.Parallel()
 
+	primaryKey := t.Name() + "-primary"
+	backupKey := t.Name() + "-backup"
+
 	attemptCapture := new(stringCapture)
 
 	router := newGeminiRetryRouterWithFactory(
@@ -1542,7 +1546,7 @@ func TestChatCompletionRouter_GeminiEmptyResponseTriggersKeyFallback(t *testing.
 				_ *genai.GenerateContentConfig,
 			) iter.Seq2[*genai.GenerateContentResponse, error] {
 				return func(yield func(*genai.GenerateContentResponse, error) bool) {
-					if apiKey == testRetryPrimaryAPIKey {
+					if apiKey == primaryKey {
 						// Primary key returns empty response.
 						_ = yield(newGeminiGenerateContentResponse("", genai.FinishReasonStop), nil)
 
@@ -1556,19 +1560,30 @@ func TestChatCompletionRouter_GeminiEmptyResponseTriggersKeyFallback(t *testing.
 		},
 	)
 
-	req := newGeminiRetryRequest()
-	req.Provider.APIKeys = []string{testRetryPrimaryAPIKey, testRetryBackupAPIKey}
+	req := newGeminiRetryRequest(primaryKey, backupKey)
 
-	content, err := collectStreamedContent(context.Background(), router, req)
+	var streamDeltas []streamDelta
+
+	err := router.streamChatCompletion(context.Background(), req, func(delta streamDelta) error {
+		streamDeltas = append(streamDeltas, delta)
+
+		return nil
+	})
 	if err != nil {
-		t.Fatalf("expected no error, got: %v", err)
+		t.Fatalf("unexpected streamChatCompletion error: %v", err)
 	}
 
-	if content != "Success from fallback" {
-		t.Fatalf("unexpected content: %q", content)
+	var contentBuilder strings.Builder
+
+	for _, delta := range streamDeltas {
+		contentBuilder.WriteString(delta.Content)
 	}
 
-	expectedAttempts := []string{testRetryPrimaryAPIKey, testRetryPrimaryAPIKey, testRetryBackupAPIKey}
+	if contentBuilder.String() != "Success from fallback" {
+		t.Fatalf("unexpected content: %q", contentBuilder.String())
+	}
+
+	expectedAttempts := []string{primaryKey, primaryKey, backupKey}
 	if !slices.Equal(attemptCapture.snapshot(), expectedAttempts) {
 		t.Fatalf("unexpected API key attempts: %#v", attemptCapture.snapshot())
 	}

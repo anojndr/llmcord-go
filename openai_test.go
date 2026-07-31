@@ -2177,5 +2177,3 @@ func TestBuildChatCompletionRequestBodyNormalizesImagesForOpenAICompatible(t *te
 		t.Fatalf("expected OpenAI-compatible provider request to include detail: auto, got: %#v", parts[1]["image_url"])
 	}
 }
-
-

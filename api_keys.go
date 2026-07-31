@@ -1,14 +1,69 @@
 package main
 
 import (
+	"errors"
 	"fmt"
+	"math"
 	"os"
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	"gopkg.in/yaml.v3"
 )
 
 const yamlNullTag = "!!null"
+
+type apiKeyCounterError struct {
+	sync.Map
+}
+
+func (counters *apiKeyCounterError) Error() string {
+	return "apiKeyCounterError"
+}
+
+var errAPIKeyCounterError error = new(apiKeyCounterError)
+
+func roundRobinAPIKeys(apiKeys []string) []string {
+	if len(apiKeys) <= 1 {
+		return apiKeys
+	}
+
+	var countersMap *apiKeyCounterError
+	if !errors.As(errAPIKeyCounterError, &countersMap) {
+		return apiKeys
+	}
+
+	sig := strings.Join(apiKeys, "\x00")
+	val, _ := countersMap.LoadOrStore(sig, new(atomic.Uint64))
+
+	counter, ok := val.(*atomic.Uint64)
+	if !ok {
+		return apiKeys
+	}
+
+	idx := counter.Add(1) - 1
+	numKeys := uint64(len(apiKeys))
+
+	rem := idx % numKeys
+	if rem > uint64(math.MaxInt) {
+		return apiKeys
+	}
+
+	offset := int(rem)
+	if offset == 0 {
+		result := make([]string, len(apiKeys))
+		copy(result, apiKeys)
+
+		return result
+	}
+
+	result := make([]string, len(apiKeys))
+	copy(result, apiKeys[offset:])
+	copy(result[len(apiKeys)-offset:], apiKeys[:offset])
+
+	return result
+}
 
 type scalarStringList []string
 
@@ -112,7 +167,7 @@ func (provider providerRequestConfig) apiKeysForAttempts() []string {
 		return []string{""}
 	}
 
-	return apiKeys
+	return roundRobinAPIKeys(apiKeys)
 }
 
 func (provider providerRequestConfig) withSingleAPIKey(apiKey string) providerRequestConfig {
@@ -131,11 +186,11 @@ func (settings exaSearchConfig) apiKeys() []string {
 }
 
 func (settings exaSearchConfig) apiKeysForAttempts() []string {
-	return settings.apiKeys()
+	return roundRobinAPIKeys(settings.apiKeys())
 }
 
 func (settings tavilySearchConfig) apiKeysForAttempts() []string {
-	return settings.apiKeys()
+	return roundRobinAPIKeys(settings.apiKeys())
 }
 
 func (settings serpAPIVisualSearchConfig) apiKeys() []string {
@@ -143,5 +198,5 @@ func (settings serpAPIVisualSearchConfig) apiKeys() []string {
 }
 
 func (settings serpAPIVisualSearchConfig) apiKeysForAttempts() []string {
-	return settings.apiKeys()
+	return roundRobinAPIKeys(settings.apiKeys())
 }
