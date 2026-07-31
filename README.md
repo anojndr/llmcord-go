@@ -130,7 +130,7 @@ Providers can be declared in four ways:
 - Gemini: set `type: gemini`
 - ChatGPT Codex: set `type: openai-codex`
 
-`api_key` accepts either a single string or a YAML list. When multiple keys are configured, the bot tries them in order.
+`api_key` accepts either a single string or a YAML list. When multiple keys are configured, the bot rotates through them in round-robin sequence across requests, automatically falling back to remaining keys if a key fails.
 
 ### Discord and Runtime
 

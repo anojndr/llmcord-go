@@ -24,8 +24,8 @@ import (
 var (
 	xAISourceAppendixNumberedLinePattern = regexp.MustCompile(`^(?:\d+[\.\)]|\[\d+\]:?|[\-\*\+])\s+(.*)$`)
 	xAISourceAppendixMarkdownLinkPattern = regexp.MustCompile(`^\[(.+?)\]\((https?://[^\s)]+)\)(.*)$`)
-	xAISourceAppendixTitleURLPattern    = regexp.MustCompile(`^(.+?)\s*[:\-\(]\s*<?(https?://[^\s>)]+)>?\)?(.*)$`)
-	xAISourceAppendixBareURLPattern     = regexp.MustCompile(`^<?(https?://[^\s>)]+)>?\s*(.*)$`)
+	xAISourceAppendixTitleURLPattern     = regexp.MustCompile(`^(.+?)\s*[:\-\(]\s*<?(https?://[^\s>)]+)>?\)?(.*)$`)
+	xAISourceAppendixBareURLPattern      = regexp.MustCompile(`^<?(https?://[^\s>)]+)>?\s*(.*)$`)
 	xAISourceAppendixInlineQueryPattern  = regexp.MustCompile("`([^`]+)`")
 )
 
@@ -1720,7 +1720,6 @@ func xAIStreamingSourceAppendixStart(answerText string) (int, bool) {
 
 	return 0, false
 }
-
 
 func mergeXAISourceAttribution(
 	left *xAISourceAttribution,

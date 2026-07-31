@@ -201,4 +201,3 @@ func (client chatCompletionRouter) streamChatCompletionOnce(
 		)
 	}
 }
-

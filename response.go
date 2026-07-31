@@ -1042,8 +1042,6 @@ func (instance *bot) renderFailureOnProgressMessage(
 	return true, nil
 }
 
-
-
 func plainResponseActions(
 	tracker *responseTracker,
 	index int,

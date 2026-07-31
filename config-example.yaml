@@ -32,7 +32,7 @@ providers:
   # Remote providers:
   azure-openai:
     base_url: https://<resource name>.openai.azure.com/openai/deployments/<deployment name>
-    # `api_key` also accepts a YAML list. Keys are tried in order until one works.
+    # `api_key` also accepts a YAML list. Keys rotate round-robin per request, falling back to remaining keys on failure.
     # api_key:
     #   - primary-key
     #   - backup-key
@@ -42,8 +42,7 @@ providers:
 
   google:
     type: gemini
-    # `api_key` also accepts a YAML list. Gemini waits for server-provided retry
-    # delays on the current key before falling back to the next one.
+    # `api_key` also accepts a YAML list. Keys rotate round-robin per request, falling back to remaining keys on failure.
     # api_key:
     #   - primary-key
     #   - backup-key
@@ -174,7 +173,7 @@ web_search:
     # Exa MCP, and generic website extraction prefers Exa's Contents API first.
     # Use `/searchtype` to switch between `instant`, `fast`, `auto`, `deep-lite`,
     # `deep`, and `deep-reasoning` at runtime (ordered lowest to highest latency).
-    # `api_key` also accepts a YAML list. Keys are tried in order.
+    # `api_key` also accepts a YAML list. Keys rotate round-robin per request, falling back to remaining keys on failure.
     # Optional max characters to request for Exa's full page text per result.
     # Default: 15000
     text_max_characters: 15000
@@ -186,7 +185,7 @@ web_search:
     # Optional when `primary_provider: mcp`; required if you want Tavily as either
     # primary or fallback. Generic website extraction uses Tavily Extract when no
     # Exa API key is set, and as fallback when Exa Contents fails. `api_key`
-    # also accepts a YAML list. Keys are tried in order.
+    # also accepts a YAML list. Keys rotate round-robin per request, falling back to remaining keys on failure.
     # api_key:
     #   - tvly-primary-key
     #   - tvly-backup-key
@@ -196,7 +195,7 @@ visual_search:
   serpapi:
     # Optional. When set, `vsearch` runs SerpApi Google Lens concurrently with
     # the default Yandex Images visual search and combines both result sets.
-    # `api_key` also accepts a YAML list. Keys are tried in order.
+    # `api_key` also accepts a YAML list. Keys rotate round-robin per request, falling back to remaining keys on failure.
     # api_key:
     #   - serpapi-primary-key
     #   - serpapi-backup-key
