@@ -373,8 +373,8 @@ func TestBuildGeminiGenerateContentRequestDefaultsThoughtSummaries(t *testing.T)
 		t.Fatalf("unexpected gemini config: %#v", config)
 	}
 
-	if config.ThinkingConfig.IncludeThoughts {
-		t.Fatalf("expected includeThoughts to default off: %#v", config.ThinkingConfig)
+	if !config.ThinkingConfig.IncludeThoughts {
+		t.Fatalf("expected includeThoughts to default on: %#v", config.ThinkingConfig)
 	}
 }
 
@@ -1297,8 +1297,8 @@ func assertGeminiGenerateContentConfig(
 		t.Fatalf("expected priority service tier in extra body: %#v", config.HTTPOptions.ExtraBody)
 	}
 
-	if config.ThinkingConfig == nil || config.ThinkingConfig.IncludeThoughts {
-		t.Fatalf("expected gemini thought summaries to be disabled by default: %#v", config.ThinkingConfig)
+	if config.ThinkingConfig == nil || !config.ThinkingConfig.IncludeThoughts {
+		t.Fatalf("expected gemini thought summaries to be enabled by default: %#v", config.ThinkingConfig)
 	}
 }
 
@@ -1338,8 +1338,8 @@ func streamGeminiTestChunks(
 			t.Fatalf("expected priority service tier in HTTP options: %#v", config.HTTPOptions)
 		}
 
-		if config.ThinkingConfig == nil || config.ThinkingConfig.IncludeThoughts {
-			t.Fatalf("expected gemini thought summaries to be disabled by default: %#v", config)
+		if config.ThinkingConfig == nil || !config.ThinkingConfig.IncludeThoughts {
+			t.Fatalf("expected gemini thought summaries to be enabled by default: %#v", config)
 		}
 
 		return func(yield func(*genai.GenerateContentResponse, error) bool) {
@@ -1531,5 +1531,42 @@ func TestGeminiClientStreamChatCompletion_ReturnsErrEmptyModelResponseWhenNoCont
 	)
 	if !errors.Is(err, errEmptyModelResponse) {
 		t.Fatalf("expected errEmptyModelResponse, got: %v", err)
+	}
+}
+
+func TestGeminiStreamDeltaSeparatesThinkingFromAnswer(t *testing.T) {
+	t.Parallel()
+
+	thoughtPart := genai.NewPartFromText(
+		"Query: does premid require discord client\n\n" +
+			"Let's do a quick search or evaluate based on knowledge of PreMiD.",
+	)
+	thoughtPart.Thought = true
+
+	answerPart := genai.NewPartFromText(
+		"Yes, PreMiD requires the official Discord desktop client to be running.",
+	)
+	answerPart.Thought = false
+
+	response := newGeminiGenerateContentResponseWithParts(
+		[]*genai.Part{thoughtPart, answerPart},
+		genai.FinishReasonStop,
+	)
+
+	delta, err := geminiStreamDelta(response)
+	if err != nil {
+		t.Fatalf("geminiStreamDelta failed: %v", err)
+	}
+
+	expectedThinking := "Query: does premid require discord client\n\n" +
+		"Let's do a quick search or evaluate based on knowledge of PreMiD."
+	expectedContent := "Yes, PreMiD requires the official Discord desktop client to be running."
+
+	if delta.Thinking != expectedThinking {
+		t.Errorf("unexpected Thinking:\ngot:  %q\nwant: %q", delta.Thinking, expectedThinking)
+	}
+
+	if delta.Content != expectedContent {
+		t.Errorf("unexpected Content:\ngot:  %q\nwant: %q", delta.Content, expectedContent)
 	}
 }
