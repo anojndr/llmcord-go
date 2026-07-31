@@ -79,34 +79,9 @@ func (client openAICodexClient) streamChatCompletion(
 	request chatCompletionRequest,
 	handle func(streamDelta) error,
 ) error {
-	requestBody, err := buildOpenAICodexRequestBody(request)
+	httpRequest, err := createOpenAICodexHTTPRequest(ctx, request)
 	if err != nil {
-		return fmt.Errorf("build codex request body: %w", err)
-	}
-
-	requestBytes, err := json.Marshal(requestBody)
-	if err != nil {
-		return fmt.Errorf("marshal codex request: %w", err)
-	}
-
-	requestURL, err := buildOpenAICodexURL(request.Provider.BaseURL, request.Provider.ExtraQuery)
-	if err != nil {
-		return fmt.Errorf("build codex request url: %w", err)
-	}
-
-	httpRequest, err := http.NewRequestWithContext(
-		ctx,
-		http.MethodPost,
-		requestURL,
-		bytes.NewReader(requestBytes),
-	)
-	if err != nil {
-		return fmt.Errorf("create codex request: %w", err)
-	}
-
-	err = populateOpenAICodexHeaders(httpRequest, request.Provider, request.SessionID)
-	if err != nil {
-		return fmt.Errorf("build codex headers: %w", err)
+		return err
 	}
 
 	httpResponse, err := client.httpClient.Do(httpRequest)
@@ -139,9 +114,16 @@ func (client openAICodexClient) streamChatCompletion(
 	}
 
 	terminalEventSeen := false
+	contentYielded := false
 
 	doneSeen, err := consumeServerSentEvents(httpResponse.Body, func(payload []byte) error {
-		terminal, payloadErr := handleOpenAICodexStreamPayload(payload, handle)
+		terminal, payloadErr := handleOpenAICodexStreamPayload(payload, func(delta streamDelta) error {
+			if delta.Content != "" || delta.Thinking != "" || delta.SearchMetadata != nil {
+				contentYielded = true
+			}
+
+			return handle(delta)
+		})
 		if terminal {
 			terminalEventSeen = true
 		}
@@ -159,7 +141,48 @@ func (client openAICodexClient) streamChatCompletion(
 		)
 	}
 
+	if !contentYielded {
+		return errEmptyModelResponse
+	}
+
 	return nil
+}
+
+func createOpenAICodexHTTPRequest(
+	ctx context.Context,
+	request chatCompletionRequest,
+) (*http.Request, error) {
+	requestBody, err := buildOpenAICodexRequestBody(request)
+	if err != nil {
+		return nil, fmt.Errorf("build codex request body: %w", err)
+	}
+
+	requestBytes, err := json.Marshal(requestBody)
+	if err != nil {
+		return nil, fmt.Errorf("marshal codex request: %w", err)
+	}
+
+	requestURL, err := buildOpenAICodexURL(request.Provider.BaseURL, request.Provider.ExtraQuery)
+	if err != nil {
+		return nil, fmt.Errorf("build codex request url: %w", err)
+	}
+
+	httpRequest, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodPost,
+		requestURL,
+		bytes.NewReader(requestBytes),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("create codex request: %w", err)
+	}
+
+	err = populateOpenAICodexHeaders(httpRequest, request.Provider, request.SessionID)
+	if err != nil {
+		return nil, fmt.Errorf("build codex headers: %w", err)
+	}
+
+	return httpRequest, nil
 }
 
 func buildOpenAICodexRequestBody(request chatCompletionRequest) (map[string]any, error) {

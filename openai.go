@@ -106,7 +106,7 @@ func (client openAIClient) streamChatCompletion(
 
 	contentYielded := false
 	wrappedHandle := func(delta streamDelta) error {
-		if delta.Content != "" {
+		if delta.Content != "" || delta.Thinking != "" || delta.SearchMetadata != nil {
 			contentYielded = true
 		}
 
@@ -139,6 +139,10 @@ func (client openAIClient) streamChatCompletion(
 		}
 
 		if statusCode == 0 {
+			if !contentYielded {
+				return errEmptyModelResponse
+			}
+
 			return nil
 		}
 

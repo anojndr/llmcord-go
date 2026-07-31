@@ -136,6 +136,7 @@ func (client geminiClient) streamChatCompletion(
 	}
 
 	finishSeen := false
+	hasContent := false
 
 	for response, streamErr := range apiClient.GenerateContentStream(
 		ctx,
@@ -143,16 +144,21 @@ func (client geminiClient) streamChatCompletion(
 		contents,
 		generateConfig,
 	) {
-		finished, err := processGeminiStreamResponse(handle, response, streamErr)
+		finished, contentProduced, err := processGeminiStreamResponse(handle, response, streamErr)
 		if err != nil {
 			return err
 		}
 
 		finishSeen = finishSeen || finished
+		hasContent = hasContent || contentProduced
 	}
 
 	if !finishSeen {
 		return fmt.Errorf("gemini stream ended without finish reason: %w", io.ErrUnexpectedEOF)
+	}
+
+	if !hasContent {
+		return errEmptyModelResponse
 	}
 
 	return nil
@@ -162,32 +168,34 @@ func processGeminiStreamResponse(
 	handle func(streamDelta) error,
 	response *genai.GenerateContentResponse,
 	streamErr error,
-) (bool, error) {
+) (bool, bool, error) {
 	if streamErr != nil {
-		return false, fmt.Errorf("stream gemini content: %w", streamErr)
+		return false, false, fmt.Errorf("stream gemini content: %w", streamErr)
 	}
 
 	delta, processErr := geminiStreamDelta(response)
 
+	contentProduced := delta.Thinking != "" || delta.Content != "" || delta.SearchMetadata != nil
+
 	err := geminiHandleStreamUpdate(handle, delta)
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
 
 	if processErr != nil {
-		return false, fmt.Errorf("process gemini stream response: %w", processErr)
+		return false, contentProduced, fmt.Errorf("process gemini stream response: %w", processErr)
 	}
 
 	if delta.FinishReason == "" {
-		return false, nil
+		return false, contentProduced, nil
 	}
 
 	err = geminiHandleFinishReason(handle, delta.FinishReason)
 	if err != nil {
-		return false, err
+		return false, contentProduced, err
 	}
 
-	return true, nil
+	return true, contentProduced, nil
 }
 
 func geminiHandleStreamUpdate(handle func(streamDelta) error, delta streamDelta) error {
