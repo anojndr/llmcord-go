@@ -7,7 +7,6 @@ import (
 	"slices"
 	"strings"
 	"time"
-	"unicode/utf8"
 )
 
 var atAIMentionRegexp = regexp.MustCompile(`(?i)\bat\s+ai\b`)
@@ -18,7 +17,13 @@ var horizontalWhitespaceRegexp = regexp.MustCompile(`[^\S\n]+`)
 var whitespaceBeforePunctuationRegexp = regexp.MustCompile(`([^\S\n]+)([,.:;!?])`)
 
 func runeCount(text string) int {
-	return utf8.RuneCountInString(text)
+	count := 0
+
+	for range text {
+		count++
+	}
+
+	return count
 }
 
 func truncateRunes(text string, limit int) string {
@@ -26,11 +31,17 @@ func truncateRunes(text string, limit int) string {
 		return ""
 	}
 
-	if runeCount(text) <= limit {
-		return text
+	count := 0
+
+	for idx := range text {
+		if count == limit {
+			return text[:idx]
+		}
+
+		count++
 	}
 
-	return string([]rune(text)[:limit])
+	return text
 }
 
 func splitRunesPrefix(text string, limit int) (string, string) {
@@ -38,26 +49,39 @@ func splitRunesPrefix(text string, limit int) (string, string) {
 		return "", text
 	}
 
-	runes := []rune(text)
-	if len(runes) <= limit {
-		return text, ""
+	count := 0
+
+	for idx := range text {
+		if count == limit {
+			return text[:idx], text[idx:]
+		}
+
+		count++
 	}
 
-	return string(runes[:limit]), string(runes[limit:])
+	return text, ""
 }
 
 func joinNonEmpty(parts []string) string {
-	filteredParts := make([]string, 0, len(parts))
+	var builder strings.Builder
+
+	first := true
 
 	for _, part := range parts {
 		if strings.TrimSpace(part) == "" {
 			continue
 		}
 
-		filteredParts = append(filteredParts, part)
+		if !first {
+			builder.WriteByte('\n')
+		}
+
+		builder.WriteString(part)
+
+		first = false
 	}
 
-	return strings.Join(filteredParts, "\n")
+	return builder.String()
 }
 
 func appendUniqueWarning(warnings map[string]struct{}, warning string) {
@@ -88,13 +112,15 @@ func containsFold(text, fragment string) bool {
 }
 
 func trimBotMention(text, botID string) string {
-	for _, mention := range []string{
-		fmt.Sprintf("<@%s>", botID),
-		fmt.Sprintf("<@!%s>", botID),
-	} {
-		trimmedText, found := strings.CutPrefix(text, mention)
-		if found {
-			return strings.TrimSpace(trimmedText)
+	if strings.HasPrefix(text, "<@") {
+		for _, mention := range []string{
+			"<@" + botID + ">",
+			"<@!" + botID + ">",
+		} {
+			trimmedText, found := strings.CutPrefix(text, mention)
+			if found {
+				return strings.TrimSpace(trimmedText)
+			}
 		}
 	}
 
@@ -169,7 +195,7 @@ func isGoodFinishReason(reason string) bool {
 }
 
 func visionModelTags() []string {
-	return []string{
+	tags := [...]string{
 		"claude",
 		"gemini",
 		"gemma",
@@ -184,10 +210,13 @@ func visionModelTags() []string {
 		"vision",
 		"vl",
 	}
+
+	return append([]string(nil), tags[:]...)
 }
 
 func isVisionModel(modelName string) bool {
 	lowerModelName := strings.ToLower(modelName)
+
 	for _, tag := range visionModelTags() {
 		if strings.Contains(lowerModelName, tag) {
 			return true

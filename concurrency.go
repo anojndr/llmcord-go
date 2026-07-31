@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 )
 
 type boundedTaskResult[T any] struct {
@@ -26,14 +27,21 @@ func runTasksConcurrently[T any](
 	}
 
 	results := make([]boundedTaskResult[T], taskCount)
-	indices := make(chan int)
+
+	var currentTaskIndex atomic.Int64
 
 	var waitGroup sync.WaitGroup
 
 	for range workerCount {
 		waitGroup.Go(func() {
-			for index := range indices {
+			for {
+				index := int(currentTaskIndex.Add(1) - 1)
+				if index >= taskCount {
+					return
+				}
+
 				value, err := task(ctx, index)
+
 				results[index] = boundedTaskResult[T]{
 					value: value,
 					err:   err,
@@ -42,11 +50,6 @@ func runTasksConcurrently[T any](
 		})
 	}
 
-	for index := range taskCount {
-		indices <- index
-	}
-
-	close(indices)
 	waitGroup.Wait()
 
 	return results
