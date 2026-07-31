@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"io"
 	"iter"
 	"net/http"
@@ -1491,5 +1492,44 @@ func TestBuildGeminiGenerateContentRequestPreservesCustomServiceTier(t *testing.
 	got, ok := config.HTTPOptions.ExtraBody["service_tier"].(string)
 	if !ok || got != "standard" {
 		t.Fatalf("expected custom service_tier to be preserved as standard, got %#v", config.HTTPOptions.ExtraBody)
+	}
+}
+
+func TestGeminiClientStreamChatCompletion_ReturnsErrEmptyModelResponseWhenNoContent(t *testing.T) {
+	t.Parallel()
+
+	client := geminiClient{
+		httpClient: new(http.Client),
+		newClient: func(
+			_ context.Context,
+			_ *genai.ClientConfig,
+		) (geminiAPIClient, error) {
+			var stubClient stubGeminiAPIClient
+
+			stubClient.generateContentStream = func(
+				_ context.Context,
+				_ string,
+				_ []*genai.Content,
+				_ *genai.GenerateContentConfig,
+			) iter.Seq2[*genai.GenerateContentResponse, error] {
+				return func(yield func(*genai.GenerateContentResponse, error) bool) {
+					resp := newGeminiGenerateContentResponse("", genai.FinishReasonStop)
+					yield(resp, nil)
+				}
+			}
+
+			return stubClient, nil
+		},
+	}
+
+	err := client.streamChatCompletion(
+		context.Background(),
+		newSimpleGeminiStreamRequest(),
+		func(_ streamDelta) error {
+			return nil
+		},
+	)
+	if !errors.Is(err, errEmptyModelResponse) {
+		t.Fatalf("expected errEmptyModelResponse, got: %v", err)
 	}
 }

@@ -1520,3 +1520,56 @@ func TestChatCompletionRouterAttemptTimeoutWithAndWithoutFallbackKey(t *testing.
 		)
 	}
 }
+
+func TestChatCompletionRouter_GeminiEmptyResponseTriggersKeyFallback(t *testing.T) {
+	t.Parallel()
+
+	attemptCapture := new(stringCapture)
+
+	router := newGeminiRetryRouterWithFactory(
+		attemptCapture,
+		nil,
+		func(apiKey string, _ int) func(
+			ctx context.Context,
+			model string,
+			contents []*genai.Content,
+			config *genai.GenerateContentConfig,
+		) iter.Seq2[*genai.GenerateContentResponse, error] {
+			return func(
+				_ context.Context,
+				_ string,
+				_ []*genai.Content,
+				_ *genai.GenerateContentConfig,
+			) iter.Seq2[*genai.GenerateContentResponse, error] {
+				return func(yield func(*genai.GenerateContentResponse, error) bool) {
+					if apiKey == testRetryPrimaryAPIKey {
+						// Primary key returns empty response.
+						_ = yield(newGeminiGenerateContentResponse("", genai.FinishReasonStop), nil)
+
+						return
+					}
+
+					// Fallback key succeeds.
+					_ = yield(newGeminiGenerateContentResponse("Success from fallback", genai.FinishReasonStop), nil)
+				}
+			}
+		},
+	)
+
+	req := newGeminiRetryRequest()
+	req.Provider.APIKeys = []string{testRetryPrimaryAPIKey, testRetryBackupAPIKey}
+
+	content, err := collectStreamedContent(context.Background(), router, req)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	if content != "Success from fallback" {
+		t.Fatalf("unexpected content: %q", content)
+	}
+
+	expectedAttempts := []string{testRetryPrimaryAPIKey, testRetryPrimaryAPIKey, testRetryBackupAPIKey}
+	if !slices.Equal(attemptCapture.snapshot(), expectedAttempts) {
+		t.Fatalf("unexpected API key attempts: %#v", attemptCapture.snapshot())
+	}
+}

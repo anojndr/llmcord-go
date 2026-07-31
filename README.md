@@ -200,7 +200,7 @@ Model notes:
 - Generic website fetching rejects localhost, private, link-local, and unsafe redirect targets.
 - OpenRouter providers automatically send `transforms: ["middle-out"]` unless overridden.
 - 9Router requests (identified by provider name or baseURL containing `9router`) will automatically omit the `Authorization` header if the provider is configured without an API key (for unauthenticated or local 9Router configurations).
-- Multi-key Gemini, OpenAI, and OpenAI Codex providers honor retry delays and rotate keys when needed.
+- Multi-key Gemini, OpenAI, and OpenAI Codex providers honor retry delays, handle transient empty model responses during streaming, and rotate keys when needed.
 
 
 ## Development

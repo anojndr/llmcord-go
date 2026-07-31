@@ -104,6 +104,10 @@ func isTransientError(_ providerAPIKind, err error) bool {
 		return false
 	}
 
+	if errors.Is(err, errEmptyModelResponse) {
+		return true
+	}
+
 	// 1. Check for network errors.
 	var netErr net.Error
 	if errors.As(err, &netErr) {
@@ -121,6 +125,7 @@ func isTransientError(_ providerAPIKind, err error) bool {
 		"unexpected EOF",
 		"context deadline exceeded",
 		"malformed_function_call",
+		"model returned an empty response",
 	} {
 		if strings.Contains(errText, text) {
 			return true
