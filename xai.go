@@ -1615,42 +1615,31 @@ func xAIStreamingVisibleAnswerText(request chatCompletionRequest, answerText str
 		return answerText
 	}
 
-	return strings.TrimRight(answerText[:appendixStart], "\n")
+	return strings.TrimRight(answerText[:appendixStart], "\r\n")
 }
 
-func isSourceAppendixHeaderLine(line string) bool {
+func normalizedSourceAppendixHeader(line string) string {
 	trimmed := strings.TrimSpace(line)
-	if trimmed == "" {
-		return false
-	}
-
 	trimmed = strings.TrimLeft(trimmed, "#")
 	trimmed = strings.TrimSpace(trimmed)
 	trimmed = strings.Trim(trimmed, "*_:")
 	trimmed = strings.TrimSpace(trimmed)
 
-	lower := strings.ToLower(trimmed)
+	return strings.ToLower(trimmed)
+}
 
-	return slices.Contains(sourceAppendixHeaderPrefixesList(), lower)
+func isSourceAppendixHeaderLine(line string) bool {
+	return slices.Contains(sourceAppendixHeaderPrefixesList(), normalizedSourceAppendixHeader(line))
 }
 
 func isSourceAppendixHeaderPartial(line string) bool {
-	trimmed := strings.TrimSpace(line)
-	if trimmed == "" {
-		return false
-	}
-
-	trimmed = strings.TrimLeft(trimmed, "#")
-	trimmed = strings.TrimSpace(trimmed)
-	trimmed = strings.TrimLeft(trimmed, "*_")
-
-	lower := strings.ToLower(trimmed)
-	if lower == "" {
-		return false
+	partialHeader := normalizedSourceAppendixHeader(line)
+	if partialHeader == "" {
+		return true
 	}
 
 	for _, prefix := range sourceAppendixHeaderPrefixesList() {
-		if strings.HasPrefix(prefix, lower) || strings.HasPrefix(prefix+":", lower) {
+		if strings.HasPrefix(prefix, partialHeader) {
 			return true
 		}
 	}
@@ -1679,7 +1668,7 @@ func xAIStreamingSourceAppendixStart(answerText string) (int, bool) {
 		return 0, false
 	}
 
-	normalized := strings.ReplaceAll(answerText, "\r\n", "\n")
+	normalized, originalOffsets := normalizeNewlinesWithOriginalOffsets(answerText)
 	lastIdx := -1
 	idx := 0
 
@@ -1697,11 +1686,11 @@ func xAIStreamingSourceAppendixStart(answerText string) (int, bool) {
 			lastIdx = pos
 		}
 
-		idx = pos + doubleNewlineSeparatorLength
+		idx = pos + 1
 	}
 
 	if lastIdx >= 0 {
-		return lastIdx, true
+		return originalOffsets[lastIdx], true
 	}
 
 	firstLine, _, _ := strings.Cut(normalized, "\n")
@@ -1712,13 +1701,40 @@ func xAIStreamingSourceAppendixStart(answerText string) (int, bool) {
 	if lastDoubleNewline := strings.LastIndex(normalized, "\n\n"); lastDoubleNewline >= 0 {
 		tail := normalized[lastDoubleNewline+doubleNewlineSeparatorLength:]
 		if !strings.Contains(tail, "\n") && isSourceAppendixHeaderPartial(tail) {
-			return lastDoubleNewline, true
+			return originalOffsets[lastDoubleNewline], true
 		}
 	} else if !strings.Contains(normalized, "\n") && isSourceAppendixHeaderPartial(normalized) {
 		return 0, true
 	}
 
+	if strings.HasSuffix(normalized, "\n") {
+		return originalOffsets[len(normalized)-1], true
+	}
+
 	return 0, false
+}
+
+func normalizeNewlinesWithOriginalOffsets(text string) (string, []int) {
+	var normalized strings.Builder
+
+	normalized.Grow(len(text))
+	originalOffsets := make([]int, 1, len(text)+1)
+
+	for index := 0; index < len(text); index++ {
+		if text[index] == '\r' {
+			if index+1 < len(text) && text[index+1] == '\n' {
+				index++
+			}
+
+			normalized.WriteByte('\n')
+		} else {
+			normalized.WriteByte(text[index])
+		}
+
+		originalOffsets = append(originalOffsets, index+1)
+	}
+
+	return normalized.String(), originalOffsets
 }
 
 func mergeXAISourceAttribution(
