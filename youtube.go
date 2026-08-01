@@ -18,7 +18,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"time"
 )
 
 const (
@@ -28,9 +27,6 @@ const (
 	youtubeWarningText             = "Warning: YouTube content unavailable"
 	noteGPTSuccessCode             = 100000
 	noteGPTPlatformYouTube         = "youtube"
-	noteGPTMediaStatusProcessing   = "processing"
-	noteGPTMediaStatusSuccess      = "success"
-	noteGPTMediaStatusNotFound     = "not_found"
 	noteGPTAnonymousUserCookieName = "anonymous_user_id"
 	noteGPTUUIDVersionMask         = 0x0f
 	noteGPTUUIDVersionValue        = 0x40
@@ -43,7 +39,6 @@ const (
 	youtubeUserAgent               = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 " +
 		"(KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36"
 	youtubeCommentsPanelIdentifier = "engagement-panel-comments-section"
-	youtubeMediaStatusPollInterval = 500 * time.Millisecond
 	youtubeFetchTaskCount          = 2
 )
 
@@ -123,16 +118,6 @@ type noteGPTTranscriptSegment struct {
 	Start string `json:"start"`
 	End   string `json:"end"`
 	Text  string `json:"text"`
-}
-
-type noteGPTStatusResponse struct {
-	Code    int               `json:"code"`
-	Message string            `json:"message"`
-	Data    noteGPTStatusData `json:"data"`
-}
-
-type noteGPTStatusData struct {
-	Status string `json:"status"`
 }
 
 func newYouTubeClient(httpClient *http.Client) youtubeClient {
@@ -315,28 +300,9 @@ func (client youtubeClient) fetchNoteGPTVideoTranscript(
 		return noteGPTVideoTranscriptData{}, err
 	}
 
-	if ready {
-		return transcriptData, nil
-	}
-
-	err = client.startNoteGPTTranscriptGeneration(ctx, videoID, anonymousUserID)
-	if err != nil {
-		return noteGPTVideoTranscriptData{}, err
-	}
-
-	err = client.waitForNoteGPTTranscriptGeneration(ctx, videoID, anonymousUserID)
-	if err != nil {
-		return noteGPTVideoTranscriptData{}, err
-	}
-
-	transcriptData, ready, err = client.fetchNoteGPTVideoTranscriptOnce(ctx, videoID, anonymousUserID)
-	if err != nil {
-		return noteGPTVideoTranscriptData{}, err
-	}
-
 	if !ready {
 		return noteGPTVideoTranscriptData{}, fmt.Errorf(
-			"transcript unavailable after generation for %q: %w",
+			"notegpt transcript unavailable for %q: %w",
 			videoID,
 			os.ErrNotExist,
 		)
@@ -351,7 +317,7 @@ func (client youtubeClient) fetchNoteGPTVideoTranscriptOnce(
 	anonymousUserID string,
 ) (noteGPTVideoTranscriptData, bool, error) {
 	requestURL, err := client.buildNoteGPTURL(
-		"video-transcript",
+		"video-transcript-v2",
 		map[string]string{
 			messagePlatformKey: noteGPTPlatformYouTube,
 			messageVideoIDKey:  videoID,
@@ -391,132 +357,6 @@ func (client youtubeClient) fetchNoteGPTVideoTranscriptOnce(
 	}
 
 	return payload.Data, len(selectNoteGPTTranscriptSegments(payload.Data)) > 0, nil
-}
-
-func (client youtubeClient) startNoteGPTTranscriptGeneration(
-	ctx context.Context,
-	videoID string,
-	anonymousUserID string,
-) error {
-	requestURL, err := client.buildNoteGPTURL(
-		"transcript-generate",
-		map[string]string{
-			"platform": noteGPTPlatformYouTube,
-			"video_id": videoID,
-		},
-	)
-	if err != nil {
-		return err
-	}
-
-	responseBody, err := client.doRequest(
-		ctx,
-		http.MethodGet,
-		requestURL,
-		nil,
-		map[string]string{
-			"Cookie": client.noteGPTAnonymousUserCookie(anonymousUserID),
-		},
-	)
-	if err != nil {
-		return err
-	}
-
-	var payload noteGPTStatusResponse
-
-	err = json.Unmarshal(responseBody, &payload)
-	if err != nil {
-		return fmt.Errorf("decode notegpt transcript generate response: %w", err)
-	}
-
-	if payload.Code != noteGPTSuccessCode {
-		return fmt.Errorf(
-			"notegpt transcript generate code %d: %s: %w",
-			payload.Code,
-			strings.TrimSpace(payload.Message),
-			os.ErrInvalid,
-		)
-	}
-
-	return nil
-}
-
-func (client youtubeClient) waitForNoteGPTTranscriptGeneration(
-	ctx context.Context,
-	videoID string,
-	anonymousUserID string,
-) error {
-	ticker := time.NewTicker(youtubeMediaStatusPollInterval)
-	defer ticker.Stop()
-
-	for {
-		status, err := client.fetchNoteGPTMediaStatus(ctx, videoID, anonymousUserID)
-		if err != nil {
-			return err
-		}
-
-		switch strings.TrimSpace(strings.ToLower(status)) {
-		case noteGPTMediaStatusSuccess:
-			return nil
-		case "", noteGPTMediaStatusNotFound, noteGPTMediaStatusProcessing:
-		default:
-			return fmt.Errorf("notegpt media status for %q: %s: %w", videoID, status, os.ErrInvalid)
-		}
-
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("wait for notegpt transcript generation for %q: %w", videoID, ctx.Err())
-		case <-ticker.C:
-		}
-	}
-}
-
-func (client youtubeClient) fetchNoteGPTMediaStatus(
-	ctx context.Context,
-	videoID string,
-	anonymousUserID string,
-) (string, error) {
-	requestURL, err := client.buildNoteGPTURL(
-		"media-status",
-		map[string]string{
-			"platform": noteGPTPlatformYouTube,
-			"video_id": videoID,
-		},
-	)
-	if err != nil {
-		return "", err
-	}
-
-	responseBody, err := client.doRequest(
-		ctx,
-		http.MethodGet,
-		requestURL,
-		nil,
-		map[string]string{
-			"Cookie": client.noteGPTAnonymousUserCookie(anonymousUserID),
-		},
-	)
-	if err != nil {
-		return "", err
-	}
-
-	var payload noteGPTStatusResponse
-
-	err = json.Unmarshal(responseBody, &payload)
-	if err != nil {
-		return "", fmt.Errorf("decode notegpt media status response: %w", err)
-	}
-
-	if payload.Code != noteGPTSuccessCode {
-		return "", fmt.Errorf(
-			"notegpt media status code %d: %s: %w",
-			payload.Code,
-			strings.TrimSpace(payload.Message),
-			os.ErrInvalid,
-		)
-	}
-
-	return payload.Data.Status, nil
 }
 
 func (client youtubeClient) buildNoteGPTURL(
@@ -563,6 +403,43 @@ func newNoteGPTAnonymousUserID() (string, error) {
 		randomBytes[8:10],
 		randomBytes[10:16],
 	), nil
+}
+
+func (response *noteGPTVideoTranscriptResponse) UnmarshalJSON(rawValue []byte) error {
+	var envelope struct {
+		Code    int             `json:"code"`
+		Message string          `json:"message"`
+		Data    json.RawMessage `json:"data"`
+	}
+
+	err := json.Unmarshal(rawValue, &envelope)
+	if err != nil {
+		return fmt.Errorf("decode notegpt video transcript envelope: %w", err)
+	}
+
+	response.Code = envelope.Code
+	response.Message = envelope.Message
+	response.Data = noteGPTVideoTranscriptData{
+		VideoID: "",
+		VideoInfo: noteGPTVideoInfo{
+			Name:   "",
+			Author: "",
+		},
+		LanguageCode: nil,
+		Transcripts:  nil,
+		Duration:     "",
+	}
+
+	if response.Code != noteGPTSuccessCode {
+		return nil
+	}
+
+	err = json.Unmarshal(envelope.Data, &response.Data)
+	if err != nil {
+		return fmt.Errorf("decode notegpt video transcript data: %w", err)
+	}
+
+	return nil
 }
 
 func (transcriptData *noteGPTVideoTranscriptData) UnmarshalJSON(rawValue []byte) error {

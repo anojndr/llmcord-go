@@ -41,6 +41,7 @@ Behavior notes:
 - xAI image-generation replies keep the provider's generated image URL in the response body instead of rendering it as a Discord embed image.
 - Final answers that include `https://i.ibb.co/...` links are followed by a plain Discord reply containing those imgbb image URLs so Discord can render them outside the bot embed.
 - When an xAI model is selected, non-Facebook, non-YouTube Shorts URLs stay provider-side instead of running the bot's URL fetchers first.
+- YouTube enrichment uses NoteGPT's current anonymous transcript endpoint and consumes existing captions only; videos without subtitles return the normal YouTube-unavailable warning instead of attempting NoteGPT's login-only transcription flow, and provider errors—including array-valued `data` payloads—remain visible instead of being masked by JSON decoding failures.
 - Empty prompts such as a bare `at ai` or an empty follow-up turn are sent upstream as `.` so providers still receive an explicit user input.
 - Provider response streams are capped at 5 minutes so bad multimodal requests fail cleanly instead of hanging the bot indefinitely. Built-in `openai/...` Responses requests are capped at 30 minutes because OpenAI reasoning responses can legitimately run longer before completing.
 - Native Gemini models default `thinkingConfig.includeThoughts` to `true` so Gemini thought summaries are generated in separate candidate parts (`part.Thought = true`), preventing internal reasoning or search-decider planning text from leaking into the user-facing answer content.
