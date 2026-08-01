@@ -248,7 +248,7 @@ func TestYouTubeFetchStartsWatchPageBeforeTranscriptCompletes(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
-		case "/notegpt/video-transcript":
+		case "/notegpt/video-transcript-v2":
 			select {
 			case <-watchStarted:
 			case <-request.Context().Done():
@@ -430,59 +430,10 @@ func TestYouTubeClientFetchUsesNoteGPTTranscriptAndLimitsCommentsToFifty(t *test
 		t.Fatalf("unexpected next call count: %d", nextCallCount)
 	}
 
-	assertNoteGPTCallCounts(t, noteGPTCalls, 1, 0, 0)
+	assertNoteGPTCallCount(t, noteGPTCalls, 1)
 }
 
-func TestYouTubeClientFetchGeneratesTranscriptWhenNoteGPTCacheMisses(t *testing.T) {
-	t.Parallel()
-
-	const (
-		videoID       = "abc123def45"
-		youtubeAPIKey = "test-api-key"
-		clientVersion = "2.20260309.01.00"
-	)
-
-	noteGPTServer, noteGPTCalls := newMockNoteGPTServer(
-		t,
-		videoID,
-		newGeneratingNoteGPTConfig(videoID),
-	)
-	defer noteGPTServer.Close()
-
-	commentsServer, nextCalls := newMockYouTubeCommentsServer(
-		t,
-		youtubeAPIKey,
-		clientVersion,
-		"",
-	)
-	defer commentsServer.Close()
-
-	client := newTestYouTubeClient(
-		noteGPTServer.Client(),
-		noteGPTServer.URL+"/api/v2",
-		commentsServer.URL+"/watch",
-		commentsServer.URL+"/youtubei/v1",
-	)
-
-	result, err := client.fetch(context.Background(), "https://youtu.be/"+videoID)
-	if err != nil {
-		t.Fatalf("fetch youtube content after notegpt generation: %v", err)
-	}
-
-	assertMockYouTubeResult(t, result, videoID, "Example Video", "Example Channel", "Hello\nworld")
-
-	if len(result.Comments) != 0 {
-		t.Fatalf("unexpected comments: %#v", result.Comments)
-	}
-
-	assertNoteGPTCallCounts(t, noteGPTCalls, 2, 1, 2)
-
-	if got := atomic.LoadInt32(nextCalls); got != 0 {
-		t.Fatalf("unexpected youtube comments call count: %d", got)
-	}
-}
-
-func TestYouTubeClientFetchReturnsErrorWhenNoteGPTGenerationFails(t *testing.T) {
+func TestFetchNoteGPTVideoTranscriptReturnsNotExistWithoutCaptions(t *testing.T) {
 	t.Parallel()
 
 	const videoID = "abc123def45"
@@ -490,7 +441,11 @@ func TestYouTubeClientFetchReturnsErrorWhenNoteGPTGenerationFails(t *testing.T) 
 	noteGPTServer, noteGPTCalls := newMockNoteGPTServer(
 		t,
 		videoID,
-		newFailingNoteGPTConfig(),
+		mockNoteGPTConfig{
+			videoTranscriptResponses: []any{
+				newNoTranscriptNoteGPTVideoTranscriptResponse("523"),
+			},
+		},
 	)
 	defer noteGPTServer.Close()
 
@@ -501,28 +456,67 @@ func TestYouTubeClientFetchReturnsErrorWhenNoteGPTGenerationFails(t *testing.T) 
 		"http://127.0.0.1/unused-api",
 	)
 
-	_, err := client.fetch(context.Background(), "https://youtu.be/"+videoID)
+	_, err := client.fetchNoteGPTVideoTranscript(context.Background(), videoID, "anonymous-user")
 	if err == nil {
-		t.Fatal("expected fetch youtube content error")
+		t.Fatal("expected unavailable transcript error")
 	}
 
-	if !strings.Contains(err.Error(), "notegpt transcript generate code 164003") {
+	if !strings.Contains(err.Error(), "notegpt transcript unavailable") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	assertNoteGPTCallCounts(t, noteGPTCalls, 1, 1, 0)
+	assertNoteGPTCallCount(t, noteGPTCalls, 1)
+}
+
+func TestFetchNoteGPTVideoTranscriptPreservesProviderErrorWithArrayData(t *testing.T) {
+	t.Parallel()
+
+	const videoID = "abc123def45"
+
+	noteGPTServer, noteGPTCalls := newMockNoteGPTServer(
+		t,
+		videoID,
+		mockNoteGPTConfig{
+			videoTranscriptResponses: []any{
+				map[string]any{
+					"code":    164003,
+					"message": "login expired",
+					"data":    []any{},
+				},
+			},
+		},
+	)
+	defer noteGPTServer.Close()
+
+	client := newTestYouTubeClient(
+		noteGPTServer.Client(),
+		noteGPTServer.URL+"/api/v2",
+		"http://127.0.0.1/unused-watch",
+		"http://127.0.0.1/unused-api",
+	)
+
+	_, err := client.fetchNoteGPTVideoTranscript(context.Background(), videoID, "anonymous-user")
+	if err == nil {
+		t.Fatal("expected notegpt provider error")
+	}
+
+	if !strings.Contains(err.Error(), "notegpt video transcript code 164003: login expired") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if strings.Contains(err.Error(), "cannot unmarshal array") {
+		t.Fatalf("provider error was masked by data decoding: %v", err)
+	}
+
+	assertNoteGPTCallCount(t, noteGPTCalls, 1)
 }
 
 type mockNoteGPTConfig struct {
-	videoTranscriptResponses   []noteGPTVideoTranscriptResponse
-	transcriptGenerateResponse noteGPTStatusResponse
-	mediaStatusResponses       []noteGPTStatusResponse
+	videoTranscriptResponses []any
 }
 
 type mockNoteGPTCalls struct {
-	videoTranscriptCalls    atomic.Int32
-	transcriptGenerateCalls atomic.Int32
-	mediaStatusCalls        atomic.Int32
+	videoTranscriptCalls atomic.Int32
 }
 
 func newTestYouTubeClient(
@@ -542,47 +536,9 @@ func newTestYouTubeClient(
 
 func newDirectNoteGPTConfig(videoID string) mockNoteGPTConfig {
 	return mockNoteGPTConfig{
-		videoTranscriptResponses: []noteGPTVideoTranscriptResponse{
+		videoTranscriptResponses: []any{
 			newSuccessNoteGPTVideoTranscriptResponse(mockNoteGPTTranscriptData(videoID)),
 		},
-		transcriptGenerateResponse: noteGPTStatusResponse{
-			Code:    0,
-			Message: "",
-			Data: noteGPTStatusData{
-				Status: "",
-			},
-		},
-		mediaStatusResponses: nil,
-	}
-}
-
-func newGeneratingNoteGPTConfig(videoID string) mockNoteGPTConfig {
-	return mockNoteGPTConfig{
-		videoTranscriptResponses: []noteGPTVideoTranscriptResponse{
-			newNoTranscriptNoteGPTVideoTranscriptResponse("523"),
-			newSuccessNoteGPTVideoTranscriptResponse(mockNoteGPTTranscriptData(videoID)),
-		},
-		transcriptGenerateResponse: newSuccessNoteGPTStatusResponse(noteGPTMediaStatusProcessing),
-		mediaStatusResponses: []noteGPTStatusResponse{
-			newSuccessNoteGPTStatusResponse(noteGPTMediaStatusProcessing),
-			newSuccessNoteGPTStatusResponse(noteGPTMediaStatusSuccess),
-		},
-	}
-}
-
-func newFailingNoteGPTConfig() mockNoteGPTConfig {
-	return mockNoteGPTConfig{
-		videoTranscriptResponses: []noteGPTVideoTranscriptResponse{
-			newNoTranscriptNoteGPTVideoTranscriptResponse("523"),
-		},
-		transcriptGenerateResponse: noteGPTStatusResponse{
-			Code:    164003,
-			Message: "quota exceeded",
-			Data: noteGPTStatusData{
-				Status: "",
-			},
-		},
-		mediaStatusResponses: nil,
 	}
 }
 
@@ -613,35 +569,15 @@ func newNoTranscriptNoteGPTVideoTranscriptResponse(
 	}
 }
 
-func newSuccessNoteGPTStatusResponse(status string) noteGPTStatusResponse {
-	return noteGPTStatusResponse{
-		Code:    noteGPTSuccessCode,
-		Message: "success",
-		Data: noteGPTStatusData{
-			Status: status,
-		},
-	}
-}
-
-func assertNoteGPTCallCounts(
+func assertNoteGPTCallCount(
 	t *testing.T,
 	calls *mockNoteGPTCalls,
 	videoTranscriptCalls int32,
-	transcriptGenerateCalls int32,
-	mediaStatusCalls int32,
 ) {
 	t.Helper()
 
 	if got := calls.videoTranscriptCalls.Load(); got != videoTranscriptCalls {
 		t.Fatalf("unexpected notegpt video transcript call count: %d", got)
-	}
-
-	if got := calls.transcriptGenerateCalls.Load(); got != transcriptGenerateCalls {
-		t.Fatalf("unexpected notegpt transcript generate call count: %d", got)
-	}
-
-	if got := calls.mediaStatusCalls.Load(); got != mediaStatusCalls {
-		t.Fatalf("unexpected notegpt media status call count: %d", got)
 	}
 }
 
@@ -672,15 +608,9 @@ func newMockNoteGPTServer(
 		}
 
 		switch request.URL.Path {
-		case "/api/v2/video-transcript":
+		case "/api/v2/video-transcript-v2":
 			responseIndex := int(calls.videoTranscriptCalls.Add(1)) - 1
 			writeJSON(writer, noteGPTVideoTranscriptResponseAt(config.videoTranscriptResponses, responseIndex))
-		case "/api/v2/transcript-generate":
-			calls.transcriptGenerateCalls.Add(1)
-			writeJSON(writer, defaultNoteGPTStatusResponse(config.transcriptGenerateResponse, noteGPTMediaStatusProcessing))
-		case "/api/v2/media-status":
-			responseIndex := int(calls.mediaStatusCalls.Add(1)) - 1
-			writeJSON(writer, noteGPTStatusResponseAt(config.mediaStatusResponses, responseIndex))
 		default:
 			http.NotFound(writer, request)
 		}
@@ -690,9 +620,9 @@ func newMockNoteGPTServer(
 }
 
 func noteGPTVideoTranscriptResponseAt(
-	responses []noteGPTVideoTranscriptResponse,
+	responses []any,
 	index int,
-) noteGPTVideoTranscriptResponse {
+) any {
 	if len(responses) == 0 {
 		return noteGPTVideoTranscriptResponse{
 			Code:    noteGPTSuccessCode,
@@ -706,44 +636,6 @@ func noteGPTVideoTranscriptResponseAt(
 	}
 
 	return responses[index]
-}
-
-func noteGPTStatusResponseAt(
-	responses []noteGPTStatusResponse,
-	index int,
-) noteGPTStatusResponse {
-	if len(responses) == 0 {
-		return noteGPTStatusResponse{
-			Code:    noteGPTSuccessCode,
-			Message: "success",
-			Data: noteGPTStatusData{
-				Status: noteGPTMediaStatusSuccess,
-			},
-		}
-	}
-
-	if index >= len(responses) {
-		index = len(responses) - 1
-	}
-
-	return responses[index]
-}
-
-func defaultNoteGPTStatusResponse(
-	response noteGPTStatusResponse,
-	defaultStatus string,
-) noteGPTStatusResponse {
-	if response.Code != 0 {
-		return response
-	}
-
-	return noteGPTStatusResponse{
-		Code:    noteGPTSuccessCode,
-		Message: "success",
-		Data: noteGPTStatusData{
-			Status: defaultStatus,
-		},
-	}
 }
 
 func mockNoteGPTTranscriptData(videoID string) noteGPTVideoTranscriptData {
