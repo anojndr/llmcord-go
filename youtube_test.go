@@ -274,6 +274,7 @@ func TestYouTubeFetchStartsWatchPageBeforeTranscriptCompletes(t *testing.T) {
 		httpClient:        server.Client(),
 		watchURL:          server.URL + "/watch",
 		apiBaseURL:        server.URL + "/youtubei/v1",
+		oEmbedURL:         server.URL + "/unused-oembed",
 		noteGPTAPIBaseURL: server.URL + "/notegpt",
 		userAgent:         youtubeUserAgent,
 	}
@@ -403,6 +404,7 @@ func TestYouTubeClientFetchUsesNoteGPTTranscriptAndLimitsCommentsToFifty(t *test
 	client := newTestYouTubeClient(
 		noteGPTServer.Client(),
 		noteGPTServer.URL+"/api/v2",
+		"http://127.0.0.1/unused-oembed",
 		commentsServer.URL+"/watch",
 		commentsServer.URL+"/youtubei/v1",
 	)
@@ -433,39 +435,96 @@ func TestYouTubeClientFetchUsesNoteGPTTranscriptAndLimitsCommentsToFifty(t *test
 	assertNoteGPTCallCount(t, noteGPTCalls, 1)
 }
 
-func TestFetchNoteGPTVideoTranscriptReturnsNotExistWithoutCaptions(t *testing.T) {
+func TestYouTubeClientFetchUsesOEmbedMetadataWithoutCaptions(t *testing.T) {
 	t.Parallel()
 
-	const videoID = "abc123def45"
+	const (
+		videoID       = "Z_hqZ0fPV8o"
+		youtubeAPIKey = "test-api-key"
+		clientVersion = "2.20260309.01.00"
+	)
 
 	noteGPTServer, noteGPTCalls := newMockNoteGPTServer(
 		t,
 		videoID,
 		mockNoteGPTConfig{
 			videoTranscriptResponses: []any{
-				newNoTranscriptNoteGPTVideoTranscriptResponse("523"),
+				newNoTranscriptNoteGPTVideoTranscriptResponse("40"),
 			},
 		},
 	)
 	defer noteGPTServer.Close()
 
+	var oEmbedCalls atomic.Int32
+
+	oEmbedServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/oembed" {
+			http.NotFound(writer, request)
+
+			return
+		}
+
+		oEmbedCalls.Add(1)
+
+		queryValues := request.URL.Query()
+		if got := queryValues.Get("url"); got != "https://www.youtube.com/watch?v="+videoID {
+			t.Fatalf("unexpected youtube oembed video url: %q", got)
+		}
+
+		if got := queryValues.Get("format"); got != "json" {
+			t.Fatalf("unexpected youtube oembed format: %q", got)
+		}
+
+		writeJSON(writer, map[string]string{
+			"title":       "Razer | Huntsman V3 HE Magnetic 8KHz Line",
+			"author_name": "R Λ Z Ξ R",
+		})
+	}))
+	defer oEmbedServer.Close()
+
+	commentsServer, nextCalls := newMockYouTubeCommentsServer(
+		t,
+		youtubeAPIKey,
+		clientVersion,
+		"",
+	)
+	defer commentsServer.Close()
+
 	client := newTestYouTubeClient(
 		noteGPTServer.Client(),
 		noteGPTServer.URL+"/api/v2",
-		"http://127.0.0.1/unused-watch",
-		"http://127.0.0.1/unused-api",
+		oEmbedServer.URL+"/oembed",
+		commentsServer.URL+"/watch",
+		commentsServer.URL+"/youtubei/v1",
 	)
 
-	_, err := client.fetchNoteGPTVideoTranscript(context.Background(), videoID, "anonymous-user")
-	if err == nil {
-		t.Fatal("expected unavailable transcript error")
+	result, err := client.fetch(context.Background(), "https://youtu.be/"+videoID)
+	if err != nil {
+		t.Fatalf("fetch captionless youtube content: %v", err)
 	}
 
-	if !strings.Contains(err.Error(), "notegpt transcript unavailable") {
-		t.Fatalf("unexpected error: %v", err)
+	assertMockYouTubeResult(
+		t,
+		result,
+		videoID,
+		"Razer | Huntsman V3 HE Magnetic 8KHz Line",
+		"R Λ Z Ξ R",
+		youtubeTranscriptUnavailable,
+	)
+
+	if len(result.Comments) != 0 {
+		t.Fatalf("unexpected comments: %#v", result.Comments)
 	}
 
 	assertNoteGPTCallCount(t, noteGPTCalls, 1)
+
+	if got := oEmbedCalls.Load(); got != 1 {
+		t.Fatalf("unexpected youtube oembed call count: %d", got)
+	}
+
+	if got := atomic.LoadInt32(nextCalls); got != 0 {
+		t.Fatalf("unexpected youtube comments call count: %d", got)
+	}
 }
 
 func TestFetchNoteGPTVideoTranscriptPreservesProviderErrorWithArrayData(t *testing.T) {
@@ -491,11 +550,12 @@ func TestFetchNoteGPTVideoTranscriptPreservesProviderErrorWithArrayData(t *testi
 	client := newTestYouTubeClient(
 		noteGPTServer.Client(),
 		noteGPTServer.URL+"/api/v2",
+		"http://127.0.0.1/unused-oembed",
 		"http://127.0.0.1/unused-watch",
 		"http://127.0.0.1/unused-api",
 	)
 
-	_, err := client.fetchNoteGPTVideoTranscript(context.Background(), videoID, "anonymous-user")
+	_, _, err := client.fetchNoteGPTVideoTranscript(context.Background(), videoID, "anonymous-user")
 	if err == nil {
 		t.Fatal("expected notegpt provider error")
 	}
@@ -522,6 +582,7 @@ type mockNoteGPTCalls struct {
 func newTestYouTubeClient(
 	httpClient *http.Client,
 	noteGPTAPIBaseURL string,
+	oEmbedURL string,
 	watchURL string,
 	apiBaseURL string,
 ) youtubeClient {
@@ -529,6 +590,7 @@ func newTestYouTubeClient(
 		httpClient:        httpClient,
 		watchURL:          watchURL,
 		apiBaseURL:        apiBaseURL,
+		oEmbedURL:         oEmbedURL,
 		noteGPTAPIBaseURL: noteGPTAPIBaseURL,
 		userAgent:         youtubeUserAgent,
 	}
@@ -554,18 +616,13 @@ func newSuccessNoteGPTVideoTranscriptResponse(
 
 func newNoTranscriptNoteGPTVideoTranscriptResponse(
 	duration string,
-) noteGPTVideoTranscriptResponse {
-	return noteGPTVideoTranscriptResponse{
-		Code:    noteGPTSuccessCode,
-		Message: "no transcript",
-		Data: newNoteGPTTranscriptData(
-			"",
-			"",
-			"",
-			nil,
-			nil,
-			duration,
-		),
+) map[string]any {
+	return map[string]any{
+		"code":    noteGPTSuccessCode,
+		"message": "no transcript",
+		"data": map[string]string{
+			"duration": duration,
+		},
 	}
 }
 

@@ -23,8 +23,10 @@ import (
 const (
 	defaultYouTubeWatchURL         = "https://www.youtube.com/watch"
 	defaultYouTubeAPIBaseURL       = "https://www.youtube.com/youtubei/v1"
+	defaultYouTubeOEmbedURL        = "https://www.youtube.com/oembed"
 	defaultNoteGPTAPIBaseURL       = "https://notegpt.io/api/v2"
 	youtubeWarningText             = "Warning: YouTube content unavailable"
+	youtubeTranscriptUnavailable   = "No transcript available."
 	noteGPTSuccessCode             = 100000
 	noteGPTPlatformYouTube         = "youtube"
 	noteGPTAnonymousUserCookieName = "anonymous_user_id"
@@ -74,6 +76,7 @@ type youtubeClient struct {
 	httpClient        *http.Client
 	watchURL          string
 	apiBaseURL        string
+	oEmbedURL         string
 	noteGPTAPIBaseURL string
 	userAgent         string
 }
@@ -82,6 +85,11 @@ type youtubeWatchPage struct {
 	APIKey        string
 	ClientVersion string
 	CommentsToken string
+}
+
+type youtubeVideoMetadata struct {
+	Title       string
+	ChannelName string
 }
 
 type noteGPTVideoTranscriptResponse struct {
@@ -125,6 +133,7 @@ func newYouTubeClient(httpClient *http.Client) youtubeClient {
 		httpClient:        httpClient,
 		watchURL:          defaultYouTubeWatchURL,
 		apiBaseURL:        defaultYouTubeAPIBaseURL,
+		oEmbedURL:         defaultYouTubeOEmbedURL,
 		noteGPTAPIBaseURL: defaultNoteGPTAPIBaseURL,
 		userAgent:         youtubeUserAgent,
 	}
@@ -260,24 +269,47 @@ func (client youtubeClient) fetchNoteGPTContent(
 		return youtubeVideoContent{}, err
 	}
 
-	transcriptData, err := client.fetchNoteGPTVideoTranscript(ctx, videoID, anonymousUserID)
+	transcriptData, transcriptAvailable, err := client.fetchNoteGPTVideoTranscript(
+		ctx,
+		videoID,
+		anonymousUserID,
+	)
 	if err != nil {
 		return youtubeVideoContent{}, err
 	}
 
 	title := strings.TrimSpace(transcriptData.VideoInfo.Name)
+	channelName := strings.TrimSpace(transcriptData.VideoInfo.Author)
+
+	if title == "" || channelName == "" {
+		metadata, metadataErr := client.fetchYouTubeVideoMetadata(ctx, videoID)
+		if metadataErr != nil {
+			return youtubeVideoContent{}, metadataErr
+		}
+
+		if title == "" {
+			title = metadata.Title
+		}
+
+		if channelName == "" {
+			channelName = metadata.ChannelName
+		}
+	}
+
 	if title == "" {
 		return youtubeVideoContent{}, fmt.Errorf("extract title for %q: %w", videoID, os.ErrInvalid)
 	}
 
-	channelName := strings.TrimSpace(transcriptData.VideoInfo.Author)
 	if channelName == "" {
 		channelName = unknownText
 	}
 
-	transcript, err := formatNoteGPTTranscript(transcriptData)
-	if err != nil {
-		return youtubeVideoContent{}, fmt.Errorf("format transcript for %q: %w", videoID, err)
+	transcript := youtubeTranscriptUnavailable
+	if transcriptAvailable {
+		transcript, err = formatNoteGPTTranscript(transcriptData)
+		if err != nil {
+			return youtubeVideoContent{}, fmt.Errorf("format transcript for %q: %w", videoID, err)
+		}
 	}
 
 	return youtubeVideoContent{
@@ -291,27 +323,6 @@ func (client youtubeClient) fetchNoteGPTContent(
 }
 
 func (client youtubeClient) fetchNoteGPTVideoTranscript(
-	ctx context.Context,
-	videoID string,
-	anonymousUserID string,
-) (noteGPTVideoTranscriptData, error) {
-	transcriptData, ready, err := client.fetchNoteGPTVideoTranscriptOnce(ctx, videoID, anonymousUserID)
-	if err != nil {
-		return noteGPTVideoTranscriptData{}, err
-	}
-
-	if !ready {
-		return noteGPTVideoTranscriptData{}, fmt.Errorf(
-			"notegpt transcript unavailable for %q: %w",
-			videoID,
-			os.ErrNotExist,
-		)
-	}
-
-	return transcriptData, nil
-}
-
-func (client youtubeClient) fetchNoteGPTVideoTranscriptOnce(
 	ctx context.Context,
 	videoID string,
 	anonymousUserID string,
@@ -357,6 +368,46 @@ func (client youtubeClient) fetchNoteGPTVideoTranscriptOnce(
 	}
 
 	return payload.Data, len(selectNoteGPTTranscriptSegments(payload.Data)) > 0, nil
+}
+
+func (client youtubeClient) fetchYouTubeVideoMetadata(
+	ctx context.Context,
+	videoID string,
+) (youtubeVideoMetadata, error) {
+	requestURL, err := url.Parse(client.oEmbedURL)
+	if err != nil {
+		return youtubeVideoMetadata{}, fmt.Errorf("parse youtube oembed url %q: %w", client.oEmbedURL, err)
+	}
+
+	queryValues := requestURL.Query()
+	queryValues.Set("url", defaultYouTubeWatchURL+"?v="+url.QueryEscape(videoID))
+	queryValues.Set("format", "json")
+	requestURL.RawQuery = queryValues.Encode()
+
+	responseBody, err := client.doRequest(ctx, http.MethodGet, requestURL.String(), nil, nil)
+	if err != nil {
+		return youtubeVideoMetadata{}, fmt.Errorf("fetch youtube oembed metadata for %q: %w", videoID, err)
+	}
+
+	var payload struct {
+		Title      string `json:"title"`
+		AuthorName string `json:"author_name"`
+	}
+
+	err = json.Unmarshal(responseBody, &payload)
+	if err != nil {
+		return youtubeVideoMetadata{}, fmt.Errorf("decode youtube oembed metadata for %q: %w", videoID, err)
+	}
+
+	metadata := youtubeVideoMetadata{
+		Title:       strings.TrimSpace(payload.Title),
+		ChannelName: strings.TrimSpace(payload.AuthorName),
+	}
+	if metadata.Title == "" {
+		return youtubeVideoMetadata{}, fmt.Errorf("extract youtube oembed title for %q: %w", videoID, os.ErrInvalid)
+	}
+
+	return metadata, nil
 }
 
 func (client youtubeClient) buildNoteGPTURL(
