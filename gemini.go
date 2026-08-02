@@ -22,6 +22,14 @@ import (
 
 var geminiAPIVersionPattern = regexp.MustCompile(`^v[0-9]+(?:(?:alpha|beta)[0-9]*)?$`)
 
+const (
+	geminiNoToolsInstruction = "No functions or tools are available in this request. " +
+		"Do not call any function or tool. Answer directly in text using the provided context."
+	geminiGroundingInstruction = "Google Search is the only available tool in this request " +
+		"and is executed automatically by the provider. Do not call custom functions, " +
+		"invent tool names, or emit function-call syntax."
+)
+
 type geminiContentStreamer interface {
 	GenerateContentStream(
 		ctx context.Context,
@@ -283,25 +291,12 @@ func buildGeminiGenerateContentRequest(
 
 	config := new(genai.GenerateContentConfig)
 
-	geminiSystemInstruction := systemInstruction
+	geminiSystemInstruction := geminiRequestSystemInstruction(
+		systemInstruction,
+		request.Provider.EnableGrounding,
+	)
 
-	if request.Provider.EnableGrounding {
-		const functionCallingInstruction = "Ensure all string values in function call arguments " +
-			"are properly JSON-escaped (newlines as \\n, quotes as \\\", backslashes as \\\\). " +
-			"When calling functions or tools, output the function/tool name exactly as defined. " +
-			"Do not prepend any namespaces."
-
-		if geminiSystemInstruction == "" {
-			geminiSystemInstruction = functionCallingInstruction
-		} else {
-			geminiSystemInstruction += "\n\n" + functionCallingInstruction
-		}
-	}
-
-	if geminiSystemInstruction != "" {
-		config.SystemInstruction = genai.NewContentFromText(geminiSystemInstruction, "")
-	}
-
+	config.SystemInstruction = genai.NewContentFromText(geminiSystemInstruction, "")
 	if thinkingConfig != nil {
 		config.ThinkingConfig = thinkingConfig
 	}
@@ -319,6 +314,19 @@ func buildGeminiGenerateContentRequest(
 	}
 
 	return contents, config, nil
+}
+
+func geminiRequestSystemInstruction(systemInstruction string, enableGrounding bool) string {
+	toolInstruction := geminiNoToolsInstruction
+	if enableGrounding {
+		toolInstruction = geminiGroundingInstruction
+	}
+
+	if strings.TrimSpace(systemInstruction) == "" {
+		return toolInstruction
+	}
+
+	return systemInstruction + "\n\n" + toolInstruction
 }
 
 func normalizeGeminiModelAlias(

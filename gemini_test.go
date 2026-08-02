@@ -107,6 +107,30 @@ func TestBuildGeminiGenerateContentRequestConvertsMessagesAndHTTPOptions(t *test
 	assertGeminiGenerateContentConfig(t, config)
 }
 
+func TestBuildGeminiGenerateContentRequestOverridesUnavailableToolInstructions(t *testing.T) {
+	t.Parallel()
+
+	request := newSimpleGeminiStreamRequest()
+	request.Messages = []chatMessage{
+		{Role: messageRoleSystem, Content: "Always search the web thoroughly."},
+		{Role: messageRoleUser, Content: "Answer using the supplied web search results."},
+	}
+
+	_, config, err := buildGeminiGenerateContentRequest(context.Background(), request, nil)
+	if err != nil {
+		t.Fatalf("build gemini generate content request: %v", err)
+	}
+
+	if config == nil || config.SystemInstruction == nil || len(config.SystemInstruction.Parts) != 1 {
+		t.Fatalf("unexpected gemini system instruction: %#v", config)
+	}
+
+	expectedInstruction := "Always search the web thoroughly.\n\n" + geminiNoToolsInstruction
+	if config.SystemInstruction.Parts[0].Text != expectedInstruction {
+		t.Fatalf("unexpected gemini system instruction: %q", config.SystemInstruction.Parts[0].Text)
+	}
+}
+
 func TestBuildGeminiGenerateContentRequestAddsPlaceholderForImageOnlyUserMessage(t *testing.T) {
 	t.Parallel()
 
@@ -1281,7 +1305,8 @@ func assertGeminiGenerateContentConfig(
 		t.Fatal("expected system instruction")
 	}
 
-	if config.SystemInstruction.Parts[0].Text != "Be concise." {
+	expectedInstruction := "Be concise.\n\n" + geminiNoToolsInstruction
+	if config.SystemInstruction.Parts[0].Text != expectedInstruction {
 		t.Fatalf("unexpected system instruction: %q", config.SystemInstruction.Parts[0].Text)
 	}
 
@@ -1330,8 +1355,12 @@ func streamGeminiTestChunks(
 			t.Fatal("expected gemini config")
 		}
 
-		if config.SystemInstruction != nil {
-			t.Fatalf("unexpected gemini config contents: %#v", config)
+		if config.SystemInstruction == nil || len(config.SystemInstruction.Parts) != 1 {
+			t.Fatalf("expected gemini system instruction: %#v", config)
+		}
+
+		if config.SystemInstruction.Parts[0].Text != geminiNoToolsInstruction {
+			t.Fatalf("unexpected gemini system instruction: %#v", config.SystemInstruction)
 		}
 
 		if config.HTTPOptions == nil || config.HTTPOptions.ExtraBody["service_tier"] != "priority" {
