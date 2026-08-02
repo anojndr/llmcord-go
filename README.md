@@ -202,6 +202,9 @@ Model notes:
 - `LLMCORD_CONFIG_PATH` is the preferred config override. The legacy `CONFIG_PATH` environment variable still works.
 - `LLMCORD_HTTP_ADDR` overrides the HTTP bind address directly. If it is unset, `PORT` enables the health server on `:<port>`.
 - Generic website fetching rejects localhost, private, link-local, and unsafe redirect targets.
+- Generic website URL validation, Exa Contents, Tavily Extract, and the built-in HTML/text fetcher each receive an independent 30-second request budget, so a slow provider cannot pre-cancel later fallbacks.
+- The built-in website fetcher keeps a standards-compliant, per-fetch cookie jar across redirects so regional and login-cookie synchronization flows can terminate without sharing cookies between unrelated fetches.
+- AliExpress product shells are replaced with their embedded product ID, Open Graph title, and product image list instead of generic site navigation text.
 - OpenRouter providers automatically send `transforms: ["middle-out"]` unless overridden.
 - 9Router requests (identified by provider name or baseURL containing `9router`) will automatically omit the `Authorization` header if the provider is configured without an API key (for unauthenticated or local 9Router configurations).
 - Multi-key Gemini, OpenAI, and OpenAI Codex providers honor retry delays, handle transient empty model responses during streaming, and rotate keys when needed.
