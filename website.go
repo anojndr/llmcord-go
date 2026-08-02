@@ -9,15 +9,18 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/cookiejar"
 	"net/netip"
 	"net/url"
 	"os"
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 
 	"golang.org/x/net/html"
 	"golang.org/x/net/html/atom"
+	"golang.org/x/net/publicsuffix"
 )
 
 const (
@@ -56,6 +59,7 @@ type websiteClient struct {
 	exaContentsEndpoint   string
 	tavilyExtractEndpoint string
 	lookupIP              websiteLookupIPFunc
+	requestTimeout        time.Duration
 }
 
 type websitePageContent struct {
@@ -72,7 +76,36 @@ func newWebsiteClient(httpClient *http.Client) websiteClient {
 		exaContentsEndpoint:   defaultExaContentsEndpoint,
 		tavilyExtractEndpoint: defaultTavilyExtractEndpoint,
 		lookupIP:              defaultWebsiteLookupIP,
+		requestTimeout:        websiteRequestTimeout,
 	}
+}
+
+func (client websiteClient) fetchRequestTimeout() time.Duration {
+	if client.requestTimeout <= 0 {
+		return websiteRequestTimeout
+	}
+
+	return client.requestTimeout
+}
+
+func (client websiteClient) fetchWithinTimeout(
+	ctx context.Context,
+	fetch func(context.Context) (websitePageContent, error),
+) (websitePageContent, error) {
+	requestContext, cancel := context.WithTimeout(ctx, client.fetchRequestTimeout())
+	defer cancel()
+
+	return fetch(requestContext)
+}
+
+func (client websiteClient) validateRequestURLWithinTimeout(
+	ctx context.Context,
+	requestURL *url.URL,
+) error {
+	requestContext, cancel := context.WithTimeout(ctx, client.fetchRequestTimeout())
+	defer cancel()
+
+	return validateWebsiteRequestURL(requestContext, requestURL, client.lookupWebsiteIP())
 }
 
 func (instance *bot) maybeAugmentConversationWithWebsite(
@@ -187,15 +220,12 @@ func (client websiteClient) fetch(
 		return websitePageContent{}, err
 	}
 
-	requestContext, cancel := context.WithTimeout(ctx, websiteRequestTimeout)
-	defer cancel()
-
 	parsedURL, err := url.Parse(normalizedURL)
 	if err != nil {
 		return websitePageContent{}, fmt.Errorf("parse normalized website url %q: %w", normalizedURL, err)
 	}
 
-	err = validateWebsiteRequestURL(requestContext, parsedURL, client.lookupWebsiteIP())
+	err = client.validateRequestURLWithinTimeout(ctx, parsedURL)
 	if err != nil {
 		return websitePageContent{}, fmt.Errorf("validate website url %q: %w", rawURL, err)
 	}
@@ -203,10 +233,15 @@ func (client websiteClient) fetch(
 	attemptErrors := make([]error, 0, websiteFetchAttemptCapacity)
 
 	if loadedConfig.WebSearch.exaUsesAPI() {
-		pageContent, exaErr := client.fetchWithExaContents(
-			requestContext,
-			normalizedURL,
-			loadedConfig.WebSearch.Exa.apiKeysForAttempts(),
+		pageContent, exaErr := client.fetchWithinTimeout(
+			ctx,
+			func(requestContext context.Context) (websitePageContent, error) {
+				return client.fetchWithExaContents(
+					requestContext,
+					normalizedURL,
+					loadedConfig.WebSearch.Exa.apiKeysForAttempts(),
+				)
+			},
 		)
 		if exaErr == nil {
 			return pageContent, nil
@@ -216,10 +251,15 @@ func (client websiteClient) fetch(
 	}
 
 	if tavilyAPIKeys := loadedConfig.WebSearch.Tavily.apiKeysForAttempts(); len(tavilyAPIKeys) > 0 {
-		pageContent, tavilyErr := client.fetchWithTavilyExtract(
-			requestContext,
-			normalizedURL,
-			tavilyAPIKeys,
+		pageContent, tavilyErr := client.fetchWithinTimeout(
+			ctx,
+			func(requestContext context.Context) (websitePageContent, error) {
+				return client.fetchWithTavilyExtract(
+					requestContext,
+					normalizedURL,
+					tavilyAPIKeys,
+				)
+			},
 		)
 		if tavilyErr == nil {
 			return pageContent, nil
@@ -228,7 +268,12 @@ func (client websiteClient) fetch(
 		attemptErrors = append(attemptErrors, fmt.Errorf("tavily extract: %w", tavilyErr))
 	}
 
-	pageContent, err := client.fetchWithCurrentImplementation(requestContext, normalizedURL)
+	pageContent, err := client.fetchWithinTimeout(
+		ctx,
+		func(requestContext context.Context) (websitePageContent, error) {
+			return client.fetchWithCurrentImplementation(requestContext, normalizedURL)
+		},
+	)
 	if err == nil {
 		return pageContent, nil
 	}
@@ -1159,7 +1204,7 @@ func validateWebsiteDialAddress(
 	return validateWebsiteHost(ctx, host, lookupIP)
 }
 
-func (client websiteClient) websiteFetchHTTPClient() *http.Client {
+func (client websiteClient) websiteFetchHTTPClient() (*http.Client, error) {
 	baseClient := client.httpClient
 	if baseClient == nil {
 		baseClient = new(http.Client)
@@ -1167,15 +1212,25 @@ func (client websiteClient) websiteFetchHTTPClient() *http.Client {
 
 	fetchClient := new(http.Client)
 	*fetchClient = *baseClient
+
 	fetchClient.CheckRedirect = func(*http.Request, []*http.Request) error {
 		return http.ErrUseLastResponse
 	}
+
+	cookieJar, err := cookiejar.New(&cookiejar.Options{
+		PublicSuffixList: publicsuffix.List,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create website cookie jar: %w", err)
+	}
+
+	fetchClient.Jar = cookieJar
 	fetchClient.Transport = newSSRFProtectedWebsiteTransport(
 		baseClient.Transport,
 		client.lookupWebsiteIP(),
 	)
 
-	return fetchClient
+	return fetchClient, nil
 }
 
 func redirectWebsiteRequestURL(
@@ -1248,7 +1303,10 @@ func (client websiteClient) doRequest(
 		return nil, "", "", fmt.Errorf("parse website request %q: %w", requestURL, err)
 	}
 
-	httpClient := client.websiteFetchHTTPClient()
+	httpClient, err := client.websiteFetchHTTPClient()
+	if err != nil {
+		return nil, "", "", err
+	}
 
 	for redirectHop := 0; ; redirectHop++ {
 		httpResponse, err := client.sendWebsiteRequest(ctx, httpClient, currentURL)
@@ -1426,12 +1484,25 @@ func parseWebsiteHTML(pageURL string, responseBody []byte) (websitePageContent, 
 		normalizeWebsiteText(extractWebsiteDescription(document)),
 		maxWebsiteDescriptionRunes,
 	)
+	content := extractWebsiteBodyText(document)
+
+	aliExpressTitle, aliExpressContent, isAliExpressProduct := extractAliExpressProductMetadata(
+		pageURL,
+		responseBody,
+		document,
+		title,
+	)
+	if isAliExpressProduct {
+		title = aliExpressTitle
+		description = ""
+		content = aliExpressContent
+	}
 
 	return newWebsitePageContent(
 		pageURL,
 		title,
 		description,
-		extractWebsiteBodyText(document),
+		content,
 	)
 }
 
@@ -1471,14 +1542,27 @@ func extractWebsiteTitle(document *html.Node) string {
 	titleNode := findWebsiteNode(document, func(node *html.Node) bool {
 		return node.Type == html.ElementNode && node.DataAtom == atom.Title
 	})
-	if titleNode == nil || titleNode.FirstChild == nil {
-		return ""
+	if titleNode != nil && titleNode.FirstChild != nil {
+		if title := strings.TrimSpace(titleNode.FirstChild.Data); title != "" {
+			return title
+		}
 	}
 
-	return titleNode.FirstChild.Data
+	return firstNonEmptyString(
+		extractWebsiteMetaContent(document, "og:title"),
+		extractWebsiteMetaContent(document, "twitter:title"),
+	)
 }
 
 func extractWebsiteDescription(document *html.Node) string {
+	return firstNonEmptyString(
+		extractWebsiteMetaContent(document, "description"),
+		extractWebsiteMetaContent(document, "og:description"),
+		extractWebsiteMetaContent(document, "twitter:description"),
+	)
+}
+
+func extractWebsiteMetaContent(document *html.Node, key string) string {
 	metaNode := findWebsiteNode(document, func(node *html.Node) bool {
 		if node.Type != html.ElementNode || node.DataAtom != atom.Meta {
 			return false
@@ -1487,13 +1571,37 @@ func extractWebsiteDescription(document *html.Node) string {
 		name := strings.ToLower(strings.TrimSpace(htmlAttribute(node, "name")))
 		property := strings.ToLower(strings.TrimSpace(htmlAttribute(node, "property")))
 
-		return name == "description" || property == "og:description" || name == "twitter:description"
+		return (name == key || property == key) && strings.TrimSpace(htmlAttribute(node, "content")) != ""
 	})
 	if metaNode == nil {
 		return ""
 	}
 
 	return htmlAttribute(metaNode, "content")
+}
+
+func extractWebsiteMetaContents(document *html.Node, key string) []string {
+	contents := make([]string, 0)
+
+	visitWebsiteNodes(document, func(node *html.Node) {
+		if node.Type != html.ElementNode || node.DataAtom != atom.Meta {
+			return
+		}
+
+		name := strings.ToLower(strings.TrimSpace(htmlAttribute(node, "name")))
+
+		property := strings.ToLower(strings.TrimSpace(htmlAttribute(node, "property")))
+		if name != key && property != key {
+			return
+		}
+
+		content := strings.TrimSpace(htmlAttribute(node, "content"))
+		if content != "" {
+			contents = append(contents, content)
+		}
+	})
+
+	return contents
 }
 
 func extractWebsiteBodyText(document *html.Node) string {
@@ -1596,6 +1704,18 @@ func findWebsiteNode(node *html.Node, predicate func(*html.Node) bool) *html.Nod
 	}
 
 	return nil
+}
+
+func visitWebsiteNodes(node *html.Node, visit func(*html.Node)) {
+	if node == nil {
+		return
+	}
+
+	visit(node)
+
+	for child := node.FirstChild; child != nil; child = child.NextSibling {
+		visitWebsiteNodes(child, visit)
+	}
 }
 
 func renderWebsiteText(root *html.Node) string {

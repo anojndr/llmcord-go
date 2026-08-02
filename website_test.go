@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/netip"
 	"net/url"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -58,6 +60,7 @@ func newWebsiteTestClient(httpClient *http.Client, exaURL string, tavilyURL stri
 		exaContentsEndpoint:   exaURL,
 		tavilyExtractEndpoint: tavilyURL,
 		lookupIP:              testWebsiteLookupIP,
+		requestTimeout:        websiteRequestTimeout,
 	}
 }
 
@@ -707,6 +710,157 @@ func TestWebsiteClientFetchFollowsAllowedRedirects(t *testing.T) {
 	}
 }
 
+func TestWebsiteClientFetchPersistsCookiesAcrossAllowedRedirects(t *testing.T) {
+	t.Parallel()
+
+	const (
+		articleURL         = "https://redirect.example.com/article"
+		loginURL           = "https://login.example.com/sync"
+		websiteCookieName  = "website_session"
+		websiteCookieValue = "ready"
+	)
+
+	requests := make([]string, 0, 3)
+
+	httpClient := new(http.Client)
+	httpClient.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		requests = append(requests, request.URL.String())
+
+		cookie, cookieErr := request.Cookie(websiteCookieName)
+
+		switch request.URL.String() {
+		case articleURL:
+			if errors.Is(cookieErr, http.ErrNoCookie) {
+				return newWebsiteTestResponse(
+					http.StatusFound,
+					http.Header{
+						"Location": []string{loginURL},
+						"Set-Cookie": []string{
+							websiteCookieName + "=" + websiteCookieValue +
+								"; Domain=.example.com; Path=/; Secure; HttpOnly",
+						},
+					},
+					"",
+					request,
+				), nil
+			}
+
+			assertWebsiteTestCookie(t, cookie, cookieErr, websiteCookieName, websiteCookieValue)
+
+			return newWebsiteTestResponse(
+				http.StatusOK,
+				http.Header{contentTypeHeader: []string{"text/html; charset=utf-8"}},
+				strings.Join([]string{
+					"<!doctype html>",
+					"<html><head><title>Cookie Redirect Target</title></head>",
+					"<body><main><p>Cookie-backed redirect content.</p></main></body></html>",
+				}, ""),
+				request,
+			), nil
+		case loginURL:
+			assertWebsiteTestCookie(t, cookie, cookieErr, websiteCookieName, websiteCookieValue)
+
+			return newWebsiteTestResponse(
+				http.StatusFound,
+				http.Header{"Location": []string{articleURL}},
+				"",
+				request,
+			), nil
+		default:
+			t.Fatalf("unexpected request url: %q", request.URL.String())
+
+			return nil, os.ErrInvalid
+		}
+	})
+
+	client := newWebsiteTestClient(httpClient, defaultExaContentsEndpoint, defaultTavilyExtractEndpoint)
+
+	result, err := client.fetch(context.Background(), testSearchConfig(), articleURL)
+	if err != nil {
+		t.Fatalf("fetch cookie-backed redirected website content: %v", err)
+	}
+
+	expectedRequests := []string{articleURL, loginURL, articleURL}
+	if !slices.Equal(requests, expectedRequests) {
+		t.Fatalf("unexpected requests: got %#v want %#v", requests, expectedRequests)
+	}
+
+	if result.Title != "Cookie Redirect Target" {
+		t.Fatalf("unexpected title: %q", result.Title)
+	}
+
+	if !containsFold(result.Content, "Cookie-backed redirect content.") {
+		t.Fatalf("unexpected content: %q", result.Content)
+	}
+}
+
+func TestWebsiteClientFetchDoesNotShareCookiesBetweenFetches(t *testing.T) {
+	t.Parallel()
+
+	const (
+		articleURL         = "https://redirect.example.com/article"
+		websiteCookieName  = "website_session"
+		websiteCookieValue = "ready"
+	)
+
+	baseCookieJar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatalf("create base cookie jar: %v", err)
+	}
+
+	httpClient := new(http.Client)
+	httpClient.Jar = baseCookieJar
+	httpClient.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		_, cookieErr := request.Cookie(websiteCookieName)
+		if !errors.Is(cookieErr, http.ErrNoCookie) {
+			t.Fatalf("website cookie leaked between fetches: %v", cookieErr)
+		}
+
+		return newWebsiteTestResponse(
+			http.StatusOK,
+			http.Header{
+				contentTypeHeader: []string{"text/html; charset=utf-8"},
+				"Set-Cookie": []string{
+					websiteCookieName + "=" + websiteCookieValue + "; Path=/; Secure; HttpOnly",
+				},
+			},
+			"<html><head><title>Isolated Cookies</title></head><body>Content.</body></html>",
+			request,
+		), nil
+	})
+
+	client := newWebsiteTestClient(httpClient, defaultExaContentsEndpoint, defaultTavilyExtractEndpoint)
+
+	for range 2 {
+		result, err := client.fetch(context.Background(), testSearchConfig(), articleURL)
+		if err != nil {
+			t.Fatalf("fetch website with isolated cookies: %v", err)
+		}
+
+		if result.Title != "Isolated Cookies" {
+			t.Fatalf("unexpected title: %q", result.Title)
+		}
+	}
+}
+
+func assertWebsiteTestCookie(
+	t *testing.T,
+	cookie *http.Cookie,
+	err error,
+	expectedName string,
+	expectedValue string,
+) {
+	t.Helper()
+
+	if err != nil {
+		t.Fatalf("read website test cookie %q: %v", expectedName, err)
+	}
+
+	if cookie.Name != expectedName || cookie.Value != expectedValue {
+		t.Fatalf("unexpected website test cookie: %#v", cookie)
+	}
+}
+
 func TestWebsiteClientFetchUsesExaContentsWhenConfigured(t *testing.T) {
 	t.Parallel()
 
@@ -1036,6 +1190,117 @@ func TestWebsiteClientFetchFallsBackToCurrentImplementationWhenExaAndTavilyFail(
 	}
 
 	if !containsFold(result.Content, "Current implementation body.") {
+		t.Fatalf("unexpected content: %q", result.Content)
+	}
+}
+
+func TestWebsiteClientFetchGivesTavilyFreshTimeoutAfterExaTimeout(t *testing.T) {
+	t.Parallel()
+
+	const (
+		exaEndpoint    = "https://exa.example.test/contents"
+		tavilyEndpoint = "https://tavily.example.test/extract"
+	)
+
+	exaRequestStarted := make(chan struct{}, 1)
+
+	httpClient := new(http.Client)
+	httpClient.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		switch request.URL.String() {
+		case exaEndpoint:
+			exaRequestStarted <- struct{}{}
+
+			<-request.Context().Done()
+
+			return nil, fmt.Errorf("wait for Exa request cancellation: %w", request.Context().Err())
+		case tavilyEndpoint:
+			return newWebsiteTestResponse(
+				http.StatusOK,
+				http.Header{contentTypeHeader: []string{applicationJSONContentType}},
+				strings.Join([]string{
+					`{"results":[{"url":"https://example.com/article",`,
+					`"raw_content":"Tavily content after Exa timeout."}],`,
+					`"failed_results":[]}`,
+				}, ""),
+				request,
+			), nil
+		default:
+			t.Fatalf("unexpected request url: %q", request.URL.String())
+
+			return nil, os.ErrInvalid
+		}
+	})
+
+	client := newWebsiteTestClient(httpClient, exaEndpoint, tavilyEndpoint)
+	client.requestTimeout = 100 * time.Millisecond
+
+	result := mustFetchWebsiteArticle(t, client, testWebsiteExaAndTavilyConfig())
+
+	select {
+	case <-exaRequestStarted:
+	default:
+		t.Fatal("expected Exa request to start")
+	}
+
+	if !containsFold(result.Content, "Tavily content after Exa timeout.") {
+		t.Fatalf("unexpected content: %q", result.Content)
+	}
+}
+
+func TestWebsiteClientFetchGivesCurrentImplementationFreshTimeoutAfterTavilyTimeout(t *testing.T) {
+	t.Parallel()
+
+	const tavilyEndpoint = "https://tavily.example.test/extract"
+
+	tavilyRequestStarted := make(chan struct{}, 1)
+
+	httpClient := new(http.Client)
+	httpClient.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		switch request.URL.String() {
+		case tavilyEndpoint:
+			tavilyRequestStarted <- struct{}{}
+
+			<-request.Context().Done()
+
+			return nil, fmt.Errorf("wait for Tavily request cancellation: %w", request.Context().Err())
+		case "https://example.com/article":
+			return newWebsiteTestResponse(
+				http.StatusOK,
+				http.Header{contentTypeHeader: []string{"text/html; charset=utf-8"}},
+				strings.Join([]string{
+					"<!doctype html>",
+					"<html><head><title>Fresh Local Fallback</title></head>",
+					"<body><main><p>Local content after Tavily timeout.</p></main></body></html>",
+				}, ""),
+				request,
+			), nil
+		default:
+			t.Fatalf("unexpected request url: %q", request.URL.String())
+
+			return nil, os.ErrInvalid
+		}
+	})
+
+	client := newWebsiteTestClient(
+		httpClient,
+		defaultExaContentsEndpoint,
+		tavilyEndpoint,
+	)
+	client.requestTimeout = 100 * time.Millisecond
+
+	result := mustFetchWebsiteArticle(t, client, testWebsiteTavilyOnlyConfig())
+
+	select {
+	case <-tavilyRequestStarted:
+	default:
+		t.Fatal("expected Tavily request to start")
+	}
+
+	if result.Title != "Fresh Local Fallback" {
+		t.Fatalf("unexpected title: %q", result.Title)
+	}
+
+	if !containsFold(result.Content, "Local content after Tavily timeout.") {
 		t.Fatalf("unexpected content: %q", result.Content)
 	}
 }
