@@ -14,7 +14,7 @@
 !LICENSE.md
 !README.md
 
-# Root-level Go implementation and regression tests stay explicit; local scratch, CDP/oEmbed transcript captures, NoteGPT payload dumps, local tool binaries, and quality-gate reports remain ignored by default.
+# Root-level Go implementation and provider regression tests stay explicit; local scratch, CDP/oEmbed transcript captures, NoteGPT payload dumps, local tool binaries, and quality-gate reports remain ignored by default.
 !*.go
 !searchDeciderPrompt.txt
 !cmd/

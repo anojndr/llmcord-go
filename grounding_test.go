@@ -56,6 +56,14 @@ func TestBuildGeminiGenerateContentRequestWithGrounding(t *testing.T) {
 	if !found {
 		t.Error("expected GoogleSearch tool to be present in Gemini request")
 	}
+
+	if config.SystemInstruction == nil || len(config.SystemInstruction.Parts) != 1 {
+		t.Fatalf("expected grounding system instruction: %#v", config.SystemInstruction)
+	}
+
+	if config.SystemInstruction.Parts[0].Text != geminiGroundingInstruction {
+		t.Fatalf("unexpected grounding system instruction: %q", config.SystemInstruction.Parts[0].Text)
+	}
 }
 
 func TestBuildGeminiGenerateContentRequestWithoutGrounding(t *testing.T) {
@@ -96,6 +104,14 @@ func TestBuildGeminiGenerateContentRequestWithoutGrounding(t *testing.T) {
 				t.Error("unexpected GoogleSearch tool in Gemini request")
 			}
 		}
+	}
+
+	if config == nil || config.SystemInstruction == nil || len(config.SystemInstruction.Parts) != 1 {
+		t.Fatalf("expected no-tools system instruction: %#v", config)
+	}
+
+	if config.SystemInstruction.Parts[0].Text != geminiNoToolsInstruction {
+		t.Fatalf("unexpected no-tools system instruction: %q", config.SystemInstruction.Parts[0].Text)
 	}
 }
 
