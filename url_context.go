@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"log/slog"
-	"sync"
 )
 
 type urlContentFetcher[T any] func(context.Context, string) (T, error)
@@ -15,45 +14,28 @@ func fetchConcurrentURLContent[T any](
 	logMessage string,
 	warningText string,
 ) ([]T, []string) {
-	results := make([]T, len(urls))
-	successful := make([]bool, len(urls))
-
-	var (
-		fetchFailed bool
-		failedMu    sync.Mutex
-		waitGroup   sync.WaitGroup
+	taskResults := runTasksConcurrently(
+		ctx,
+		externalRequestConcurrency,
+		len(urls),
+		func(taskContext context.Context, index int) (T, error) {
+			return fetcher(taskContext, urls[index])
+		},
 	)
 
-	for index, rawURL := range urls {
-		waitGroup.Add(1)
+	fetchFailed := false
+	formattedResults := make([]T, 0, len(taskResults))
 
-		go func(index int, rawURL string) {
-			defer waitGroup.Done()
+	for index, result := range taskResults {
+		if result.err != nil {
+			slog.Warn(logMessage, "url", urls[index], "error", result.err)
 
-			result, fetchErr := fetcher(ctx, rawURL)
-			if fetchErr != nil {
-				slog.Warn(logMessage, "url", rawURL, "error", fetchErr)
-				failedMu.Lock()
-				fetchFailed = true
-				failedMu.Unlock()
+			fetchFailed = true
 
-				return
-			}
-
-			results[index] = result
-			successful[index] = true
-		}(index, rawURL)
-	}
-
-	waitGroup.Wait()
-
-	formattedResults := make([]T, 0, len(results))
-	for index, result := range results {
-		if !successful[index] {
 			continue
 		}
 
-		formattedResults = append(formattedResults, result)
+		formattedResults = append(formattedResults, result.value)
 	}
 
 	warnings := make([]string, 0, 1)

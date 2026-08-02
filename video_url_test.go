@@ -2,10 +2,14 @@ package main
 
 import (
 	"context"
+	"errors"
+	"slices"
 	"sync"
 	"testing"
 	"time"
 )
+
+var errDownloadedVideoFetch = errors.New("downloaded video fetch failed")
 
 type testDownloadedVideoContent struct {
 	url  string
@@ -18,6 +22,42 @@ func (content testDownloadedVideoContent) resolvedURL() string {
 
 func (content testDownloadedVideoContent) mediaPart() contentPart {
 	return content.part
+}
+
+func TestFetchDownloadedVideosPreservesOrderDeduplicatesAndWarns(t *testing.T) {
+	t.Parallel()
+
+	urls := []string{"first", "duplicate", "failed", "last"}
+
+	videoContents, warnings := fetchDownloadedVideos(
+		t.Context(),
+		urls,
+		func(_ context.Context, rawURL string) (testDownloadedVideoContent, error) {
+			switch rawURL {
+			case "failed":
+				return testDownloadedVideoContent{}, errDownloadedVideoFetch
+			case "duplicate":
+				return testDownloadedVideoContent{url: "first", part: nil}, nil
+			default:
+				return testDownloadedVideoContent{url: rawURL, part: nil}, nil
+			}
+		},
+		"fetch test video",
+		"some videos failed",
+	)
+
+	resolvedURLs := make([]string, 0, len(videoContents))
+	for _, content := range videoContents {
+		resolvedURLs = append(resolvedURLs, content.resolvedURL())
+	}
+
+	if !slices.Equal(resolvedURLs, []string{"first", "last"}) {
+		t.Fatalf("resolved URLs = %#v", resolvedURLs)
+	}
+
+	if !slices.Equal(warnings, []string{"some videos failed"}) {
+		t.Fatalf("warnings = %#v", warnings)
+	}
 }
 
 func TestDownloadedVideoAnalysesWithGeminiRunConcurrentlyAndKeepOrder(t *testing.T) {
