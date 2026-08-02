@@ -75,8 +75,6 @@ const (
 	xAISourceQueriesAppendixSeparator                = "\n\nSearch Queries\n"
 	xAIInputImageUploadFilename                      = "input-image"
 	xAIInlineImageByteLimit                          = 4 * 1024 * 1024
-	base64DecodedLengthNumerator                     = 3
-	base64DecodedLengthDenominator                   = 4
 )
 
 type xAIResponsesUsage struct {
@@ -764,16 +762,23 @@ func xAIResponsesPreparedImageFileID(
 		return "", false, nil
 	}
 
-	imageBytes, mimeType, err := geminiInlineImage(imageURL)
-	if err != nil {
-		return "", false, err
-	}
-
 	if cachedFileID, exists := uploadedFileIDs[imageURL]; exists {
 		return cachedFileID, true, nil
 	}
 
-	fileID, err := uploadXAIResponsesInputFile(ctx, httpClient, request, imageBytes, mimeType)
+	imageData, err := parseBase64ImageDataURL(imageURL)
+	if err != nil {
+		return "", false, fmt.Errorf("parse xAI inline image: %w", err)
+	}
+
+	fileID, err := uploadXAIResponsesInputFile(
+		ctx,
+		httpClient,
+		request,
+		imageData.decoder(),
+		imageData.decodedLengthEstimate(),
+		imageData.mimeType,
+	)
 	if err != nil {
 		return "", false, err
 	}
@@ -807,17 +812,12 @@ func xAIResponsesShouldUploadInlineImage(
 	return base64DecodedLengthEstimate(payload) > xAIInlineImageByteLimit, nil
 }
 
-func base64DecodedLengthEstimate(payload string) int {
-	trimmedPayload := strings.TrimRight(strings.TrimSpace(payload), "=")
-
-	return len(trimmedPayload) * base64DecodedLengthNumerator / base64DecodedLengthDenominator
-}
-
 func uploadXAIResponsesInputFile(
 	ctx context.Context,
 	httpClient *http.Client,
 	request chatCompletionRequest,
-	fileBytes []byte,
+	fileReader io.Reader,
+	fileByteCount int,
 	mimeType string,
 ) (string, error) {
 	requestURL, err := buildXAIFileUploadURL(request.Provider.BaseURL, request.Provider.ExtraQuery)
@@ -825,7 +825,11 @@ func uploadXAIResponsesInputFile(
 		return "", fmt.Errorf("build xAI file upload url: %w", err)
 	}
 
-	requestBody, contentType, err := xAIFileUploadPayload(fileBytes, mimeType)
+	requestBody, contentType, contentLength, err := xAIFileUploadPayload(
+		fileReader,
+		fileByteCount,
+		mimeType,
+	)
 	if err != nil {
 		return "", err
 	}
@@ -834,7 +838,7 @@ func uploadXAIResponsesInputFile(
 		ctx,
 		http.MethodPost,
 		requestURL,
-		bytes.NewReader(requestBody),
+		requestBody,
 	)
 	if err != nil {
 		return "", fmt.Errorf("create xAI file upload request: %w", err)
@@ -843,6 +847,7 @@ func uploadXAIResponsesInputFile(
 	httpRequest.Header.Set("Accept", "application/json")
 	httpRequest.Header.Set("Authorization", "Bearer "+openAIAPIKey(request.Provider.primaryAPIKey()))
 	httpRequest.Header.Set("Content-Type", contentType)
+	httpRequest.ContentLength = contentLength
 	setOpenAIClientRequestIDHeader(httpRequest, request)
 
 	for key, value := range request.Provider.ExtraHeaders {
@@ -861,14 +866,39 @@ func uploadXAIResponsesInputFile(
 	return xAIUploadedFileIDFromResponse(httpResponse)
 }
 
-func xAIFileUploadPayload(fileBytes []byte, mimeType string) ([]byte, string, error) {
-	var requestBody bytes.Buffer
+type redirectWriter struct {
+	destination io.Writer
+}
 
-	multipartWriter := multipart.NewWriter(&requestBody)
+func (writer *redirectWriter) Write(data []byte) (int, error) {
+	written, err := writer.destination.Write(data)
+	if err != nil {
+		return written, fmt.Errorf("redirect xAI upload body: %w", err)
+	}
+
+	return written, nil
+}
+
+func xAIFileUploadPayload(
+	fileReader io.Reader,
+	fileByteCount int,
+	mimeType string,
+) (io.Reader, string, int64, error) {
+	if fileReader == nil || fileByteCount <= 0 {
+		return nil, "", 0, fmt.Errorf("empty xAI file upload: %w", os.ErrInvalid)
+	}
+
+	var (
+		requestPrefix bytes.Buffer
+		requestSuffix bytes.Buffer
+	)
+
+	bodyWriter := &redirectWriter{destination: &requestPrefix}
+	multipartWriter := multipart.NewWriter(bodyWriter)
 
 	err := multipartWriter.WriteField("purpose", xAIResponsesUploadPurposeUserData)
 	if err != nil {
-		return nil, "", fmt.Errorf("write xAI file upload purpose: %w", err)
+		return nil, "", 0, fmt.Errorf("write xAI file upload purpose: %w", err)
 	}
 
 	filePartHeaders := make(textproto.MIMEHeader)
@@ -878,22 +908,24 @@ func xAIFileUploadPayload(fileBytes []byte, mimeType string) ([]byte, string, er
 	)
 	filePartHeaders.Set("Content-Type", mimeType)
 
-	fileWriter, err := multipartWriter.CreatePart(filePartHeaders)
+	_, err = multipartWriter.CreatePart(filePartHeaders)
 	if err != nil {
-		return nil, "", fmt.Errorf("create xAI file upload part: %w", err)
+		return nil, "", 0, fmt.Errorf("create xAI file upload part: %w", err)
 	}
 
-	_, err = fileWriter.Write(fileBytes)
-	if err != nil {
-		return nil, "", fmt.Errorf("write xAI file upload bytes: %w", err)
-	}
+	bodyWriter.destination = &requestSuffix
 
 	err = multipartWriter.Close()
 	if err != nil {
-		return nil, "", fmt.Errorf("close xAI file upload body: %w", err)
+		return nil, "", 0, fmt.Errorf("close xAI file upload body: %w", err)
 	}
 
-	return requestBody.Bytes(), multipartWriter.FormDataContentType(), nil
+	contentLength := int64(requestPrefix.Len()) + int64(fileByteCount) + int64(requestSuffix.Len())
+
+	return io.MultiReader(&requestPrefix, fileReader, &requestSuffix),
+		multipartWriter.FormDataContentType(),
+		contentLength,
+		nil
 }
 
 func xAIUploadedFileIDFromResponse(httpResponse *http.Response) (string, error) {
