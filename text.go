@@ -65,6 +65,15 @@ func splitRunesPrefix(text string, limit int) (string, string) {
 func joinNonEmpty(parts []string) string {
 	var builder strings.Builder
 
+	capacity := len(parts) - 1
+	for _, part := range parts {
+		capacity += len(part)
+	}
+
+	if capacity > 0 {
+		builder.Grow(capacity)
+	}
+
 	first := true
 
 	for _, part := range parts {

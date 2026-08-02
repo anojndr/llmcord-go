@@ -3,13 +3,11 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"iter"
 	"maps"
-	"mime"
 	"net/http"
 	"net/url"
 	"os"
@@ -921,13 +919,21 @@ func geminiImagePart(
 		return nil, false, nil
 	}
 
-	imageBytes, mimeType, err := geminiInlineImage(imageURL)
+	imageData, err := parseBase64ImageDataURL(imageURL)
 	if err != nil {
-		return nil, false, err
+		return nil, false, fmt.Errorf("parse gemini image: %w", err)
 	}
 
-	if len(imageBytes) > geminiInlineImageByteLimit && files != nil {
-		uploadedPart, uploadErr := geminiUploadedBytesPart(ctx, files, imageBytes, mimeType, "")
+	decodedLength := imageData.decodedLengthEstimate()
+	if decodedLength > geminiInlineImageByteLimit && files != nil {
+		uploadedPart, uploadErr := geminiUploadedReaderPart(
+			ctx,
+			files,
+			imageData.decoder(),
+			decodedLength,
+			imageData.mimeType,
+			"",
+		)
 		if uploadErr != nil {
 			return nil, false, uploadErr
 		}
@@ -935,7 +941,12 @@ func geminiImagePart(
 		return uploadedPart, uploadedPart != nil, nil
 	}
 
-	return genai.NewPartFromBytes(imageBytes, mimeType), true, nil
+	imageBytes, err := imageData.decode()
+	if err != nil {
+		return nil, false, fmt.Errorf("decode gemini image data: %w", err)
+	}
+
+	return genai.NewPartFromBytes(imageBytes, imageData.mimeType), true, nil
 }
 
 func geminiSupportsDocumentPart(part contentPart) bool {
@@ -980,7 +991,33 @@ func geminiUploadedBytesPart(
 		return nil, fmt.Errorf("empty gemini media bytes: %w", os.ErrInvalid)
 	}
 
-	uploadedFile, err := files.UploadFile(ctx, bytes.NewReader(mediaBytes), &genai.UploadFileConfig{
+	return geminiUploadedReaderPart(
+		ctx,
+		files,
+		bytes.NewReader(mediaBytes),
+		len(mediaBytes),
+		mimeType,
+		filename,
+	)
+}
+
+func geminiUploadedReaderPart(
+	ctx context.Context,
+	files geminiFilesClient,
+	mediaReader io.Reader,
+	mediaByteCount int,
+	mimeType string,
+	filename string,
+) (*genai.Part, error) {
+	if files == nil {
+		return nil, fmt.Errorf("missing gemini file client: %w", os.ErrInvalid)
+	}
+
+	if mediaReader == nil || mediaByteCount <= 0 {
+		return nil, fmt.Errorf("empty gemini media: %w", os.ErrInvalid)
+	}
+
+	uploadedFile, err := files.UploadFile(ctx, mediaReader, &genai.UploadFileConfig{
 		HTTPOptions: nil,
 		Name:        "",
 		MIMEType:    mimeType,
@@ -1012,62 +1049,6 @@ func geminiImageURL(part contentPart) (string, error) {
 	urlValue, _ := rawImageURL["url"].(string)
 
 	return strings.TrimSpace(urlValue), nil
-}
-
-func geminiInlineImage(imageURL string) ([]byte, string, error) {
-	if !strings.HasPrefix(imageURL, "data:") {
-		return nil, "", fmt.Errorf(
-			"unsupported gemini image URL %q: %w",
-			imageURL,
-			os.ErrInvalid,
-		)
-	}
-
-	metadata, payload, found := strings.Cut(strings.TrimPrefix(imageURL, "data:"), ",")
-	if !found {
-		return nil, "", fmt.Errorf("parse gemini data URL %q: %w", imageURL, os.ErrInvalid)
-	}
-
-	segments := strings.Split(metadata, ";")
-	mimeType := "application/octet-stream"
-
-	if len(segments) > 0 && strings.TrimSpace(segments[0]) != "" {
-		parsedMediaType, _, err := mime.ParseMediaType(strings.TrimSpace(segments[0]))
-		if err != nil {
-			return nil, "", fmt.Errorf(
-				"parse gemini data URL media type %q: %w",
-				imageURL,
-				err,
-			)
-		}
-
-		mimeType = parsedMediaType
-	}
-
-	hasBase64Encoding := false
-
-	for _, segment := range segments[1:] {
-		if strings.EqualFold(strings.TrimSpace(segment), "base64") {
-			hasBase64Encoding = true
-
-			break
-		}
-	}
-
-	if !hasBase64Encoding {
-		return nil, "", fmt.Errorf(
-			"unsupported gemini image URL encoding %q: %w",
-			imageURL,
-			os.ErrInvalid,
-		)
-	}
-
-	imageBytes, err := base64.StdEncoding.DecodeString(payload)
-	if err != nil {
-		return nil, "", fmt.Errorf("decode gemini image data: %w", err)
-	}
-
-	return imageBytes, mimeType, nil
 }
 
 func reorderGeminiSingleImagePromptParts(parts []*genai.Part) []*genai.Part {
