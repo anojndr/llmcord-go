@@ -12,7 +12,6 @@ import (
 	neturl "net/url"
 	"os"
 	"strings"
-	"sync"
 	"unicode/utf8"
 
 	"github.com/bwmarrin/discordgo"
@@ -835,45 +834,54 @@ func (instance *bot) fetchVisualSearchProviderResults(
 	imageURLs []string,
 	providers []visualSearchProvider,
 ) ([]indexedVisualSearchResult, bool) {
-	results := make([]indexedVisualSearchResult, len(imageURLs)*len(providers))
+	taskCount := len(imageURLs) * len(providers)
+	taskResults := runTasksConcurrently(
+		ctx,
+		externalRequestConcurrency,
+		taskCount,
+		func(taskContext context.Context, taskIndex int) (visualSearchResult, error) {
+			imageIndex := taskIndex / len(providers)
+			providerIndex := taskIndex % len(providers)
 
-	var (
-		fetchFailed bool
-		failedMu    sync.Mutex
-		waitGroup   sync.WaitGroup
+			return providers[providerIndex].search(taskContext, imageURLs[imageIndex])
+		},
 	)
 
-	for imageIndex, imageURL := range imageURLs {
-		for providerIndex, provider := range providers {
-			waitGroup.Add(1)
+	results := make([]indexedVisualSearchResult, taskCount)
+	fetchFailed := false
 
-			go func(
-				imageIndex int,
-				imageURL string,
-				providerIndex int,
-				provider visualSearchProvider,
-			) {
-				defer waitGroup.Done()
+	for taskIndex, taskResult := range taskResults {
+		imageIndex := taskIndex / len(providers)
+		providerIndex := taskIndex % len(providers)
+		imageURL := imageURLs[imageIndex]
+		provider := providers[providerIndex]
 
-				result, err := provider.search(ctx, imageURL)
-				if err != nil {
-					slog.Warn("run visual search", "provider", provider.name, "url", imageURL, "error", err)
-					failedMu.Lock()
-					fetchFailed = true
-					failedMu.Unlock()
+		if taskResult.err != nil {
+			slog.Warn(
+				"run visual search",
+				"provider",
+				provider.name,
+				"url",
+				imageURL,
+				"error",
+				taskResult.err,
+			)
 
-					return
-				}
+			fetchFailed = true
 
-				results[imageIndex*len(providers)+providerIndex] = indexedVisualSearchResult{
-					result: normalizeVisualSearchResult(result, imageIndex, imageURL, provider.name),
-					ok:     true,
-				}
-			}(imageIndex, imageURL, providerIndex, provider)
+			continue
+		}
+
+		results[taskIndex] = indexedVisualSearchResult{
+			result: normalizeVisualSearchResult(
+				taskResult.value,
+				imageIndex,
+				imageURL,
+				provider.name,
+			),
+			ok: true,
 		}
 	}
-
-	waitGroup.Wait()
 
 	return results, fetchFailed
 }

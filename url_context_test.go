@@ -2,9 +2,41 @@ package main
 
 import (
 	"context"
+	"errors"
+	"slices"
 	"strings"
 	"testing"
 )
+
+var errURLContextFetch = errors.New("url content fetch failed")
+
+func TestFetchConcurrentURLContentPreservesOrderAndPartialSuccess(t *testing.T) {
+	t.Parallel()
+
+	urls := []string{"first", "failed", "third"}
+
+	results, warnings := fetchConcurrentURLContent(
+		t.Context(),
+		urls,
+		func(_ context.Context, rawURL string) (string, error) {
+			if rawURL == "failed" {
+				return "", errURLContextFetch
+			}
+
+			return strings.ToUpper(rawURL), nil
+		},
+		"fetch test URL",
+		"some URLs failed",
+	)
+
+	if !slices.Equal(results, []string{"FIRST", "THIRD"}) {
+		t.Fatalf("results = %#v", results)
+	}
+
+	if !slices.Equal(warnings, []string{"some URLs failed"}) {
+		t.Fatalf("warnings = %#v", warnings)
+	}
+}
 
 func assertURLAugmentationIgnoresDocumentOnlyURLs(
 	t *testing.T,

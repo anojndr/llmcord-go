@@ -40,6 +40,13 @@ func runTasksConcurrently[T any](
 					return
 				}
 
+				ctxErr := ctx.Err()
+				if ctxErr != nil {
+					results[index].err = ctxErr
+
+					continue
+				}
+
 				value, err := task(ctx, index)
 
 				results[index] = boundedTaskResult[T]{

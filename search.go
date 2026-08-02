@@ -1422,7 +1422,7 @@ func (client exaSearchClient) search(
 	exaAPIKeys := loadedConfig.WebSearch.Exa.apiKeysForAttempts()
 	searchType := loadedConfig.WebSearch.Exa.searchType()
 
-	return searchQueriesConcurrently(searchContext, cancel, queries, func(
+	return searchQueriesConcurrently(searchContext, queries, func(
 		queryContext context.Context,
 		query string,
 	) (webSearchResult, error) {
@@ -1456,7 +1456,7 @@ func (client tavilySearchClient) search(
 
 	maxURLs := loadedConfig.WebSearch.maxURLs()
 
-	return searchQueriesConcurrently(searchContext, cancel, queries, func(
+	return searchQueriesConcurrently(searchContext, queries, func(
 		queryContext context.Context,
 		query string,
 	) (webSearchResult, error) {
@@ -1466,39 +1466,46 @@ func (client tavilySearchClient) search(
 
 func searchQueriesConcurrently(
 	ctx context.Context,
-	cancel context.CancelFunc,
 	queries []string,
 	searchQuery func(context.Context, string) (webSearchResult, error),
 ) ([]webSearchResult, error) {
-	results := make([]webSearchResult, len(queries))
-	errorChannel := make(chan error, len(queries))
+	taskContext, cancel := context.WithCancel(ctx)
+	defer cancel()
 
-	var waitGroup sync.WaitGroup
+	var (
+		firstErr     error
+		firstErrOnce sync.Once
+	)
 
-	for index, query := range queries {
-		waitGroup.Add(1)
-
-		go func(index int, query string) {
-			defer waitGroup.Done()
-
-			result, err := searchQuery(ctx, query)
+	taskResults := runTasksConcurrently(
+		taskContext,
+		externalRequestConcurrency,
+		len(queries),
+		func(queryContext context.Context, index int) (webSearchResult, error) {
+			result, err := searchQuery(queryContext, queries[index])
 			if err != nil {
-				cancel()
+				firstErrOnce.Do(func() {
+					firstErr = err
 
-				errorChannel <- err
-
-				return
+					cancel()
+				})
 			}
 
-			results[index] = result
-		}(index, query)
+			return result, err
+		},
+	)
+
+	if firstErr != nil {
+		return nil, firstErr
 	}
 
-	waitGroup.Wait()
-	close(errorChannel)
+	results := make([]webSearchResult, len(taskResults))
+	for index, result := range taskResults {
+		if result.err != nil {
+			return nil, result.err
+		}
 
-	if err, ok := <-errorChannel; ok {
-		return nil, err
+		results[index] = result.value
 	}
 
 	return results, nil

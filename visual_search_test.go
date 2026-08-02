@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -615,6 +616,98 @@ func TestMaybeAugmentConversationWithVisualSearchReturnsWarningWhenOneProviderFa
 	prompt := parseAugmentedUserPrompt(content)
 	if !containsFold(prompt.VisualSearch, testVisualSearchTitle) {
 		t.Fatalf("expected successful provider content in prompt: %q", prompt.VisualSearch)
+	}
+}
+
+func TestFetchVisualSearchProviderResultsLimitsConcurrency(t *testing.T) {
+	t.Parallel()
+
+	imageURLs := make([]string, externalRequestConcurrency+1)
+	for index := range imageURLs {
+		imageURLs[index] = fmt.Sprintf("https://example.com/image-%d.png", index)
+	}
+
+	started := make(chan struct{}, len(imageURLs))
+	release := make(chan struct{})
+
+	var releaseOnce sync.Once
+
+	t.Cleanup(func() {
+		releaseOnce.Do(func() {
+			close(release)
+		})
+	})
+
+	providers := []visualSearchProvider{{
+		name: "test provider",
+		search: func(taskContext context.Context, imageURL string) (visualSearchResult, error) {
+			started <- struct{}{}
+
+			select {
+			case <-release:
+				return newVisualSearchResult(imageURL, ""), nil
+			case <-taskContext.Done():
+				return emptyVisualSearchResult(), taskContext.Err()
+			}
+		},
+	}}
+
+	type fetchResult struct {
+		results []indexedVisualSearchResult
+		failed  bool
+	}
+
+	resultChannel := make(chan fetchResult, 1)
+	instance := new(bot)
+
+	go func() {
+		results, failed := instance.fetchVisualSearchProviderResults(
+			t.Context(),
+			imageURLs,
+			providers,
+		)
+		resultChannel <- fetchResult{results: results, failed: failed}
+	}()
+
+	for range externalRequestConcurrency {
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for visual search workers")
+		}
+	}
+
+	select {
+	case <-started:
+		t.Fatalf("more than %d visual searches started concurrently", externalRequestConcurrency)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	releaseOnce.Do(func() {
+		close(release)
+	})
+
+	select {
+	case result := <-resultChannel:
+		if result.failed {
+			t.Fatal("visual search unexpectedly reported a failure")
+		}
+
+		if len(result.results) != len(imageURLs) {
+			t.Fatalf("result count = %d, want %d", len(result.results), len(imageURLs))
+		}
+
+		for index, item := range result.results {
+			if !item.ok {
+				t.Fatalf("result %d was not marked successful", index)
+			}
+
+			if item.result.ImageURL != imageURLs[index] {
+				t.Fatalf("result %d URL = %q", index, item.result.ImageURL)
+			}
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for visual search results")
 	}
 }
 

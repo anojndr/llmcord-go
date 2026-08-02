@@ -79,6 +79,7 @@ const (
 	finishReasonStop                     = "stop"
 	finishReasonLength                   = "length"
 	finishReasonRetryReset               = "retry_reset"
+	externalRequestConcurrency           = 8
 	maxSearchQueries                     = 500
 	defaultWebSearchMaxURLs              = 5
 	exaSearchTypeInstant                 = "instant"

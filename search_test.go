@@ -57,6 +57,72 @@ func testTavilySearchConfig() config {
 	return loadedConfig
 }
 
+func TestSearchQueriesConcurrentlyLimitsFanoutAndCancelsQueuedQueries(t *testing.T) {
+	t.Parallel()
+
+	queries := make([]string, externalRequestConcurrency*3)
+	for index := range queries {
+		queries[index] = fmt.Sprintf("query-%d", index)
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+
+	allWorkersStarted := make(chan struct{})
+
+	var (
+		startedCount int
+		startedMu    sync.Mutex
+	)
+
+	results, err := searchQueriesConcurrently(
+		ctx,
+		queries,
+		func(queryContext context.Context, query string) (webSearchResult, error) {
+			startedMu.Lock()
+			startedCount++
+
+			if startedCount == externalRequestConcurrency {
+				close(allWorkersStarted)
+			}
+			startedMu.Unlock()
+
+			if query == queries[0] {
+				select {
+				case <-allWorkersStarted:
+					return webSearchResult{}, errSearchBackendUnavailable
+				case <-queryContext.Done():
+					return webSearchResult{}, queryContext.Err()
+				}
+			}
+
+			<-queryContext.Done()
+
+			return webSearchResult{}, queryContext.Err()
+		},
+	)
+
+	if !errors.Is(err, errSearchBackendUnavailable) {
+		t.Fatalf("search error = %v", err)
+	}
+
+	if results != nil {
+		t.Fatalf("results = %#v, want nil", results)
+	}
+
+	startedMu.Lock()
+	actualStartedCount := startedCount
+	startedMu.Unlock()
+
+	if actualStartedCount != externalRequestConcurrency {
+		t.Fatalf(
+			"started queries = %d, want %d",
+			actualStartedCount,
+			externalRequestConcurrency,
+		)
+	}
+}
+
 func newExaAPISearchTestClient(handler http.HandlerFunc) (exaSearchClient, func()) {
 	httpServer := httptest.NewServer(handler)
 

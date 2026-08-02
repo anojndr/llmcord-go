@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
-	"sync"
 )
 
 type downloadedURLVideoContent interface {
@@ -257,47 +256,29 @@ func fetchDownloadedVideos[T downloadedURLVideoContent](
 	logMessage string,
 	warningText string,
 ) ([]T, []string) {
-	results := make([]T, len(urls))
-	successful := make([]bool, len(urls))
-
-	var (
-		failed    bool
-		failedMu  sync.Mutex
-		waitGroup sync.WaitGroup
+	taskResults := runTasksConcurrently(
+		ctx,
+		externalRequestConcurrency,
+		len(urls),
+		func(taskContext context.Context, index int) (T, error) {
+			return fetcher(taskContext, urls[index])
+		},
 	)
 
-	for index, rawURL := range urls {
-		waitGroup.Add(1)
+	failed := false
+	videoContents := make([]T, 0, len(taskResults))
+	seenResolvedURLs := make(map[string]struct{}, len(taskResults))
 
-		go func(index int, rawURL string) {
-			defer waitGroup.Done()
+	for index, result := range taskResults {
+		if result.err != nil {
+			slog.Warn(logMessage, "url", urls[index], "error", result.err)
 
-			videoContent, err := fetcher(ctx, rawURL)
-			if err != nil {
-				slog.Warn(logMessage, "url", rawURL, "error", err)
-				failedMu.Lock()
-				failed = true
-				failedMu.Unlock()
+			failed = true
 
-				return
-			}
-
-			results[index] = videoContent
-			successful[index] = true
-		}(index, rawURL)
-	}
-
-	waitGroup.Wait()
-
-	videoContents := make([]T, 0, len(results))
-	seenResolvedURLs := make(map[string]struct{}, len(results))
-
-	for index, result := range results {
-		if !successful[index] {
 			continue
 		}
 
-		resolvedURL := strings.TrimSpace(result.resolvedURL())
+		resolvedURL := strings.TrimSpace(result.value.resolvedURL())
 		if resolvedURL == "" {
 			resolvedURL = urls[index]
 		}
@@ -308,7 +289,7 @@ func fetchDownloadedVideos[T downloadedURLVideoContent](
 
 		seenResolvedURLs[resolvedURL] = struct{}{}
 
-		videoContents = append(videoContents, result)
+		videoContents = append(videoContents, result.value)
 	}
 
 	warnings := make([]string, 0, 1)
