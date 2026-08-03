@@ -14,7 +14,7 @@ It also works with local backends such as Ollama, LM Studio, and vLLM.
 
 - Reply-chain conversations in guilds, DMs, and public threads
 - Bot mentions or plain `at ai` triggers in guild channels
-- Real-time streaming replies in embed and plain-response modes, with progress state, `Show Thinking`, `Show Sources`, and `View on Rentry`
+- Real-time streaming replies in embed and plain-response modes, with a live progress indicator, `Show Thinking`, `Show Sources`, and `View on Rentry`
 - Multimodal input handling for images, audio, video, PDFs, DOCX, PPTX, and generic file attachments
 - URL enrichment for TikTok, Facebook, YouTube, YouTube Shorts, Reddit, and generic websites
 - Optional web-search augmentation with Exa or Tavily
@@ -28,7 +28,7 @@ It also works with local backends such as Ollama, LM Studio, and vLLM.
 1. A user mentions the bot, says `at ai`, or replies inside an existing chain.
 2. The bot rebuilds recent conversation state from the reply chain and replied message.
 3. It augments the latest user turn with attachments, supported URLs, visual-search results, and optional web-search results.
-4. The selected provider streams the response back to Discord. The first visible delta replaces the progress placeholder immediately; subsequent edits are rate-limited to Discord's API cadence, and final-only controls are added after the terminal provider event.
+4. While the request is prepared, the bot posts a live progress embed with a three-stage checklist (reading conversation, gathering context, generating response), a progress bar with percentage, an elapsed timer that refreshes every 2 seconds, and a started-at timestamp. The selected provider then streams the response back to Discord. The first visible delta replaces the progress placeholder immediately; subsequent edits are rate-limited to Discord's API cadence, and final-only controls are added after the terminal provider event.
 
 Behavior notes:
 - The built-in `openai` provider uses the Responses API regardless of its configured `base_url`, requests reasoning summaries by default, and streams Responses API reasoning deltas into the bot's thinking output when the provider emits them. OpenAI follow-ups replay the local reply-chain history with the stable `prompt_cache_key` instead of switching to server-side `previous_response_id` state. Other OpenAI-compatible providers stay on Chat Completions unless they explicitly opt into a different Responses-compatible flow such as `x-ai`.
@@ -49,7 +49,8 @@ Behavior notes:
 - Search-decider requests are isolated with dedicated prompt cache key scoping and fail-safe error handling so search query evaluation never interferes with or pollutes the main model's prompt cache or request execution. Search-decider requests are capped at 60 seconds before the bot skips web search and continues with a warning.
 - External request fan-out is capped at 8 concurrent operations across web-search queries, URL enrichment, downloaded-video fetches, and visual-search providers. Search failures cancel queued queries before they start, while partial URL and visual-search successes remain ordered and usable.
 - Discord REST API requests (such as editing progress embeds or sending typing indicators) utilize a resilient HTTP transport that automatically retries up to 3 times on transient network errors, connection failures, or timeouts with backoff, making the bot highly stable on unreliable internet connections.
-- Empty model completions and streaming generation failures are detected and explicitly update the request progress embed to display a user-facing failure message instead of leaving the progress embed permanently stuck in the channel.
+- The request progress embed marks each stage with done/current/pending states, shows an overall progress bar and percentage, and keeps an elapsed timer up to date every 2 seconds so long-running context gathering or model waits never look hung.
+- Empty model completions and streaming generation failures are detected and explicitly update the request progress embed to display a titled user-facing failure message instead of leaving the progress embed permanently stuck in the channel.
 
 ## Quick Start
 
