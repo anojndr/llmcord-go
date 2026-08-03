@@ -319,6 +319,8 @@ func (instance *bot) syncCommands() error {
 	commands = append(commands, newSearchTypeCommand())
 	commands = append(commands, newSearchDeciderModelCommand())
 	commands = append(commands, newGroundingCommand())
+	commands = append(commands, newEditChannelNameCommand())
+	commands = append(commands, newMoveChannelCommand())
 
 	_, err := instance.session.ApplicationCommandBulkOverwrite(
 		instance.session.State.User.ID,
@@ -362,6 +364,68 @@ func newGroundingCommand() *discordgo.ApplicationCommand {
 	option.Required = false
 
 	command.Options = []*discordgo.ApplicationCommandOption{option}
+
+	return command
+}
+
+func newEditChannelNameCommand() *discordgo.ApplicationCommand {
+	command := new(discordgo.ApplicationCommand)
+	command.Name = editChannelNameCommandName
+	command.Description = editChannelNameCommandDescription
+	command.Type = discordgo.ChatApplicationCommand
+
+	channelIDOption := new(discordgo.ApplicationCommandOption)
+	channelIDOption.Name = editChannelNameChannelIDOptionName
+	channelIDOption.Description = editChannelNameChannelIDOptionDescription
+	channelIDOption.Type = discordgo.ApplicationCommandOptionString
+	channelIDOption.Required = true
+
+	newNameOption := new(discordgo.ApplicationCommandOption)
+	newNameOption.Name = editChannelNameOptionName
+	newNameOption.Description = editChannelNameOptionDescription
+	newNameOption.Type = discordgo.ApplicationCommandOptionString
+	newNameOption.Required = true
+
+	command.Options = []*discordgo.ApplicationCommandOption{channelIDOption, newNameOption}
+
+	return command
+}
+
+func newMoveChannelCommand() *discordgo.ApplicationCommand {
+	command := new(discordgo.ApplicationCommand)
+	command.Name = moveChannelCommandName
+	command.Description = moveChannelCommandDescription
+	command.Type = discordgo.ChatApplicationCommand
+
+	channelIDOption := new(discordgo.ApplicationCommandOption)
+	channelIDOption.Name = moveChannelChannelIDOptionName
+	channelIDOption.Description = moveChannelChannelIDOptionDescription
+	channelIDOption.Type = discordgo.ApplicationCommandOptionString
+	channelIDOption.Required = true
+
+	movementOption := new(discordgo.ApplicationCommandOption)
+	movementOption.Name = moveChannelMovementOptionName
+	movementOption.Description = moveChannelMovementOptionDescription
+	movementOption.Type = discordgo.ApplicationCommandOptionString
+	movementOption.Required = true
+
+	upChoice := new(discordgo.ApplicationCommandOptionChoice)
+	upChoice.Name = moveChannelMovementUp
+	upChoice.Value = moveChannelMovementUp
+
+	downChoice := new(discordgo.ApplicationCommandOptionChoice)
+	downChoice.Name = moveChannelMovementDown
+	downChoice.Value = moveChannelMovementDown
+
+	movementOption.Choices = []*discordgo.ApplicationCommandOptionChoice{upChoice, downChoice}
+
+	howManyOption := new(discordgo.ApplicationCommandOption)
+	howManyOption.Name = moveChannelHowManyOptionName
+	howManyOption.Description = moveChannelHowManyOptionDescription
+	howManyOption.Type = discordgo.ApplicationCommandOptionInteger
+	howManyOption.Required = true
+
+	command.Options = []*discordgo.ApplicationCommandOption{channelIDOption, movementOption, howManyOption}
 
 	return command
 }

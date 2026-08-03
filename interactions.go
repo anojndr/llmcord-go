@@ -92,6 +92,10 @@ func (instance *bot) handleApplicationCommandInteraction(
 		return nil
 	case groundingCommandName:
 		return instance.handleGroundingCommand(session, interaction)
+	case editChannelNameCommandName:
+		return instance.handleEditChannelNameCommand(session, interaction)
+	case moveChannelCommandName:
+		return instance.handleMoveChannelCommand(session, interaction)
 	default:
 		return nil
 	}
@@ -1021,4 +1025,176 @@ func (instance *bot) handleGroundingCommand(
 		interaction.Interaction,
 		fmt.Sprintf("Gemini grounding switched to: `%t`", *requestedEnabled),
 	)
+}
+
+func (instance *bot) handleEditChannelNameCommand(
+	session *discordgo.Session,
+	interaction *discordgo.InteractionCreate,
+) error {
+	commandData := interaction.ApplicationCommandData()
+
+	channelIDOption := commandData.GetOption(editChannelNameChannelIDOptionName)
+	newNameOption := commandData.GetOption(editChannelNameOptionName)
+
+	channelID := ""
+	if channelIDOption != nil {
+		channelID = channelIDOption.StringValue()
+	}
+
+	newName := ""
+	if newNameOption != nil {
+		newName = newNameOption.StringValue()
+	}
+
+	if channelID == "" || newName == "" {
+		return respondInteractionText(
+			session,
+			interaction.Interaction,
+			"Both `channelid` and `newchannelname` are required.",
+		)
+	}
+
+	channelEdit := new(discordgo.ChannelEdit)
+	channelEdit.Name = newName
+
+	editedChannel, err := session.ChannelEdit(channelID, channelEdit)
+	if err != nil {
+		logWarn("edit channel name command failed", err, "channel_id", channelID)
+
+		return respondInteractionText(
+			session,
+			interaction.Interaction,
+			fmt.Sprintf("Failed to rename channel `%s`.", channelID),
+		)
+	}
+
+	slog.Info("channel renamed", "channel_id", channelID, "name", editedChannel.Name)
+
+	return respondInteractionText(
+		session,
+		interaction.Interaction,
+		fmt.Sprintf("Renamed channel to `%s`.", editedChannel.Name),
+	)
+}
+
+func (instance *bot) handleMoveChannelCommand(
+	session *discordgo.Session,
+	interaction *discordgo.InteractionCreate,
+) error {
+	channelID, movement, howMany := moveChannelInputOptions(interaction.ApplicationCommandData())
+
+	if channelID == "" {
+		return respondInteractionText(
+			session,
+			interaction.Interaction,
+			"`channelid` is required.",
+		)
+	}
+
+	if movement != moveChannelMovementUp && movement != moveChannelMovementDown {
+		return respondInteractionText(
+			session,
+			interaction.Interaction,
+			"`movement` must be `up` or `down`.",
+		)
+	}
+
+	if howMany <= 0 {
+		return respondInteractionText(
+			session,
+			interaction.Interaction,
+			"`howmany` must be a positive integer.",
+		)
+	}
+
+	channel, err := session.Channel(channelID)
+	if err != nil {
+		logWarn("move channel command failed to load channel", err, "channel_id", channelID)
+
+		return respondInteractionText(
+			session,
+			interaction.Interaction,
+			fmt.Sprintf("Failed to load channel `%s`.", channelID),
+		)
+	}
+
+	newPosition := channelPositionAfterMove(channel, movement, howMany)
+
+	channelEdit := new(discordgo.ChannelEdit)
+	channelEdit.Position = &newPosition
+
+	editedChannel, err := session.ChannelEdit(channelID, channelEdit)
+	if err != nil {
+		logWarn("move channel command failed", err, "channel_id", channelID)
+
+		return respondInteractionText(
+			session,
+			interaction.Interaction,
+			fmt.Sprintf("Failed to move channel `%s`.", channelID),
+		)
+	}
+
+	slog.Info(
+		"channel moved",
+		"channel_id",
+		channelID,
+		"movement",
+		movement,
+		"how_many",
+		howMany,
+		"position",
+		editedChannel.Position,
+	)
+
+	return respondInteractionText(
+		session,
+		interaction.Interaction,
+		fmt.Sprintf(
+			"Moved channel `%s` %s %d position(s) to position `%d`.",
+			editedChannel.Name,
+			movement,
+			howMany,
+			editedChannel.Position,
+		),
+	)
+}
+
+func moveChannelInputOptions(
+	commandData discordgo.ApplicationCommandInteractionData,
+) (string, string, int) {
+	channelID := ""
+	movement := ""
+	howMany := 0
+
+	channelIDOption := commandData.GetOption(moveChannelChannelIDOptionName)
+	movementOption := commandData.GetOption(moveChannelMovementOptionName)
+	howManyOption := commandData.GetOption(moveChannelHowManyOptionName)
+
+	if channelIDOption != nil {
+		channelID = channelIDOption.StringValue()
+	}
+
+	if movementOption != nil {
+		movement = movementOption.StringValue()
+	}
+
+	if howManyOption != nil {
+		howMany = int(howManyOption.IntValue())
+	}
+
+	return channelID, movement, howMany
+}
+
+func channelPositionAfterMove(channel *discordgo.Channel, movement string, howMany int) int {
+	newPosition := channel.Position
+	if movement == moveChannelMovementUp {
+		newPosition -= howMany
+		if newPosition < 0 {
+			newPosition = 0
+		}
+	} else {
+		newPosition += howMany
+	}
+
+	return newPosition
 }

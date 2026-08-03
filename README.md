@@ -190,6 +190,8 @@ Model notes:
 - Use `/model` to switch the main reply model
 - Use `/searchdecidermodel` to switch the search-decider model
 - Use `/searchtype` to switch the Exa Search API mode when `web_search.exa.api_key` is configured (ordered from lowest to highest latency: `instant`, `fast`, `auto`, `deep-lite`, `deep`, `deep-reasoning`)
+- Use `/editchannelname` with `channelid` and `newchannelname` to rename a Discord channel (requires the bot to have `Manage Channels` permission)
+- Use `/movechannel` with `channelid`, `movement` (`up` or `down`), and `howmany` to move a Discord channel up or down the channel list (requires the bot to have `Manage Channels` permission)
 - Attach files or images for multimodal context
   Text-like files such as JSON, CSV, logs, Markdown, and source code are inlined when the target provider cannot read raw files directly.
   Other files are still preserved as explicit attachments and fall back to metadata summaries, including ZIP manifests for archive uploads.
