@@ -17,10 +17,11 @@ type chatCompletionRouter struct {
 }
 
 const (
-	sameKeyRetryDelayLimit = time.Minute
-	attemptTimeoutDivisor  = 2
-	minAttemptTimeout      = 20 * time.Second
-	maxAttemptTimeout      = 90 * time.Second
+	sameKeyRetryDelayLimit   = time.Minute
+	attemptTimeoutDivisor    = 2
+	minAttemptTimeout        = 20 * time.Second
+	maxAttemptTimeout        = 90 * time.Second
+	maxEmptyResponseAttempts = 3
 )
 
 func newChatCompletionRouter(httpClient *http.Client) chatCompletionRouter {
@@ -126,30 +127,12 @@ func (client chatCompletionRouter) streamChatCompletionForKey(
 	waitForRetry := client.retryDelayWaiter()
 	retrySameKey := true
 	attemptNumber := 0
+	emptyResponseAttempts := 0
 
 	for {
 		streamStarted := false
 		attemptNumber++
-		attemptCtx, attemptCancel := context.WithCancel(ctx)
-
-		if deadline, ok := ctx.Deadline(); ok {
-			remaining := time.Until(deadline)
-			attemptTimeout := remaining
-
-			if hasFallbackKey {
-				attemptTimeout = remaining / attemptTimeoutDivisor
-			}
-
-			attemptTimeout = max(attemptTimeout, minAttemptTimeout)
-			attemptTimeout = min(attemptTimeout, maxAttemptTimeout)
-
-			if attemptTimeout < remaining {
-				var cancel context.CancelFunc
-
-				attemptCtx, cancel = context.WithTimeout(ctx, attemptTimeout)
-				attemptCancel = cancel
-			}
-		}
+		attemptCtx, attemptCancel := streamAttemptContext(ctx, hasFallbackKey)
 
 		if attemptNumber > 1 {
 			sendRetryResetDelta(
@@ -176,7 +159,22 @@ func (client chatCompletionRouter) streamChatCompletionForKey(
 			return streamStarted, nil
 		}
 
-		if streamStarted || !retrySameKey || ctx.Err() != nil {
+		if streamStarted || ctx.Err() != nil {
+			return streamStarted, err
+		}
+
+		emptyResponse := errors.Is(err, errEmptyModelResponse)
+		if emptyResponse {
+			emptyResponseAttempts++
+
+			if streamEmptyResponseAttemptsExhausted(
+				err,
+				emptyResponseAttempts,
+				request.Provider.APIKind,
+			) {
+				return streamStarted, err
+			}
+		} else if !retrySameKey {
 			return streamStarted, err
 		}
 
@@ -207,6 +205,55 @@ func (client chatCompletionRouter) streamChatCompletionForKey(
 			return streamStarted, fmt.Errorf("wait for provider retry delay: %w", err)
 		}
 	}
+}
+
+func streamAttemptContext(
+	ctx context.Context,
+	hasFallbackKey bool,
+) (context.Context, context.CancelFunc) {
+	attemptCtx, attemptCancel := context.WithCancel(ctx)
+
+	if deadline, ok := ctx.Deadline(); ok {
+		remaining := time.Until(deadline)
+		attemptTimeout := remaining
+
+		if hasFallbackKey {
+			attemptTimeout = remaining / attemptTimeoutDivisor
+		}
+
+		attemptTimeout = max(attemptTimeout, minAttemptTimeout)
+		attemptTimeout = min(attemptTimeout, maxAttemptTimeout)
+
+		if attemptTimeout < remaining {
+			var cancel context.CancelFunc
+
+			attemptCtx, cancel = context.WithTimeout(ctx, attemptTimeout)
+			attemptCancel = cancel
+		}
+	}
+
+	return attemptCtx, attemptCancel
+}
+
+func streamEmptyResponseAttemptsExhausted(
+	err error,
+	attempts int,
+	apiKind providerAPIKind,
+) bool {
+	if !errors.Is(err, errEmptyModelResponse) || attempts < maxEmptyResponseAttempts {
+		return false
+	}
+
+	logWarn(
+		"provider returned empty model responses repeatedly",
+		err,
+		"provider",
+		apiKind,
+		"attempts",
+		attempts,
+	)
+
+	return true
 }
 
 func (client chatCompletionRouter) retryDelayWaiter() func(context.Context, time.Duration) error {
