@@ -23,7 +23,7 @@ const (
 	defaultMaxImages                     = 5
 	defaultMaxMessages                   = 25
 	maxMessageNodes                      = 500
-	registeredCommandCount               = 4
+	registeredCommandCount               = 6
 	maxAutocompleteChoices               = 25
 	statusMessageMaxLength               = 128
 	plainResponseMaxLength               = 4000
@@ -58,6 +58,25 @@ const (
 	groundingCommandDescription          = "View or switch Gemini grounding (native search)"
 	groundingOptionName                  = "enabled"
 	groundingOptionDescription           = "Whether grounding should be enabled"
+
+	editChannelNameCommandName                = "editchannelname"
+	editChannelNameCommandDescription         = "Rename a Discord channel"
+	editChannelNameChannelIDOptionName        = "channelid"
+	editChannelNameChannelIDOptionDescription = "ID of the channel to rename"
+	editChannelNameOptionName                 = "newchannelname"
+	editChannelNameOptionDescription          = "New name for the channel"
+
+	moveChannelCommandName                = "movechannel"
+	moveChannelCommandDescription         = "Move a Discord channel up or down"
+	moveChannelChannelIDOptionName        = "channelid"
+	moveChannelChannelIDOptionDescription = "ID of the channel to move"
+	moveChannelMovementOptionName         = "movement"
+	moveChannelMovementOptionDescription  = "Direction to move the channel (`up` or `down`)"
+	moveChannelHowManyOptionName          = "howmany"
+	moveChannelHowManyOptionDescription   = "How many positions to move the channel"
+	moveChannelMovementUp                 = "up"
+	moveChannelMovementDown               = "down"
+
 	optimizedHTTPDialTimeout             = 30 * time.Second
 	optimizedHTTPDialKeepAlive           = 30 * time.Second
 	optimizedHTTPMaxIdleConns            = 100

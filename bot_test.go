@@ -2,12 +2,82 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
+	"io"
 	"net/http"
 	"sync/atomic"
 	"testing"
 
 	"github.com/bwmarrin/discordgo"
 )
+
+func TestSyncCommandsRegistersChannelCommand(t *testing.T) {
+	t.Parallel()
+
+	session, err := discordgo.New("Bot discord-token")
+	if err != nil {
+		t.Fatalf("create discord session: %v", err)
+	}
+
+	user := new(discordgo.User)
+	user.ID = "application-id"
+	session.State.User = user
+
+	var registeredCommands []struct {
+		Name string `json:"name"`
+	}
+
+	client := new(http.Client)
+	client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		t.Helper()
+
+		if request.Method != http.MethodPut {
+			t.Fatalf("unexpected method: %s", request.Method)
+		}
+
+		expectedPath := "/api/v9/applications/application-id/commands"
+		if request.URL.Path != expectedPath {
+			t.Fatalf("unexpected request path: got %q want %q", request.URL.Path, expectedPath)
+		}
+
+		responseBody, err := io.ReadAll(request.Body)
+		if err != nil {
+			t.Fatalf("read request body: %v", err)
+		}
+
+		err = json.Unmarshal(responseBody, &registeredCommands)
+		if err != nil {
+			t.Fatalf("decode registered commands: %v", err)
+		}
+
+		return newInteractionJSONResponse(request, http.StatusOK, `[]`), nil
+	})
+	session.Client = client
+
+	instance := new(bot)
+	instance.session = session
+
+	err = instance.syncCommands()
+	if err != nil {
+		t.Fatalf("sync commands: %v", err)
+	}
+
+	for _, expectedName := range []string{editChannelNameCommandName, moveChannelCommandName} {
+		found := false
+
+		for _, command := range registeredCommands {
+			if command.Name == expectedName {
+				found = true
+
+				break
+			}
+		}
+
+		if !found {
+			t.Fatalf("expected %q among registered commands, got %+v", expectedName, registeredCommands)
+		}
+	}
+}
 
 func TestCurrentModelForChannelIDsUsesLockedModelWithoutChangingGlobalModel(t *testing.T) {
 	t.Parallel()
