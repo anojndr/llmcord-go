@@ -14,6 +14,7 @@ import (
 	"path"
 	"reflect"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -1228,7 +1229,68 @@ func openAIStreamEventError(message string, eventType string, code any) error {
 		messageParts = append(messageParts, "chat completion stream error")
 	}
 
-	return fmt.Errorf("%s: %w", strings.Join(messageParts, " "), os.ErrInvalid)
+	errorText := strings.Join(messageParts, " ")
+
+	statusCode := openAIStreamErrorStatusCode(message, eventType, code)
+	if statusCode == 0 {
+		return fmt.Errorf("%s: %w", errorText, os.ErrInvalid)
+	}
+
+	return providerStatusError{
+		StatusCode: statusCode,
+		Message:    errorText,
+		RetryDelay: 0,
+		Err:        os.ErrInvalid,
+	}
+}
+
+const openAIStreamStatusMatchParts = 4
+
+var openAIStreamErrorStatusCodePattern = regexp.MustCompile(`\[?\s*([0-9]{3})\s*\]?`)
+
+func openAIStreamErrorStatusCode(message string, eventType string, code any) int {
+	statusCode := openAIStreamStatusCodeFromText(stringifyValue(code))
+	if statusCode != 0 {
+		return statusCode
+	}
+
+	statusCode = openAIStreamStatusCodeFromText(message)
+	if statusCode != 0 {
+		return statusCode
+	}
+
+	if strings.EqualFold(strings.TrimSpace(eventType), "server_error") {
+		return http.StatusServiceUnavailable
+	}
+
+	return 0
+}
+
+func openAIStreamStatusCodeFromText(text string) int {
+	for _, match := range openAIStreamErrorStatusCodePattern.FindAllStringSubmatchIndex(text, -1) {
+		if len(match) != openAIStreamStatusMatchParts {
+			continue
+		}
+
+		if match[2] > 0 && isASCIIDigit(text[match[2]-1]) {
+			continue
+		}
+
+		if match[3] < len(text) && isASCIIDigit(text[match[3]]) {
+			continue
+		}
+
+		statusCode, err := strconv.Atoi(text[match[2]:match[3]])
+		if err == nil && statusCode >= http.StatusBadRequest && statusCode <= 599 {
+			return statusCode
+		}
+	}
+
+	return 0
+}
+
+func isASCIIDigit(char byte) bool {
+	return char >= '0' && char <= '9'
 }
 
 func openAIStreamFinishReasonError(finishReason string) error {

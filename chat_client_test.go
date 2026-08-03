@@ -150,6 +150,74 @@ func TestChatCompletionRouterRetriesOpenAIAPIKeysOnInternalServerError(t *testin
 	runOpenAIRetryTestWithStatusCode(t, http.StatusInternalServerError, "internal server error")
 }
 
+func TestChatCompletionRouterRetriesTransientStreamEventErrorOnSameKey(t *testing.T) {
+	t.Parallel()
+
+	var (
+		mutex    sync.Mutex
+		attempts int
+	)
+
+	delayCapture := new(durationCapture)
+
+	server := httptest.NewServer(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		_ *http.Request,
+	) {
+		t.Helper()
+
+		mutex.Lock()
+		attempts++
+		attempt := attempts
+		mutex.Unlock()
+
+		if attempt == 1 {
+			responseWriter.Header().Set("Content-Type", "text/event-stream")
+
+			queueFullError := `{"error":{"message":"Streaming response failed: ` +
+				`[503] The request queue is full.","type":"server_error","code":null}}`
+			writeStreamChunk(t, responseWriter, "data: "+queueFullError+"\n\n")
+
+			return
+		}
+
+		streamOpenAIHello(t, responseWriter)
+	}))
+	defer server.Close()
+
+	router := chatCompletionRouter{
+		openAI:      newOpenAIClient(server.Client()),
+		openAICodex: newOpenAICodexClient(nil),
+		gemini:      newGeminiClient(nil),
+		waitForRetry: func(_ context.Context, delay time.Duration) error {
+			delayCapture.append(delay)
+
+			return nil
+		},
+	}
+
+	content, err := collectStreamedContent(
+		context.Background(),
+		router,
+		newOpenAIRetryRequest(server.URL+"/v1", testRetryPrimaryAPIKey),
+	)
+	if err != nil {
+		t.Fatalf("stream chat completion: %v", err)
+	}
+
+	if attempts != 2 {
+		t.Fatalf("unexpected request attempts: %d", attempts)
+	}
+
+	if !slices.Equal(delayCapture.snapshot(), []time.Duration{time.Second}) {
+		t.Fatalf("unexpected retry delays: %#v", delayCapture.snapshot())
+	}
+
+	if content != testStreamedHelloText {
+		t.Fatalf("unexpected streamed content: %q", content)
+	}
+}
+
 func TestChatCompletionRouterWaitsForOpenAIRetryDelayBeforeFallbackKey(t *testing.T) {
 	t.Parallel()
 
