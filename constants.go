@@ -117,7 +117,7 @@ const (
 	openRouterHost                       = "openrouter.ai"
 	openRouterTransformsField            = "transforms"
 	openRouterMiddleOutTransform         = "middle-out"
-	searchDeciderTimeout                 = time.Minute
+	searchDeciderTimeout                 = 2 * time.Minute
 	chatCompletionTimeout                = 5 * time.Minute
 	openAIResponsesChatCompletionTimeout = 30 * time.Minute
 	facebookRequestTimeout               = 30 * time.Second
