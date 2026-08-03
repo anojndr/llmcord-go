@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"strings"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 )
@@ -15,6 +17,56 @@ const (
 	requestProgressStageGeneratingResponse
 )
 
+const (
+	requestProgressRefreshInterval = 2 * time.Second
+	requestProgressBarWidth        = 10
+	requestProgressBarHalfPercent  = 50
+	requestProgressBarFullPercent  = 100
+	requestProgressElapsedHoursDiv = 3600
+	requestProgressElapsedMinsDiv  = 60
+	requestProgressEmbedExtraLines = 2
+	requestProgressTitleText       = "⏳ Working on it…"
+	requestProgressFailureTitle    = "❌ Request failed"
+	requestProgressDoneMarker      = "✅"
+	requestProgressCurrentMarker   = "⏳"
+	requestProgressPendingMarker   = "⬜"
+	requestProgressBarFilledCell   = "▰"
+	requestProgressBarEmptyCell    = "▱"
+	requestProgressElapsedPrefix   = "⏱"
+)
+
+type requestProgressStageInfo struct {
+	label   string
+	detail  string
+	percent int
+}
+
+func requestProgressStageInfos() []requestProgressStageInfo {
+	return []requestProgressStageInfo{
+		{
+			label:   "Reading conversation",
+			detail:  "Scanning the message, attachments, and reply history",
+			percent: requestProgressReadingPercent,
+		},
+		{
+			label:   "Gathering context",
+			detail:  "Collecting links, documents, and search results",
+			percent: requestProgressGatheringPercent,
+		},
+		{
+			label:   "Generating response",
+			detail:  "Waiting for the model to respond",
+			percent: requestProgressGeneratingPercent,
+		},
+	}
+}
+
+const (
+	requestProgressReadingPercent    = 10
+	requestProgressGatheringPercent  = 45
+	requestProgressGeneratingPercent = 80
+)
+
 type requestProgress struct {
 	instance     *bot
 	tracker      *responseTracker
@@ -22,6 +74,7 @@ type requestProgress struct {
 	stageUpdates chan requestProgressStage
 	handoffs     chan requestProgressHandoff
 	failures     chan requestProgressFailure
+	startedAt    time.Time
 }
 
 type requestProgressHandoff struct {
@@ -43,6 +96,7 @@ func (instance *bot) startRequestProgress(
 	progress := new(requestProgress)
 	progress.instance = instance
 	progress.tracker = newResponseTracker(sourceMessage, modelName)
+	progress.startedAt = time.Now()
 	progress.stageUpdates = make(chan requestProgressStage, 1)
 	progress.handoffs = make(chan requestProgressHandoff)
 	progress.failures = make(chan requestProgressFailure)
@@ -52,6 +106,8 @@ func (instance *bot) startRequestProgress(
 	progressEmbed := buildRequestProgressEmbed(
 		requestProgressStageReadingConversation,
 		progress.tracker.modelName,
+		0,
+		progress.startedAt,
 	)
 
 	sentMessage, pending, err := instance.sendEmbedMessage(
@@ -170,7 +226,12 @@ func (progress *requestProgress) renderStageUpdate(ctx context.Context, stage re
 
 	editErr := progress.instance.editEmbedMessage(
 		progress.message,
-		buildRequestProgressEmbed(stage, progress.tracker.modelName),
+		buildRequestProgressEmbed(
+			stage,
+			progress.tracker.modelName,
+			progress.elapsed(),
+			progress.startedAt,
+		),
 		nil,
 	)
 	if editErr != nil {
@@ -181,6 +242,19 @@ func (progress *requestProgress) renderStageUpdate(ctx context.Context, stage re
 			progress.message.ID,
 		)
 	}
+}
+
+func (progress *requestProgress) elapsed() time.Duration {
+	if progress == nil || progress.startedAt.IsZero() {
+		return 0
+	}
+
+	elapsed := time.Since(progress.startedAt)
+	if elapsed < 0 {
+		return 0
+	}
+
+	return elapsed
 }
 
 func (progress *requestProgress) handlePendingHandoffStage(ctx context.Context, currentStage *requestProgressStage) {
@@ -198,6 +272,9 @@ func (progress *requestProgress) run(ctx context.Context) {
 	currentStage := requestProgressStageReadingConversation
 	tracker := progress.tracker
 
+	ticker := time.NewTicker(requestProgressRefreshInterval)
+	defer ticker.Stop()
+
 	for {
 		select {
 		case stage := <-progress.stageUpdates:
@@ -207,6 +284,8 @@ func (progress *requestProgress) run(ctx context.Context) {
 
 			currentStage = stage
 			progress.renderStageUpdate(ctx, stage)
+		case <-ticker.C:
+			progress.renderStageUpdate(ctx, currentStage)
 		case handoff := <-progress.handoffs:
 			progress.handlePendingHandoffStage(ctx, &currentStage)
 
@@ -247,41 +326,126 @@ func (progress *requestProgress) run(ctx context.Context) {
 func buildRequestProgressEmbed(
 	stage requestProgressStage,
 	modelName string,
+	elapsed time.Duration,
+	startedAt time.Time,
 ) *discordgo.MessageEmbed {
-	description := strings.Join([]string{
-		"Working on it.",
-		"",
-		formatRequestProgressLine(requestProgressStageReadingConversation, stage, "Reading conversation"),
-		formatRequestProgressLine(requestProgressStageGatheringContext, stage, "Gathering context"),
-		formatRequestProgressLine(requestProgressStageGeneratingResponse, stage, "Generating response"),
-	}, "\n")
+	infos := requestProgressStageInfos()
 
-	return buildResponseEmbed(description, modelName, embedColorIncomplete, nil, "")
+	lines := make([]string, 0, len(infos)+requestProgressEmbedExtraLines)
+	lines = append(
+		lines,
+		buildRequestProgressStatusLine(stage, elapsed),
+		"",
+	)
+
+	for lineStage, info := range infos {
+		lines = append(
+			lines,
+			formatRequestProgressLine(requestProgressStage(lineStage), stage, info),
+		)
+	}
+
+	embed := buildResponseEmbed(strings.Join(lines, "\n"), modelName, embedColorIncomplete, nil, "")
+	embed.Title = requestProgressTitleText
+
+	if !startedAt.IsZero() {
+		embed.Timestamp = startedAt.Format(time.RFC3339)
+	}
+
+	return embed
 }
 
 func buildRequestProgressFailureEmbed(
 	modelName, errorText string,
 ) *discordgo.MessageEmbed {
-	return buildResponseEmbed(
+	embed := buildResponseEmbed(
 		strings.TrimSpace(errorText),
 		modelName,
 		embedColorFailure,
 		nil,
 		"",
 	)
+	embed.Title = requestProgressFailureTitle
+
+	return embed
 }
 
 func formatRequestProgressLine(
 	lineStage requestProgressStage,
 	currentStage requestProgressStage,
-	label string,
+	info requestProgressStageInfo,
 ) string {
+	marker := requestProgressPendingMarker
+
 	switch {
 	case lineStage < currentStage:
-		return "[x] " + label
+		marker = requestProgressDoneMarker
 	case lineStage == currentStage:
-		return "[>] " + label
-	default:
-		return "[ ] " + label
+		marker = requestProgressCurrentMarker
 	}
+
+	line := marker + " " + info.label
+	if lineStage == currentStage && strings.TrimSpace(info.detail) != "" {
+		line += " — " + info.detail
+	}
+
+	return line
+}
+
+func buildRequestProgressStatusLine(stage requestProgressStage, elapsed time.Duration) string {
+	info := requestProgressStageInfoFor(stage)
+
+	return fmt.Sprintf(
+		"%s **%d%%** · %s **%s**",
+		buildRequestProgressBar(info.percent),
+		info.percent,
+		requestProgressElapsedPrefix,
+		formatRequestProgressElapsed(elapsed),
+	)
+}
+
+func requestProgressStageInfoFor(stage requestProgressStage) requestProgressStageInfo {
+	infos := requestProgressStageInfos()
+
+	if stage < 0 || int(stage) >= len(infos) {
+		return requestProgressStageInfo{
+			label:   "",
+			detail:  "",
+			percent: 0,
+		}
+	}
+
+	return infos[stage]
+}
+
+func buildRequestProgressBar(percent int) string {
+	percent = max(0, min(requestProgressBarFullPercent, percent))
+
+	if percent == 0 {
+		return strings.Repeat(requestProgressBarEmptyCell, requestProgressBarWidth)
+	}
+
+	if percent == requestProgressBarFullPercent {
+		return strings.Repeat(requestProgressBarFilledCell, requestProgressBarWidth)
+	}
+
+	filled := (percent*requestProgressBarWidth + requestProgressBarHalfPercent) /
+		requestProgressBarFullPercent
+
+	return strings.Repeat(requestProgressBarFilledCell, filled) +
+		strings.Repeat(requestProgressBarEmptyCell, requestProgressBarWidth-filled)
+}
+
+func formatRequestProgressElapsed(elapsed time.Duration) string {
+	totalSeconds := max(0, int(elapsed.Seconds()))
+
+	hours := totalSeconds / requestProgressElapsedHoursDiv
+	minutes := (totalSeconds % requestProgressElapsedHoursDiv) / requestProgressElapsedMinsDiv
+	seconds := totalSeconds % requestProgressElapsedMinsDiv
+
+	if hours > 0 {
+		return fmt.Sprintf("%d:%02d:%02d", hours, minutes, seconds)
+	}
+
+	return fmt.Sprintf("%d:%02d", minutes, seconds)
 }
