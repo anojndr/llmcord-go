@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"regexp"
 	"strings"
@@ -114,7 +115,12 @@ func isTransientError(_ providerAPIKind, err error) bool {
 		return true
 	}
 
-	// 2. Check for specific common transient error messages.
+	// 2. Check for provider status errors that indicate transient failure.
+	if isTransientStatusError(err) {
+		return true
+	}
+
+	// 3. Check for specific common transient error messages.
 	errText := err.Error()
 	for _, text := range []string{
 		"connection refused",
@@ -126,6 +132,10 @@ func isTransientError(_ providerAPIKind, err error) bool {
 		"context deadline exceeded",
 		"malformed_function_call",
 		"model returned an empty response",
+		"request queue is full",
+		"overloaded",
+		"temporarily unavailable",
+		"try again later",
 	} {
 		if strings.Contains(errText, text) {
 			return true
@@ -133,6 +143,39 @@ func isTransientError(_ providerAPIKind, err error) bool {
 	}
 
 	return false
+}
+
+func isTransientStatusError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	var statusErr providerStatusError
+	if errors.As(err, &statusErr) && isTransientProviderStatusCode(statusErr.StatusCode) {
+		return true
+	}
+
+	apiErr, found := geminiAPIError(err)
+	if found && isTransientProviderStatusCode(apiErr.Code) {
+		return true
+	}
+
+	return false
+}
+
+func isTransientProviderStatusCode(statusCode int) bool {
+	switch statusCode {
+	case http.StatusRequestTimeout,
+		http.StatusConflict,
+		http.StatusTooManyRequests,
+		http.StatusInternalServerError,
+		http.StatusBadGateway,
+		http.StatusServiceUnavailable,
+		http.StatusGatewayTimeout:
+		return true
+	default:
+		return false
+	}
 }
 
 func openAIRetryDelay(err error) (time.Duration, bool) {

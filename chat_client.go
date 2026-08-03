@@ -178,12 +178,13 @@ func (client chatCompletionRouter) streamChatCompletionForKey(
 			return streamStarted, err
 		}
 
-		retryDelay, ok := retryDelayForProvider(request.Provider.APIKind, err)
-		if !ok {
-			return streamStarted, err
-		}
-
-		if retryDelay > sameKeyRetryDelayLimit && hasFallbackKey {
+		retryDelay, canRetry := providerRetryDecision(
+			request.Provider.APIKind,
+			err,
+			emptyResponse,
+			hasFallbackKey,
+		)
+		if !canRetry {
 			return streamStarted, err
 		}
 
@@ -205,6 +206,29 @@ func (client chatCompletionRouter) streamChatCompletionForKey(
 			return streamStarted, fmt.Errorf("wait for provider retry delay: %w", err)
 		}
 	}
+}
+
+func providerRetryDecision(
+	apiKind providerAPIKind,
+	err error,
+	emptyResponse bool,
+	hasFallbackKey bool,
+) (time.Duration, bool) {
+	retryDelay, ok := retryDelayForProvider(apiKind, err)
+	if !ok {
+		return 0, false
+	}
+
+	_, hasExplicitRetryDelay := explicitRetryDelayForProvider(apiKind, err)
+	if hasFallbackKey && !hasExplicitRetryDelay && !emptyResponse && isTransientStatusError(err) {
+		return 0, false
+	}
+
+	if retryDelay > sameKeyRetryDelayLimit && hasFallbackKey {
+		return 0, false
+	}
+
+	return retryDelay, true
 }
 
 func streamAttemptContext(
