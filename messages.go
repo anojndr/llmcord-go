@@ -39,14 +39,21 @@ func (instance *bot) handleMessageCreate(
 
 	loadedConfig, err := loadConfig(instance.configPath)
 	if err != nil {
-		slog.Error("load config for incoming message", "error", err)
+		logError(
+			"load config for incoming message",
+			err,
+			"message_id",
+			message.ID,
+			"channel_id",
+			message.ChannelID,
+		)
 
 		return
 	}
 
 	channelIDs, err := instance.messageChannelIDs(message)
 	if err != nil {
-		slog.Warn("resolve channel ids", "channel_id", message.ChannelID, "error", err)
+		logWarn("resolve channel ids", err, "channel_id", message.ChannelID)
 		channelIDs = []string{message.ChannelID}
 	}
 
@@ -69,7 +76,14 @@ func (instance *bot) handleMessageCreate(
 		currentModel,
 	)
 	if err != nil {
-		slog.Error("respond to message", "error", err, "message_id", message.ID)
+		logError(
+			"respond to message",
+			err,
+			"message_id",
+			message.ID,
+			"channel_id",
+			message.ChannelID,
+		)
 	}
 
 	instance.nodes.evictExcess()

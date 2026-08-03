@@ -844,7 +844,7 @@ func extractStructuredAPIErrorMessage(responseBody []byte) string {
 		}
 	}
 
-	for _, key := range []string{"error", messageKindValue} {
+	for _, key := range []string{openAIStreamErrorEventType, messageKindValue} {
 		if message := mapStringValue(response, key); message != "" {
 			return message
 		}

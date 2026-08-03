@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	neturl "net/url"
 	"os"
@@ -857,14 +856,13 @@ func (instance *bot) fetchVisualSearchProviderResults(
 		provider := providers[providerIndex]
 
 		if taskResult.err != nil {
-			slog.Warn(
+			logWarn(
 				"run visual search",
+				taskResult.err,
 				"provider",
 				provider.name,
 				"url",
 				imageURL,
-				"error",
-				taskResult.err,
 			)
 
 			fetchFailed = true

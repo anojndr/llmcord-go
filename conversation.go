@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"mime"
 	"net"
 	"net/http"
@@ -295,20 +294,20 @@ func (instance *bot) initializeNode(
 
 	initializationWaitGroup.Add(nodeInitializationTaskCount)
 
-	go func() {
+	safeGo(func() {
 		defer initializationWaitGroup.Done()
 
 		payloads, attachmentDownloadFailed = instance.fetchSupportedAttachments(
 			ctx,
 			message.Attachments,
 		)
-	}()
+	})
 
-	go func() {
+	safeGo(func() {
 		defer initializationWaitGroup.Done()
 
 		parentMessage, fetchParentFailed = instance.resolveParentMessage(message)
-	}()
+	})
 
 	initializationWaitGroup.Wait()
 
@@ -527,7 +526,7 @@ func (instance *bot) fetchSupportedAttachments(
 
 			downloadURL, err := discordAttachmentDownloadURL(attachment.URL)
 			if err != nil {
-				slog.Warn("invalid attachment url", "error", err)
+				logWarn("invalid attachment url", err)
 
 				return attachmentPayload{}, err
 			}
@@ -580,14 +579,13 @@ func (instance *bot) fetchAttachmentWithRetry(
 
 		lastErr = err
 
-		slog.Warn(
+		logWarn(
 			"download attachment",
+			lastErr,
 			"attempt",
 			attempt,
 			"max_attempts",
 			maxAttempts,
-			"error",
-			lastErr,
 		)
 
 		if !attachmentDownloadShouldRetry(lastErr) || attempt == maxAttempts {
@@ -640,13 +638,13 @@ func (instance *bot) fetchAttachmentAttempt(
 	closeErr := httpResponse.Body.Close()
 
 	if readErr != nil {
-		slog.Warn("read attachment", "error", readErr)
+		logWarn("read attachment", readErr)
 
 		return nil, fmt.Errorf("read attachment response body: %w", readErr)
 	}
 
 	if closeErr != nil {
-		slog.Warn("close attachment body", "error", closeErr)
+		logWarn("close attachment body", closeErr)
 	}
 
 	if httpResponse.StatusCode < http.StatusOK || httpResponse.StatusCode >= http.StatusMultipleChoices {
@@ -1015,7 +1013,7 @@ func (instance *bot) resolveParentMessage(message *discordgo.Message) (*discordg
 
 	channel, err := instance.channelByID(message.ChannelID)
 	if err != nil {
-		slog.Warn("fetch current channel", "channel_id", message.ChannelID, "error", err)
+		logWarn("fetch current channel", err, "channel_id", message.ChannelID)
 
 		return nil, true
 	}
@@ -1025,7 +1023,7 @@ func (instance *bot) resolveParentMessage(message *discordgo.Message) (*discordg
 		channel.ParentID != "" {
 		parentChannel, parentErr := instance.channelByID(channel.ParentID)
 		if parentErr != nil {
-			slog.Warn("fetch parent channel", "channel_id", channel.ParentID, "error", parentErr)
+			logWarn("fetch parent channel", parentErr, "channel_id", channel.ParentID)
 
 			return nil, true
 		}
@@ -1058,7 +1056,7 @@ func (instance *bot) resolveImplicitParentMessage(message *discordgo.Message) (*
 
 	previousMessage, found, err := instance.previousMessageInChannel(message)
 	if err != nil {
-		slog.Warn("fetch previous message", "channel_id", message.ChannelID, "error", err)
+		logWarn("fetch previous message", err, "channel_id", message.ChannelID)
 
 		return nil, true
 	}
@@ -1088,14 +1086,13 @@ func previousMessageCanChain(
 func (instance *bot) threadStarterMessage(parentChannelID, messageID string) (*discordgo.Message, bool) {
 	parentMessage, err := instance.session.ChannelMessage(parentChannelID, messageID)
 	if err != nil {
-		slog.Warn(
+		logWarn(
 			"fetch thread starter message",
+			err,
 			"channel_id",
 			parentChannelID,
 			"message_id",
 			messageID,
-			"error",
-			err,
 		)
 
 		return nil, true
@@ -1109,14 +1106,13 @@ func (instance *bot) fetchReferencedParentMessage(
 ) (*discordgo.Message, bool) {
 	referencedMessage, err := instance.session.ChannelMessage(referenceChannelID, messageID)
 	if err != nil {
-		slog.Warn(
+		logWarn(
 			"fetch referenced message",
+			err,
 			"channel_id",
 			referenceChannelID,
 			"message_id",
 			messageID,
-			"error",
-			err,
 		)
 
 		return nil, true

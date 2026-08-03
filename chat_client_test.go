@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"iter"
 	"net/http"
@@ -23,6 +24,8 @@ const (
 	testRetryPrimaryAuthHeader = "Bearer " + testRetryPrimaryAPIKey
 	testRetryBackupAuthHeader  = "Bearer " + testRetryBackupAPIKey
 )
+
+var errTestLogResetDelta = errors.New("reset delta failed")
 
 type stringCapture struct {
 	mutex  sync.Mutex
@@ -1586,5 +1589,63 @@ func TestChatCompletionRouter_GeminiEmptyResponseTriggersKeyFallback(t *testing.
 	expectedAttempts := []string{primaryKey, primaryKey, backupKey}
 	if !slices.Equal(attemptCapture.snapshot(), expectedAttempts) {
 		t.Fatalf("unexpected API key attempts: %#v", attemptCapture.snapshot())
+	}
+}
+
+func TestSendRetryResetDeltaLogsHandleFailure(t *testing.T) {
+	t.Setenv(logLevelEnvironmentVariable, "")
+
+	sentinel := errTestLogResetDelta
+
+	handler := captureLogs(t, func(*captureLogHandler) {
+		sendRetryResetDelta(
+			func(streamDelta) error {
+				return sentinel
+			},
+			"send retry reset delta",
+			"provider",
+			providerAPIKindOpenAI,
+			"attempt",
+			2,
+		)
+	})
+
+	records := handler.snapshot()
+	if len(records) != 1 {
+		t.Fatalf("captured %d records, want 1", len(records))
+	}
+
+	record := records[0]
+	if record.message != "send retry reset delta" {
+		t.Fatalf("message = %q, want %q", record.message, "send retry reset delta")
+	}
+
+	errAttr, isError := record.attrs[errorAttributeKey].(error)
+	if !isError || !errors.Is(errAttr, sentinel) {
+		t.Fatalf("error attr = %v, want %v", record.attrs[errorAttributeKey], sentinel)
+	}
+
+	if record.attrs["provider"] != providerAPIKindOpenAI {
+		t.Fatalf("provider attr = %v, want %q", record.attrs["provider"], providerAPIKindOpenAI)
+	}
+
+	attemptAttr, isInt := record.attrs["attempt"].(int64)
+	if !isInt || attemptAttr != 2 {
+		t.Fatalf("attempt attr = %v, want 2", record.attrs["attempt"])
+	}
+}
+
+func TestSendRetryResetDeltaSilentOnSuccess(t *testing.T) {
+	t.Setenv(logLevelEnvironmentVariable, "")
+
+	handler := captureLogs(t, func(*captureLogHandler) {
+		sendRetryResetDelta(func(streamDelta) error {
+			return nil
+		}, "send retry reset delta")
+	})
+
+	records := handler.snapshot()
+	if len(records) != 0 {
+		t.Fatalf("captured %d records, want 0", len(records))
 	}
 }

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"math"
 	"regexp"
 	"strconv"
@@ -298,7 +297,7 @@ func (instance *bot) runGenerationAttempt(
 	cancelStream()
 
 	if streamErr != nil && finishReason == "" {
-		finishReason = "error"
+		finishReason = openAIStreamErrorEventType
 	}
 
 	finalAnswerText := streamState.rawAnswerText
@@ -1184,14 +1183,13 @@ func (instance *bot) sendImgbbURLReplies(tracker *responseTracker, answerText st
 
 		sentMessage, err := instance.session.ChannelMessageSendComplex(responseMessage.ChannelID, send)
 		if err != nil {
-			slog.Warn(
+			logWarn(
 				"send imgbb url reply",
+				err,
 				"channel_id",
 				responseMessage.ChannelID,
 				"message_id",
 				responseMessage.ID,
-				"error",
-				err,
 			)
 
 			return

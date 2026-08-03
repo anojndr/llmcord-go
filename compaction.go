@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -157,8 +156,9 @@ func (instance *bot) autoCompactRequest(
 		limit,
 	)
 	if err != nil {
-		slog.Warn(
+		logWarn(
 			"auto compact request",
+			err,
 			"configured_model",
 			request.ConfiguredModel,
 			"context_window",
@@ -169,8 +169,6 @@ func (instance *bot) autoCompactRequest(
 			estimatedTokens,
 			"token_limit",
 			limit,
-			"error",
-			err,
 		)
 
 		return request, result

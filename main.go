@@ -3,7 +3,6 @@ package main
 
 import (
 	"context"
-	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -14,6 +13,8 @@ func main() {
 }
 
 func runMain() int {
+	configureLogging(os.Getenv)
+
 	ctx, stop := signal.NotifyContext(
 		context.Background(),
 		os.Interrupt,
@@ -23,7 +24,7 @@ func runMain() int {
 
 	err := run(ctx, runtimeConfigPath(os.Getenv))
 	if err != nil {
-		slog.Error("llmcord exited", "error", err)
+		logError("llmcord exited", err)
 
 		return 1
 	}

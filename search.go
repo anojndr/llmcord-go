@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"os"
 	"slices"
@@ -276,7 +275,7 @@ func (instance *bot) maybeAugmentConversationWithWebSearch(
 		conversation,
 	)
 	if err != nil {
-		slog.Warn("decide web search", "error", err)
+		logWarn("decide web search", err)
 
 		return conversation, nil, append(decisionWarnings, searchWarningText)
 	}
@@ -290,7 +289,7 @@ func (instance *bot) maybeAugmentConversationWithWebSearch(
 
 	results, err := instance.webSearch.search(ctx, searchConfig, decision.Queries)
 	if err != nil {
-		slog.Warn("run web search", "queries", decision.Queries, "error", err)
+		logWarn("run web search", err, "queries", decision.Queries)
 
 		return conversation, nil, append(decisionWarnings, searchWarningText)
 	}
@@ -300,7 +299,7 @@ func (instance *bot) maybeAugmentConversationWithWebSearch(
 		formatWebSearchResults(results),
 	)
 	if err != nil {
-		slog.Warn("append web search results to conversation", "error", err)
+		logWarn("append web search results to conversation", err)
 
 		return conversation, nil, append(decisionWarnings, searchWarningText)
 	}
