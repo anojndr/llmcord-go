@@ -1067,6 +1067,20 @@ func streamOpenAIHello(t *testing.T, responseWriter http.ResponseWriter) {
 	flusher.Flush()
 }
 
+func streamOpenAIEmpty(t *testing.T, responseWriter http.ResponseWriter) {
+	t.Helper()
+
+	responseWriter.Header().Set("Content-Type", "text/event-stream")
+
+	flusher, ok := responseWriter.(http.Flusher)
+	if !ok {
+		t.Fatal("expected response writer to support flushing")
+	}
+
+	writeStreamChunk(t, responseWriter, "data: [DONE]\n\n")
+	flusher.Flush()
+}
+
 func streamOpenAIPartialHello(t *testing.T, responseWriter http.ResponseWriter) {
 	t.Helper()
 
@@ -1586,9 +1600,132 @@ func TestChatCompletionRouter_GeminiEmptyResponseTriggersKeyFallback(t *testing.
 		t.Fatalf("unexpected content: %q", contentBuilder.String())
 	}
 
-	expectedAttempts := []string{primaryKey, primaryKey, backupKey}
+	expectedAttempts := []string{primaryKey, primaryKey, primaryKey, backupKey}
 	if !slices.Equal(attemptCapture.snapshot(), expectedAttempts) {
 		t.Fatalf("unexpected API key attempts: %#v", attemptCapture.snapshot())
+	}
+}
+
+func TestChatCompletionRouter_OpenAIEmptyResponseRetriesUntilSuccess(t *testing.T) {
+	t.Parallel()
+
+	attemptCounter := new(countCapture)
+
+	server := httptest.NewServer(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		_ *http.Request,
+	) {
+		t.Helper()
+
+		attemptCounter.increment()
+
+		if attemptCounter.value() < maxEmptyResponseAttempts {
+			streamOpenAIEmpty(t, responseWriter)
+
+			return
+		}
+
+		streamOpenAIHello(t, responseWriter)
+	}))
+	defer server.Close()
+
+	router := chatCompletionRouter{
+		openAI:      newOpenAIClient(server.Client()),
+		openAICodex: newOpenAICodexClient(nil),
+		gemini:      newGeminiClient(nil),
+		waitForRetry: func(context.Context, time.Duration) error {
+			return nil
+		},
+	}
+
+	var streamDeltas []streamDelta
+
+	err := router.streamChatCompletion(
+		context.Background(),
+		newOpenAIRetryRequest(server.URL+"/v1", testRetryPrimaryAPIKey),
+		func(delta streamDelta) error {
+			streamDeltas = append(streamDeltas, delta)
+
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("stream chat completion: %v", err)
+	}
+
+	var contentBuilder strings.Builder
+
+	for _, delta := range streamDeltas {
+		contentBuilder.WriteString(delta.Content)
+	}
+
+	if contentBuilder.String() != testStreamedHelloText {
+		t.Fatalf("unexpected streamed content: %q", contentBuilder.String())
+	}
+
+	if got := attemptCounter.value(); got != maxEmptyResponseAttempts {
+		t.Fatalf("unexpected attempt count: %d, want %d", got, maxEmptyResponseAttempts)
+	}
+
+	resetCount := 0
+
+	for _, delta := range streamDeltas {
+		if delta.FinishReason == finishReasonRetryReset {
+			resetCount++
+		}
+	}
+
+	if resetCount != maxEmptyResponseAttempts-1 {
+		t.Fatalf("unexpected reset delta count: %d, want %d", resetCount, maxEmptyResponseAttempts-1)
+	}
+}
+
+func TestChatCompletionRouter_OpenAIEmptyResponseExhaustsAttempts(t *testing.T) {
+	t.Setenv(logLevelEnvironmentVariable, "")
+
+	attemptCounter := new(countCapture)
+
+	server := httptest.NewServer(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		_ *http.Request,
+	) {
+		t.Helper()
+
+		attemptCounter.increment()
+
+		streamOpenAIEmpty(t, responseWriter)
+	}))
+	defer server.Close()
+
+	router := chatCompletionRouter{
+		openAI:      newOpenAIClient(server.Client()),
+		openAICodex: newOpenAICodexClient(nil),
+		gemini:      newGeminiClient(nil),
+		waitForRetry: func(context.Context, time.Duration) error {
+			return nil
+		},
+	}
+
+	handler := captureLogs(t, func(*captureLogHandler) {
+		err := router.streamChatCompletion(
+			context.Background(),
+			newOpenAIRetryRequest(server.URL+"/v1", testRetryPrimaryAPIKey),
+			func(streamDelta) error {
+				return nil
+			},
+		)
+		if !errors.Is(err, errEmptyModelResponse) {
+			t.Fatalf("expected errEmptyModelResponse, got: %v", err)
+		}
+	})
+
+	if got := attemptCounter.value(); got != maxEmptyResponseAttempts {
+		t.Fatalf("unexpected attempt count: %d, want %d", got, maxEmptyResponseAttempts)
+	}
+
+	records := handler.snapshot()
+	if len(records) == 0 || records[len(records)-1].message != "provider returned empty model responses repeatedly" {
+		t.Fatalf("expected repeated empty response warning, got records: %#v", records)
 	}
 }
 
