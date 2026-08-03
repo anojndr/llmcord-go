@@ -1599,3 +1599,303 @@ func TestGeminiStreamDeltaSeparatesThinkingFromAnswer(t *testing.T) {
 		t.Errorf("unexpected Content:\ngot:  %q\nwant: %q", delta.Content, expectedContent)
 	}
 }
+
+func TestGeminiThoughtSplitterSeparatesInlineThoughtMarkers(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range geminiThoughtSplitterCases() {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			splitter := newGeminiThoughtSplitter()
+
+			var thinkingText strings.Builder
+
+			var answerText strings.Builder
+
+			for _, chunk := range testCase.chunks {
+				splitThinking, splitAnswer := splitter.split(chunk)
+				thinkingText.WriteString(splitThinking)
+				answerText.WriteString(splitAnswer)
+			}
+
+			splitThinking, splitAnswer := splitter.finalize()
+			thinkingText.WriteString(splitThinking)
+			answerText.WriteString(splitAnswer)
+
+			if thinkingText.String() != testCase.expectedThinking {
+				t.Errorf(
+					"unexpected thinking:\ngot:  %q\nwant: %q",
+					thinkingText.String(),
+					testCase.expectedThinking,
+				)
+			}
+
+			if answerText.String() != testCase.expectedAnswer {
+				t.Errorf(
+					"unexpected answer:\ngot:  %q\nwant: %q",
+					answerText.String(),
+					testCase.expectedAnswer,
+				)
+			}
+		})
+	}
+}
+
+func geminiThoughtSplitterCases() []struct {
+	name             string
+	chunks           []string
+	expectedThinking string
+	expectedAnswer   string
+} {
+	return []struct {
+		name             string
+		chunks           []string
+		expectedThinking string
+		expectedAnswer   string
+	}{
+		{
+			name:             "plain content passes through",
+			chunks:           []string{"Hello", " world"},
+			expectedThinking: "",
+			expectedAnswer:   "Hello world",
+		},
+		{
+			name:             "single thought block",
+			chunks:           []string{"<<<Plan first.>>>Final answer."},
+			expectedThinking: "Plan first.",
+			expectedAnswer:   "Final answer.",
+		},
+		{
+			name:             "thought block split across chunks",
+			chunks:           []string{"<<<Plan ", "first.>>>Final ", "answer."},
+			expectedThinking: "Plan first.",
+			expectedAnswer:   "Final answer.",
+		},
+		{
+			name:             "open marker split across chunks",
+			chunks:           []string{"Intro <", "<", "<Plan.>>>Final."},
+			expectedThinking: "Plan.",
+			expectedAnswer:   "Intro Final.",
+		},
+		{
+			name:             "close marker split across chunks",
+			chunks:           []string{"<<<Plan", ">>", ">Final."},
+			expectedThinking: "Plan",
+			expectedAnswer:   "Final.",
+		},
+		{
+			name:             "unclosed thought block",
+			chunks:           []string{"<<<Plan first."},
+			expectedThinking: "Plan first.",
+			expectedAnswer:   "",
+		},
+		{
+			name:             "multiple thought blocks",
+			chunks:           []string{"<<<A>>>X<<<B>>>Y"},
+			expectedThinking: "AB",
+			expectedAnswer:   "XY",
+		},
+		{
+			name:             "stray closing marker stays literal",
+			chunks:           []string{"A>>>B"},
+			expectedThinking: "",
+			expectedAnswer:   "A>>>B",
+		},
+		{
+			name:             "partial open marker never completes",
+			chunks:           []string{"A<<", "B"},
+			expectedThinking: "",
+			expectedAnswer:   "A<<B",
+		},
+	}
+}
+
+func TestGeminiClientStreamChatCompletionSeparatesInlineThoughtMarkers(t *testing.T) {
+	t.Parallel()
+
+	client := geminiClient{
+		httpClient: new(http.Client),
+		newClient: func(
+			_ context.Context,
+			_ *genai.ClientConfig,
+		) (geminiAPIClient, error) {
+			var stubClient stubGeminiAPIClient
+
+			stubClient.generateContentStream = func(
+				_ context.Context,
+				_ string,
+				_ []*genai.Content,
+				_ *genai.GenerateContentConfig,
+			) iter.Seq2[*genai.GenerateContentResponse, error] {
+				return func(yield func(*genai.GenerateContentResponse, error) bool) {
+					if !yield(newGeminiGenerateContentResponse("<<<Plan ", ""), nil) {
+						return
+					}
+
+					if !yield(newGeminiGenerateContentResponse("first.>>>Final ", ""), nil) {
+						return
+					}
+
+					if !yield(newGeminiGenerateContentResponse("answer.", genai.FinishReasonStop), nil) {
+						return
+					}
+				}
+			}
+
+			return stubClient, nil
+		},
+	}
+
+	var thinkingText strings.Builder
+
+	var answerText strings.Builder
+
+	err := client.streamChatCompletion(
+		context.Background(),
+		newSimpleGeminiStreamRequest(),
+		func(delta streamDelta) error {
+			thinkingText.WriteString(delta.Thinking)
+			answerText.WriteString(delta.Content)
+
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("stream chat completion: %v", err)
+	}
+
+	if thinkingText.String() != "Plan first." {
+		t.Fatalf("unexpected thinking text: %q", thinkingText.String())
+	}
+
+	if answerText.String() != "Final answer." {
+		t.Fatalf("unexpected answer text: %q", answerText.String())
+	}
+}
+
+func TestGeminiClientStreamChatCompletionKeepsStrayClosingMarkerInAnswer(t *testing.T) {
+	t.Parallel()
+
+	client := geminiClient{
+		httpClient: new(http.Client),
+		newClient: func(
+			_ context.Context,
+			_ *genai.ClientConfig,
+		) (geminiAPIClient, error) {
+			var stubClient stubGeminiAPIClient
+
+			stubClient.generateContentStream = func(
+				_ context.Context,
+				_ string,
+				_ []*genai.Content,
+				_ *genai.GenerateContentConfig,
+			) iter.Seq2[*genai.GenerateContentResponse, error] {
+				return func(yield func(*genai.GenerateContentResponse, error) bool) {
+					_ = yield(newGeminiGenerateContentResponse("A>>>B", genai.FinishReasonStop), nil)
+				}
+			}
+
+			return stubClient, nil
+		},
+	}
+
+	var answerText strings.Builder
+
+	err := client.streamChatCompletion(
+		context.Background(),
+		newSimpleGeminiStreamRequest(),
+		func(delta streamDelta) error {
+			answerText.WriteString(delta.Content)
+
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("stream chat completion: %v", err)
+	}
+
+	if answerText.String() != "A>>>B" {
+		t.Fatalf("unexpected answer text: %q", answerText.String())
+	}
+}
+
+func TestGeminiClientStreamChatCompletionPreservesMetadataOnMarkerOnlyChunk(t *testing.T) {
+	t.Parallel()
+
+	client := geminiClient{
+		httpClient: new(http.Client),
+		newClient: func(
+			_ context.Context,
+			_ *genai.ClientConfig,
+		) (geminiAPIClient, error) {
+			var stubClient stubGeminiAPIClient
+
+			stubClient.generateContentStream = func(
+				_ context.Context,
+				_ string,
+				_ []*genai.Content,
+				_ *genai.GenerateContentConfig,
+			) iter.Seq2[*genai.GenerateContentResponse, error] {
+				return func(yield func(*genai.GenerateContentResponse, error) bool) {
+					markerOnly := newGeminiGenerateContentResponse("<<<", "")
+					markerOnly.Candidates[0].GroundingMetadata = &genai.GroundingMetadata{
+						ImageSearchQueries: nil,
+						GroundingChunks: []*genai.GroundingChunk{
+							{
+								Image:            nil,
+								Maps:             nil,
+								RetrievedContext: nil,
+								Web: &genai.GroundingChunkWeb{
+									Domain: "",
+									Title:  "Tokyo Weather",
+									URI:    "https://weather.com/tokyo",
+								},
+							},
+						},
+						GroundingSupports:            nil,
+						RetrievalMetadata:            nil,
+						SearchEntryPoint:             nil,
+						WebSearchQueries:             []string{"current weather Tokyo"},
+						GoogleMapsWidgetContextToken: "",
+						RetrievalQueries:             nil,
+						SourceFlaggingUris:           nil,
+					}
+
+					if !yield(markerOnly, nil) {
+						return
+					}
+
+					_ = yield(newGeminiGenerateContentResponse("Final.", genai.FinishReasonStop), nil)
+				}
+			}
+
+			return stubClient, nil
+		},
+	}
+
+	var metadata *searchMetadata
+
+	err := client.streamChatCompletion(
+		context.Background(),
+		newSimpleGeminiStreamRequest(),
+		func(delta streamDelta) error {
+			if delta.SearchMetadata != nil {
+				metadata = mergeSearchMetadata(metadata, delta.SearchMetadata)
+			}
+
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("stream chat completion: %v", err)
+	}
+
+	if metadata == nil {
+		t.Fatal("expected search metadata from marker-only chunk")
+	}
+
+	if len(metadata.Queries) != 1 || metadata.Queries[0] != "current weather Tokyo" {
+		t.Fatalf("unexpected search queries: %#v", metadata.Queries)
+	}
+}

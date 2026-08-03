@@ -26,6 +26,9 @@ const (
 	geminiGroundingInstruction = "Google Search is the only available tool in this request " +
 		"and is executed automatically by the provider. Do not call custom functions, " +
 		"invent tool names, or emit function-call syntax."
+	geminiThoughtMarkerOpen  = "<<<"
+	geminiThoughtMarkerClose = ">>>"
+	geminiSplitDeltaCapacity = 3
 )
 
 type geminiContentStreamer interface {
@@ -144,19 +147,26 @@ func (client geminiClient) streamChatCompletion(
 	finishSeen := false
 	hasContent := false
 
+	splitter := newGeminiStreamHandleSplitter(handle)
+
 	for response, streamErr := range apiClient.GenerateContentStream(
 		ctx,
 		request.Model,
 		contents,
 		generateConfig,
 	) {
-		finished, contentProduced, err := processGeminiStreamResponse(handle, response, streamErr)
+		finished, contentProduced, err := processGeminiStreamResponse(splitter.handleDelta, response, streamErr)
 		if err != nil {
 			return err
 		}
 
 		finishSeen = finishSeen || finished
 		hasContent = hasContent || contentProduced
+	}
+
+	err = splitter.finalize()
+	if err != nil {
+		return err
 	}
 
 	if !finishSeen {
@@ -168,6 +178,223 @@ func (client geminiClient) streamChatCompletion(
 	}
 
 	return nil
+}
+
+type geminiStreamHandleSplitter struct {
+	emit     func(streamDelta) error
+	splitter *geminiThoughtSplitter
+}
+
+func newGeminiStreamHandleSplitter(handle func(streamDelta) error) *geminiStreamHandleSplitter {
+	return &geminiStreamHandleSplitter{
+		emit:     handle,
+		splitter: newGeminiThoughtSplitter(),
+	}
+}
+
+func (splitter *geminiStreamHandleSplitter) handleDelta(delta streamDelta) error {
+	if delta.Content == "" {
+		return splitter.emit(delta)
+	}
+
+	splitThinking, splitAnswer := splitter.splitter.split(delta.Content)
+
+	parts := make([]streamDelta, 0, geminiSplitDeltaCapacity)
+	if delta.Thinking != "" {
+		parts = append(parts, streamDelta{
+			Thinking:           delta.Thinking,
+			Content:            "",
+			FinishReason:       "",
+			Usage:              nil,
+			ProviderResponseID: "",
+			SearchMetadata:     nil,
+		})
+	}
+
+	if splitThinking != "" {
+		parts = append(parts, streamDelta{
+			Thinking:           splitThinking,
+			Content:            "",
+			FinishReason:       "",
+			Usage:              nil,
+			ProviderResponseID: "",
+			SearchMetadata:     nil,
+		})
+	}
+
+	if splitAnswer != "" {
+		parts = append(parts, streamDelta{
+			Thinking:           "",
+			Content:            splitAnswer,
+			FinishReason:       "",
+			Usage:              nil,
+			ProviderResponseID: "",
+			SearchMetadata:     nil,
+		})
+	}
+
+	if len(parts) == 0 {
+		if delta.SearchMetadata == nil {
+			return nil
+		}
+
+		parts = append(parts, streamDelta{
+			Thinking:           "",
+			Content:            "",
+			FinishReason:       "",
+			Usage:              nil,
+			ProviderResponseID: "",
+			SearchMetadata:     delta.SearchMetadata,
+		})
+	}
+
+	for index, part := range parts {
+		if index == 0 {
+			part.SearchMetadata = delta.SearchMetadata
+		}
+
+		err := splitter.emit(part)
+		if err != nil {
+			return fmt.Errorf(handleStreamDeltaErrorFormat, err)
+		}
+	}
+
+	return nil
+}
+
+func (splitter *geminiStreamHandleSplitter) finalize() error {
+	splitThinking, splitAnswer := splitter.splitter.finalize()
+	if splitThinking != "" {
+		err := splitter.emit(streamDelta{
+			Thinking:           splitThinking,
+			Content:            "",
+			FinishReason:       "",
+			Usage:              nil,
+			ProviderResponseID: "",
+			SearchMetadata:     nil,
+		})
+		if err != nil {
+			return fmt.Errorf(handleStreamDeltaErrorFormat, err)
+		}
+	}
+
+	if splitAnswer != "" {
+		err := splitter.emit(streamDelta{
+			Thinking:           "",
+			Content:            splitAnswer,
+			FinishReason:       "",
+			Usage:              nil,
+			ProviderResponseID: "",
+			SearchMetadata:     nil,
+		})
+		if err != nil {
+			return fmt.Errorf(handleStreamDeltaErrorFormat, err)
+		}
+	}
+
+	return nil
+}
+
+type geminiThoughtSplitter struct {
+	inThinking bool
+	thinking   strings.Builder
+	pending    string
+}
+
+func newGeminiThoughtSplitter() *geminiThoughtSplitter {
+	return &geminiThoughtSplitter{
+		inThinking: false,
+		thinking:   strings.Builder{},
+		pending:    "",
+	}
+}
+
+// split separates Gemini inline thought blocks (wrapped in <<< and >>> markers)
+// from visible answer text. State persists across chunks so markers split
+// between stream chunks are still recognized.
+func (splitter *geminiThoughtSplitter) split(content string) (string, string) {
+	if content == "" {
+		return splitter.flushThinking(), ""
+	}
+
+	text := splitter.pending + content
+	splitter.pending = ""
+
+	var answer strings.Builder
+
+	for text != "" {
+		if splitter.inThinking {
+			if markerIndex := strings.Index(text, geminiThoughtMarkerClose); markerIndex >= 0 {
+				splitter.thinking.WriteString(text[:markerIndex])
+				text = text[markerIndex+len(geminiThoughtMarkerClose):]
+				splitter.inThinking = false
+
+				continue
+			}
+
+			keep := geminiThoughtMarkerTrailingRunes(text, '>')
+			splitter.thinking.WriteString(text[:len(text)-keep])
+			splitter.pending = text[len(text)-keep:]
+
+			text = ""
+
+			continue
+		}
+
+		if markerIndex := strings.Index(text, geminiThoughtMarkerOpen); markerIndex >= 0 {
+			answer.WriteString(text[:markerIndex])
+			text = text[markerIndex+len(geminiThoughtMarkerOpen):]
+			splitter.inThinking = true
+
+			continue
+		}
+
+		keep := geminiThoughtMarkerTrailingRunes(text, '<')
+		answer.WriteString(text[:len(text)-keep])
+		splitter.pending = text[len(text)-keep:]
+
+		text = ""
+	}
+
+	return splitter.flushThinking(), answer.String()
+}
+
+// finalize returns any thinking or answer text still buffered when the stream
+// ends, such as a partial delimiter that never completed into a full marker.
+func (splitter *geminiThoughtSplitter) finalize() (string, string) {
+	if splitter.inThinking {
+		splitter.thinking.WriteString(splitter.pending)
+		splitter.pending = ""
+
+		return splitter.flushThinking(), ""
+	}
+
+	answer := splitter.pending
+	splitter.pending = ""
+
+	return "", answer
+}
+
+func (splitter *geminiThoughtSplitter) flushThinking() string {
+	if splitter.thinking.Len() == 0 {
+		return ""
+	}
+
+	text := splitter.thinking.String()
+	splitter.thinking.Reset()
+
+	return text
+}
+
+// geminiThoughtMarkerTrailingRunes returns how many trailing marker runes could
+// form the start of a three-rune delimiter split across stream chunks.
+func geminiThoughtMarkerTrailingRunes(text string, markerRune byte) int {
+	count := 0
+	for index := len(text) - 1; index >= 0 && count < 2 && text[index] == markerRune; index-- {
+		count++
+	}
+
+	return count
 }
 
 func processGeminiStreamResponse(
