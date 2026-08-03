@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"log/slog"
 	"strings"
 
 	"github.com/bwmarrin/discordgo"
@@ -61,12 +60,11 @@ func (instance *bot) startRequestProgress(
 		actions,
 	)
 	if err != nil {
-		slog.Warn(
+		logWarn(
 			"send request progress embed",
+			err,
 			"source_message_id",
 			sourceMessage.ID,
-			"error",
-			err,
 		)
 	} else {
 		progress.message = sentMessage
@@ -139,12 +137,11 @@ func (progress *requestProgress) fail(ctx context.Context, err error) {
 			false,
 		)
 		if renderErr != nil {
-			slog.Warn(
+			logWarn(
 				"render fallback request progress failure response",
+				renderErr,
 				"source_message_id",
 				progress.tracker.sourceMessage.ID,
-				"error",
-				renderErr,
 			)
 		}
 
@@ -163,12 +160,11 @@ func (progress *requestProgress) renderStageUpdate(ctx context.Context, stage re
 		progress.message.ID,
 	)
 	if waitErr != nil {
-		slog.Warn(
+		logWarn(
 			"wait before request progress embed edit",
+			waitErr,
 			"message_id",
 			progress.message.ID,
-			"error",
-			waitErr,
 		)
 	}
 
@@ -178,12 +174,11 @@ func (progress *requestProgress) renderStageUpdate(ctx context.Context, stage re
 		nil,
 	)
 	if editErr != nil {
-		slog.Warn(
+		logWarn(
 			"edit request progress embed",
+			editErr,
 			"message_id",
 			progress.message.ID,
-			"error",
-			editErr,
 		)
 	}
 }
@@ -232,12 +227,11 @@ func (progress *requestProgress) run(ctx context.Context) {
 				false,
 			)
 			if err != nil {
-				slog.Warn(
+				logWarn(
 					"render request progress failure response",
+					err,
 					"source_message_id",
 					tracker.sourceMessage.ID,
-					"error",
-					err,
 				)
 			}
 

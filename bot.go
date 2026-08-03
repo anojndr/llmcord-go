@@ -117,7 +117,7 @@ func newBot(ctx context.Context, configPath string, loadedConfig config) (*bot, 
 		loadedConfig.Database.ConnectionString,
 	)
 	if err != nil {
-		slog.Warn("configure persisted message history", "error", err)
+		logWarn("configure persisted message history", err)
 	} else {
 		instance.nodes = store
 	}
@@ -131,9 +131,9 @@ func newBot(ctx context.Context, configPath string, loadedConfig config) (*bot, 
 		discordgo.IntentsGuildMessages |
 		discordgo.IntentsDirectMessages |
 		discordgo.IntentsMessageContent
-	discordSession.AddHandler(instance.handleReady)
-	discordSession.AddHandler(instance.handleInteractionCreate)
-	discordSession.AddHandler(instance.handleMessageCreate)
+	discordSession.AddHandler(recoverHandler(instance.handleReady))
+	discordSession.AddHandler(recoverHandler(instance.handleInteractionCreate))
+	discordSession.AddHandler(recoverHandler(instance.handleMessageCreate))
 
 	return instance, nil
 }
@@ -164,7 +164,7 @@ func run(ctx context.Context, configPath string) error {
 		defer func() {
 			shutdownErr := shutdownPublicHTTPServer(ctx, publicHTTPServer)
 			if shutdownErr != nil {
-				slog.Warn("shutdown public http server", "error", shutdownErr)
+				logWarn("shutdown public http server", shutdownErr)
 			}
 		}()
 
@@ -179,7 +179,10 @@ func run(ctx context.Context, configPath string) error {
 
 	err = instance.open(ctx, loadedConfig)
 	if err != nil {
-		_ = instance.close()
+		closeErr := instance.close()
+		if closeErr != nil {
+			logWarn("close bot after open failure", closeErr)
+		}
 
 		return fmt.Errorf("open bot: %w", err)
 	}
@@ -187,7 +190,10 @@ func run(ctx context.Context, configPath string) error {
 	select {
 	case <-ctx.Done():
 	case err = <-publicHTTPServerErrCh:
-		_ = instance.close()
+		closeErr := instance.close()
+		if closeErr != nil {
+			logWarn("close bot after http server failure", closeErr)
+		}
 
 		return fmt.Errorf("serve public http: %w", err)
 	}
@@ -394,7 +400,7 @@ func (instance *bot) startTyping(ctx context.Context, channelID string) func() {
 
 	instance.sendTypingIndicator(channelID)
 
-	go func() {
+	safeGo(func() {
 		ticker := time.NewTicker(typingRefreshInterval)
 		defer ticker.Stop()
 
@@ -409,7 +415,7 @@ func (instance *bot) startTyping(ctx context.Context, channelID string) func() {
 
 			instance.sendTypingIndicator(channelID)
 		}
-	}()
+	})
 
 	return func() {
 		close(stop)
@@ -419,7 +425,7 @@ func (instance *bot) startTyping(ctx context.Context, channelID string) func() {
 func (instance *bot) sendTypingIndicator(channelID string) {
 	err := instance.session.ChannelTyping(channelID)
 	if err != nil {
-		slog.Warn("send typing indicator", "channel_id", channelID, "error", err)
+		logWarn("send typing indicator", err, "channel_id", channelID)
 	}
 }
 

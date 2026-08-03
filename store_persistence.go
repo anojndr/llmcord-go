@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"maps"
 	"os"
 	"path/filepath"
@@ -835,12 +834,11 @@ func (store *messageNodeStore) runSaveWorker(
 
 			err := store.persist()
 			if err != nil {
-				slog.Warn(
+				logWarn(
 					"persist message history",
+					err,
 					"store_key",
 					store.storeKey,
-					"error",
-					err,
 				)
 			}
 		case <-saveStop:

@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"log/slog"
 )
 
 type urlContentFetcher[T any] func(context.Context, string) (T, error)
@@ -28,7 +27,7 @@ func fetchConcurrentURLContent[T any](
 
 	for index, result := range taskResults {
 		if result.err != nil {
-			slog.Warn(logMessage, "url", urls[index], "error", result.err)
+			logWarn(logMessage, result.err, "url", urls[index])
 
 			fetchFailed = true
 

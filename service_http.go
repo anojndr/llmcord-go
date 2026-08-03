@@ -78,12 +78,12 @@ func startPublicHTTPServer(
 
 	errCh := make(chan error, 1)
 
-	go func() {
+	safeGo(func() {
 		serveErr := server.Serve(listener)
 		if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
 			errCh <- serveErr
 		}
-	}()
+	})
 
 	return server, errCh, nil
 }

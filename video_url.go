@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"strings"
 )
 
@@ -271,7 +270,7 @@ func fetchDownloadedVideos[T downloadedURLVideoContent](
 
 	for index, result := range taskResults {
 		if result.err != nil {
-			slog.Warn(logMessage, "url", urls[index], "error", result.err)
+			logWarn(logMessage, result.err, "url", urls[index])
 
 			failed = true
 

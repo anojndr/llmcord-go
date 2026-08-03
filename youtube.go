@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"html"
 	"io"
-	"log/slog"
 	"maps"
 	"net/http"
 	"net/url"
@@ -205,17 +204,17 @@ func (client youtubeClient) fetch(ctx context.Context, rawURL string) (youtubeVi
 
 	fetchWaitGroup.Add(youtubeFetchTaskCount)
 
-	go func() {
+	safeGo(func() {
 		defer fetchWaitGroup.Done()
 
 		content, transcriptErr = client.fetchNoteGPTContent(requestContext, videoID)
-	}()
+	})
 
-	go func() {
+	safeGo(func() {
 		defer fetchWaitGroup.Done()
 
 		comments = client.fetchWatchPageComments(requestContext, rawURL, videoID)
-	}()
+	})
 
 	fetchWaitGroup.Wait()
 
@@ -240,7 +239,7 @@ func (client youtubeClient) fetchWatchPageComments(
 ) []youtubeComment {
 	watchPage, err := client.fetchWatchPage(ctx, videoID)
 	if err != nil {
-		slog.Warn("fetch youtube watch page", "url", rawURL, "error", err)
+		logWarn("fetch youtube watch page", err, "url", rawURL)
 
 		return nil
 	}
@@ -252,7 +251,7 @@ func (client youtubeClient) fetchWatchPageComments(
 		watchPage.CommentsToken,
 	)
 	if err != nil {
-		slog.Warn("fetch youtube comments", "url", rawURL, "error", err)
+		logWarn("fetch youtube comments", err, "url", rawURL)
 
 		return nil
 	}

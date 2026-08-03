@@ -32,6 +32,20 @@ func newChatCompletionRouter(httpClient *http.Client) chatCompletionRouter {
 	}
 }
 
+func sendRetryResetDelta(handle func(streamDelta) error, message string, attrs ...any) {
+	err := handle(streamDelta{
+		Thinking:           "",
+		Content:            "",
+		FinishReason:       finishReasonRetryReset,
+		Usage:              nil,
+		ProviderResponseID: "",
+		SearchMetadata:     nil,
+	})
+	if err != nil {
+		logWarn(message, err, attrs...)
+	}
+}
+
 func (client chatCompletionRouter) streamChatCompletion(
 	ctx context.Context,
 	request chatCompletionRequest,
@@ -47,14 +61,14 @@ func (client chatCompletionRouter) streamChatCompletion(
 		keyedRequest.Provider = request.Provider.withSingleAPIKey(apiKey)
 
 		if index > 0 {
-			_ = handle(streamDelta{
-				Thinking:           "",
-				Content:            "",
-				FinishReason:       finishReasonRetryReset,
-				Usage:              nil,
-				ProviderResponseID: "",
-				SearchMetadata:     nil,
-			})
+			sendRetryResetDelta(
+				handle,
+				"send key rotation reset delta",
+				"provider",
+				request.Provider.APIKind,
+				"key_index",
+				index,
+			)
 		}
 
 		wrappedHandle := func(delta streamDelta) error {
@@ -76,6 +90,17 @@ func (client chatCompletionRouter) streamChatCompletion(
 		}
 
 		attemptErrors = append(attemptErrors, err)
+		if index < len(apiKeys)-1 {
+			logWarn(
+				"provider api key attempt failed",
+				err,
+				"provider",
+				request.Provider.APIKind,
+				"key_index",
+				index,
+			)
+		}
+
 		if globalStreamStarted || streamStarted || ctx.Err() != nil || index == len(apiKeys)-1 {
 			if len(attemptErrors) == 1 {
 				return err
@@ -127,14 +152,14 @@ func (client chatCompletionRouter) streamChatCompletionForKey(
 		}
 
 		if attemptNumber > 1 {
-			_ = handle(streamDelta{
-				Thinking:           "",
-				Content:            "",
-				FinishReason:       finishReasonRetryReset,
-				Usage:              nil,
-				ProviderResponseID: "",
-				SearchMetadata:     nil,
-			})
+			sendRetryResetDelta(
+				handle,
+				"send retry reset delta",
+				"provider",
+				request.Provider.APIKind,
+				"attempt",
+				attemptNumber,
+			)
 		}
 
 		err := client.streamChatCompletionOnce(attemptCtx, request, func(delta streamDelta) error {
@@ -165,6 +190,17 @@ func (client chatCompletionRouter) streamChatCompletionForKey(
 		}
 
 		retrySameKey = false
+
+		logWarn(
+			"provider request failed, retrying",
+			err,
+			"provider",
+			request.Provider.APIKind,
+			"attempt",
+			attemptNumber,
+			"retry_delay",
+			retryDelay,
+		)
 
 		err = waitForRetry(ctx, retryDelay)
 		if err != nil {

@@ -40,7 +40,16 @@ func (instance *bot) handleInteractionCreate(
 			return
 		}
 
-		slog.Error("handle interaction", "error", err)
+		logError(
+			"handle interaction",
+			err,
+			"interaction_id",
+			interaction.ID,
+			"type",
+			interaction.Type,
+			"channel_id",
+			interaction.ChannelID,
+		)
 	}
 }
 
@@ -477,7 +486,7 @@ func (instance *bot) handleViewOnRentryButton(
 
 	rentryURL, err := instance.rentry.createEntry(context.Background(), responseText)
 	if err != nil {
-		slog.Warn("create Rentry entry", "message_id", interaction.Message.ID, "error", err)
+		logWarn("create Rentry entry", err, "message_id", interaction.Message.ID)
 
 		return editInteractionResponseText(
 			session,
@@ -516,7 +525,7 @@ func (instance *bot) handleModelCommand(
 
 	channelIDs, err := instance.interactionChannelIDs(interaction)
 	if err != nil {
-		slog.Warn("resolve interaction channel ids", "channel_id", interaction.ChannelID, "error", err)
+		logWarn("resolve interaction channel ids", err, "channel_id", interaction.ChannelID)
 		channelIDs = []string{interaction.ChannelID}
 	}
 
@@ -659,7 +668,7 @@ func (instance *bot) handleModelAutocomplete(
 
 	channelIDs, err := instance.interactionChannelIDs(interaction)
 	if err != nil {
-		slog.Warn("resolve interaction channel ids", "channel_id", interaction.ChannelID, "error", err)
+		logWarn("resolve interaction channel ids", err, "channel_id", interaction.ChannelID)
 		channelIDs = []string{interaction.ChannelID}
 	}
 
@@ -971,7 +980,7 @@ func (instance *bot) handleGroundingCommand(
 
 	channelIDs, err := instance.interactionChannelIDs(interaction)
 	if err != nil {
-		slog.Warn("resolve interaction channel ids", "channel_id", interaction.ChannelID, "error", err)
+		logWarn("resolve interaction channel ids", err, "channel_id", interaction.ChannelID)
 		channelIDs = []string{interaction.ChannelID}
 	}
 

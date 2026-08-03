@@ -202,6 +202,9 @@ Model notes:
 - The bot reloads configuration from disk on incoming messages and slash-command paths, so `config.yaml` changes apply without a restart.
 - `LLMCORD_CONFIG_PATH` is the preferred config override. The legacy `CONFIG_PATH` environment variable still works.
 - `LLMCORD_HTTP_ADDR` overrides the HTTP bind address directly. If it is unset, `PORT` enables the health server on `:<port>`.
+- `LLMCORD_LOG_LEVEL` sets the minimum log level (`debug`, `info`, `warn`, or `error`; default `info`).
+- `LLMCORD_LOG_FORMAT` selects the log output format (`text` or `json`; default `text`). JSON mode is intended for log aggregation services.
+- Every log record includes the source file and line. Error records additionally include a captured stack trace, and panics in Discord event handlers or background goroutines are recovered and logged with the full stack instead of taking down the bot.
 - Generic website fetching rejects localhost, private, link-local, and unsafe redirect targets.
 - Generic website URL validation, Exa Contents, Tavily Extract, and the built-in HTML/text fetcher each receive an independent 30-second request budget, so a slow provider cannot pre-cancel later fallbacks.
 - The built-in website fetcher keeps a standards-compliant, per-fetch cookie jar across redirects so regional and login-cookie synchronization flows can terminate without sharing cookies between unrelated fetches.
