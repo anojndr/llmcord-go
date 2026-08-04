@@ -2,7 +2,7 @@
 
 `llmcord-go` is a Go rewrite of [`jakobdylanc/llmcord`](https://github.com/jakobdylanc/llmcord).
 
-It turns Discord reply chains into a frontend for OpenAI-compatible chat-completions APIs, Exa Research Pro, OpenAI Codex Responses providers, and native Gemini models — including local backends such as Ollama, LM Studio, and vLLM.
+It turns Discord reply chains into a frontend for OpenAI-compatible chat-completions APIs, Exa Research Pro, and native Gemini models — including local backends such as Ollama, LM Studio, and vLLM.
 
 ## Highlights
 
@@ -37,12 +37,6 @@ go run .
 
 Use a different config path with `LLMCORD_CONFIG_PATH=/path/to/config.yaml go run .`. Startup prints `bot is online`.
 
-### Optional: get a ChatGPT Codex API key
-
-```bash
-go run ./cmd/chatgpt-api-key
-```
-
 ## Deployment
 
 ### Docker Compose
@@ -59,7 +53,7 @@ When `PORT` or `LLMCORD_HTTP_ADDR` is set, the bot exposes JSON health responses
 
 ## Configuration
 
-Providers are declared with `base_url` (OpenAI-compatible). The provider name selects the API kind: names containing `gemini` use the native Gemini API (no `base_url` needed), `openai-codex` uses the OpenAI Codex API, and `exa` is an OpenAI-compatible research provider with a default base URL. `api_key` accepts a string or a YAML list; multiple keys rotate in round-robin and fall back to remaining keys on failure.
+Providers are declared with `base_url` (OpenAI-compatible). The provider name selects the API kind: names containing `gemini` use the native Gemini API (no `base_url` needed), and `exa` is an OpenAI-compatible research provider with a default base URL. `api_key` accepts a string or a YAML list; the first key is used for requests.
 
 ### Discord and Runtime
 
@@ -77,7 +71,7 @@ Providers are declared with `base_url` (OpenAI-compatible). The provider name se
 
 | Setting | Purpose |
 | --- | --- |
-| `providers` | Keyed by name. OpenAI-compatible providers use `base_url`; names containing `gemini` use the native Gemini API (with `enable_grounding: true` for the Google Search tool), `openai-codex` defaults to `https://chatgpt.com/backend-api`, and `exa` defaults to `https://api.exa.ai`. |
+| `providers` | Keyed by name. OpenAI-compatible providers use `base_url`; names containing `gemini` use the native Gemini API (with `enable_grounding: true` for the Google Search tool), and `exa` defaults to `https://api.exa.ai`. |
 | `models` | Ordered `<provider>/<model>` map. The first entry is the startup default. `:vision` is a local hint for image-capability heuristics. |
 | `context_window` | Optional per-provider context windows (plain ints or `k`/`m` suffixes), applied to models without their own value. See model notes. |
 | `channel_model_locks` | Map of channel IDs to configured models. `/model` is disabled in locked channels. |
@@ -92,7 +86,7 @@ Model notes:
 
 - `context_window` is local metadata for retained-context reply-footers and compaction. Provider-only tokens (hidden reasoning) aren't counted; punctuation-heavy text (CSV, logs) is budgeted more conservatively. It also derives the per-message character limit: one message is capped at roughly one window of text, so oversized pastes and text attachments are truncated to fit. Without a configured window there is no per-message cap.
 - Context windows can be set per provider with the top-level `context_window` map (e.g. `context_window: { router: 200k, openai: 200k }`); models without their own value inherit their provider's. A per-model `context_window` always wins over the provider value.
-- OpenAI GPT-5 aliases (`openai/gpt-5.4-low`, `-none`, `-minimal`, `-medium`, `-high`, `-xhigh`) control reasoning effort: `reasoning.effort` on the built-in `openai` provider, `reasoning_effort` elsewhere; `-minimal` normalizes to `low`. Gemini aliases (`-minimal`–`-high`) control thought effort; Codex aliases (`-none`–`-xhigh`) control reasoning effort.
+- OpenAI GPT-5 aliases (`openai/gpt-5.4-low`, `-none`, `-minimal`, `-medium`, `-high`, `-xhigh`) control reasoning effort: `reasoning.effort` on the built-in `openai` provider, `reasoning_effort` elsewhere; `-minimal` normalizes to `low`. Gemini aliases (`-minimal`–`-high`) control thought effort.
 - `openai/...` models always send a stable `prompt_cache_key` (even with a custom `base_url`) and use the Priority inference tier (`service_tier: "priority"`). `prompt_cache_retention: 24h` can be set via `extra_body`.
 
 ### Search and Visual Search
@@ -126,11 +120,10 @@ Model notes:
 - Configuration reloads from disk on incoming messages and slash commands, so `config.yaml` changes apply without a restart.
 - Environment variables: `LLMCORD_CONFIG_PATH` (preferred; legacy `CONFIG_PATH` still works), `LLMCORD_HTTP_ADDR` (bind address, else `PORT`), `LLMCORD_LOG_LEVEL` (`debug`/`info`/`warn`/`error`), `LLMCORD_LOG_FORMAT` (`text`/`json`).
 - Every log record includes source file and line; errors carry stack traces, and panics in handlers are recovered and logged.
-- Generic website fetching rejects localhost, private, link-local, and unsafe redirects. Exa Contents, Tavily Extract, and the built-in fetcher each get an independent 30-second budget.
+- Generic website fetching rejects localhost, private, link-local, and unsafe redirects.
 - AliExpress product pages are replaced with the embedded product ID, OG title, and image list.
 - OpenRouter providers send `transforms: ["middle-out"]` unless overridden; unauthenticated 9Router setups omit the `Authorization` header.
-- Provider behavior: retry transient empty streams and HTTP 429/5xx with backoff before rotating keys, honor retry delays, cap streams at 5 minutes (30 for built-in OpenAI Responses), cap search-decider requests at 60 seconds, and bound external request fan-out at 8 concurrent operations.
-- Discord REST calls use a resilient transport that retries transient failures up to 3 times with backoff.
+- Provider requests are sent once: no retries, no key rotation, and no artificial context deadlines. External request fan-out is bounded at 8 concurrent operations.
 
 ## Development
 

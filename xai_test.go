@@ -770,7 +770,7 @@ func TestAssignXAIPreviousResponseIDUsesAssistantAnchorAndTrimsHistory(t *testin
 		PreviousResponseID:          "",
 		RequestID:                   "",
 		Messages: []chatMessage{
-			{Role: openAICodexRoleSystem, Content: "You are concise."},
+			{Role: messageRoleSystem, Content: "You are concise."},
 			{Role: messageRoleUser, Content: "first question"},
 			{Role: messageRoleAssistant, Content: "first answer"},
 			{Role: messageRoleUser, Content: "follow-up one"},
@@ -833,7 +833,7 @@ func TestAssignXAIPreviousResponseIDSkipsBuiltInOpenAIProvider(t *testing.T) {
 		PreviousResponseID:          "",
 		RequestID:                   "",
 		Messages: []chatMessage{
-			{Role: openAICodexRoleSystem, Content: "You are concise."},
+			{Role: messageRoleSystem, Content: "You are concise."},
 			{Role: messageRoleUser, Content: "first question"},
 			{Role: messageRoleAssistant, Content: "first answer"},
 			{Role: messageRoleUser, Content: "follow-up"},
@@ -1472,7 +1472,7 @@ func assertXAIResponsesSystemMessage(t *testing.T, rawMessage any) {
 		t.Fatalf("unexpected system message payload: %#v", rawMessage)
 	}
 
-	if systemMessage["role"] != openAICodexRoleSystem || systemMessage["content"] != "You are concise." {
+	if systemMessage["role"] != messageRoleSystem || systemMessage["content"] != "You are concise." {
 		t.Fatalf("unexpected system message: %#v", systemMessage)
 	}
 }
@@ -1680,7 +1680,7 @@ func newXAIResponsesStreamingRequest(baseURL string) chatCompletionRequest {
 		PreviousResponseID:          "",
 		RequestID:                   "",
 		Messages: []chatMessage{
-			{Role: openAICodexRoleSystem, Content: "You are concise."},
+			{Role: messageRoleSystem, Content: "You are concise."},
 			{
 				Role: messageRoleUser,
 				Content: []contentPart{

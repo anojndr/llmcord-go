@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -21,15 +20,9 @@ import (
 var errSearchBackendUnavailable = errors.New("search backend unavailable")
 
 const (
-	testExaPrimaryValue         = "exa-primary-value"
-	testExaBackupValue          = "exa-backup-value"
-	testExaPrimaryAuthHeader    = testExaPrimaryValue
-	testExaBackupAuthHeader     = testExaBackupValue
-	testTavilyPrimaryAPIKey     = "primary-key"
-	testTavilyBackupAPIKey      = "backup-key"
-	testTavilyPrimaryAuthHeader = "Bearer " + testTavilyPrimaryAPIKey
-	testTavilyBackupAuthHeader  = "Bearer " + testTavilyBackupAPIKey
-	testWebSearchMaxURLs        = 7
+	testExaPrimaryValue     = "exa-primary-value"
+	testTavilyPrimaryAPIKey = "primary-key"
+	testWebSearchMaxURLs    = 7
 )
 
 func testExaAPIWebSearchConfig() config {
@@ -37,7 +30,7 @@ func testExaAPIWebSearchConfig() config {
 	loadedConfig.WebSearch.MaxURLs = testWebSearchMaxURLs
 	loadedConfig.WebSearch.Exa = exaSearchConfig{
 		APIKey:            testExaPrimaryValue,
-		APIKeys:           []string{testExaPrimaryValue, testExaBackupValue},
+		APIKeys:           []string{testExaPrimaryValue},
 		SearchType:        defaultExaSearchType,
 		TextMaxCharacters: defaultExaSearchTextMaxCharacters,
 	}
@@ -51,7 +44,7 @@ func testTavilySearchConfig() config {
 	loadedConfig.WebSearch.MaxURLs = testWebSearchMaxURLs
 	loadedConfig.WebSearch.Tavily = tavilySearchConfig{
 		APIKey:  testTavilyPrimaryAPIKey,
-		APIKeys: []string{testTavilyPrimaryAPIKey, testTavilyBackupAPIKey},
+		APIKeys: []string{testTavilyPrimaryAPIKey},
 	}
 
 	return loadedConfig
@@ -133,61 +126,6 @@ func newExaAPISearchTestClient(handler http.HandlerFunc) (exaSearchClient, func(
 	}, httpServer.Close
 }
 
-func newTavilySearchTestClient(handler http.HandlerFunc) (tavilySearchClient, func()) {
-	httpServer := httptest.NewServer(handler)
-
-	return tavilySearchClient{
-		endpoint:   httpServer.URL,
-		httpClient: httpServer.Client(),
-	}, httpServer.Close
-}
-
-func writeTavilySearchResponse(
-	t *testing.T,
-	responseWriter http.ResponseWriter,
-	response tavilySearchResponse,
-) {
-	t.Helper()
-
-	responseWriter.Header().Set("Content-Type", "application/json")
-
-	err := json.NewEncoder(responseWriter).Encode(response)
-	if err != nil {
-		t.Errorf("encode Tavily response: %v", err)
-	}
-}
-
-func testTavilySearchSuccessResponse() tavilySearchResponse {
-	return tavilySearchResponse{
-		Results: []tavilySearchResponseResult{
-			{
-				Title:   "Example Source",
-				URL:     "https://example.com/source",
-				Content: "A relevant snippet",
-				RawContent: "Full article text\n" +
-					"URL: https://example.com/not-a-source\n" +
-					"Title: Embedded heading",
-			},
-		},
-	}
-}
-
-func assertTavilySearchRequest(t *testing.T, request tavilySearchRequest) {
-	t.Helper()
-
-	if request.SearchDepth != "advanced" {
-		t.Fatalf("unexpected Tavily search depth: %q", request.SearchDepth)
-	}
-
-	if request.MaxResults != testWebSearchMaxURLs {
-		t.Fatalf("unexpected Tavily max results: %d", request.MaxResults)
-	}
-
-	if request.IncludeRawContent != "text" {
-		t.Fatalf("unexpected Tavily raw content setting: %q", request.IncludeRawContent)
-	}
-}
-
 func assertExaSearchRequest(t *testing.T, args map[string]any) {
 	t.Helper()
 
@@ -243,18 +181,6 @@ func assertExaAPISearchRequest(
 
 	if !request.Contents.Highlights {
 		t.Fatal("expected Exa API highlights to be true")
-	}
-}
-
-func assertExaAPIAuthHeaders(t *testing.T, authHeaders []string) {
-	t.Helper()
-
-	if len(authHeaders) != 2 {
-		t.Fatalf("unexpected Exa API attempt count: %d", len(authHeaders))
-	}
-
-	if authHeaders[0] != testExaPrimaryAuthHeader || authHeaders[1] != testExaBackupAuthHeader {
-		t.Fatalf("unexpected Exa API auth headers: %#v", authHeaders)
 	}
 }
 
@@ -325,58 +251,6 @@ func mapIntValue(values map[string]any, key string) int {
 	default:
 		return 0
 	}
-}
-
-func assertSearchResultHasSingleSource(
-	t *testing.T,
-	result webSearchResult,
-	contentLabel string,
-	contentLine string,
-) {
-	t.Helper()
-
-	if !containsFold(result.Text, "Example Source") {
-		t.Fatalf("expected search result title in text: %q", result.Text)
-	}
-
-	if !containsFold(result.Text, "https://example.com/source") {
-		t.Fatalf("expected search result URL in text: %q", result.Text)
-	}
-
-	if !containsFold(result.Text, contentLabel) {
-		t.Fatalf("expected %s section in text: %q", contentLabel, result.Text)
-	}
-
-	if !containsFold(result.Text, contentLine) {
-		t.Fatalf("expected %s body in text: %q", contentLabel, result.Text)
-	}
-
-	if !containsFold(result.Text, "| URL: https://example.com/not-a-source") {
-		t.Fatalf("expected embedded URL line to be escaped: %q", result.Text)
-	}
-
-	sources := extractSearchSources(result.Text)
-	if len(sources) != 1 {
-		t.Fatalf("unexpected source count parsed from text: %d", len(sources))
-	}
-
-	const sourceURL = "https://example.com/source"
-
-	if sources[0].URL != sourceURL {
-		t.Fatalf("unexpected source parsed from text: %#v", sources[0])
-	}
-}
-
-func assertExaAPIResult(t *testing.T, result webSearchResult) {
-	t.Helper()
-
-	assertSearchResultHasSingleSource(t, result, "Text", "| Full article text")
-}
-
-func assertTavilyRawContentResult(t *testing.T, result webSearchResult) {
-	t.Helper()
-
-	assertSearchResultHasSingleSource(t, result, "Raw Content", "| Full article text")
 }
 
 type stubChatCompletionClient struct {
@@ -1549,132 +1423,6 @@ func TestExaSearchClientSearchRunsMCPQueriesConcurrentlyAndKeepsOrderWhenNoAPIKe
 	}
 }
 
-func TestExaSearchClientSearchUsesAPIWhenConfiguredAndRetriesConfiguredAPIKeys(t *testing.T) {
-	t.Parallel()
-
-	var (
-		requestsMu   sync.Mutex
-		authHeaders  []string
-		searchBodies []exaSearchRequest
-	)
-
-	primaryKey := t.Name() + "-primary"
-	backupKey := t.Name() + "-backup"
-
-	client, closeServer := newExaAPISearchTestClient(http.HandlerFunc(func(
-		responseWriter http.ResponseWriter,
-		request *http.Request,
-	) {
-		body := decodeExaSearchRequest(t, request.Body)
-
-		authHeader := request.Header.Get("X-Api-Key")
-
-		requestsMu.Lock()
-		defer requestsMu.Unlock()
-
-		authHeaders = append(authHeaders, authHeader)
-		searchBodies = append(searchBodies, body)
-
-		switch authHeader {
-		case primaryKey:
-			http.Error(responseWriter, `{"error":"rate limited"}`, http.StatusTooManyRequests)
-		case backupKey:
-			responseWriter.Header().Set("Content-Type", "application/json")
-
-			err := json.NewEncoder(responseWriter).Encode(testExaAPISearchSuccessResponse())
-			if err != nil {
-				t.Errorf("encode Exa response: %v", err)
-			}
-		default:
-			http.Error(responseWriter, `{"error":"unexpected api key"}`, http.StatusUnauthorized)
-		}
-	}))
-	defer closeServer()
-
-	cfg := testSearchConfig()
-	cfg.WebSearch.MaxURLs = testWebSearchMaxURLs
-	cfg.WebSearch.Exa = exaSearchConfig{
-		APIKey:            primaryKey,
-		APIKeys:           []string{primaryKey, backupKey},
-		SearchType:        defaultExaSearchType,
-		TextMaxCharacters: defaultExaSearchTextMaxCharacters,
-	}
-
-	results, err := client.search(context.Background(), cfg, []string{"latest ai news"})
-	if err != nil {
-		t.Fatalf("search: %v", err)
-	}
-
-	if !slices.Equal(authHeaders, []string{primaryKey, backupKey}) {
-		t.Fatalf("unexpected Exa auth headers: %#v", authHeaders)
-	}
-
-	if len(searchBodies) != 2 {
-		t.Fatalf("unexpected Exa API request count: %d", len(searchBodies))
-	}
-
-	assertExaAPISearchRequest(
-		t,
-		searchBodies[0],
-		defaultExaSearchType,
-		testExaAPIWebSearchConfig().WebSearch.Exa.TextMaxCharacters,
-	)
-	assertExaAPISearchRequest(
-		t,
-		searchBodies[1],
-		defaultExaSearchType,
-		testExaAPIWebSearchConfig().WebSearch.Exa.TextMaxCharacters,
-	)
-
-	if len(results) != 1 {
-		t.Fatalf("unexpected result count: %d", len(results))
-	}
-
-	assertExaAPIResult(t, results[0])
-}
-
-func TestExaSearchClientSearchAttemptsAllConfiguredAPIKeysBeforeFailure(t *testing.T) {
-	t.Parallel()
-
-	var (
-		requestsMu  sync.Mutex
-		authHeaders []string
-	)
-
-	client, closeServer := newExaAPISearchTestClient(http.HandlerFunc(func(
-		responseWriter http.ResponseWriter,
-		request *http.Request,
-	) {
-		authHeader := request.Header.Get("X-Api-Key")
-
-		requestsMu.Lock()
-		defer requestsMu.Unlock()
-
-		authHeaders = append(authHeaders, authHeader)
-
-		switch authHeader {
-		case testExaPrimaryAuthHeader:
-			http.Error(responseWriter, `{"error":"invalid key"}`, http.StatusUnauthorized)
-		case testExaBackupAuthHeader:
-			http.Error(responseWriter, `{"error":"rate limited"}`, http.StatusTooManyRequests)
-		default:
-			http.Error(responseWriter, `{"error":"unexpected api key"}`, http.StatusUnauthorized)
-		}
-	}))
-	defer closeServer()
-
-	_, err := client.search(context.Background(), testExaAPIWebSearchConfig(), []string{"latest ai news"})
-	if err == nil {
-		t.Fatal("expected Exa API search to fail after exhausting keys")
-	}
-
-	if !strings.Contains(err.Error(), "all configured Exa API keys failed") {
-		t.Fatalf("unexpected Exa API error: %v", err)
-	}
-
-	assertExaAPIAuthHeaders(t, authHeaders)
-}
-
 func TestExaSearchClientSearchUsesConfiguredSearchType(t *testing.T) {
 	t.Parallel()
 
@@ -1919,238 +1667,6 @@ func TestRoutedWebSearchClientFallsBackToMCPWhenTavilyFails(t *testing.T) {
 
 	if len(results) != 1 || results[0].Text != "mcp fallback result" {
 		t.Fatalf("unexpected MCP fallback results: %#v", results)
-	}
-}
-
-func TestTavilySearchClientSearchRetriesConfiguredAPIKeys(t *testing.T) {
-	t.Parallel()
-
-	primaryKey := t.Name() + "-primary"
-	backupKey := t.Name() + "-backup"
-
-	var (
-		requestsMu   sync.Mutex
-		authHeaders  []string
-		searchBodies []tavilySearchRequest
-	)
-
-	client, closeServer := newTavilySearchTestClient(http.HandlerFunc(func(
-		responseWriter http.ResponseWriter,
-		request *http.Request,
-	) {
-		var body tavilySearchRequest
-
-		err := json.NewDecoder(request.Body).Decode(&body)
-		if err != nil {
-			t.Errorf("decode request body: %v", err)
-			responseWriter.WriteHeader(http.StatusBadRequest)
-
-			return
-		}
-
-		authHeader := request.Header.Get("Authorization")
-
-		requestsMu.Lock()
-
-		defer requestsMu.Unlock()
-
-		authHeaders = append(authHeaders, authHeader)
-		searchBodies = append(searchBodies, body)
-
-		switch authHeader {
-		case "Bearer " + primaryKey:
-			http.Error(responseWriter, "rate limited", http.StatusTooManyRequests)
-		case "Bearer " + backupKey:
-			writeTavilySearchResponse(t, responseWriter, testTavilySearchSuccessResponse())
-		default:
-			http.Error(responseWriter, "unexpected api key", http.StatusUnauthorized)
-		}
-	}))
-	defer closeServer()
-
-	cfg := testSearchConfig()
-	cfg.WebSearch.MaxURLs = testWebSearchMaxURLs
-	cfg.WebSearch.Tavily = tavilySearchConfig{
-		APIKey:  primaryKey,
-		APIKeys: []string{primaryKey, backupKey},
-	}
-
-	results, err := client.search(context.Background(), cfg, []string{"latest ai news"})
-	if err != nil {
-		t.Fatalf("search: %v", err)
-	}
-
-	if !slices.Equal(authHeaders, []string{"Bearer " + primaryKey, "Bearer " + backupKey}) {
-		t.Fatalf("unexpected Tavily auth headers: %#v", authHeaders)
-	}
-
-	if len(searchBodies) != 2 {
-		t.Fatalf("unexpected Tavily request count: %d", len(searchBodies))
-	}
-
-	assertTavilySearchRequest(t, searchBodies[0])
-
-	if len(results) != 1 {
-		t.Fatalf("unexpected result count: %d", len(results))
-	}
-
-	assertTavilyRawContentResult(t, results[0])
-}
-
-func TestTavilySearchClientSearchRetriesConfiguredAPIKeysOnInternalServerError(t *testing.T) {
-	t.Parallel()
-
-	primaryKey := t.Name() + "-primary"
-	backupKey := t.Name() + "-backup"
-
-	var (
-		requestsMu   sync.Mutex
-		authHeaders  []string
-		searchBodies []tavilySearchRequest
-	)
-
-	client, closeServer := newTavilySearchTestClient(http.HandlerFunc(func(
-		responseWriter http.ResponseWriter,
-		request *http.Request,
-	) {
-		var body tavilySearchRequest
-
-		err := json.NewDecoder(request.Body).Decode(&body)
-		if err != nil {
-			t.Errorf("decode request body: %v", err)
-			responseWriter.WriteHeader(http.StatusBadRequest)
-
-			return
-		}
-
-		authHeader := request.Header.Get("Authorization")
-
-		requestsMu.Lock()
-		defer requestsMu.Unlock()
-
-		authHeaders = append(authHeaders, authHeader)
-		searchBodies = append(searchBodies, body)
-
-		switch authHeader {
-		case "Bearer " + primaryKey:
-			http.Error(responseWriter, "upstream failure", http.StatusInternalServerError)
-		case "Bearer " + backupKey:
-			writeTavilySearchResponse(t, responseWriter, testTavilySearchSuccessResponse())
-		default:
-			http.Error(responseWriter, "unexpected api key", http.StatusUnauthorized)
-		}
-	}))
-	defer closeServer()
-
-	cfg := testSearchConfig()
-	cfg.WebSearch.MaxURLs = testWebSearchMaxURLs
-	cfg.WebSearch.Tavily = tavilySearchConfig{
-		APIKey:  primaryKey,
-		APIKeys: []string{primaryKey, backupKey},
-	}
-
-	results, err := client.search(context.Background(), cfg, []string{"latest ai news"})
-	if err != nil {
-		t.Fatalf("search: %v", err)
-	}
-
-	if !slices.Equal(authHeaders, []string{"Bearer " + primaryKey, "Bearer " + backupKey}) {
-		t.Fatalf("unexpected Tavily auth headers: %#v", authHeaders)
-	}
-
-	if len(searchBodies) != 2 {
-		t.Fatalf("unexpected Tavily request count: %d", len(searchBodies))
-	}
-
-	assertTavilySearchRequest(t, searchBodies[0])
-	assertTavilySearchRequest(t, searchBodies[1])
-
-	if len(results) != 1 {
-		t.Fatalf("unexpected result count: %d", len(results))
-	}
-
-	assertTavilyRawContentResult(t, results[0])
-}
-
-func TestTavilySearchClientSearchAttemptsAllKeysBeforeFailure(t *testing.T) {
-	t.Parallel()
-	runTavilySearchAttemptsAllKeysBeforeFailureTest(
-		t,
-		http.StatusUnauthorized,
-		"invalid key",
-		http.StatusTooManyRequests,
-		"rate limited",
-	)
-}
-
-func TestTavilySearchClientSearchAttemptsAllKeysBeforeFailureOnInternalServerError(t *testing.T) {
-	t.Parallel()
-	runTavilySearchAttemptsAllKeysBeforeFailureTest(
-		t,
-		http.StatusInternalServerError,
-		"upstream failure",
-		http.StatusBadGateway,
-		"bad gateway",
-	)
-}
-
-func runTavilySearchAttemptsAllKeysBeforeFailureTest(
-	t *testing.T,
-	primaryStatusCode int,
-	primaryMessage string,
-	backupStatusCode int,
-	backupMessage string,
-) {
-	t.Helper()
-
-	primaryKey := t.Name() + "-primary"
-	backupKey := t.Name() + "-backup"
-
-	var (
-		requestsMu  sync.Mutex
-		authHeaders []string
-	)
-
-	client, closeServer := newTavilySearchTestClient(http.HandlerFunc(func(
-		responseWriter http.ResponseWriter,
-		request *http.Request,
-	) {
-		authHeader := request.Header.Get("Authorization")
-
-		requestsMu.Lock()
-		defer requestsMu.Unlock()
-
-		authHeaders = append(authHeaders, authHeader)
-
-		switch authHeader {
-		case "Bearer " + primaryKey:
-			http.Error(responseWriter, primaryMessage, primaryStatusCode)
-		case "Bearer " + backupKey:
-			http.Error(responseWriter, backupMessage, backupStatusCode)
-		default:
-			http.Error(responseWriter, "unexpected api key", http.StatusUnauthorized)
-		}
-	}))
-	defer closeServer()
-
-	cfg := testSearchConfig()
-	cfg.WebSearch.MaxURLs = testWebSearchMaxURLs
-	cfg.WebSearch.Tavily = tavilySearchConfig{
-		APIKey:  primaryKey,
-		APIKeys: []string{primaryKey, backupKey},
-	}
-
-	_, err := client.search(context.Background(), cfg, []string{"latest ai news"})
-	if err == nil {
-		t.Fatal("expected Tavily search to fail after exhausting keys")
-	}
-
-	if !strings.Contains(err.Error(), "all configured Tavily API keys failed") {
-		t.Fatalf("unexpected Tavily error: %v", err)
-	}
-
-	if !slices.Equal(authHeaders, []string{"Bearer " + primaryKey, "Bearer " + backupKey}) {
-		t.Fatalf("unexpected Tavily auth headers: %#v", authHeaders)
 	}
 }
 

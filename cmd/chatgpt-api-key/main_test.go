@@ -217,10 +217,6 @@ func TestDefaultAuthFlowUsesCLIConfiguration(t *testing.T) {
 		t.Fatal("expected default auth flow client")
 	}
 
-	if flow.client.Timeout != chatGPTRequestTimeout {
-		t.Fatalf("client timeout = %s, want %s", flow.client.Timeout, chatGPTRequestTimeout)
-	}
-
 	if flow.authorizeURL != chatGPTAuthorizeURL {
 		t.Fatalf("authorizeURL = %q, want %q", flow.authorizeURL, chatGPTAuthorizeURL)
 	}

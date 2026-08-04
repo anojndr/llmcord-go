@@ -279,7 +279,6 @@ func newTestYouTubeShortsClient(server *httptest.Server) youtubeShortsClient {
 		infoURL:            server.URL + "/info",
 		loaderURL:          server.URL + "/loader",
 		userAgent:          youtubeUserAgent,
-		requestTimeout:     time.Second,
 		loaderPollInterval: time.Millisecond,
 	}
 }

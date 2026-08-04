@@ -19,21 +19,19 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
-	"time"
 )
 
 const (
-	chatGPTAuthorizeURL   = "https://auth.openai.com/oauth/authorize"
-	chatGPTExchangeURL    = "https://auth.openai.com/oauth/token"
-	chatGPTClientID       = "app_EMoamEEZ73f0CkXaXp7hrann"
-	chatGPTRedirectURI    = "http://localhost:1455/auth/callback"
-	chatGPTCallbackAddr   = "localhost:1455"
-	chatGPTCallbackPath   = "/auth/callback"
-	chatGPTOriginator     = "llmcord-go"
-	chatGPTScope          = "openid profile email offline_access"
-	chatGPTCodeBytes      = 32
-	chatGPTStateBytes     = 16
-	chatGPTRequestTimeout = 30 * time.Second
+	chatGPTAuthorizeURL = "https://auth.openai.com/oauth/authorize"
+	chatGPTExchangeURL  = "https://auth.openai.com/oauth/token"
+	chatGPTClientID     = "app_EMoamEEZ73f0CkXaXp7hrann"
+	chatGPTRedirectURI  = "http://localhost:1455/auth/callback"
+	chatGPTCallbackAddr = "localhost:1455"
+	chatGPTCallbackPath = "/auth/callback"
+	chatGPTOriginator   = "llmcord-go"
+	chatGPTScope        = "openid profile email offline_access"
+	chatGPTCodeBytes    = 32
+	chatGPTStateBytes   = 16
 )
 
 const chatGPTSuccessHTML = `<!doctype html>
@@ -108,7 +106,6 @@ func runMain() int {
 
 func defaultAuthFlow() authFlow {
 	httpClient := new(http.Client)
-	httpClient.Timeout = chatGPTRequestTimeout
 
 	return authFlow{
 		client:       httpClient,
@@ -250,7 +247,6 @@ func startCallbackServer(ctx context.Context, address string, state string) (*ca
 
 	httpServer := new(http.Server)
 	httpServer.Handler = handler
-	httpServer.ReadHeaderTimeout = chatGPTRequestTimeout
 
 	go func() {
 		serveErr := httpServer.Serve(listener)

@@ -438,10 +438,7 @@ func (instance *bot) analyzeMediaWithGemini(
 		return "", fmt.Errorf("build gemini media analysis request: %w", err)
 	}
 
-	analysisContext, cancel := context.WithTimeout(ctx, searchDeciderTimeout)
-	defer cancel()
-
-	responseText, err := collectChatCompletionText(analysisContext, instance.chatCompletions, request)
+	responseText, err := collectChatCompletionText(ctx, instance.chatCompletions, request)
 	if err != nil {
 		return "", fmt.Errorf("collect gemini media analysis: %w", err)
 	}

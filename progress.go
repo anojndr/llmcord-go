@@ -129,7 +129,7 @@ func (instance *bot) startRequestProgress(
 		progress.tracker.progressActive = true
 	}
 
-	go progress.run(withoutCancelContext(ctx))
+	go progress.run(ctx)
 
 	return progress
 }

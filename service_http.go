@@ -93,13 +93,7 @@ func shutdownPublicHTTPServer(ctx context.Context, server *http.Server) error {
 		return nil
 	}
 
-	shutdownContext, cancel := context.WithTimeout(
-		context.WithoutCancel(ctx),
-		publicHTTPShutdownTimeout,
-	)
-	defer cancel()
-
-	err := server.Shutdown(shutdownContext)
+	err := server.Shutdown(ctx)
 	if err != nil {
 		return fmt.Errorf("shutdown public http server: %w", err)
 	}
