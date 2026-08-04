@@ -482,7 +482,7 @@ func TestBuildConversationSuppressesUnsupportedWarningForReplyTargetGeminiMedia(
 	conversation, warnings := instance.buildConversation(
 		context.Background(),
 		sourceMessage,
-		defaultMaxText,
+		testConversationTextLimit,
 		messageContentOptions{
 			maxImages:                0,
 			allowAudio:               false,

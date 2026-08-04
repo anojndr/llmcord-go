@@ -376,8 +376,6 @@ func TestHandleGeneratedStreamDeltaMergesSearchMetadataFromStream(t *testing.T) 
 		thinkingAccumulator:   &segmentAccumulator{maxLength: embedResponseMaxLength, segments: []string{""}},
 		finishReason:          &finishReason,
 		lastRenderTime:        &lastRenderTime,
-		maxLength:             embedResponseMaxLength,
-		usePlainResponses:     true,
 		initialSearchMetadata: nil,
 		rawAnswerText:         "",
 		renderedAnswerText:    "",
@@ -503,7 +501,7 @@ func TestGenerateAndSendResponseKeepsSearchDeciderSourcesAfterGeminiRetryReset(t
 	tracker := newResponseTracker(sourceMessage, request.ConfiguredModel)
 	tracker.searchMetadata = searchMetadata
 
-	err = instance.generateAndSendResponse(context.Background(), request, tracker, nil, false)
+	err = instance.generateAndSendResponse(context.Background(), request, tracker, nil)
 	if err != nil {
 		t.Fatalf("generate and send response: %v", err)
 	}
@@ -676,64 +674,6 @@ func TestNewReplyMessageDisablesReplyAuthorMention(t *testing.T) {
 	}
 }
 
-func TestBuildPlainComponentsAddsActionButtons(t *testing.T) {
-	t.Parallel()
-
-	components := buildPlainComponents("hello", responseActions{
-		showSources:  true,
-		showThinking: true,
-		showRentry:   true,
-	})
-	if len(components) != 2 {
-		t.Fatalf("unexpected component count: %#v", components)
-	}
-
-	textDisplay, textDisplayOK := components[0].(*discordgo.TextDisplay)
-	if !textDisplayOK {
-		t.Fatalf("expected text display component, got %T", components[0])
-	}
-
-	if textDisplay.Content != "hello" {
-		t.Fatalf("unexpected text display content: %#v", textDisplay)
-	}
-
-	row, rowOK := components[1].(*discordgo.ActionsRow)
-	if !rowOK {
-		t.Fatalf("expected action row component, got %T", components[1])
-	}
-
-	if len(row.Components) != 3 {
-		t.Fatalf("unexpected action row button count: %#v", row.Components)
-	}
-
-	firstButton, firstButtonOK := row.Components[0].(*discordgo.Button)
-	if !firstButtonOK {
-		t.Fatalf("expected first row button, got %T", row.Components[0])
-	}
-
-	if firstButton.CustomID != showThinkingButtonCustomID {
-		t.Fatalf("unexpected first button custom id: %q", firstButton.CustomID)
-	}
-
-	secondButton, secondButtonOK := row.Components[1].(*discordgo.Button)
-	if !secondButtonOK {
-		t.Fatalf("expected second row button, got %T", row.Components[1])
-	}
-
-	if secondButton.CustomID != showSourcesButtonCustomID {
-		t.Fatalf("unexpected second button custom id: %q", secondButton.CustomID)
-	}
-
-	thirdButton, thirdButtonOK := row.Components[2].(*discordgo.Button)
-	if !thirdButtonOK {
-		t.Fatalf("expected third row button, got %T", row.Components[2])
-	}
-
-	if thirdButton.CustomID != viewOnRentryButtonCustomID {
-		t.Fatalf("unexpected third button custom id: %q", thirdButton.CustomID)
-	}
-}
-
 func TestBuildResponseEmbedSetsConfiguredModelAsAuthor(t *testing.T) {
 	t.Parallel()
 
@@ -865,7 +805,6 @@ func testRenderFinalResponseResendsImgbbURLsWithoutBreakingReplyHistory(t *testi
 		&accumulator,
 		"",
 		finishReasonStop,
-		false,
 	)
 	if err != nil {
 		t.Fatalf("render final response: %v", err)
@@ -1022,7 +961,7 @@ func assertImgbbReplyConversation(
 	conversation, warnings := instance.buildConversation(
 		context.Background(),
 		followUpMessage,
-		defaultMaxText,
+		testConversationTextLimit,
 		contentOptions,
 		defaultMaxMessages,
 		false,
@@ -1374,76 +1313,6 @@ func TestRenderEmbedResponseDeletesExtraMessagesWhenSegmentCountShrinks(t *testi
 	}
 }
 
-func TestRenderPlainResponseDeletesExtraMessagesWhenSegmentCountShrinks(t *testing.T) {
-	t.Parallel()
-
-	const (
-		channelID     = "channel-1"
-		sourceID      = "source-message"
-		firstReplyID  = "assistant-message-1"
-		secondReplyID = "assistant-message-2"
-	)
-
-	sourceMessage := new(discordgo.Message)
-	sourceMessage.ID = sourceID
-	sourceMessage.ChannelID = channelID
-
-	postCount := 0
-	deleteCount := 0
-	session := newEmbedShrinkTestSession(
-		t,
-		channelID,
-		firstReplyID,
-		secondReplyID,
-		&postCount,
-		&deleteCount,
-	)
-
-	instance := new(bot)
-	instance.session = session
-	instance.nodes = newMessageNodeStore(10)
-
-	tracker := newResponseTracker(sourceMessage, "openai/gpt-5.1")
-
-	err := instance.renderPlainResponse(
-		context.Background(),
-		tracker,
-		[]string{"first", "second"},
-		false,
-		false,
-	)
-	if err != nil {
-		t.Fatalf("render initial plain response: %v", err)
-	}
-
-	err = instance.renderPlainResponse(
-		context.Background(),
-		tracker,
-		[]string{"first"},
-		true,
-		false,
-	)
-	if err != nil {
-		t.Fatalf("render collapsed plain response: %v", err)
-	}
-
-	if deleteCount != 1 {
-		t.Fatalf("expected one deleted extra message, got %d", deleteCount)
-	}
-
-	if len(tracker.responseMessages) != 1 {
-		t.Fatalf("unexpected response message count: %d", len(tracker.responseMessages))
-	}
-
-	if len(tracker.pendingResponses) != 1 {
-		t.Fatalf("unexpected pending response count: %d", len(tracker.pendingResponses))
-	}
-
-	if _, ok := instance.nodes.get(secondReplyID); ok {
-		t.Fatal("expected deleted extra response node to be removed from the store")
-	}
-}
-
 func newEmbedShrinkTestSession(
 	t *testing.T,
 	channelID string,
@@ -1504,155 +1373,6 @@ func newEmbedShrinkTestSession(
 	return session
 }
 
-func TestSendPlainResponseEditsExistingProgressMessage(t *testing.T) {
-	t.Parallel()
-
-	const (
-		channelID        = "channel-1"
-		sourceID         = "source-message"
-		progressID       = "progress-message"
-		plainContent     = "hello from plain response"
-		expectedPatchURL = "/api/v9/channels/" + channelID + "/messages/" + progressID
-	)
-
-	sourceMessage := new(discordgo.Message)
-	sourceMessage.ID = sourceID
-	sourceMessage.ChannelID = channelID
-
-	progressMessage := new(discordgo.Message)
-	progressMessage.ID = progressID
-	progressMessage.ChannelID = channelID
-
-	session, err := discordgo.New("Bot discord-token")
-	if err != nil {
-		t.Fatalf("create discord session: %v", err)
-	}
-
-	client := new(http.Client)
-	client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
-		t.Helper()
-
-		if request.Method == http.MethodPost &&
-			request.URL.Path == "/api/v9/channels/"+channelID+"/messages" {
-			t.Fatalf("unexpected additional message send: %s %s", request.Method, request.URL.Path)
-		}
-
-		if request.Method != http.MethodPatch || request.URL.Path != expectedPatchURL {
-			t.Fatalf("unexpected request: %s %s", request.Method, request.URL.Path)
-		}
-
-		assertPlainEditRequest(t, request, plainContent)
-
-		return newJSONResponse(t, request, progressMessage), nil
-	})
-	session.Client = client
-
-	instance := new(bot)
-	instance.session = session
-
-	tracker := newResponseTracker(sourceMessage, "")
-	tracker.responseMessages = []*discordgo.Message{progressMessage}
-	tracker.progressActive = true
-
-	err = instance.sendPlainResponse(
-		context.Background(),
-		tracker,
-		[]string{plainContent},
-		false,
-	)
-	if err != nil {
-		t.Fatalf("send plain response: %v", err)
-	}
-
-	if tracker.progressActive {
-		t.Fatal("expected progress placeholder to be cleared after plain response edit")
-	}
-}
-
-func TestHandleGeneratedStreamDeltaStreamsPlainResponse(t *testing.T) {
-	t.Parallel()
-
-	const (
-		channelID        = "channel-1"
-		sourceID         = "source-message"
-		progressID       = "progress-message"
-		partialContent   = "first streamed plain delta"
-		expectedPatchURL = "/api/v9/channels/" + channelID + "/messages/" + progressID
-	)
-
-	sourceMessage := new(discordgo.Message)
-	sourceMessage.ID = sourceID
-	sourceMessage.ChannelID = channelID
-
-	progressMessage := new(discordgo.Message)
-	progressMessage.ID = progressID
-	progressMessage.ChannelID = channelID
-
-	patchCount := 0
-
-	session, err := discordgo.New("Bot discord-token")
-	if err != nil {
-		t.Fatalf("create discord session: %v", err)
-	}
-
-	client := new(http.Client)
-	client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
-		t.Helper()
-
-		if request.Method != http.MethodPatch || request.URL.Path != expectedPatchURL {
-			t.Fatalf("unexpected request: %s %s", request.Method, request.URL.Path)
-		}
-
-		patchCount++
-
-		assertPlainEditRequestWithComponentCount(t, request, partialContent, 1)
-
-		return newJSONResponse(t, request, progressMessage), nil
-	})
-	session.Client = client
-
-	instance := new(bot)
-	instance.session = session
-
-	tracker := newResponseTracker(sourceMessage, "openai/gpt-5.1")
-	tracker.responseMessages = []*discordgo.Message{progressMessage}
-	tracker.progressActive = true
-
-	finishReason := ""
-	lastRenderTime := time.Time{}
-	state := generatedStreamState{
-		request:               emptyChatCompletionRequest(),
-		warnings:              nil,
-		answerAccumulator:     &segmentAccumulator{maxLength: plainResponseMaxLength, segments: []string{""}},
-		thinkingAccumulator:   &segmentAccumulator{maxLength: plainResponseMaxLength, segments: []string{""}},
-		finishReason:          &finishReason,
-		lastRenderTime:        &lastRenderTime,
-		maxLength:             plainResponseMaxLength,
-		usePlainResponses:     true,
-		initialSearchMetadata: nil,
-		rawAnswerText:         "",
-		renderedAnswerText:    "",
-	}
-
-	err = instance.handleGeneratedStreamDelta(
-		context.Background(),
-		tracker,
-		&state,
-		newStreamDelta(partialContent, ""),
-	)
-	if err != nil {
-		t.Fatalf("handle streamed plain delta: %v", err)
-	}
-
-	if patchCount != 1 {
-		t.Fatalf("expected the first plain delta to update Discord immediately, got %d updates", patchCount)
-	}
-
-	if tracker.progressActive {
-		t.Fatal("expected the progress placeholder to become the streamed plain response")
-	}
-}
-
 func TestGenerateAndSendResponseAppendsErrorWhenStreamFailsAfterPartialOutput(t *testing.T) {
 	t.Parallel()
 	testGenerateAndSendResponseAppendsErrorWhenStreamFailsAfterPartialOutput(t)
@@ -1697,7 +1417,6 @@ func testGenerateAndSendResponseAppendsErrorWhenStreamFailsAfterPartialOutput(t 
 		emptyChatCompletionRequest(),
 		newResponseTracker(sourceMessage, ""),
 		nil,
-		false,
 	)
 	if err == nil {
 		t.Fatal("expected generate and send response error")
@@ -1814,7 +1533,6 @@ func TestGenerateAndSendResponseKeepsAssistantReplyInConversationHistory(t *test
 		request,
 		tracker,
 		nil,
-		true,
 	)
 	if err != nil {
 		t.Fatalf("generate and send response: %v", err)
@@ -1827,7 +1545,7 @@ func TestGenerateAndSendResponseKeepsAssistantReplyInConversationHistory(t *test
 	conversation, warnings := instance.buildConversation(
 		context.Background(),
 		followUpMessage,
-		defaultMaxText,
+		testConversationTextLimit,
 		contentOptions,
 		defaultMaxMessages,
 		false,
@@ -1890,7 +1608,6 @@ func TestGenerateAndSendResponseShowsThinkingDuringStreamButNotFinalResponse(t *
 		emptyChatCompletionRequest(),
 		tracker,
 		nil,
-		false,
 	)
 	if err != nil {
 		t.Fatalf("generate and send response: %v", err)
@@ -1973,7 +1690,6 @@ func TestGenerateAndSendResponseDoesNotStreamXAISourceAppendix(t *testing.T) {
 		request,
 		tracker,
 		nil,
-		false,
 	)
 	if err != nil {
 		t.Fatalf("generate and send response: %v", err)
@@ -2069,7 +1785,6 @@ func TestGenerateAndSendResponseShowsSourcesButtonForNonGrokModelWithBridgeSourc
 		request,
 		tracker,
 		nil,
-		false,
 	)
 	if err != nil {
 		t.Fatalf("generate and send response: %v", err)
@@ -2205,7 +1920,6 @@ func TestGenerateAndSendResponsePersistsThinkingInConversationHistory(t *testing
 		emptyChatCompletionRequest(),
 		tracker,
 		nil,
-		true,
 	)
 	if err != nil {
 		t.Fatalf("generate and send response: %v", err)
@@ -2218,7 +1932,7 @@ func TestGenerateAndSendResponsePersistsThinkingInConversationHistory(t *testing
 	conversation, warnings := instance.buildConversation(
 		context.Background(),
 		followUpMessage,
-		defaultMaxText,
+		testConversationTextLimit,
 		contentOptions,
 		defaultMaxMessages,
 		false,
@@ -2370,57 +2084,6 @@ func assertEmbedPayload(
 
 	if footer["text"] != expectedFooter {
 		t.Fatalf("unexpected embed footer text: %#v", footer["text"])
-	}
-}
-
-func assertPlainEditRequest(
-	t *testing.T,
-	request *http.Request,
-	expectedContent string,
-) {
-	t.Helper()
-	assertPlainEditRequestWithComponentCount(t, request, expectedContent, 2)
-}
-
-func assertPlainEditRequestWithComponentCount(
-	t *testing.T,
-	request *http.Request,
-	expectedContent string,
-	expectedComponentCount int,
-) {
-	t.Helper()
-
-	var payload map[string]any
-
-	err := json.NewDecoder(request.Body).Decode(&payload)
-	if err != nil {
-		t.Fatalf("decode request body: %v", err)
-	}
-
-	if flags, ok := payload["flags"].(float64); !ok ||
-		discordgo.MessageFlags(int(flags)) !=
-			(discordgo.MessageFlagsIsComponentsV2|
-				discordgo.MessageFlagsSuppressNotifications) {
-		t.Fatalf("unexpected flags payload: %#v", payload["flags"])
-	}
-
-	embeds, embedsOK := payload["embeds"].([]any)
-	if !embedsOK || len(embeds) != 0 {
-		t.Fatalf("unexpected embeds payload: %#v", payload["embeds"])
-	}
-
-	components, componentsOK := payload["components"].([]any)
-	if !componentsOK || len(components) != expectedComponentCount {
-		t.Fatalf("unexpected components payload: %#v", payload["components"])
-	}
-
-	textDisplay, textDisplayOK := components[0].(map[string]any)
-	if !textDisplayOK {
-		t.Fatalf("unexpected text display payload: %#v", components[0])
-	}
-
-	if textDisplay["content"] != expectedContent {
-		t.Fatalf("unexpected text display content: %#v", textDisplay["content"])
 	}
 }
 
@@ -2642,7 +2305,6 @@ func TestGenerateAndSendResponseRendersFailureOnEmptyModelResponse(t *testing.T)
 		emptyChatCompletionRequest(),
 		tracker,
 		nil,
-		false,
 	)
 	if err == nil {
 		t.Fatal("expected error for empty model response")

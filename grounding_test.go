@@ -117,14 +117,12 @@ func TestBuildGeminiGenerateContentRequestWithoutGrounding(t *testing.T) {
 
 func testGroundingConfig() config {
 	return config{
-		BotToken:          "",
-		ClientID:          "",
-		StatusMessage:     "",
-		MaxText:           0,
-		MaxImages:         0,
-		MaxMessages:       0,
-		UsePlainResponses: false,
-		AllowDMs:          false,
+		BotToken:      "",
+		ClientID:      "",
+		StatusMessage: "",
+		MaxImages:     0,
+		MaxMessages:   0,
+		AllowDMs:      false,
 		Permissions: permissionsConfig{
 			Users: userPermissions{
 				AdminIDs:   nil,

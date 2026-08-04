@@ -19,14 +19,12 @@ const (
 	defaultTavilyExtractEndpoint         = "https://api.tavily.com/extract"
 	defaultRentryEndpoint                = "https://rentry.co/"
 	defaultStatusMessage                 = "github.com/jakobdylanc/llmcord"
-	defaultMaxText                       = 100000
 	defaultMaxImages                     = 5
 	defaultMaxMessages                   = 25
 	maxMessageNodes                      = 500
 	registeredCommandCount               = 6
 	maxAutocompleteChoices               = 25
 	statusMessageMaxLength               = 128
-	plainResponseMaxLength               = 4000
 	streamingIndicator                   = " ..."
 	unknownText                          = "Unknown"
 	applicationJSONContentType           = "application/json"
