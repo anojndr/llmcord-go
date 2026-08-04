@@ -532,7 +532,7 @@ func newGeminiSearchDeciderRetryTestBot(
 	loadedConfig := testSearchConfig()
 	loadedConfig.Providers = map[string]providerConfig{
 		"gemini": {
-			Type:            string(providerAPIKindGemini),
+			Name:            "gemini",
 			BaseURL:         "",
 			APIKey:          "",
 			APIKeys:         nil,

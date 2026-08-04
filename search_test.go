@@ -771,7 +771,7 @@ func TestSearchDeciderConversationPreservesGeminiMedia(t *testing.T) {
 	sanitizedConversation, err := searchDeciderConversation(
 		conversation,
 		testGeminiSearchConfig(),
-		"google/gemini-3-flash-preview",
+		"gemini/gemini-3-flash-preview",
 	)
 	if err != nil {
 		t.Fatalf("search decider conversation: %v", err)
@@ -1258,7 +1258,7 @@ func TestMaybeAugmentConversationWithWebSearchSkipsDeciderForExaResearchPro(t *t
 
 	loadedConfig := testSearchConfig()
 	loadedConfig.Providers["exa"] = providerConfig{
-		Type:            providerTypeExa,
+		Name:            "exa",
 		BaseURL:         "",
 		APIKey:          "",
 		APIKeys:         nil,
@@ -1328,7 +1328,7 @@ func TestMaybeAugmentConversationWithWebSearchSkipsDeciderForXAIProvider(t *test
 
 	loadedConfig := testSearchConfig()
 	loadedConfig.Providers["x-ai"] = providerConfig{
-		Type:            "",
+		Name:            xAIProviderName,
 		BaseURL:         "https://api.x.ai/v1",
 		APIKey:          "",
 		APIKeys:         nil,
@@ -2556,15 +2556,15 @@ func testGeminiSearchConfig() config {
 		TextMaxCharacters: defaultExaSearchTextMaxCharacters,
 	}
 
-	googleProvider := new(providerConfig)
-	googleProvider.Type = string(providerAPIKindGemini)
-	googleProvider.EnableGrounding = true
+	geminiProvider := new(providerConfig)
+	geminiProvider.Name = "gemini"
+	geminiProvider.EnableGrounding = true
 
 	loadedConfig.Providers = map[string]providerConfig{
-		"google": *googleProvider,
+		"gemini": *geminiProvider,
 	}
 	loadedConfig.Models = map[string]map[string]any{
-		"google/gemini-3-flash-preview": nil,
+		"gemini/gemini-3-flash-preview": nil,
 	}
 
 	return *loadedConfig

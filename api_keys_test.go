@@ -82,7 +82,7 @@ func TestAPIKeysForAttemptsRoundRobin(t *testing.T) {
 		t.Parallel()
 
 		provider := providerConfig{
-			Type:            "openai",
+			Name:            "openai",
 			BaseURL:         "https://api.openai.com/v1",
 			APIKey:          t.Name() + "-p1",
 			APIKeys:         []string{t.Name() + "-p2", t.Name() + "-p3"},

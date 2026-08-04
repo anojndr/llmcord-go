@@ -509,16 +509,16 @@ func TestConfiguredGeminiMediaModelPrefersSearchDeciderModel(t *testing.T) {
 	t.Parallel()
 
 	loadedConfig := testMediaAnalysisFallbackConfig()
-	loadedConfig.Models["google/gemini-3-pro-preview"] = nil
-	loadedConfig.ModelOrder = append(loadedConfig.ModelOrder, "google/gemini-3-pro-preview")
-	loadedConfig.SearchDeciderModel = "google/gemini-3-pro-preview"
+	loadedConfig.Models["gemini/gemini-3-pro-preview"] = nil
+	loadedConfig.ModelOrder = append(loadedConfig.ModelOrder, "gemini/gemini-3-pro-preview")
+	loadedConfig.SearchDeciderModel = "gemini/gemini-3-pro-preview"
 
 	modelName, err := configuredGeminiMediaModel(loadedConfig)
 	if err != nil {
 		t.Fatalf("find configured gemini media model: %v", err)
 	}
 
-	if modelName != "google/gemini-3-pro-preview" {
+	if modelName != "gemini/gemini-3-pro-preview" {
 		t.Fatalf("unexpected gemini media model: %q", modelName)
 	}
 }
@@ -543,11 +543,11 @@ func testMediaAnalysisConfig() config {
 	openAIProvider.BaseURL = testOpenAIBaseURL
 
 	geminiProvider := new(providerConfig)
-	geminiProvider.Type = string(providerAPIKindGemini)
+	geminiProvider.Name = "gemini"
 
 	loadedConfig.Providers = map[string]providerConfig{
 		"openai": *openAIProvider,
-		"google": *geminiProvider,
+		"gemini": *geminiProvider,
 	}
 	loadedConfig.Models = map[string]map[string]any{
 		"openai/gpt-5":          nil,

@@ -394,7 +394,7 @@ func TestBuildChatCompletionRequestNormalizesGeminiThinkingAlias(t *testing.T) {
 	t.Parallel()
 
 	provider := new(providerConfig)
-	provider.Type = string(providerAPIKindGemini)
+	provider.Name = "gemini"
 	provider.ExtraBody = map[string]any{
 		"temperature": 0.2,
 	}
@@ -408,14 +408,14 @@ func TestBuildChatCompletionRequestNormalizesGeminiThinkingAlias(t *testing.T) {
 	var loadedConfig config
 
 	loadedConfig.Providers = map[string]providerConfig{
-		"google": *provider,
+		"gemini": *provider,
 	}
 	loadedConfig.Models = map[string]map[string]any{
-		"google/gemini-3.5-flash-lite-minimal": modelParameters,
+		"gemini/gemini-3.5-flash-lite-minimal": modelParameters,
 	}
 
 	request, err := buildChatCompletionRequest(loadedConfig,
-		"google/gemini-3.5-flash-lite-minimal",
+		"gemini/gemini-3.5-flash-lite-minimal",
 		[]chatMessage{{Role: messageRoleUser, Content: "hello"}}, false)
 	if err != nil {
 		t.Fatalf("build chat completion request: %v", err)
@@ -425,7 +425,7 @@ func TestBuildChatCompletionRequestNormalizesGeminiThinkingAlias(t *testing.T) {
 		t.Fatalf("unexpected request model: %q", request.Model)
 	}
 
-	if request.ConfiguredModel != "google/gemini-3.5-flash-lite-minimal" {
+	if request.ConfiguredModel != "gemini/gemini-3.5-flash-lite-minimal" {
 		t.Fatalf("unexpected configured model: %q", request.ConfiguredModel)
 	}
 
@@ -464,21 +464,21 @@ func TestBuildChatCompletionRequestRejectsGeminiThinkingAliasWithInvalidThinking
 	t.Parallel()
 
 	provider := new(providerConfig)
-	provider.Type = string(providerAPIKindGemini)
+	provider.Name = "gemini"
 
 	var loadedConfig config
 
 	loadedConfig.Providers = map[string]providerConfig{
-		"google": *provider,
+		"gemini": *provider,
 	}
 	loadedConfig.Models = map[string]map[string]any{
-		"google/gemini-3.5-flash-lite-minimal": {
+		"gemini/gemini-3.5-flash-lite-minimal": {
 			"thinkingConfig": "invalid",
 		},
 	}
 
 	_, err := buildChatCompletionRequest(loadedConfig,
-		"google/gemini-3.5-flash-lite-minimal",
+		"gemini/gemini-3.5-flash-lite-minimal",
 		[]chatMessage{{Role: messageRoleUser, Content: "hello"}}, false)
 	if err == nil {
 		t.Fatal("expected invalid thinkingConfig to fail")
@@ -527,7 +527,7 @@ func TestMessageContentOptionsForModelAllowsXAIManagedDocuments(t *testing.T) {
 
 	loadedConfig.Providers = map[string]providerConfig{
 		xAIProviderName: {
-			Type:            "",
+			Name:            xAIProviderName,
 			BaseURL:         "https://api.x.ai/v1",
 			APIKey:          "",
 			APIKeys:         nil,
@@ -728,7 +728,7 @@ func newBlockedWebsiteClient(gate *concurrentFetchGate) *stubWebsiteContentClien
 
 func testXAIProviderConfig() providerConfig {
 	return providerConfig{
-		Type:            "",
+		Name:            xAIProviderName,
 		BaseURL:         "https://api.x.ai/v1",
 		APIKey:          "",
 		APIKeys:         nil,
@@ -1255,7 +1255,7 @@ func TestBuildChatCompletionRequestNormalizesOpenAICodexReasoningAlias(t *testin
 	t.Parallel()
 
 	provider := new(providerConfig)
-	provider.Type = string(providerAPIKindOpenAICodex)
+	provider.Name = "openai-codex"
 	provider.ExtraBody = map[string]any{
 		"verbosity":        "medium",
 		"reasoning_effort": "medium",
