@@ -195,6 +195,7 @@ type rawConfig struct {
 	SearchDeciderModel          scalarString                 `yaml:"search_decider_model"`
 	MediaAnalysisModel          scalarString                 `yaml:"media_analysis_model"`
 	SystemPrompt                string                       `yaml:"system_prompt"`
+	ContextWindows              map[string]any               `yaml:"context_window"`
 }
 
 type config struct {
@@ -214,6 +215,7 @@ type config struct {
 	AutoCompactThresholdPercent int
 	Models                      map[string]map[string]any
 	ModelContextWindows         map[string]int
+	ProviderContextWindows      map[string]int
 	ModelOrder                  []string
 	ChannelModelLocks           map[string]string
 	SearchDeciderModel          string
@@ -276,6 +278,11 @@ func buildLoadedConfig(
 		return config{}, fmt.Errorf("resolve model context windows from %q: %w", filename, err)
 	}
 
+	providerContextWindows, err := providerContextWindows(rawLoadedConfig.ContextWindows)
+	if err != nil {
+		return config{}, fmt.Errorf("resolve context windows from %q: %w", filename, err)
+	}
+
 	err = validateNoModelLocalAutoCompactThreshold(rawLoadedConfig.Models)
 	if err != nil {
 		return config{}, fmt.Errorf(
@@ -308,13 +315,14 @@ func buildLoadedConfig(
 			rawLoadedConfig.AutoCompactThresholdPercent,
 			autoCompactDefaultThresholdPercent,
 		),
-		Models:              rawLoadedConfig.Models,
-		ModelContextWindows: modelContextWindows,
-		ModelOrder:          modelOrder,
-		ChannelModelLocks:   channelModelLocks,
-		SearchDeciderModel:  searchDeciderModel,
-		MediaAnalysisModel:  mediaAnalysisModel,
-		SystemPrompt:        rawLoadedConfig.SystemPrompt,
+		Models:                 rawLoadedConfig.Models,
+		ModelContextWindows:    modelContextWindows,
+		ProviderContextWindows: providerContextWindows,
+		ModelOrder:             modelOrder,
+		ChannelModelLocks:      channelModelLocks,
+		SearchDeciderModel:     searchDeciderModel,
+		MediaAnalysisModel:     mediaAnalysisModel,
+		SystemPrompt:           rawLoadedConfig.SystemPrompt,
 	}
 
 	err = validateConfig(loadedConfig)
@@ -464,6 +472,30 @@ type modelIntSettingGroups struct {
 }
 
 const errPositiveIntMustBeGreaterThanZero = "must be greater than zero: %w"
+
+// providerContextWindows normalizes the top-level context_window map, keyed by
+// provider name, into plain integers. Values accept "200k"-style suffixes.
+func providerContextWindows(rawValues map[string]any) (map[string]int, error) {
+	if len(rawValues) == 0 {
+		return nil, nil
+	}
+
+	values := make(map[string]int, len(rawValues))
+	for providerName, rawValue := range rawValues {
+		value, err := anyPositiveIntValue(rawValue)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"read context_window for provider %q: %w",
+				providerName,
+				err,
+			)
+		}
+
+		values[strings.TrimSpace(providerName)] = value
+	}
+
+	return values, nil
+}
 
 func effectiveModelContextWindows(
 	providers map[string]providerConfig,
@@ -757,9 +789,55 @@ func anyPositiveIntValue(value any) (int, error) {
 		}
 
 		return int(typedValue), nil
+	case string:
+		parsedValue, err := positiveIntStringValue(typedValue)
+		if err != nil {
+			return 0, err
+		}
+
+		return parsedValue, nil
 	default:
 		return 0, fmt.Errorf("must be a positive integer, got %T: %w", value, os.ErrInvalid)
 	}
+}
+
+// positiveIntStringValue parses positive integers written either plainly or
+// with a k/m suffix, such as "200000" or "200k". Decimals are not supported:
+// "0.2m" would be ambiguous, so it is rejected rather than rounded.
+func positiveIntStringValue(rawValue string) (int, error) {
+	maxIntValue := int(^uint(0) >> 1)
+
+	trimmedValue := strings.TrimSpace(rawValue)
+	if trimmedValue == "" {
+		return 0, fmt.Errorf(errPositiveIntMustBeGreaterThanZero, os.ErrInvalid)
+	}
+
+	multiplier := 1
+	lastCharacter := trimmedValue[len(trimmedValue)-1]
+
+	switch lastCharacter {
+	case 'k', 'K':
+		multiplier = 1000
+		trimmedValue = trimmedValue[:len(trimmedValue)-1]
+	case 'm', 'M':
+		multiplier = 1_000_000
+		trimmedValue = trimmedValue[:len(trimmedValue)-1]
+	}
+
+	if trimmedValue == "" {
+		return 0, fmt.Errorf(errPositiveIntMustBeGreaterThanZero, os.ErrInvalid)
+	}
+
+	value, err := strconv.Atoi(trimmedValue)
+	if err != nil || value <= 0 {
+		return 0, fmt.Errorf(errPositiveIntMustBeGreaterThanZero, os.ErrInvalid)
+	}
+
+	if multiplier > 1 && value > maxIntValue/multiplier {
+		return 0, fmt.Errorf(errPositiveIntMustBeGreaterThanZero, os.ErrInvalid)
+	}
+
+	return value * multiplier, nil
 }
 
 func normalizeDatabaseConfig(rawLoadedConfig rawDatabaseConfig) databaseConfig {
@@ -820,6 +898,11 @@ func (settings exaSearchConfig) textMaxCharacters() int {
 
 func validateConfig(loadedConfig config) error {
 	err := validateConfigBasics(loadedConfig)
+	if err != nil {
+		return err
+	}
+
+	err = validateContextWindows(loadedConfig)
 	if err != nil {
 		return err
 	}
@@ -893,6 +976,26 @@ func validateConfiguredModels(loadedConfig config) error {
 			loadedConfig.SearchDeciderModel,
 			os.ErrNotExist,
 		)
+	}
+
+	return nil
+}
+
+func validateContextWindows(loadedConfig config) error {
+	for providerName := range loadedConfig.ProviderContextWindows {
+		provider, ok := loadedConfig.Providers[strings.TrimSpace(providerName)]
+		if !ok {
+			return fmt.Errorf(
+				"context_window references unknown provider %q: %w",
+				providerName,
+				os.ErrNotExist,
+			)
+		}
+
+		err := provider.validate(strings.TrimSpace(providerName))
+		if err != nil {
+			return err
+		}
 	}
 
 	return nil
@@ -1015,12 +1118,20 @@ func (loadedConfig config) hasModel(modelName string) bool {
 	return ok
 }
 
+// modelContextWindow returns the context window configured for the model,
+// falling back to the context window configured for its provider when the
+// model itself has none.
 func (loadedConfig config) modelContextWindow(modelName string) int {
-	if len(loadedConfig.ModelContextWindows) == 0 {
+	if window, ok := loadedConfig.ModelContextWindows[modelName]; ok {
+		return window
+	}
+
+	providerName, _, err := splitConfiguredModel(modelName)
+	if err != nil {
 		return 0
 	}
 
-	return loadedConfig.ModelContextWindows[modelName]
+	return loadedConfig.ProviderContextWindows[providerName]
 }
 
 func (loadedConfig config) lockedModelForChannelIDs(channelIDs []string) (string, bool) {

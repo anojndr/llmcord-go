@@ -922,6 +922,211 @@ models:
 	}
 }
 
+func TestLoadConfigUsesConfiguredProviderContextWindows(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	configText := `
+bot_token: discord-token
+providers:
+  google:
+    type: gemini
+    api_key: test-token
+  openai:
+    base_url: https://api.openai.com/v1
+context_window:
+  google: 1m
+  openai: 200k
+models:
+  google/gemini-3.5-flash-lite:
+  openai/gpt-5.4:
+  openai/gpt-5.4-low:
+`
+
+	err := os.WriteFile(configPath, []byte(configText), 0o600)
+	if err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	loadedConfig, err := loadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	for modelName, expectedWindow := range map[string]int{
+		"google/gemini-3.5-flash-lite": 1_000_000,
+		"openai/gpt-5.4":               200_000,
+		"openai/gpt-5.4-low":           200_000,
+	} {
+		if loadedConfig.modelContextWindow(modelName) != expectedWindow {
+			t.Fatalf(
+				"unexpected context window for %s: %d (want %d)",
+				modelName,
+				loadedConfig.modelContextWindow(modelName),
+				expectedWindow,
+			)
+		}
+	}
+}
+
+func TestLoadConfigModelContextWindowOverridesProviderContextWindow(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	configText := `
+bot_token: discord-token
+providers:
+  openai:
+    base_url: https://api.openai.com/v1
+context_window:
+  openai: 200k
+models:
+  openai/gpt-5.4:
+    context_window: 1050000
+  openai/gpt-5.4-low:
+`
+
+	err := os.WriteFile(configPath, []byte(configText), 0o600)
+	if err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	loadedConfig, err := loadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	if loadedConfig.modelContextWindow("openai/gpt-5.4") != 1_050_000 {
+		t.Fatalf(
+			"unexpected overridden context window: %d",
+			loadedConfig.modelContextWindow("openai/gpt-5.4"),
+		)
+	}
+
+	// The alias model inherits the base model's explicit per-model window;
+	// provider-level windows only apply when no model sets one at all.
+	if loadedConfig.modelContextWindow("openai/gpt-5.4-low") != 1_050_000 {
+		t.Fatalf(
+			"unexpected alias context window: %d",
+			loadedConfig.modelContextWindow("openai/gpt-5.4-low"),
+		)
+	}
+}
+
+func TestLoadConfigRejectsUnknownProviderContextWindow(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	configText := `
+bot_token: discord-token
+providers:
+  openai:
+    base_url: https://api.example.com/v1
+context_window:
+  openai: 200k
+  unknown-provider: 100k
+models:
+  openai/first-model:
+`
+
+	err := os.WriteFile(configPath, []byte(configText), 0o600)
+	if err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	_, err = loadConfig(configPath)
+	if err == nil {
+		t.Fatal("expected unknown provider context window to fail validation")
+	}
+
+	if !strings.Contains(err.Error(), "unknown provider") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestLoadConfigRejectsInvalidProviderContextWindow(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	configText := `
+bot_token: discord-token
+providers:
+  openai:
+    base_url: https://api.example.com/v1
+context_window:
+  openai: not-a-number
+models:
+  openai/first-model:
+`
+
+	err := os.WriteFile(configPath, []byte(configText), 0o600)
+	if err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	_, err = loadConfig(configPath)
+	if err == nil {
+		t.Fatal("expected invalid provider context window to fail validation")
+	}
+}
+
+func TestPositiveIntStringValue(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name         string
+		rawValue     string
+		expected     int
+		expectsError bool
+	}{
+		{name: "plain", rawValue: "200000", expected: 200_000},
+		{name: "lowercase k", rawValue: "200k", expected: 200_000},
+		{name: "uppercase k", rawValue: "200K", expected: 200_000},
+		{name: "lowercase m", rawValue: "1m", expected: 1_000_000},
+		{name: "uppercase m", rawValue: "1M", expected: 1_000_000},
+		{name: "spaces", rawValue: " 200k ", expected: 200_000},
+		{name: "zero", rawValue: "0", expectsError: true},
+		{name: "zero suffix", rawValue: "0k", expectsError: true},
+		{name: "negative", rawValue: "-5", expectsError: true},
+		{name: "empty", rawValue: "", expectsError: true},
+		{name: "bare suffix", rawValue: "k", expectsError: true},
+		{name: "fractional", rawValue: "1.5k", expectsError: true},
+		{name: "garbage", rawValue: "1.5", expectsError: true},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			parsedValue, err := positiveIntStringValue(testCase.rawValue)
+			if testCase.expectsError {
+				if err == nil {
+					t.Fatalf("expected %q to fail validation", testCase.rawValue)
+				}
+
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("parse %q: %v", testCase.rawValue, err)
+			}
+
+			if parsedValue != testCase.expected {
+				t.Fatalf(
+					"unexpected parsed value for %q: %d (want %d)",
+					testCase.rawValue,
+					parsedValue,
+					testCase.expected,
+				)
+			}
+		})
+	}
+}
+
 func TestLoadConfigUsesConfiguredAutoCompactThresholdPercent(t *testing.T) {
 	t.Parallel()
 
