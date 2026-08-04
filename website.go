@@ -57,6 +57,7 @@ type websiteClient struct {
 	exaContentsEndpoint   string
 	tavilyExtractEndpoint string
 	lookupIP              websiteLookupIPFunc
+	keys                  *apiKeyRotator
 }
 
 type websitePageContent struct {
@@ -73,6 +74,7 @@ func newWebsiteClient(httpClient *http.Client) websiteClient {
 		exaContentsEndpoint:   defaultExaContentsEndpoint,
 		tavilyExtractEndpoint: defaultTavilyExtractEndpoint,
 		lookupIP:              defaultWebsiteLookupIP,
+		keys:                  newAPIKeyRotator(),
 	}
 }
 
@@ -199,10 +201,12 @@ func (client websiteClient) fetch(
 	}
 
 	if loadedConfig.WebSearch.exaUsesAPI() {
+		exaAPIKey := firstAPIKey(client.keys.rotate(loadedConfig.WebSearch.Exa.apiKeys()))
+
 		pageContent, exaErr := client.fetchWithExaContents(
 			ctx,
 			normalizedURL,
-			loadedConfig.WebSearch.Exa.primaryAPIKey(),
+			exaAPIKey,
 		)
 		if exaErr == nil {
 			return pageContent, nil
@@ -211,7 +215,9 @@ func (client websiteClient) fetch(
 		return websitePageContent{}, fmt.Errorf(websiteFetchErrorFormat, rawURL, exaErr)
 	}
 
-	if tavilyAPIKey := loadedConfig.WebSearch.Tavily.primaryAPIKey(); tavilyAPIKey != "" {
+	if tavilyAPIKeys := loadedConfig.WebSearch.Tavily.apiKeys(); len(tavilyAPIKeys) > 0 {
+		tavilyAPIKey := firstAPIKey(client.keys.rotate(tavilyAPIKeys))
+
 		pageContent, tavilyErr := client.fetchWithTavilyExtract(
 			ctx,
 			normalizedURL,

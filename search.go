@@ -109,11 +109,13 @@ type exaSearchClient struct {
 	apiEndpoint string
 	mcpEndpoint string
 	httpClient  *http.Client
+	keys        *apiKeyRotator
 }
 
 type tavilySearchClient struct {
 	endpoint   string
 	httpClient *http.Client
+	keys       *apiKeyRotator
 }
 
 type routedWebSearchClient struct {
@@ -219,6 +221,7 @@ func newExaSearchClient(httpClient *http.Client) exaSearchClient {
 		apiEndpoint: defaultExaSearchEndpoint,
 		mcpEndpoint: defaultExaMCPEndpoint,
 		httpClient:  httpClient,
+		keys:        newAPIKeyRotator(),
 	}
 }
 
@@ -226,6 +229,7 @@ func newTavilySearchClient(httpClient *http.Client) tavilySearchClient {
 	return tavilySearchClient{
 		endpoint:   defaultTavilySearchEndpoint,
 		httpClient: httpClient,
+		keys:       newAPIKeyRotator(),
 	}
 }
 
@@ -1415,7 +1419,6 @@ func (client exaSearchClient) search(
 	queries []string,
 ) ([]webSearchResult, error) {
 	maxURLs := loadedConfig.WebSearch.maxURLs()
-	exaAPIKey := loadedConfig.WebSearch.Exa.primaryAPIKey()
 	searchType := loadedConfig.WebSearch.Exa.searchType()
 
 	return searchQueriesConcurrently(ctx, queries, func(
@@ -1423,6 +1426,8 @@ func (client exaSearchClient) search(
 		query string,
 	) (webSearchResult, error) {
 		if loadedConfig.WebSearch.exaUsesAPI() {
+			exaAPIKey := firstAPIKey(client.keys.rotate(loadedConfig.WebSearch.Exa.apiKeys()))
+
 			return client.searchAPIQuery(
 				queryContext,
 				exaAPIKey,
@@ -1442,8 +1447,8 @@ func (client tavilySearchClient) search(
 	loadedConfig config,
 	queries []string,
 ) ([]webSearchResult, error) {
-	apiKey := loadedConfig.WebSearch.Tavily.primaryAPIKey()
-	if apiKey == "" {
+	tavilyAPIKeys := loadedConfig.WebSearch.Tavily.apiKeys()
+	if len(tavilyAPIKeys) == 0 {
 		return nil, fmt.Errorf("tavily fallback is not configured: %w", os.ErrNotExist)
 	}
 
@@ -1453,6 +1458,8 @@ func (client tavilySearchClient) search(
 		queryContext context.Context,
 		query string,
 	) (webSearchResult, error) {
+		apiKey := firstAPIKey(client.keys.rotate(tavilyAPIKeys))
+
 		return client.searchQuery(queryContext, apiKey, query, maxURLs)
 	})
 }

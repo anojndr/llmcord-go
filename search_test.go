@@ -123,6 +123,7 @@ func newExaAPISearchTestClient(handler http.HandlerFunc) (exaSearchClient, func(
 		apiEndpoint: httpServer.URL,
 		mcpEndpoint: defaultExaMCPEndpoint,
 		httpClient:  httpServer.Client(),
+		keys:        newAPIKeyRotator(),
 	}, httpServer.Close
 }
 
@@ -1400,6 +1401,7 @@ func TestExaSearchClientSearchRunsMCPQueriesConcurrentlyAndKeepsOrderWhenNoAPIKe
 		apiEndpoint: defaultExaSearchEndpoint,
 		mcpEndpoint: httpServer.URL,
 		httpClient:  httpServer.Client(),
+		keys:        newAPIKeyRotator(),
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -1534,6 +1536,58 @@ func TestExaSearchClientSearchSendsAuthorizationBearerHeader(t *testing.T) {
 	}
 }
 
+func TestExaSearchClientSearchRotatesAPIKeysAcrossCalls(t *testing.T) {
+	t.Parallel()
+
+	var (
+		authHeaders []string
+		headerMu    sync.Mutex
+	)
+
+	client, closeServer := newExaAPISearchTestClient(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		request *http.Request,
+	) {
+		headerMu.Lock()
+
+		authHeaders = append(authHeaders, request.Header.Get("Authorization"))
+		headerMu.Unlock()
+
+		responseWriter.Header().Set("Content-Type", "application/json")
+
+		err := json.NewEncoder(responseWriter).Encode(testExaAPISearchSuccessResponse())
+		if err != nil {
+			t.Errorf("encode Exa response: %v", err)
+		}
+	}))
+	defer closeServer()
+
+	loadedConfig := testExaAPIWebSearchConfig()
+	loadedConfig.WebSearch.Exa.APIKey = "exa-key-1"
+	loadedConfig.WebSearch.Exa.APIKeys = []string{
+		"exa-key-1",
+		"exa-key-2",
+		"exa-key-3",
+	}
+
+	for range 3 {
+		_, err := client.search(context.Background(), loadedConfig, []string{"latest ai news"})
+		if err != nil {
+			t.Fatalf("search: %v", err)
+		}
+	}
+
+	headerMu.Lock()
+	defer headerMu.Unlock()
+
+	expectedHeaders := []string{"Bearer exa-key-1", "Bearer exa-key-2", "Bearer exa-key-3"}
+	for index, expected := range expectedHeaders {
+		if authHeaders[index] != expected {
+			t.Fatalf("search %d: expected Authorization header %q, got %q", index, expected, authHeaders[index])
+		}
+	}
+}
+
 func TestRoutedWebSearchClientFallsBackToTavilyWhenMCPFails(t *testing.T) {
 	t.Parallel()
 
@@ -1623,6 +1677,73 @@ func TestRoutedWebSearchClientUsesTavilyAsPrimaryWhenConfigured(t *testing.T) {
 
 	if len(results) != 1 || results[0].Text != "tavily result" {
 		t.Fatalf("unexpected primary Tavily results: %#v", results)
+	}
+}
+
+func TestTavilySearchClientSearchRotatesAPIKeysAcrossCalls(t *testing.T) {
+	t.Parallel()
+
+	var (
+		authHeaders []string
+		headerMu    sync.Mutex
+	)
+
+	httpServer := httptest.NewServer(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		request *http.Request,
+	) {
+		headerMu.Lock()
+
+		authHeaders = append(authHeaders, request.Header.Get("Authorization"))
+		headerMu.Unlock()
+
+		responseWriter.Header().Set("Content-Type", "application/json")
+
+		err := json.NewEncoder(responseWriter).Encode(tavilySearchResponse{
+			Results: []tavilySearchResponseResult{
+				{
+					Title:      "Example",
+					URL:        "https://example.com",
+					Content:    "content",
+					RawContent: "",
+				},
+			},
+		})
+		if err != nil {
+			t.Errorf("encode Tavily response: %v", err)
+		}
+	}))
+	defer httpServer.Close()
+
+	client := tavilySearchClient{
+		endpoint:   httpServer.URL,
+		httpClient: httpServer.Client(),
+		keys:       newAPIKeyRotator(),
+	}
+
+	loadedConfig := testTavilySearchConfig()
+	loadedConfig.WebSearch.Tavily.APIKey = "tavily-key-1"
+	loadedConfig.WebSearch.Tavily.APIKeys = []string{
+		"tavily-key-1",
+		"tavily-key-2",
+		"tavily-key-3",
+	}
+
+	for range 3 {
+		_, err := client.search(context.Background(), loadedConfig, []string{"latest ai news"})
+		if err != nil {
+			t.Fatalf("search: %v", err)
+		}
+	}
+
+	headerMu.Lock()
+	defer headerMu.Unlock()
+
+	expectedHeaders := []string{"Bearer tavily-key-1", "Bearer tavily-key-2", "Bearer tavily-key-3"}
+	for index, expected := range expectedHeaders {
+		if authHeaders[index] != expected {
+			t.Fatalf("search %d: expected Authorization header %q, got %q", index, expected, authHeaders[index])
+		}
 	}
 }
 

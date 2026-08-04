@@ -18,6 +18,13 @@ type stringCapture struct {
 	values []string
 }
 
+func (capture *stringCapture) reset() {
+	capture.mutex.Lock()
+	defer capture.mutex.Unlock()
+
+	capture.values = nil
+}
+
 func (capture *stringCapture) append(value string) {
 	capture.mutex.Lock()
 	defer capture.mutex.Unlock()
@@ -69,6 +76,68 @@ func TestChatCompletionRouterStreamsGeminiImmediately(t *testing.T) {
 	}
 }
 
+func TestChatCompletionRouterRotatesKeysAcrossRequests(t *testing.T) {
+	t.Parallel()
+
+	capture := new(stringCapture)
+	request := newSimpleGeminiStreamRequest()
+	request.Provider.APIKeys = []string{"gemini-key-2", "gemini-key-3"}
+	router := newGeminiAPIKeyCaptureRouter(capture)
+
+	// The router rotates the key set the request carries via its own
+	// per-instance rotator, so the first request always uses the primary
+	// key and each subsequent request advances the rotation.
+	keySet := request.Provider.apiKeys()
+
+	for index, expectedKey := range keySet {
+		err := router.streamChatCompletion(
+			context.Background(),
+			request,
+			func(streamDelta) error { return nil },
+		)
+		if err != nil {
+			t.Fatalf("stream chat completion with key set %d: %v", index, err)
+		}
+
+		if keys := capture.snapshot(); !slices.Equal(keys, []string{expectedKey}) {
+			t.Fatalf("stream %d: expected API key %q, captured %#v", index, expectedKey, keys)
+		}
+
+		capture.reset()
+	}
+}
+
+func newGeminiAPIKeyCaptureRouter(capture *stringCapture) chatCompletionRouter {
+	return chatCompletionRouter{
+		openAI: newOpenAIClient(nil),
+		keys:   newAPIKeyRotator(),
+		gemini: geminiClient{
+			httpClient: new(http.Client),
+			newClient: func(
+				_ context.Context,
+				config *genai.ClientConfig,
+			) (geminiAPIClient, error) {
+				capture.append(config.APIKey)
+
+				return stubGeminiAPIClient{
+					generateContentStream: func(
+						_ context.Context,
+						_ string,
+						_ []*genai.Content,
+						_ *genai.GenerateContentConfig,
+					) iter.Seq2[*genai.GenerateContentResponse, error] {
+						return func(yield func(*genai.GenerateContentResponse, error) bool) {
+							_ = yield(newGeminiGenerateContentResponse("hi", genai.FinishReasonStop), nil)
+						}
+					},
+					uploadFile: nil,
+					getFile:    nil,
+				}, nil
+			},
+		},
+	}
+}
+
 func newReleaseSignal() (chan struct{}, func()) {
 	releaseStream := make(chan struct{})
 
@@ -86,6 +155,7 @@ func newReleaseSignal() (chan struct{}, func()) {
 func newBlockingGeminiStreamRouter(releaseStream <-chan struct{}) chatCompletionRouter {
 	return chatCompletionRouter{
 		openAI: newOpenAIClient(nil),
+		keys:   newAPIKeyRotator(),
 		gemini: geminiClient{
 			httpClient: new(http.Client),
 			newClient: func(

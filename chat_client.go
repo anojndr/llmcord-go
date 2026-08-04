@@ -10,12 +10,14 @@ import (
 type chatCompletionRouter struct {
 	openAI openAIClient
 	gemini geminiClient
+	keys   *apiKeyRotator
 }
 
 func newChatCompletionRouter(httpClient *http.Client) chatCompletionRouter {
 	return chatCompletionRouter{
 		openAI: newOpenAIClient(httpClient),
 		gemini: newGeminiClient(httpClient),
+		keys:   newAPIKeyRotator(),
 	}
 }
 
@@ -24,6 +26,10 @@ func (client chatCompletionRouter) streamChatCompletion(
 	request chatCompletionRequest,
 	handle func(streamDelta) error,
 ) error {
+	rotatedKeys := client.keys.rotate(request.Provider.apiKeys())
+	request.Provider.APIKeys = rotatedKeys
+	request.Provider.APIKey = firstAPIKey(rotatedKeys)
+
 	return client.streamChatCompletionOnce(ctx, request, handle)
 }
 

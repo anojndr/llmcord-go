@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 
 	"gopkg.in/yaml.v3"
 )
@@ -82,6 +83,50 @@ func firstAPIKey(apiKeys []string) string {
 	return apiKeys[0]
 }
 
+// apiKeyRotator round-robins configured API key lists per key-set, so
+// concurrent prompts spread across every key while each request streams
+// with exactly one.
+type apiKeyRotator struct {
+	mu          sync.Mutex
+	nextIndexes map[string]int
+}
+
+func newAPIKeyRotator() *apiKeyRotator {
+	return &apiKeyRotator{
+		mu:          sync.Mutex{},
+		nextIndexes: make(map[string]int),
+	}
+}
+
+// rotate returns the API keys rotated by the number of previous calls for
+// the same key set, wrapping around. The first call returns the keys in
+// configured order, so the primary key handles the first request. Results
+// are fresh slices; the input is never mutated.
+func (rotator *apiKeyRotator) rotate(apiKeys []string) []string {
+	if len(apiKeys) <= 1 {
+		return append([]string(nil), apiKeys...)
+	}
+
+	signature := keySetSignature(apiKeys)
+
+	rotator.mu.Lock()
+	nextIndex := rotator.nextIndexes[signature]
+	rotator.nextIndexes[signature] = (nextIndex + 1) % len(apiKeys)
+	rotator.mu.Unlock()
+
+	offsetIndex := nextIndex
+
+	if offsetIndex == 0 {
+		return append([]string(nil), apiKeys...)
+	}
+
+	rotated := make([]string, len(apiKeys))
+	copy(rotated, apiKeys[offsetIndex:])
+	copy(rotated[len(apiKeys)-offsetIndex:], apiKeys[:offsetIndex])
+
+	return rotated
+}
+
 func providerAPIKeys(primaryKey string, fallbackKeys []string) []string {
 	candidates := make([]string, 0, len(fallbackKeys)+1)
 	candidates = append(candidates, primaryKey)
@@ -104,6 +149,14 @@ func (provider providerRequestConfig) apiKeys() []string {
 
 func (provider providerRequestConfig) primaryAPIKey() string {
 	return firstAPIKey(provider.apiKeys())
+}
+
+func keySetSignature(apiKeys []string) string {
+	if len(apiKeys) == 0 {
+		return ""
+	}
+
+	return strings.Join(apiKeys, "\x00")
 }
 
 func (settings tavilySearchConfig) apiKeys() []string {
