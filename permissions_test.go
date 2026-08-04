@@ -116,6 +116,7 @@ func testPermissionsConfig() config {
 		AutoCompactThresholdPercent: 0,
 		Models:                      nil,
 		ModelContextWindows:         map[string]int{},
+		ProviderContextWindows:      nil,
 		ModelOrder:                  nil,
 		ChannelModelLocks:           nil,
 		SearchDeciderModel:          "",

@@ -1585,7 +1585,7 @@ func TestStreamAttemptContextAppliesTimeout(t *testing.T) {
 	parentCtx, cancel := context.WithDeadline(context.Background(), time.Now().Add(60*time.Second))
 	defer cancel()
 
-	attemptCtx, attemptCancel := streamAttemptContext(parentCtx, false, 45*time.Second)
+	attemptCtx, attemptCancel := streamAttemptContext(parentCtx, 45*time.Second)
 	defer attemptCancel()
 
 	deadline, ok := attemptCtx.Deadline()
@@ -1604,7 +1604,7 @@ func TestStreamAttemptContextWithoutTimeout(t *testing.T) {
 	parentCtx, cancel := context.WithDeadline(context.Background(), time.Now().Add(60*time.Second))
 	defer cancel()
 
-	attemptCtx, attemptCancel := streamAttemptContext(parentCtx, false, 0)
+	attemptCtx, attemptCancel := streamAttemptContext(parentCtx, 0)
 	defer attemptCancel()
 
 	if _, ok := attemptCtx.Deadline(); !ok {

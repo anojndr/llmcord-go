@@ -141,7 +141,7 @@ func (client chatCompletionRouter) streamChatCompletionForKey(
 	for {
 		streamStarted := false
 		attemptNumber++
-		attemptCtx, attemptCancel := streamAttemptContext(ctx, hasFallbackKey, attemptTimeout)
+		attemptCtx, attemptCancel := streamAttemptContext(ctx, attemptTimeout)
 
 		if attemptNumber > 1 {
 			sendRetryResetDelta(
@@ -185,51 +185,88 @@ func (client chatCompletionRouter) streamChatCompletionForKey(
 			return streamStarted, err
 		}
 
-		emptyResponse := errors.Is(err, errEmptyModelResponse)
-		if emptyResponse {
-			emptyResponseAttempts++
-
-			if streamEmptyResponseAttemptsExhausted(
-				err,
-				emptyResponseAttempts,
-				request.Provider.APIKind,
-			) {
-				return streamStarted, err
-			}
-		} else if !retrySameKey {
-			return streamStarted, err
+		canRetry, waitErr := retryDecisionForFailedAttempt(
+			ctx,
+			request,
+			err,
+			hasFallbackKey,
+			retrySameKey,
+			&emptyResponseAttempts,
+			attemptNumber,
+			waitForRetry,
+		)
+		if waitErr != nil {
+			return streamStarted, waitErr
 		}
 
-		retryDelay, canRetry := providerRetryDecision(
-			request.Provider.APIKind,
-			err,
-			emptyResponse,
-			hasFallbackKey,
-		)
 		if !canRetry {
 			return streamStarted, err
 		}
 
 		retrySameKey = false
-
-		logWarn(
-			"provider request failed, retrying",
-			err,
-			"provider",
-			request.Provider.APIKind,
-			"model",
-			strings.TrimSpace(request.ConfiguredModel),
-			"attempt",
-			attemptNumber,
-			"retry_delay",
-			retryDelay,
-		)
-
-		err = waitForRetry(ctx, retryDelay)
-		if err != nil {
-			return streamStarted, fmt.Errorf("wait for provider retry delay: %w", err)
-		}
 	}
+}
+
+// retryDecisionForFailedAttempt decides whether a failed stream attempt can be
+// retried with the same key and, when it can, waits for the provider's backoff
+// delay. It increments the empty-response attempt counter and reports when the
+// empty-response retry budget is exhausted. The returned error is set only when
+// waiting for the retry delay fails; canRetry is false when the attempt must
+// not be retried.
+func retryDecisionForFailedAttempt(
+	ctx context.Context,
+	request chatCompletionRequest,
+	attemptErr error,
+	hasFallbackKey bool,
+	retrySameKey bool,
+	emptyResponseAttempts *int,
+	attemptNumber int,
+	waitForRetry func(context.Context, time.Duration) error,
+) (bool, error) {
+	emptyResponse := errors.Is(attemptErr, errEmptyModelResponse)
+	if emptyResponse {
+		*emptyResponseAttempts++
+
+		if streamEmptyResponseAttemptsExhausted(
+			attemptErr,
+			*emptyResponseAttempts,
+			request.Provider.APIKind,
+		) {
+			return false, nil
+		}
+	} else if !retrySameKey {
+		return false, nil
+	}
+
+	retryDelay, canRetry := providerRetryDecision(
+		request.Provider.APIKind,
+		attemptErr,
+		emptyResponse,
+		hasFallbackKey,
+	)
+	if !canRetry {
+		return false, nil
+	}
+
+	logWarn(
+		"provider request failed, retrying",
+		attemptErr,
+		"provider",
+		request.Provider.APIKind,
+		"model",
+		strings.TrimSpace(request.ConfiguredModel),
+		"attempt",
+		attemptNumber,
+		"retry_delay",
+		retryDelay,
+	)
+
+	err := waitForRetry(ctx, retryDelay)
+	if err != nil {
+		return false, fmt.Errorf("wait for provider retry delay: %w", err)
+	}
+
+	return true, nil
 }
 
 func providerRetryDecision(
@@ -257,7 +294,6 @@ func providerRetryDecision(
 
 func streamAttemptContext(
 	ctx context.Context,
-	hasFallbackKey bool,
 	attemptTimeout time.Duration,
 ) (context.Context, context.CancelFunc) {
 	attemptCtx, attemptCancel := context.WithCancel(ctx)

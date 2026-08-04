@@ -1073,19 +1073,19 @@ func TestPositiveIntStringValue(t *testing.T) {
 		expected     int
 		expectsError bool
 	}{
-		{name: "plain", rawValue: "200000", expected: 200_000},
-		{name: "lowercase k", rawValue: "200k", expected: 200_000},
-		{name: "uppercase k", rawValue: "200K", expected: 200_000},
-		{name: "lowercase m", rawValue: "1m", expected: 1_000_000},
-		{name: "uppercase m", rawValue: "1M", expected: 1_000_000},
-		{name: "spaces", rawValue: " 200k ", expected: 200_000},
-		{name: "zero", rawValue: "0", expectsError: true},
-		{name: "zero suffix", rawValue: "0k", expectsError: true},
-		{name: "negative", rawValue: "-5", expectsError: true},
-		{name: "empty", rawValue: "", expectsError: true},
-		{name: "bare suffix", rawValue: "k", expectsError: true},
-		{name: "fractional", rawValue: "1.5k", expectsError: true},
-		{name: "garbage", rawValue: "1.5", expectsError: true},
+		{name: "plain", rawValue: "200000", expected: 200_000, expectsError: false},
+		{name: "lowercase k", rawValue: "200k", expected: 200_000, expectsError: false},
+		{name: "uppercase k", rawValue: "200K", expected: 200_000, expectsError: false},
+		{name: "lowercase m", rawValue: "1m", expected: 1_000_000, expectsError: false},
+		{name: "uppercase m", rawValue: "1M", expected: 1_000_000, expectsError: false},
+		{name: "spaces", rawValue: " 200k ", expected: 200_000, expectsError: false},
+		{name: "zero", rawValue: "0", expected: 0, expectsError: true},
+		{name: "zero suffix", rawValue: "0k", expected: 0, expectsError: true},
+		{name: "negative", rawValue: "-5", expected: 0, expectsError: true},
+		{name: "empty", rawValue: "", expected: 0, expectsError: true},
+		{name: "bare suffix", rawValue: "k", expected: 0, expectsError: true},
+		{name: "fractional", rawValue: "1.5k", expected: 0, expectsError: true},
+		{name: "garbage", rawValue: "1.5", expected: 0, expectsError: true},
 	}
 
 	for _, testCase := range testCases {
