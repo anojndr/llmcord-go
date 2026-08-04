@@ -186,12 +186,7 @@ func (progress *requestProgress) fail(ctx context.Context, err error) {
 	default:
 		errorText := userFacingResponseError(err)
 
-		renderErr := progress.instance.renderFailureResponse(
-			ctx,
-			progress.tracker,
-			errorText,
-			false,
-		)
+		renderErr := progress.instance.renderFailureResponse(ctx, progress.tracker, errorText)
 		if renderErr != nil {
 			logWarn(
 				"render fallback request progress failure response",
@@ -299,12 +294,7 @@ func (progress *requestProgress) run(ctx context.Context) {
 		case failure := <-progress.failures:
 			errorText := userFacingResponseError(failure.err)
 
-			err := progress.instance.renderFailureResponse(
-				ctx,
-				tracker,
-				errorText,
-				false,
-			)
+			err := progress.instance.renderFailureResponse(ctx, tracker, errorText)
 			if err != nil {
 				logWarn(
 					"render request progress failure response",

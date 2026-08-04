@@ -47,7 +47,6 @@ func TestBuildMessageConversationUsesPlaceholderForStandaloneEmptyMention(t *tes
 	sourceMessage.Content = testEmptyAIMention
 
 	loadedConfig := testSearchConfig()
-	loadedConfig.MaxText = defaultMaxText
 	loadedConfig.MaxImages = defaultMaxImages
 	loadedConfig.MaxMessages = defaultMaxMessages
 
@@ -108,7 +107,6 @@ func TestBuildMessageConversationKeepsEmptyFollowUpQueryAsPlaceholder(t *testing
 	followUpMessage.ReferencedMessage = assistantMessage
 
 	loadedConfig := testSearchConfig()
-	loadedConfig.MaxText = defaultMaxText
 	loadedConfig.MaxImages = defaultMaxImages
 	loadedConfig.MaxMessages = defaultMaxMessages
 
@@ -1799,7 +1797,6 @@ func newGeminiMediaPreparationFailureFixture(
 	instance.chatCompletions = newUnavailableGeminiMediaPreparationChatClient(t, stageEdited)
 
 	loadedConfig := testMediaAnalysisConfig()
-	loadedConfig.MaxText = defaultMaxText
 	loadedConfig.MaxImages = defaultMaxImages
 	loadedConfig.MaxMessages = defaultMaxMessages
 
@@ -2003,10 +2000,8 @@ func newRespondToMessageAttachmentFailureFixture(
 	})
 
 	loadedConfig := testSearchConfig()
-	loadedConfig.MaxText = defaultMaxText
 	loadedConfig.MaxImages = defaultMaxImages
 	loadedConfig.MaxMessages = defaultMaxMessages
-	loadedConfig.UsePlainResponses = true
 
 	sourceMessage := newPromptMessage(sourceMessageID, channelID, userID, botUserID)
 	sourceMessage.Content = "<@" + botUserID + ">"
@@ -2117,7 +2112,6 @@ func TestBuildMessageConversationKeepsFollowUpQueryPlainForRepliedTextAttachment
 	instance.nodes = newMessageNodeStore(10)
 
 	loadedConfig := testSearchConfig()
-	loadedConfig.MaxText = defaultMaxText
 	loadedConfig.MaxImages = defaultMaxImages
 	loadedConfig.MaxMessages = defaultMaxMessages
 
@@ -2203,7 +2197,6 @@ func TestBuildMessageConversationKeepsFollowUpQueryPlainWhenReplyingToAssistant(
 	setCachedUserNode(instance, followUpMessage, assistantMessage, "what is my name again")
 
 	loadedConfig := testSearchConfig()
-	loadedConfig.MaxText = defaultMaxText
 	loadedConfig.MaxImages = defaultMaxImages
 	loadedConfig.MaxMessages = defaultMaxMessages
 
@@ -2462,10 +2455,8 @@ func newRespondToMessageTypingFixture(
 	instance.chatCompletions = chatClient
 
 	loadedConfig := testSearchConfig()
-	loadedConfig.MaxText = defaultMaxText
 	loadedConfig.MaxImages = defaultMaxImages
 	loadedConfig.MaxMessages = defaultMaxMessages
-	loadedConfig.UsePlainResponses = true
 
 	return respondToMessageTypingFixture{
 		instance:          instance,
@@ -2561,7 +2552,6 @@ func newRateLimitedRespondToMessageBot(session *discordgo.Session) *bot {
 
 func newRateLimitedRespondToMessageConfig() config {
 	loadedConfig := testSearchConfig()
-	loadedConfig.MaxText = defaultMaxText
 	loadedConfig.MaxImages = defaultMaxImages
 	loadedConfig.MaxMessages = defaultMaxMessages
 

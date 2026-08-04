@@ -177,10 +177,8 @@ type rawConfig struct {
 	BotToken                    scalarString                 `yaml:"bot_token"`
 	ClientID                    scalarString                 `yaml:"client_id"`
 	StatusMessage               string                       `yaml:"status_message"`
-	MaxText                     *int                         `yaml:"max_text"`
 	MaxImages                   *int                         `yaml:"max_images"`
 	MaxMessages                 *int                         `yaml:"max_messages"`
-	UsePlainResponses           bool                         `yaml:"use_plain_responses"`
 	AllowDMs                    *bool                        `yaml:"allow_dms"`
 	Permissions                 permissionsConfig            `yaml:"permissions"`
 	Providers                   map[string]rawProviderConfig `yaml:"providers"`
@@ -200,10 +198,8 @@ type config struct {
 	BotToken                    string
 	ClientID                    string
 	StatusMessage               string
-	MaxText                     int
 	MaxImages                   int
 	MaxMessages                 int
-	UsePlainResponses           bool
 	AllowDMs                    bool
 	Permissions                 permissionsConfig
 	Providers                   map[string]providerConfig
@@ -291,17 +287,15 @@ func buildLoadedConfig(
 	}
 
 	loadedConfig := config{
-		BotToken:          string(rawLoadedConfig.BotToken),
-		ClientID:          string(rawLoadedConfig.ClientID),
-		StatusMessage:     rawLoadedConfig.StatusMessage,
-		MaxText:           intValueOrDefault(rawLoadedConfig.MaxText, defaultMaxText),
-		MaxImages:         intValueOrDefault(rawLoadedConfig.MaxImages, defaultMaxImages),
-		MaxMessages:       intValueOrDefault(rawLoadedConfig.MaxMessages, defaultMaxMessages),
-		UsePlainResponses: rawLoadedConfig.UsePlainResponses,
-		AllowDMs:          allowDMs,
-		Permissions:       rawLoadedConfig.Permissions,
-		Providers:         loadedProviders,
-		WebSearch:         normalizeWebSearchConfig(rawLoadedConfig.WebSearch),
+		BotToken:      string(rawLoadedConfig.BotToken),
+		ClientID:      string(rawLoadedConfig.ClientID),
+		StatusMessage: rawLoadedConfig.StatusMessage,
+		MaxImages:     intValueOrDefault(rawLoadedConfig.MaxImages, defaultMaxImages),
+		MaxMessages:   intValueOrDefault(rawLoadedConfig.MaxMessages, defaultMaxMessages),
+		AllowDMs:      allowDMs,
+		Permissions:   rawLoadedConfig.Permissions,
+		Providers:     loadedProviders,
+		WebSearch:     normalizeWebSearchConfig(rawLoadedConfig.WebSearch),
 		VisualSearch: visualSearchConfig{
 			SerpAPI: serpAPIVisualSearchConfig{
 				APIKey:  firstAPIKey(serpAPIVisualSearchKeys),
@@ -938,8 +932,6 @@ func validateConfigBasics(loadedConfig config) error {
 		return fmt.Errorf("bot_token is required: %w", os.ErrInvalid)
 	case len(loadedConfig.ModelOrder) == 0:
 		return fmt.Errorf("models must contain at least one entry: %w", os.ErrInvalid)
-	case loadedConfig.MaxText <= 0:
-		return fmt.Errorf("max_text must be greater than zero: %w", os.ErrInvalid)
 	case loadedConfig.MaxImages < 0:
 		return fmt.Errorf("max_images must not be negative: %w", os.ErrInvalid)
 	case loadedConfig.MaxMessages <= 0:
@@ -1129,6 +1121,19 @@ func (loadedConfig config) modelContextWindow(modelName string) int {
 	}
 
 	return loadedConfig.ProviderContextWindows[providerName]
+}
+
+// messageTextLimit derives the per-message character limit from a context
+// window, capping one message at roughly one window of text. A window of zero
+// leaves messages unlimited.
+func messageTextLimit(contextWindow int) int {
+	return contextWindow * autoCompactCharsPerToken
+}
+
+// messageTextLimitForModel returns the per-message character limit derived
+// from the model's context window, falling back to the provider window.
+func (loadedConfig config) messageTextLimitForModel(modelName string) int {
+	return messageTextLimit(loadedConfig.modelContextWindow(modelName))
 }
 
 func (loadedConfig config) lockedModelForChannelIDs(channelIDs []string) (string, bool) {

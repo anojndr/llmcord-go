@@ -261,11 +261,9 @@ func (instance *bot) runGenerationAttempt(
 	request chatCompletionRequest,
 	tracker *responseTracker,
 	warnings []string,
-	maxLength int,
-	usePlainResponses bool,
 ) (string, string, *searchMetadata, error) {
-	accumulator := newSegmentAccumulator(maxLength)
-	thinkingAccumulator := newSegmentAccumulator(maxLength)
+	accumulator := newSegmentAccumulator(embedResponseMaxLength)
+	thinkingAccumulator := newSegmentAccumulator(embedResponseMaxLength)
 
 	var finishReason string
 
@@ -278,8 +276,6 @@ func (instance *bot) runGenerationAttempt(
 		thinkingAccumulator:   &thinkingAccumulator,
 		finishReason:          &finishReason,
 		lastRenderTime:        &lastRenderTime,
-		maxLength:             maxLength,
-		usePlainResponses:     usePlainResponses,
 		initialSearchMetadata: cloneSearchMetadata(tracker.searchMetadata),
 		rawAnswerText:         "",
 		renderedAnswerText:    "",
@@ -314,7 +310,7 @@ func (instance *bot) runGenerationAttempt(
 	finalAccumulator := accumulator
 
 	if cleanedAnswerText != finalAnswerText {
-		finalAccumulator = newSegmentAccumulator(maxLength)
+		finalAccumulator = newSegmentAccumulator(embedResponseMaxLength)
 
 		_ = finalAccumulator.appendText(cleanedAnswerText)
 	}
@@ -327,7 +323,6 @@ func (instance *bot) runGenerationAttempt(
 		&finalAccumulator,
 		thinkingAccumulator.joined(),
 		finishReason,
-		usePlainResponses,
 	)
 
 	if responseErr == nil && streamErr != nil {
@@ -347,14 +342,7 @@ func (instance *bot) generateAndSendResponse(
 	request chatCompletionRequest,
 	tracker *responseTracker,
 	warnings []string,
-	usePlainResponses bool,
 ) error {
-	maxLength := embedResponseMaxLength
-
-	if usePlainResponses {
-		maxLength = plainResponseMaxLength
-	}
-
 	tracker.modelName = strings.TrimSpace(request.ConfiguredModel)
 
 	cleanedText, thinkingText, _, responseErr := instance.runGenerationAttempt(
@@ -362,8 +350,6 @@ func (instance *bot) generateAndSendResponse(
 		request,
 		tracker,
 		warnings,
-		maxLength,
-		usePlainResponses,
 	)
 	if responseErr == nil {
 		finalText := visibleResponseText(thinkingText, cleanedText)
@@ -377,7 +363,7 @@ func (instance *bot) generateAndSendResponse(
 
 	errorText := userFacingResponseError(responseErr)
 
-	renderErr := instance.renderFailureResponse(ctx, tracker, errorText, usePlainResponses)
+	renderErr := instance.renderFailureResponse(ctx, tracker, errorText)
 
 	var finalText string
 
@@ -405,8 +391,6 @@ type generatedStreamState struct {
 	thinkingAccumulator   *segmentAccumulator
 	finishReason          *string
 	lastRenderTime        *time.Time
-	maxLength             int
-	usePlainResponses     bool
 	initialSearchMetadata *searchMetadata
 	rawAnswerText         string
 	renderedAnswerText    string
@@ -461,36 +445,25 @@ func (instance *bot) handleGeneratedStreamDelta(
 		tracker.searchMetadata = mergeSearchMetadata(tracker.searchMetadata, delta.SearchMetadata)
 	}
 
-	var segments []string
-	if state.usePlainResponses {
-		segments = state.answerAccumulator.renderSegments()
-	} else {
-		segments = visibleResponseSegments(
-			state.thinkingAccumulator.joined(),
-			state.answerAccumulator.joined(),
-			state.maxLength,
-		)
-	}
+	segments := visibleResponseSegments(
+		state.thinkingAccumulator.joined(),
+		state.answerAccumulator.joined(),
+		embedResponseMaxLength,
+	)
 
 	if !shouldRenderProgress(segments, splitOccurred, *state.lastRenderTime) {
 		return nil
 	}
 
-	var err error
-	if state.usePlainResponses {
-		err = instance.renderPlainResponse(ctx, tracker, segments, false, false)
-	} else {
-		err = instance.renderEmbedResponse(
-			ctx,
-			tracker,
-			state.warnings,
-			segments,
-			*state.finishReason,
-			false,
-			false,
-		)
-	}
-
+	err := instance.renderEmbedResponse(
+		ctx,
+		tracker,
+		state.warnings,
+		segments,
+		*state.finishReason,
+		false,
+		false,
+	)
 	if err != nil {
 		return fmt.Errorf("render streaming response: %w", err)
 	}
@@ -541,24 +514,7 @@ func (instance *bot) renderFinalResponse(
 	accumulator *segmentAccumulator,
 	thinkingText string,
 	finishReason string,
-	usePlainResponses bool,
 ) error {
-	if usePlainResponses {
-		err := instance.sendPlainResponse(
-			ctx,
-			tracker,
-			accumulator.renderSegments(),
-			strings.TrimSpace(thinkingText) != "",
-		)
-		if err != nil {
-			return fmt.Errorf("send plain response: %w", err)
-		}
-
-		instance.sendImgbbURLReplies(tracker, accumulator.joined())
-
-		return nil
-	}
-
 	tracker.contextUsage = retainedContextWindowUsage(
 		request,
 		visibleResponseText(thinkingText, accumulator.joined()),
@@ -627,7 +583,6 @@ func (instance *bot) renderFailureResponse(
 	ctx context.Context,
 	tracker *responseTracker,
 	errorText string,
-	usePlainResponses bool,
 ) error {
 	if instance == nil || instance.session == nil || tracker == nil {
 		return nil
@@ -645,20 +600,12 @@ func (instance *bot) renderFailureResponse(
 		return nil
 	}
 
-	return instance.sendFailureResponse(
-		tracker,
-		errorText,
-		failureEmbed,
-		usePlainResponses,
-		renderErr,
-	)
+	return instance.sendFailureResponse(tracker, failureEmbed, renderErr)
 }
 
 func (instance *bot) sendFailureResponse(
 	tracker *responseTracker,
-	errorText string,
 	failureEmbed *discordgo.MessageEmbed,
-	usePlainResponses bool,
 	renderErr error,
 ) error {
 	failureTracker := newResponseTracker(tracker.sourceMessage, tracker.modelName)
@@ -666,11 +613,10 @@ func (instance *bot) sendFailureResponse(
 	failureTracker.searchMetadata = cloneSearchMetadata(tracker.searchMetadata)
 	failureTracker.responseMessages = append(failureTracker.responseMessages, tracker.responseMessages...)
 
-	sentMessage, pending, err := instance.sendFailureResponseMessage(
+	sentMessage, pending, err := instance.sendEmbedMessage(
 		failureTracker,
-		errorText,
 		failureEmbed,
-		usePlainResponses,
+		responseActions{showSources: false, showThinking: false, showRentry: false},
 	)
 	if err != nil {
 		if renderErr != nil {
@@ -686,27 +632,6 @@ func (instance *bot) sendFailureResponse(
 	tracker.pendingResponses = append(tracker.pendingResponses, pending)
 
 	return renderErr
-}
-
-func (instance *bot) sendFailureResponseMessage(
-	failureTracker *responseTracker,
-	errorText string,
-	failureEmbed *discordgo.MessageEmbed,
-	usePlainResponses bool,
-) (*discordgo.Message, pendingResponse, error) {
-	if usePlainResponses {
-		return instance.sendPlainMessage(
-			failureTracker,
-			errorText,
-			responseActions{showSources: false, showThinking: false, showRentry: false},
-		)
-	}
-
-	return instance.sendEmbedMessage(
-		failureTracker,
-		failureEmbed,
-		responseActions{showSources: false, showThinking: false, showRentry: false},
-	)
 }
 
 func shouldRenderProgress(
@@ -952,60 +877,6 @@ func discardPendingResponse(store *messageNodeStore, pending pendingResponse) {
 	pending.node.mu.Unlock()
 }
 
-func (instance *bot) sendPlainResponse(
-	ctx context.Context,
-	tracker *responseTracker,
-	segments []string,
-	hasThinking bool,
-) error {
-	return instance.renderPlainResponse(ctx, tracker, segments, true, hasThinking)
-}
-
-func (instance *bot) renderPlainResponse(
-	ctx context.Context,
-	tracker *responseTracker,
-	segments []string,
-	final bool,
-	hasThinking bool,
-) error {
-	for index, segment := range segments {
-		actions := responseActions{
-			showSources:  false,
-			showThinking: false,
-			showRentry:   false,
-		}
-		if final {
-			actions = plainResponseActions(tracker, index, len(segments), hasThinking)
-		}
-
-		if index < len(tracker.responseMessages) {
-			err := instance.updatePlainResponseMessage(ctx, tracker, index, segment, actions)
-			if err != nil {
-				return err
-			}
-
-			continue
-		}
-
-		sentMessage, pending, err := instance.sendPlainResponseMessage(tracker, segment, actions)
-		if err != nil {
-			return err
-		}
-
-		tracker.responseMessages = append(tracker.responseMessages, sentMessage)
-		tracker.pendingResponses = append(tracker.pendingResponses, pending)
-	}
-
-	err := instance.trimExtraResponseMessages(ctx, tracker, len(segments))
-	if err != nil {
-		return err
-	}
-
-	tracker.responseVisible = true
-
-	return nil
-}
-
 func (instance *bot) renderFailureOnProgressMessage(
 	ctx context.Context,
 	tracker *responseTracker,
@@ -1039,67 +910,6 @@ func (instance *bot) renderFailureOnProgressMessage(
 	tracker.responseVisible = true
 
 	return true, nil
-}
-
-func plainResponseActions(
-	tracker *responseTracker,
-	index int,
-	totalSegments int,
-	hasThinking bool,
-) responseActions {
-	return responseActions{
-		showSources:  tracker.searchMetadata != nil && index == totalSegments-1,
-		showThinking: hasThinking && index == totalSegments-1,
-		showRentry:   index == totalSegments-1,
-	}
-}
-
-func (instance *bot) updatePlainResponseMessage(
-	ctx context.Context,
-	tracker *responseTracker,
-	index int,
-	segment string,
-	actions responseActions,
-) error {
-	err := instance.waitForEditSlotForMessage(
-		ctx,
-		tracker.responseMessages[index].ID,
-	)
-	if err != nil {
-		return fmt.Errorf("wait before plain message update: %w", err)
-	}
-
-	err = instance.editPlainMessage(
-		tracker.responseMessages[index],
-		segment,
-		actions,
-	)
-	if err != nil {
-		return fmt.Errorf("edit plain message: %w", err)
-	}
-
-	if index == 0 {
-		tracker.progressActive = false
-	}
-
-	return nil
-}
-
-func (instance *bot) sendPlainResponseMessage(
-	tracker *responseTracker,
-	segment string,
-	actions responseActions,
-) (*discordgo.Message, pendingResponse, error) {
-	sentMessage, pending, err := instance.sendPlainMessage(
-		tracker,
-		segment,
-		actions,
-	)
-	if err != nil {
-		return nil, pendingResponse{}, fmt.Errorf("send plain message: %w", err)
-	}
-
-	return sentMessage, pending, nil
 }
 
 func imgbbResponseURLs(text string) []string {
@@ -1242,18 +1052,6 @@ func (instance *bot) sendEmbedMessage(
 	return instance.sendReplyMessage(tracker, send)
 }
 
-func (instance *bot) sendPlainMessage(
-	tracker *responseTracker,
-	content string,
-	actions responseActions,
-) (*discordgo.Message, pendingResponse, error) {
-	send := newReplyMessage(referenceTarget(tracker))
-	send.Flags |= discordgo.MessageFlagsIsComponentsV2
-	send.Components = buildPlainComponents(content, actions)
-
-	return instance.sendReplyMessage(tracker, send)
-}
-
 func referenceTarget(tracker *responseTracker) *discordgo.Message {
 	if len(tracker.responseMessages) == 0 {
 		return tracker.sourceMessage
@@ -1316,31 +1114,6 @@ func (instance *bot) editEmbedMessage(
 	edit := discordgo.NewMessageEdit(message.ChannelID, message.ID)
 	edit.SetEmbeds([]*discordgo.MessageEmbed{embed})
 	edit.Components = &components
-
-	_, err := instance.session.ChannelMessageEditComplex(edit)
-	if err != nil {
-		return fmt.Errorf("edit message %s: %w", message.ID, err)
-	}
-
-	return nil
-}
-
-func (instance *bot) editPlainMessage(
-	message *discordgo.Message,
-	content string,
-	actions responseActions,
-) error {
-	if instance == nil || instance.session == nil {
-		return errNilSession
-	}
-
-	edit := discordgo.NewMessageEdit(message.ChannelID, message.ID)
-	edit.SetEmbeds([]*discordgo.MessageEmbed{})
-
-	components := buildPlainComponents(content, actions)
-	edit.Components = &components
-	edit.Flags = discordgo.MessageFlagsIsComponentsV2 |
-		discordgo.MessageFlagsSuppressNotifications
 
 	_, err := instance.session.ChannelMessageEditComplex(edit)
 	if err != nil {
@@ -1486,21 +1259,6 @@ func buildEmbedComponents(actions responseActions) []discordgo.MessageComponent 
 	row.Components = buttons
 
 	return []discordgo.MessageComponent{row}
-}
-
-func buildPlainComponents(content string, actions responseActions) []discordgo.MessageComponent {
-	textDisplay := new(discordgo.TextDisplay)
-	textDisplay.Content = content
-
-	buttons := buildResponseButtons(actions)
-	if len(buttons) == 0 {
-		return []discordgo.MessageComponent{textDisplay}
-	}
-
-	row := new(discordgo.ActionsRow)
-	row.Components = buttons
-
-	return []discordgo.MessageComponent{textDisplay, row}
 }
 
 func buildResponseButtons(actions responseActions) []discordgo.MessageComponent {

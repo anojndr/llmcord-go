@@ -899,7 +899,6 @@ func TestGenerateAndSendResponseStoresProviderResponseIDForXAIContinuation(t *te
 		request,
 		tracker,
 		nil,
-		true,
 	)
 	if err != nil {
 		t.Fatalf("generate and send response: %v", err)
@@ -1871,7 +1870,6 @@ func newXAIFollowUpRequestFixtureForTest(
 
 func newXAIVisionConversationConfig(xAIVisionModel string) config {
 	loadedConfig := testSearchConfig()
-	loadedConfig.MaxText = defaultMaxText
 	loadedConfig.MaxImages = defaultMaxImages
 	loadedConfig.MaxMessages = defaultMaxMessages
 	loadedConfig.Providers = map[string]providerConfig{xAIProviderName: testXAIProviderConfig()}

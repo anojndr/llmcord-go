@@ -137,7 +137,7 @@ func appendConversationWarnings(
 	messageCount int,
 	maxMessages int,
 ) {
-	if runeCount(node.text) > maxText {
+	if maxText > 0 && runeCount(node.text) > maxText {
 		appendUniqueWarning(
 			warningSet,
 			fmt.Sprintf("Warning: max %d characters per message", maxText),
@@ -195,13 +195,16 @@ func buildMessageContent(
 	options messageContentOptions,
 ) (any, messageContentSummary) {
 	selectedMedia, summary := selectMessageMedia(node.media, options)
-	truncatedText := truncateRunes(
-		appendInlineAttachmentText(
-			node.text,
-			inlineTextAttachmentContent(node.media, options),
-		),
-		maxText,
+
+	text := appendInlineAttachmentText(
+		node.text,
+		inlineTextAttachmentContent(node.media, options),
 	)
+	if maxText > 0 {
+		text = truncateRunes(text, maxText)
+	}
+
+	truncatedText := text
 
 	if len(selectedMedia) > 0 {
 		parts := make([]contentPart, 0, len(selectedMedia)+1)

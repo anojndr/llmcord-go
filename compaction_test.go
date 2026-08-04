@@ -738,7 +738,6 @@ func newPrepareMessageResponseAutoCompactFixture(
 	sourceMessage.ReferencedMessage = assistantMessage
 
 	loadedConfig := testSearchConfig()
-	loadedConfig.MaxText = defaultMaxText
 	loadedConfig.MaxImages = defaultMaxImages
 	loadedConfig.MaxMessages = defaultMaxMessages
 	loadedConfig.SystemPrompt = "Always help the user."

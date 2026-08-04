@@ -266,7 +266,7 @@ func retainedHistoryForFollowUp(
 	history, _ := instance.buildConversation(
 		context.Background(),
 		followUpMessage,
-		defaultMaxText,
+		testConversationTextLimit,
 		options,
 		defaultMaxMessages,
 		false,

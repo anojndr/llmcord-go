@@ -103,10 +103,6 @@ func assertDefaultLoadedConfig(t *testing.T, loadedConfig config) {
 		t.Fatalf("unexpected client id: %q", loadedConfig.ClientID)
 	}
 
-	if loadedConfig.MaxText != defaultMaxText {
-		t.Fatalf("unexpected max text: %d", loadedConfig.MaxText)
-	}
-
 	if loadedConfig.MaxImages != defaultMaxImages {
 		t.Fatalf("unexpected max images: %d", loadedConfig.MaxImages)
 	}
