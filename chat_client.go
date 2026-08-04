@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -129,10 +130,18 @@ func (client chatCompletionRouter) streamChatCompletionForKey(
 	attemptNumber := 0
 	emptyResponseAttempts := 0
 
+	attemptTimeout := streamAttemptTimeout(ctx, hasFallbackKey)
+	if attemptTimeout > 0 {
+		var watchdog context.CancelFunc
+
+		ctx, watchdog = context.WithTimeout(ctx, attemptTimeout)
+		defer watchdog()
+	}
+
 	for {
 		streamStarted := false
 		attemptNumber++
-		attemptCtx, attemptCancel := streamAttemptContext(ctx, hasFallbackKey)
+		attemptCtx, attemptCancel := streamAttemptContext(ctx, hasFallbackKey, attemptTimeout)
 
 		if attemptNumber > 1 {
 			sendRetryResetDelta(
@@ -161,6 +170,10 @@ func (client chatCompletionRouter) streamChatCompletionForKey(
 
 		if streamStarted || ctx.Err() != nil {
 			return streamStarted, err
+		}
+
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(attemptCtx.Err(), context.DeadlineExceeded) {
+			return streamStarted, fmt.Errorf("stream attempt timeout: %w", err)
 		}
 
 		emptyResponse := errors.Is(err, errEmptyModelResponse)
@@ -195,6 +208,8 @@ func (client chatCompletionRouter) streamChatCompletionForKey(
 			err,
 			"provider",
 			request.Provider.APIKind,
+			"model",
+			strings.TrimSpace(request.ConfiguredModel),
 			"attempt",
 			attemptNumber,
 			"retry_delay",
@@ -234,29 +249,46 @@ func providerRetryDecision(
 func streamAttemptContext(
 	ctx context.Context,
 	hasFallbackKey bool,
+	attemptTimeout time.Duration,
 ) (context.Context, context.CancelFunc) {
 	attemptCtx, attemptCancel := context.WithCancel(ctx)
 
-	if deadline, ok := ctx.Deadline(); ok {
-		remaining := time.Until(deadline)
-		attemptTimeout := remaining
-
-		if hasFallbackKey {
-			attemptTimeout = remaining / attemptTimeoutDivisor
-		}
-
-		attemptTimeout = max(attemptTimeout, minAttemptTimeout)
-		attemptTimeout = min(attemptTimeout, maxAttemptTimeout)
-
-		if attemptTimeout < remaining {
-			var cancel context.CancelFunc
-
-			attemptCtx, cancel = context.WithTimeout(ctx, attemptTimeout)
-			attemptCancel = cancel
-		}
+	if attemptTimeout <= 0 {
+		return attemptCtx, attemptCancel
 	}
 
+	var cancel context.CancelFunc
+
+	attemptCtx, cancel = context.WithTimeout(ctx, attemptTimeout)
+	attemptCancel = cancel
+
 	return attemptCtx, attemptCancel
+}
+
+// streamAttemptTimeout returns the timeout applied to each individual stream
+// attempt, or 0 when the caller has no deadline of its own. With no deadline
+// there is nothing to divide, and every attempt runs until the stream finishes
+// naturally.
+func streamAttemptTimeout(
+	ctx context.Context,
+	hasFallbackKey bool,
+) time.Duration {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return 0
+	}
+
+	remaining := time.Until(deadline)
+	attemptTimeout := remaining
+
+	if hasFallbackKey {
+		attemptTimeout = remaining / attemptTimeoutDivisor
+	}
+
+	attemptTimeout = max(attemptTimeout, minAttemptTimeout)
+	attemptTimeout = min(attemptTimeout, maxAttemptTimeout)
+
+	return attemptTimeout
 }
 
 func streamEmptyResponseAttemptsExhausted(

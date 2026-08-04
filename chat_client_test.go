@@ -1519,6 +1519,251 @@ func TestChatCompletionRouterRetriesGeminiOnMalformedFunctionCall(t *testing.T) 
 	}
 }
 
+func TestStreamAttemptTimeoutComputesPerAttemptBudget(t *testing.T) {
+	t.Parallel()
+
+	t.Run("no deadline returns zero", func(t *testing.T) {
+		t.Parallel()
+
+		if timeout := streamAttemptTimeout(context.Background(), true); timeout != 0 {
+			t.Fatalf("streamAttemptTimeout without deadline = %v, want 0", timeout)
+		}
+	})
+
+	t.Run("with fallback key splits budget", func(t *testing.T) {
+		t.Parallel()
+
+		parentCtx, cancel := context.WithDeadline(context.Background(), time.Now().Add(60*time.Second))
+		defer cancel()
+
+		timeout := streamAttemptTimeout(parentCtx, true)
+		if timeout > 30*time.Second || timeout < 29*time.Second {
+			t.Fatalf("streamAttemptTimeout with fallback key = %v, want ~30s", timeout)
+		}
+	})
+
+	t.Run("without fallback key keeps full budget", func(t *testing.T) {
+		t.Parallel()
+
+		parentCtx, cancel := context.WithDeadline(context.Background(), time.Now().Add(60*time.Second))
+		defer cancel()
+
+		timeout := streamAttemptTimeout(parentCtx, false)
+		if timeout > 60*time.Second || timeout < 59*time.Second {
+			t.Fatalf("streamAttemptTimeout without fallback key = %v, want ~60s", timeout)
+		}
+	})
+
+	t.Run("clamps to minimum", func(t *testing.T) {
+		t.Parallel()
+
+		parentCtx, cancel := context.WithDeadline(context.Background(), time.Now().Add(5*time.Second))
+		defer cancel()
+
+		timeout := streamAttemptTimeout(parentCtx, true)
+		if timeout != minAttemptTimeout {
+			t.Fatalf("streamAttemptTimeout with tiny budget = %v, want %v", timeout, minAttemptTimeout)
+		}
+	})
+
+	t.Run("clamps to maximum", func(t *testing.T) {
+		t.Parallel()
+
+		parentCtx, cancel := context.WithDeadline(context.Background(), time.Now().Add(10*time.Minute))
+		defer cancel()
+
+		timeout := streamAttemptTimeout(parentCtx, false)
+		if timeout != maxAttemptTimeout {
+			t.Fatalf("streamAttemptTimeout with large budget = %v, want %v", timeout, maxAttemptTimeout)
+		}
+	})
+}
+
+func TestStreamAttemptContextAppliesTimeout(t *testing.T) {
+	t.Parallel()
+
+	parentCtx, cancel := context.WithDeadline(context.Background(), time.Now().Add(60*time.Second))
+	defer cancel()
+
+	attemptCtx, attemptCancel := streamAttemptContext(parentCtx, false, 45*time.Second)
+	defer attemptCancel()
+
+	deadline, ok := attemptCtx.Deadline()
+	if !ok {
+		t.Fatal("expected attempt context deadline")
+	}
+
+	if time.Until(deadline) > 45*time.Second || time.Until(deadline) < 44*time.Second {
+		t.Fatalf("expected attempt deadline roughly 45s out, got %v", time.Until(deadline))
+	}
+}
+
+func TestStreamAttemptContextWithoutTimeout(t *testing.T) {
+	t.Parallel()
+
+	parentCtx, cancel := context.WithDeadline(context.Background(), time.Now().Add(60*time.Second))
+	defer cancel()
+
+	attemptCtx, attemptCancel := streamAttemptContext(parentCtx, false, 0)
+	defer attemptCancel()
+
+	if _, ok := attemptCtx.Deadline(); !ok {
+		t.Fatal("expected attempt context to keep parent deadline")
+	}
+}
+
+func TestChatCompletionRouterEachAttemptGetsFreshTimeoutBudget(t *testing.T) {
+	t.Parallel()
+
+	var (
+		capturedDeadlinesMu sync.Mutex
+		capturedDeadlines   []time.Time
+	)
+
+	attemptCapture := new(stringCapture)
+	router := newGeminiRetryRouterWithFactory(
+		attemptCapture,
+		nil,
+		func(_ string, attempt int) func(
+			context.Context,
+			string,
+			[]*genai.Content,
+			*genai.GenerateContentConfig,
+		) iter.Seq2[*genai.GenerateContentResponse, error] {
+			return func(
+				ctx context.Context,
+				_ string,
+				_ []*genai.Content,
+				_ *genai.GenerateContentConfig,
+			) iter.Seq2[*genai.GenerateContentResponse, error] {
+				return func(yield func(*genai.GenerateContentResponse, error) bool) {
+					if dl, ok := ctx.Deadline(); ok {
+						capturedDeadlinesMu.Lock()
+
+						capturedDeadlines = append(capturedDeadlines, dl)
+
+						capturedDeadlinesMu.Unlock()
+					}
+
+					if attempt == 0 {
+						// Fail the first attempt so the router retries on the
+						// same key. The second attempt must receive a fresh
+						// timeout budget, not the leftover of the first one.
+						_ = yield(nil, newTestGeminiRetryDelayError(
+							"overloaded, retry later",
+							"1s",
+						))
+
+						return
+					}
+
+					_ = yield(newGeminiGenerateContentResponse("Hello", genai.FinishReasonStop), nil)
+				}
+			}
+		},
+	)
+
+	req := newGeminiRetryRequest()
+	req.Provider.APIKeys = []string{"single-key"}
+
+	parentCtx, cancel := context.WithDeadline(context.Background(), time.Now().Add(60*time.Second))
+	defer cancel()
+
+	content, err := collectStreamedContent(parentCtx, router, req)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	if content != "Hello" {
+		t.Fatalf("unexpected streamed content: %q", content)
+	}
+
+	capturedDeadlinesMu.Lock()
+	deadlines := capturedDeadlines
+	capturedDeadlinesMu.Unlock()
+
+	if len(deadlines) != 2 {
+		t.Fatalf("expected 2 captured deadlines, got %d", len(deadlines))
+	}
+
+	// Without a fallback key every attempt gets the full remaining parent
+	// budget. Both attempts are instant, so the distance between the two
+	// deadlines must be far smaller than the attempt timeout itself.
+	if gap := deadlines[1].Sub(deadlines[0]); gap > time.Second {
+		t.Fatalf("expected fresh deadline per attempt, gap = %v", gap)
+	}
+}
+
+func TestChatCompletionRouterStopsWhenAttemptBudgetExhausted(t *testing.T) {
+	t.Parallel()
+
+	var (
+		attemptsMu sync.Mutex
+		attempts   int
+	)
+
+	attemptCapture := new(stringCapture)
+	router := newGeminiRetryRouterWithFactory(
+		attemptCapture,
+		nil,
+		func(_ string, _ int) func(
+			context.Context,
+			string,
+			[]*genai.Content,
+			*genai.GenerateContentConfig,
+		) iter.Seq2[*genai.GenerateContentResponse, error] {
+			return func(
+				ctx context.Context,
+				_ string,
+				_ []*genai.Content,
+				_ *genai.GenerateContentConfig,
+			) iter.Seq2[*genai.GenerateContentResponse, error] {
+				return func(yield func(*genai.GenerateContentResponse, error) bool) {
+					attemptsMu.Lock()
+					attempts++
+					attempt := attempts
+					attemptsMu.Unlock()
+
+					if attempt > 1 {
+						t.Errorf("stream attempts continued after the attempt budget was exhausted")
+					}
+
+					// Consume the attempt budget, then report a transient
+					// error. With a single key the attempt timeout equals the
+					// parent deadline, so after this attempt the watchdog
+					// deadline is already exceeded.
+					<-ctx.Done()
+
+					_ = yield(nil, fmt.Errorf("overloaded, retry later: %w", context.DeadlineExceeded))
+				}
+			}
+		},
+	)
+
+	req := newGeminiRetryRequest()
+	req.Provider.APIKeys = []string{"single-key"}
+
+	parentCtx, cancel := context.WithDeadline(context.Background(), time.Now().Add(2*time.Second))
+	defer cancel()
+
+	_, err := collectStreamedContent(parentCtx, router, req)
+	if err == nil {
+		t.Fatal("expected an error when the attempt budget is exhausted")
+	}
+
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected context deadline exceeded, got: %v", err)
+	}
+
+	attemptsMu.Lock()
+	gotAttempts := attempts
+	attemptsMu.Unlock()
+
+	if gotAttempts != 1 {
+		t.Fatalf("expected 1 attempt, got %d", gotAttempts)
+	}
+}
+
 func TestChatCompletionRouterAttemptTimeoutWithAndWithoutFallbackKey(t *testing.T) {
 	t.Parallel()
 
