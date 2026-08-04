@@ -428,7 +428,7 @@ func (instance *bot) runAutoCompactionPrompt(
 	compactionRequest.SessionID = ""
 	compactionRequest.Messages = []chatMessage{
 		{
-			Role:    openAICodexRoleSystem,
+			Role:    messageRoleSystem,
 			Content: systemPrompt,
 		},
 		{
@@ -918,7 +918,7 @@ func ceilDivPositive(value int, divisor int) int {
 func splitLeadingSystemMessages(messages []chatMessage) ([]chatMessage, []chatMessage) {
 	splitIndex := 0
 	for splitIndex < len(messages) &&
-		strings.EqualFold(strings.TrimSpace(messages[splitIndex].Role), openAICodexRoleSystem) {
+		strings.EqualFold(strings.TrimSpace(messages[splitIndex].Role), messageRoleSystem) {
 		splitIndex++
 	}
 

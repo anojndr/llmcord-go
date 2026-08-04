@@ -35,7 +35,6 @@ type youtubeShortsClient struct {
 	infoURL            string
 	loaderURL          string
 	userAgent          string
-	requestTimeout     time.Duration
 	loaderPollInterval time.Duration
 }
 
@@ -94,7 +93,6 @@ func newYouTubeShortsClient(httpClient *http.Client) youtubeShortsClient {
 		infoURL:            defaultYouTubeShortsInfoURL,
 		loaderURL:          defaultYouTubeShortsLoaderURL,
 		userAgent:          youtubeUserAgent,
-		requestTimeout:     youtubeShortsRequestTimeout,
 		loaderPollInterval: youtubeShortsLoaderPollInterval,
 	}
 }
@@ -225,31 +223,23 @@ func (client youtubeShortsClient) fetch(
 	ctx context.Context,
 	rawURL string,
 ) (youtubeShortsVideoContent, error) {
-	requestTimeout := client.requestTimeout
-	if requestTimeout <= 0 {
-		requestTimeout = youtubeShortsRequestTimeout
-	}
-
-	requestContext, cancel := context.WithTimeout(ctx, requestTimeout)
-	defer cancel()
-
 	resolvedURL, err := normalizeYouTubeShortsURL(rawURL)
 	if err != nil {
 		return youtubeShortsVideoContent{}, err
 	}
 
-	info, err := client.fetchInfo(requestContext, resolvedURL)
+	info, err := client.fetchInfo(ctx, resolvedURL)
 	if err != nil {
 		return youtubeShortsVideoContent{}, fmt.Errorf("fetch youtube shorts info: %w", err)
 	}
 
-	downloadURL, err := client.resolveDownloadURL(requestContext, resolvedURL, info.Formats)
+	downloadURL, err := client.resolveDownloadURL(ctx, resolvedURL, info.Formats)
 	if err != nil {
 		return youtubeShortsVideoContent{}, err
 	}
 
 	videoBytes, mimeType, filename, err := client.downloadVideo(
-		requestContext,
+		ctx,
 		downloadURL,
 		resolvedURL,
 	)

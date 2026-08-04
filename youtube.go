@@ -192,9 +192,6 @@ func (client youtubeClient) fetch(ctx context.Context, rawURL string) (youtubeVi
 		return youtubeVideoContent{}, err
 	}
 
-	requestContext, cancel := context.WithTimeout(ctx, youtubeRequestTimeout)
-	defer cancel()
-
 	var (
 		content        youtubeVideoContent
 		comments       []youtubeComment
@@ -207,13 +204,13 @@ func (client youtubeClient) fetch(ctx context.Context, rawURL string) (youtubeVi
 	safeGo(func() {
 		defer fetchWaitGroup.Done()
 
-		content, transcriptErr = client.fetchNoteGPTContent(requestContext, videoID)
+		content, transcriptErr = client.fetchNoteGPTContent(ctx, videoID)
 	})
 
 	safeGo(func() {
 		defer fetchWaitGroup.Done()
 
-		comments = client.fetchWatchPageComments(requestContext, rawURL, videoID)
+		comments = client.fetchWatchPageComments(ctx, rawURL, videoID)
 	})
 
 	fetchWaitGroup.Wait()

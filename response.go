@@ -183,35 +183,6 @@ func newResponseTracker(
 	return tracker
 }
 
-func withoutCancelContext(ctx context.Context) context.Context {
-	if ctx == nil {
-		return context.Background()
-	}
-
-	return context.WithoutCancel(ctx)
-}
-
-func streamChatCompletionContext(
-	ctx context.Context,
-	request chatCompletionRequest,
-) (context.Context, context.CancelFunc) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-
-	return context.WithTimeout(ctx, streamChatCompletionTimeout(request))
-}
-
-func streamChatCompletionTimeout(request chatCompletionRequest) time.Duration {
-	if request.Provider.APIKind == providerAPIKindOpenAI &&
-		request.Provider.UseResponsesAPI &&
-		openAIConfiguredModel(request.ConfiguredModel) {
-		return openAIResponsesChatCompletionTimeout
-	}
-
-	return chatCompletionTimeout
-}
-
 func (tracker *responseTracker) release(store *messageNodeStore, fullText string, thinkingText string) {
 	for _, pending := range tracker.pendingResponses {
 		pending.node.role = messageRoleAssistant
@@ -270,27 +241,23 @@ func (instance *bot) runGenerationAttempt(
 	lastRenderTime := time.Time{}
 
 	streamState := generatedStreamState{
-		request:               request,
-		warnings:              warnings,
-		answerAccumulator:     &accumulator,
-		thinkingAccumulator:   &thinkingAccumulator,
-		finishReason:          &finishReason,
-		lastRenderTime:        &lastRenderTime,
-		initialSearchMetadata: cloneSearchMetadata(tracker.searchMetadata),
-		rawAnswerText:         "",
-		renderedAnswerText:    "",
+		request:             request,
+		warnings:            warnings,
+		answerAccumulator:   &accumulator,
+		thinkingAccumulator: &thinkingAccumulator,
+		finishReason:        &finishReason,
+		lastRenderTime:      &lastRenderTime,
+		rawAnswerText:       "",
+		renderedAnswerText:  "",
 	}
 
-	streamContext, cancelStream := streamChatCompletionContext(ctx, request)
 	streamErr := instance.chatCompletions.streamChatCompletion(
-		streamContext,
+		ctx,
 		request,
 		func(delta streamDelta) error {
 			return instance.handleGeneratedStreamDelta(ctx, tracker, &streamState, delta)
 		},
 	)
-
-	cancelStream()
 
 	if streamErr != nil && finishReason == "" {
 		finishReason = openAIStreamErrorEventType
@@ -385,15 +352,14 @@ func (instance *bot) generateAndSendResponse(
 }
 
 type generatedStreamState struct {
-	request               chatCompletionRequest
-	warnings              []string
-	answerAccumulator     *segmentAccumulator
-	thinkingAccumulator   *segmentAccumulator
-	finishReason          *string
-	lastRenderTime        *time.Time
-	initialSearchMetadata *searchMetadata
-	rawAnswerText         string
-	renderedAnswerText    string
+	request             chatCompletionRequest
+	warnings            []string
+	answerAccumulator   *segmentAccumulator
+	thinkingAccumulator *segmentAccumulator
+	finishReason        *string
+	lastRenderTime      *time.Time
+	rawAnswerText       string
+	renderedAnswerText  string
 }
 
 func (instance *bot) handleGeneratedStreamDelta(
@@ -402,19 +368,6 @@ func (instance *bot) handleGeneratedStreamDelta(
 	state *generatedStreamState,
 	delta streamDelta,
 ) error {
-	if delta.FinishReason == finishReasonRetryReset {
-		state.answerAccumulator.segments = []string{""}
-		state.thinkingAccumulator.segments = []string{""}
-		state.rawAnswerText = ""
-		state.renderedAnswerText = ""
-		*state.finishReason = ""
-		tracker.usage = nil
-		tracker.providerResponseID = ""
-		tracker.searchMetadata = cloneSearchMetadata(state.initialSearchMetadata)
-
-		return nil
-	}
-
 	splitOccurred := false
 	if delta.Thinking != "" {
 		splitOccurred = state.thinkingAccumulator.appendText(delta.Thinking) || splitOccurred
@@ -540,10 +493,9 @@ func (instance *bot) renderFinalResponse(
 
 func userFacingResponseError(err error) string {
 	const (
-		genericResponseErrorText  = "Couldn't generate a response right now. Try again."
-		invalidProviderErrorText  = "The provider returned an invalid or oversized error response. Try again."
-		timedOutResponseErrorText = "The model timed out while processing the request. Try again."
-		truncatedErrorSuffix      = " [truncated]"
+		genericResponseErrorText = "Couldn't generate a response right now. Try again."
+		invalidProviderErrorText = "The provider returned an invalid or oversized error response. Try again."
+		truncatedErrorSuffix     = " [truncated]"
 	)
 
 	if err == nil {
@@ -552,10 +504,6 @@ func userFacingResponseError(err error) string {
 
 	if errors.Is(err, errEmptyModelResponse) {
 		return "The model returned an empty response. Try again."
-	}
-
-	if errors.Is(err, context.DeadlineExceeded) {
-		return timedOutResponseErrorText
 	}
 
 	errorText := strings.TrimSpace(err.Error())
@@ -891,7 +839,7 @@ func (instance *bot) renderFailureOnProgressMessage(
 	tracker.progressActive = false
 
 	err := instance.waitForEditSlotForMessage(
-		withoutCancelContext(ctx),
+		ctx,
 		tracker.responseMessages[0].ID,
 	)
 	if err != nil {

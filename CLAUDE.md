@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-`llmcord-go` is a Go Discord bot that turns reply chains into a frontend for LLM chat-completion APIs: OpenAI-compatible providers (Ollama, LM Studio, vLLM, xAI, OpenRouter…), the OpenAI Codex Responses API, native Gemini, and Exa research. See README.md for the full feature list and config reference.
+`llmcord-go` is a Go Discord bot that turns reply chains into a frontend for LLM chat-completion APIs: OpenAI-compatible providers (Ollama, LM Studio, vLLM, xAI, OpenRouter…), native Gemini, and Exa research. See README.md for the full feature list and config reference.
 
 ## Standing workflow rules
 
@@ -55,9 +55,9 @@ The bot's pipeline is: Discord message → conversation build → augmentation �
 
 ### Streaming and providers
 
-`chatCompletionRouter` (chat_client.go) dispatches a `chatCompletionRequest` to one of three clients, chosen by `providerAPIKind` inferred from the provider name: `openai.go` (chat completions and Responses API, incl. `UseResponsesAPI` for `openai-codex`-style providers... actually handled by `openai_codex.go`), `gemini.go` (native `google.golang.org/genai`), and `openai_codex.go`. `streamDelta` is the provider-neutral stream event; handlers consume it to update the embed.
+`chatCompletionRouter` (chat_client.go) dispatches a `chatCompletionRequest` to one of two clients, chosen by `providerAPIKind` inferred from the provider name: `openai.go` (chat completions and Responses API, incl. `UseResponsesAPI`) and `gemini.go` (native `google.golang.org/genai`). `streamDelta` is the provider-neutral stream event; handlers consume it to update the embed.
 
-`streamChatCompletionForKey` is the retry heart: per-attempt timeouts (20–90 s, halved when a fallback API key exists), key rotation, transient-error retries with backoff, and empty-response retries (up to 3). **The check order matters** — see the memory note: once the caller's deadline is gone, it returns `stream retry budget exhausted` and stops routing; a `context deadline exceeded` here means the overall `chatCompletionTimeout` ran out, not a retry-logic bug. When multiple API keys are configured, keys rotate in round-robin and fall back on failure.
+The router performs no retries, no key rotation, and no attempt timeouts: each request streams exactly once with the provider's primary API key (the first key in `api_keys`, if multiple are configured) and runs until it finishes or the caller cancels the context. There are no artificial context deadlines anywhere — a stream only stops when it completes, errors, or the surrounding pipeline cancels it.
 
 ### Rendering and responses
 
@@ -72,7 +72,7 @@ The bot's pipeline is: Discord message → conversation build → augmentation �
 ## Config and environment
 
 - `config.yaml` is hot-reloaded from disk on every incoming message/slash command — no restart needed. `loadConfig` (config.go) decodes it; unknown keys are rejected (strict YAML decode).
-- Provider API kind is inferred from provider **name** (contains `gemini` → native Gemini, `openai-codex` → Codex, `exa` → Exa research), not from a `type` field.
+- Provider API kind is inferred from provider **name** (contains `gemini` → native Gemini, `exa` → Exa research), not from a `type` field.
 - Env vars: `LLMCORD_CONFIG_PATH` (legacy `CONFIG_PATH`), `LLMCORD_HTTP_ADDR`/`PORT` (health server), `LLMCORD_LOG_LEVEL`, `LLMCORD_LOG_FORMAT`.
 - Logging (`logging.go`) is `log/slog`; every record carries source file/line and error stack traces; handlers are wrapped in `recoverHandler` so panics log rather than crash the bot. Errors are wrapped with `%w` context chains throughout.
 

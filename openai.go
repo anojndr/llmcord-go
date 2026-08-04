@@ -12,7 +12,6 @@ import (
 	"net/url"
 	"os"
 	"path"
-	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -24,7 +23,6 @@ const (
 	openAIContentFilterFinishReason      = "content_filter"
 	openAIStreamToolCallsFinishReason    = "tool_calls"
 	openAIStreamFunctionCallFinishReason = "function_call"
-	openAIDegradedFunctionIDMatchParts   = 2
 	openAIClientRequestIDHeader          = "X-Client-Request-Id"
 )
 
@@ -75,10 +73,6 @@ type openAIClient struct {
 	httpClient *http.Client
 }
 
-var openAIDegradedFunctionIDPattern = regexp.MustCompile(
-	`(?i)function id ['"]?([^'":]+)['"]?:\s*degraded function cannot be invoked`,
-)
-
 func newOpenAIClient(httpClient *http.Client) openAIClient {
 	if httpClient == nil {
 		httpClient = newOptimizedHTTPClient()
@@ -101,164 +95,31 @@ func (client openAIClient) streamChatCompletion(
 		return fmt.Errorf("build chat completion url: %w", err)
 	}
 
-	excludedFunctionIDs := make(map[string]struct{})
-	includeStreamingUsage := true
-	includeServiceTier := true
+	requestBody := buildChatCompletionRequestBody(request)
 
-	contentYielded := false
-	wrappedHandle := func(delta streamDelta) error {
-		if delta.Content != "" || delta.Thinking != "" || delta.SearchMetadata != nil {
-			contentYielded = true
-		}
-
-		return handle(delta)
-	}
-
-	for {
-		requestBody := openAIStreamRequestBody(
-			request,
-			includeStreamingUsage,
-			includeServiceTier,
-			excludedFunctionIDs,
-		)
-
-		statusCode, statusText, responseHeaders, responseBody, err := client.streamChatCompletionAttempt(
-			ctx,
-			request,
-			requestURL,
-			requestBody,
-			wrappedHandle,
-		)
-		if err != nil {
-			if includeStreamingUsage && !contentYielded && isOpenAIStreamEndedBeforeDoneError(err) {
-				includeStreamingUsage = false
-
-				continue
-			}
-
-			return err
-		}
-
-		if statusCode == 0 {
-			if !contentYielded {
-				return errEmptyModelResponse
-			}
-
-			return nil
-		}
-
-		retry, nextIncludeStreamingUsage, nextIncludeServiceTier := openAIShouldRetryChatCompletion(
-			statusCode,
-			statusText,
-			responseHeaders,
-			responseBody,
-			requestBody,
-			includeStreamingUsage,
-			includeServiceTier,
-			excludedFunctionIDs,
-		)
-		includeStreamingUsage = nextIncludeStreamingUsage
-		includeServiceTier = nextIncludeServiceTier
-
-		if retry {
-			continue
-		}
-
-		return newOpenAIProviderStatusError(
-			"chat completion request failed",
-			statusCode,
-			statusText,
-			responseHeaders,
-			responseBody,
-			false,
-		)
-	}
-}
-
-func isOpenAIStreamEndedBeforeDoneError(err error) bool {
-	if err == nil {
-		return false
-	}
-
-	errText := err.Error()
-
-	return strings.Contains(errText, "ended before [DONE]") ||
-		strings.Contains(errText, "unexpected EOF")
-}
-
-func openAIStreamRequestBody(
-	request chatCompletionRequest,
-	includeStreamingUsage bool,
-	includeServiceTier bool,
-	excludedFunctionIDs map[string]struct{},
-) map[string]any {
-	requestBody := buildChatCompletionRequestBodyWithUsageOption(request, includeStreamingUsage)
-	if !includeServiceTier {
-		delete(requestBody, "service_tier")
-		delete(requestBody, "serviceTier")
-	}
-
-	if len(excludedFunctionIDs) == 0 {
-		return requestBody
-	}
-
-	sanitizedRequestBody, changed := excludeDegradedFunctionsFromChatCompletionRequestBody(
+	statusCode, statusText, responseHeaders, responseBody, err := client.streamChatCompletionAttempt(
+		ctx,
+		request,
+		requestURL,
 		requestBody,
-		excludedFunctionIDs,
+		handle,
 	)
-	if !changed {
-		return requestBody
+	if err != nil {
+		return err
 	}
 
-	return sanitizedRequestBody
-}
-
-func openAIShouldRetryChatCompletion(
-	statusCode int,
-	statusText string,
-	responseHeaders http.Header,
-	responseBody []byte,
-	requestBody map[string]any,
-	includeStreamingUsage bool,
-	includeServiceTier bool,
-	excludedFunctionIDs map[string]struct{},
-) (bool, bool, bool) {
-	if statusCode != http.StatusBadRequest {
-		return false, includeStreamingUsage, includeServiceTier
+	if statusCode == 0 {
+		return nil
 	}
 
-	if includeServiceTier &&
-		openAIShouldRetryWithoutServiceTier(
-			statusCode,
-			statusText,
-			responseHeaders,
-			responseBody,
-		) {
-		return true, includeStreamingUsage, false
-	}
-
-	if includeStreamingUsage &&
-		openAIShouldRetryWithoutStreamingUsage(
-			statusCode,
-			statusText,
-			responseHeaders,
-			responseBody,
-		) {
-		return true, false, includeServiceTier
-	}
-
-	degradedFunctionIDs := openAIDegradedFunctionIDs(responseBody)
-	if addOpenAIExcludedFunctionIDs(excludedFunctionIDs, degradedFunctionIDs) {
-		_, changed := excludeDegradedFunctionsFromChatCompletionRequestBody(
-			requestBody,
-			excludedFunctionIDs,
-		)
-		if changed {
-			return true, includeStreamingUsage, includeServiceTier
-		}
-	}
-
-	return false, includeStreamingUsage, includeServiceTier
+	return newOpenAIProviderStatusError(
+		"chat completion request failed",
+		statusCode,
+		statusText,
+		responseHeaders,
+		responseBody,
+		false,
+	)
 }
 
 func (client openAIClient) streamChatCompletionAttempt(
@@ -471,6 +332,29 @@ func openAINormalizeMessageContent(content any) (any, bool) {
 	}
 }
 
+func nestedRequestBodyMap(requestBody map[string]any, key string) map[string]any {
+	existing, found := requestBody[key]
+	if !found {
+		nested := make(map[string]any)
+		requestBody[key] = nested
+
+		return nested
+	}
+
+	nested, typeOK := existing.(map[string]any)
+	if typeOK {
+		cloned := maps.Clone(nested)
+		requestBody[key] = cloned
+
+		return cloned
+	}
+
+	nested = make(map[string]any)
+	requestBody[key] = nested
+
+	return nested
+}
+
 func openAINormalizeContentPart(part contentPart) (contentPart, bool) {
 	partType, _ := part["type"].(string)
 	if partType != contentTypeImageURL {
@@ -488,7 +372,7 @@ func openAINormalizeContentPart(part contentPart) (contentPart, bool) {
 	case string:
 		normalizedPart["image_url"] = map[string]string{
 			messageURLKey:    typed,
-			messageDetailKey: openAICodexAuto,
+			messageDetailKey: xAIResponsesImageDetailAuto,
 		}
 
 		return normalizedPart, true
@@ -496,7 +380,7 @@ func openAINormalizeContentPart(part contentPart) (contentPart, bool) {
 	case map[string]string:
 		if _, hasDetail := typed[messageDetailKey]; !hasDetail {
 			clonedMap := maps.Clone(typed)
-			clonedMap[messageDetailKey] = openAICodexAuto
+			clonedMap[messageDetailKey] = xAIResponsesImageDetailAuto
 			normalizedPart["image_url"] = clonedMap
 
 			return normalizedPart, true
@@ -507,7 +391,7 @@ func openAINormalizeContentPart(part contentPart) (contentPart, bool) {
 	case map[string]any:
 		if _, hasDetail := typed[messageDetailKey]; !hasDetail {
 			clonedMap := maps.Clone(typed)
-			clonedMap[messageDetailKey] = openAICodexAuto
+			clonedMap[messageDetailKey] = xAIResponsesImageDetailAuto
 			normalizedPart["image_url"] = clonedMap
 
 			return normalizedPart, true
@@ -537,7 +421,7 @@ func openAINormalizeContentPartMap(part map[string]any) (map[string]any, bool) {
 	case string:
 		normalizedPart["image_url"] = map[string]string{
 			messageURLKey:    typed,
-			messageDetailKey: openAICodexAuto,
+			messageDetailKey: xAIResponsesImageDetailAuto,
 		}
 
 		return normalizedPart, true
@@ -545,7 +429,7 @@ func openAINormalizeContentPartMap(part map[string]any) (map[string]any, bool) {
 	case map[string]string:
 		if _, hasDetail := typed[messageDetailKey]; !hasDetail {
 			clonedMap := maps.Clone(typed)
-			clonedMap[messageDetailKey] = openAICodexAuto
+			clonedMap[messageDetailKey] = "auto"
 			normalizedPart["image_url"] = clonedMap
 
 			return normalizedPart, true
@@ -556,7 +440,7 @@ func openAINormalizeContentPartMap(part map[string]any) (map[string]any, bool) {
 	case map[string]any:
 		if _, hasDetail := typed[messageDetailKey]; !hasDetail {
 			clonedMap := maps.Clone(typed)
-			clonedMap[messageDetailKey] = openAICodexAuto
+			clonedMap[messageDetailKey] = "auto"
 			normalizedPart["image_url"] = clonedMap
 
 			return normalizedPart, true
@@ -598,289 +482,6 @@ func ensureOpenAIStreamingUsageOption(requestBody map[string]any) {
 	clonedStreamOptions := maps.Clone(streamOptions)
 	clonedStreamOptions["include_usage"] = true
 	requestBody["stream_options"] = clonedStreamOptions
-}
-
-func openAIShouldRetryWithoutServiceTier(
-	statusCode int,
-	statusText string,
-	responseHeaders http.Header,
-	responseBody []byte,
-) bool {
-	errorInfo := parseOpenAIHTTPErrorResponse(
-		statusCode,
-		statusText,
-		responseHeaders,
-		responseBody,
-		false,
-	)
-
-	normalizedParam := strings.ToLower(strings.TrimSpace(errorInfo.Param))
-	switch normalizedParam {
-	case "service_tier", "servicetier":
-		return true
-	}
-
-	normalizedMessage := strings.ToLower(strings.TrimSpace(errorInfo.Message))
-	if !strings.Contains(normalizedMessage, "service_tier") &&
-		!strings.Contains(normalizedMessage, "servicetier") {
-		return false
-	}
-
-	return strings.EqualFold(errorInfo.Code, "unsupported_parameter") ||
-		strings.Contains(normalizedMessage, "unknown") ||
-		strings.Contains(normalizedMessage, "unsupported") ||
-		strings.Contains(normalizedMessage, "invalid")
-}
-
-func openAIShouldRetryWithoutStreamingUsage(
-	statusCode int,
-	statusText string,
-	responseHeaders http.Header,
-	responseBody []byte,
-) bool {
-	errorInfo := parseOpenAIHTTPErrorResponse(
-		statusCode,
-		statusText,
-		responseHeaders,
-		responseBody,
-		false,
-	)
-
-	normalizedParam := strings.ToLower(strings.TrimSpace(errorInfo.Param))
-	switch normalizedParam {
-	case "stream_options", "stream_options.include_usage":
-		return true
-	}
-
-	normalizedMessage := strings.ToLower(strings.TrimSpace(errorInfo.Message))
-	if !strings.Contains(normalizedMessage, "stream_options") &&
-		!strings.Contains(normalizedMessage, "include_usage") {
-		return false
-	}
-
-	return strings.EqualFold(errorInfo.Code, "unsupported_parameter") ||
-		strings.Contains(normalizedMessage, "unknown") ||
-		strings.Contains(normalizedMessage, "unsupported") ||
-		strings.Contains(normalizedMessage, "invalid")
-}
-
-func excludeDegradedFunctionsFromChatCompletionRequestBody(
-	requestBody map[string]any,
-	excludedFunctionIDs map[string]struct{},
-) (map[string]any, bool) {
-	if len(excludedFunctionIDs) == 0 {
-		return requestBody, false
-	}
-
-	sanitizedBody := maps.Clone(requestBody)
-	changed := false
-
-	filteredTools, toolsChanged := filterExcludedOpenAIRequestValues(
-		requestBody["tools"],
-		excludedFunctionIDs,
-	)
-	if toolsChanged {
-		changed = true
-
-		if len(filteredTools) == 0 {
-			delete(sanitizedBody, "tools")
-		} else {
-			sanitizedBody["tools"] = filteredTools
-		}
-	}
-
-	filteredFunctions, functionsChanged := filterExcludedOpenAIRequestValues(
-		requestBody["functions"],
-		excludedFunctionIDs,
-	)
-	if functionsChanged {
-		changed = true
-
-		if len(filteredFunctions) == 0 {
-			delete(sanitizedBody, "functions")
-		} else {
-			sanitizedBody["functions"] = filteredFunctions
-		}
-	}
-
-	if openAIRequestValueReferencesExcludedFunction(requestBody["tool_choice"], excludedFunctionIDs) {
-		changed = true
-
-		delete(sanitizedBody, "tool_choice")
-	}
-
-	if openAIRequestValueReferencesExcludedFunction(requestBody["function_call"], excludedFunctionIDs) {
-		changed = true
-
-		delete(sanitizedBody, "function_call")
-	}
-
-	if !changed {
-		return requestBody, false
-	}
-
-	if _, ok := sanitizedBody["tools"]; !ok {
-		delete(sanitizedBody, "tool_choice")
-	}
-
-	if _, ok := sanitizedBody["functions"]; !ok {
-		delete(sanitizedBody, "function_call")
-	}
-
-	return sanitizedBody, true
-}
-
-func filterExcludedOpenAIRequestValues(
-	rawValues any,
-	excludedFunctionIDs map[string]struct{},
-) ([]any, bool) {
-	values, ok := openAIRequestValueSlice(rawValues)
-	if !ok {
-		return nil, false
-	}
-
-	filteredValues := make([]any, 0, len(values))
-	changed := false
-
-	for _, value := range values {
-		if openAIRequestValueReferencesExcludedFunction(value, excludedFunctionIDs) {
-			changed = true
-
-			continue
-		}
-
-		filteredValues = append(filteredValues, value)
-	}
-
-	return filteredValues, changed
-}
-
-func openAIRequestValueReferencesExcludedFunction(
-	value any,
-	excludedFunctionIDs map[string]struct{},
-) bool {
-	if value == nil || len(excludedFunctionIDs) == 0 {
-		return false
-	}
-
-	object, mapOK := openAIRequestValueMap(value)
-	if mapOK {
-		return openAIRequestMapReferencesExcludedFunction(object, excludedFunctionIDs)
-	}
-
-	values, ok := openAIRequestValueSlice(value)
-	if !ok {
-		return false
-	}
-
-	return openAIRequestSliceReferencesExcludedFunction(values, excludedFunctionIDs)
-}
-
-func isOpenAIFunctionIDField(field string) bool {
-	switch strings.ToLower(strings.TrimSpace(field)) {
-	case "id", "function_id", "tool_id":
-		return true
-	default:
-		return false
-	}
-}
-
-func openAIRequestValueMap(value any) (map[string]any, bool) {
-	typedValue, ok := value.(map[string]any)
-	if ok {
-		return typedValue, true
-	}
-
-	reflectedValue := reflect.ValueOf(value)
-	if !reflectedValue.IsValid() || reflectedValue.Kind() != reflect.Map {
-		return nil, false
-	}
-
-	if reflectedValue.Type().Key().Kind() != reflect.String {
-		return nil, false
-	}
-
-	converted := make(map[string]any, reflectedValue.Len())
-
-	iterator := reflectedValue.MapRange()
-	for iterator.Next() {
-		converted[iterator.Key().String()] = iterator.Value().Interface()
-	}
-
-	return converted, true
-}
-
-func openAIRequestValueSlice(value any) ([]any, bool) {
-	typedValue, ok := value.([]any)
-	if ok {
-		return typedValue, true
-	}
-
-	reflectedValue := reflect.ValueOf(value)
-	if !reflectedValue.IsValid() {
-		return nil, false
-	}
-
-	if reflectedValue.Kind() != reflect.Array && reflectedValue.Kind() != reflect.Slice {
-		return nil, false
-	}
-
-	converted := make([]any, 0, reflectedValue.Len())
-	for index := range reflectedValue.Len() {
-		converted = append(converted, reflectedValue.Index(index).Interface())
-	}
-
-	return converted, true
-}
-
-func openAIDegradedFunctionIDs(responseBody []byte) []string {
-	matches := openAIDegradedFunctionIDPattern.FindAllStringSubmatch(string(responseBody), -1)
-	if len(matches) == 0 {
-		return nil
-	}
-
-	functionIDs := make([]string, 0, len(matches))
-
-	seenFunctionIDs := make(map[string]struct{}, len(matches))
-	for _, match := range matches {
-		if len(match) < openAIDegradedFunctionIDMatchParts {
-			continue
-		}
-
-		functionID := strings.TrimSpace(match[1])
-		if functionID == "" {
-			continue
-		}
-
-		if _, seen := seenFunctionIDs[functionID]; seen {
-			continue
-		}
-
-		seenFunctionIDs[functionID] = struct{}{}
-		functionIDs = append(functionIDs, functionID)
-	}
-
-	return functionIDs
-}
-
-func addOpenAIExcludedFunctionIDs(excludedFunctionIDs map[string]struct{}, functionIDs []string) bool {
-	changed := false
-
-	for _, functionID := range functionIDs {
-		trimmedFunctionID := strings.TrimSpace(functionID)
-		if trimmedFunctionID == "" {
-			continue
-		}
-
-		if _, found := excludedFunctionIDs[trimmedFunctionID]; found {
-			continue
-		}
-
-		excludedFunctionIDs[trimmedFunctionID] = struct{}{}
-		changed = true
-	}
-
-	return changed
 }
 
 func buildChatCompletionURL(baseURL string, extraQuery map[string]any) (string, error) {
@@ -978,46 +579,6 @@ func consumeServerSentEvents(reader io.Reader, handle func([]byte) error) (bool,
 	}
 
 	return doneSeen, nil
-}
-
-func openAIRequestMapReferencesExcludedFunction(
-	object map[string]any,
-	excludedFunctionIDs map[string]struct{},
-) bool {
-	for key, child := range object {
-		if openAIRequestFieldReferencesExcludedFunction(key, child, excludedFunctionIDs) {
-			return true
-		}
-	}
-
-	return false
-}
-
-func openAIRequestFieldReferencesExcludedFunction(
-	key string,
-	child any,
-	excludedFunctionIDs map[string]struct{},
-) bool {
-	if isOpenAIFunctionIDField(key) {
-		if _, found := excludedFunctionIDs[strings.TrimSpace(stringifyValue(child))]; found {
-			return true
-		}
-	}
-
-	return openAIRequestValueReferencesExcludedFunction(child, excludedFunctionIDs)
-}
-
-func openAIRequestSliceReferencesExcludedFunction(
-	values []any,
-	excludedFunctionIDs map[string]struct{},
-) bool {
-	for _, child := range values {
-		if openAIRequestValueReferencesExcludedFunction(child, excludedFunctionIDs) {
-			return true
-		}
-	}
-
-	return false
 }
 
 func appendServerSentEventLine(
@@ -1239,7 +800,6 @@ func openAIStreamEventError(message string, eventType string, code any) error {
 	return providerStatusError{
 		StatusCode: statusCode,
 		Message:    errorText,
-		RetryDelay: 0,
 		Err:        os.ErrInvalid,
 	}
 }

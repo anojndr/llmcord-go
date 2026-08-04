@@ -16,7 +16,6 @@ import (
 	"regexp"
 	"slices"
 	"strings"
-	"time"
 
 	"golang.org/x/net/html"
 	"golang.org/x/net/html/atom"
@@ -29,7 +28,6 @@ const (
 	maxWebsiteDescriptionRunes          = 500
 	maxWebsiteResponseBytes             = 2 * 1024 * 1024
 	minimumWebsiteContentSelectionRunes = 300
-	websiteFetchAttemptCapacity         = 3
 	websiteContentCandidateCapacity     = 7
 	websiteRedirectHopLimit             = 10
 	websiteSegmentCapacity              = 32
@@ -59,7 +57,6 @@ type websiteClient struct {
 	exaContentsEndpoint   string
 	tavilyExtractEndpoint string
 	lookupIP              websiteLookupIPFunc
-	requestTimeout        time.Duration
 }
 
 type websitePageContent struct {
@@ -76,36 +73,7 @@ func newWebsiteClient(httpClient *http.Client) websiteClient {
 		exaContentsEndpoint:   defaultExaContentsEndpoint,
 		tavilyExtractEndpoint: defaultTavilyExtractEndpoint,
 		lookupIP:              defaultWebsiteLookupIP,
-		requestTimeout:        websiteRequestTimeout,
 	}
-}
-
-func (client websiteClient) fetchRequestTimeout() time.Duration {
-	if client.requestTimeout <= 0 {
-		return websiteRequestTimeout
-	}
-
-	return client.requestTimeout
-}
-
-func (client websiteClient) fetchWithinTimeout(
-	ctx context.Context,
-	fetch func(context.Context) (websitePageContent, error),
-) (websitePageContent, error) {
-	requestContext, cancel := context.WithTimeout(ctx, client.fetchRequestTimeout())
-	defer cancel()
-
-	return fetch(requestContext)
-}
-
-func (client websiteClient) validateRequestURLWithinTimeout(
-	ctx context.Context,
-	requestURL *url.URL,
-) error {
-	requestContext, cancel := context.WithTimeout(ctx, client.fetchRequestTimeout())
-	defer cancel()
-
-	return validateWebsiteRequestURL(requestContext, requestURL, client.lookupWebsiteIP())
 }
 
 func (instance *bot) maybeAugmentConversationWithWebsite(
@@ -225,66 +193,43 @@ func (client websiteClient) fetch(
 		return websitePageContent{}, fmt.Errorf("parse normalized website url %q: %w", normalizedURL, err)
 	}
 
-	err = client.validateRequestURLWithinTimeout(ctx, parsedURL)
+	err = validateWebsiteRequestURL(ctx, parsedURL, client.lookupWebsiteIP())
 	if err != nil {
 		return websitePageContent{}, fmt.Errorf("validate website url %q: %w", rawURL, err)
 	}
 
-	attemptErrors := make([]error, 0, websiteFetchAttemptCapacity)
-
 	if loadedConfig.WebSearch.exaUsesAPI() {
-		pageContent, exaErr := client.fetchWithinTimeout(
+		pageContent, exaErr := client.fetchWithExaContents(
 			ctx,
-			func(requestContext context.Context) (websitePageContent, error) {
-				return client.fetchWithExaContents(
-					requestContext,
-					normalizedURL,
-					loadedConfig.WebSearch.Exa.apiKeysForAttempts(),
-				)
-			},
+			normalizedURL,
+			loadedConfig.WebSearch.Exa.primaryAPIKey(),
 		)
 		if exaErr == nil {
 			return pageContent, nil
 		}
 
-		attemptErrors = append(attemptErrors, fmt.Errorf("exa contents API: %w", exaErr))
+		return websitePageContent{}, fmt.Errorf(websiteFetchErrorFormat, rawURL, exaErr)
 	}
 
-	if tavilyAPIKeys := loadedConfig.WebSearch.Tavily.apiKeysForAttempts(); len(tavilyAPIKeys) > 0 {
-		pageContent, tavilyErr := client.fetchWithinTimeout(
+	if tavilyAPIKey := loadedConfig.WebSearch.Tavily.primaryAPIKey(); tavilyAPIKey != "" {
+		pageContent, tavilyErr := client.fetchWithTavilyExtract(
 			ctx,
-			func(requestContext context.Context) (websitePageContent, error) {
-				return client.fetchWithTavilyExtract(
-					requestContext,
-					normalizedURL,
-					tavilyAPIKeys,
-				)
-			},
+			normalizedURL,
+			tavilyAPIKey,
 		)
 		if tavilyErr == nil {
 			return pageContent, nil
 		}
 
-		attemptErrors = append(attemptErrors, fmt.Errorf("tavily extract: %w", tavilyErr))
+		return websitePageContent{}, fmt.Errorf(websiteFetchErrorFormat, rawURL, tavilyErr)
 	}
 
-	pageContent, err := client.fetchWithinTimeout(
-		ctx,
-		func(requestContext context.Context) (websitePageContent, error) {
-			return client.fetchWithCurrentImplementation(requestContext, normalizedURL)
-		},
-	)
-	if err == nil {
-		return pageContent, nil
-	}
-
-	if len(attemptErrors) == 0 {
+	pageContent, err := client.fetchWithCurrentImplementation(ctx, normalizedURL)
+	if err != nil {
 		return websitePageContent{}, fmt.Errorf(websiteFetchErrorFormat, rawURL, err)
 	}
 
-	attemptErrors = append(attemptErrors, fmt.Errorf("current implementation: %w", err))
-
-	return websitePageContent{}, fmt.Errorf(websiteFetchErrorFormat, rawURL, errors.Join(attemptErrors...))
+	return pageContent, nil
 }
 
 func (client websiteClient) fetchWithCurrentImplementation(
@@ -319,35 +264,9 @@ func (client websiteClient) fetchWithCurrentImplementation(
 func (client websiteClient) fetchWithExaContents(
 	ctx context.Context,
 	requestURL string,
-	apiKeys []string,
+	apiKey string,
 ) (websitePageContent, error) {
-	attemptErrors := make([]error, 0, len(apiKeys))
-
-	for index, apiKey := range apiKeys {
-		pageContent, err := client.fetchWithExaContentsOnce(ctx, requestURL, apiKey)
-		if err == nil {
-			return pageContent, nil
-		}
-
-		attemptErrors = append(attemptErrors, err)
-		if ctx.Err() != nil || index == len(apiKeys)-1 {
-			if len(attemptErrors) == 1 {
-				return websitePageContent{}, err
-			}
-
-			if ctx.Err() != nil {
-				return websitePageContent{}, err
-			}
-
-			return websitePageContent{}, fmt.Errorf(
-				"all configured Exa API keys failed for %q: %w",
-				requestURL,
-				errors.Join(attemptErrors...),
-			)
-		}
-	}
-
-	return websitePageContent{}, fmt.Errorf("missing Exa API key attempt for %q: %w", requestURL, os.ErrInvalid)
+	return client.fetchWithExaContentsOnce(ctx, requestURL, apiKey)
 }
 
 func (client websiteClient) fetchWithExaContentsOnce(
@@ -594,35 +513,9 @@ func exaContentsResultForURL(
 func (client websiteClient) fetchWithTavilyExtract(
 	ctx context.Context,
 	requestURL string,
-	apiKeys []string,
+	apiKey string,
 ) (websitePageContent, error) {
-	attemptErrors := make([]error, 0, len(apiKeys))
-
-	for index, apiKey := range apiKeys {
-		pageContent, err := client.fetchWithTavilyExtractOnce(ctx, requestURL, apiKey)
-		if err == nil {
-			return pageContent, nil
-		}
-
-		attemptErrors = append(attemptErrors, err)
-		if ctx.Err() != nil || index == len(apiKeys)-1 {
-			if len(attemptErrors) == 1 {
-				return websitePageContent{}, err
-			}
-
-			if ctx.Err() != nil {
-				return websitePageContent{}, err
-			}
-
-			return websitePageContent{}, fmt.Errorf(
-				"all configured Tavily API keys failed for %q: %w",
-				requestURL,
-				errors.Join(attemptErrors...),
-			)
-		}
-	}
-
-	return websitePageContent{}, fmt.Errorf("missing Tavily API key attempt for %q: %w", requestURL, os.ErrInvalid)
+	return client.fetchWithTavilyExtractOnce(ctx, requestURL, apiKey)
 }
 
 func (client websiteClient) fetchWithTavilyExtractOnce(

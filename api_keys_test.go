@@ -2,83 +2,59 @@ package main
 
 import (
 	"reflect"
-	"sync"
 	"testing"
 )
 
-func TestRoundRobinAPIKeysBasic(t *testing.T) {
+func TestNormalizeAPIKeysDeduplicatesAndTrims(t *testing.T) {
 	t.Parallel()
 
-	if res := roundRobinAPIKeys(nil); res != nil {
-		t.Fatalf("expected nil, got %#v", res)
-	}
+	normalized := normalizeAPIKeys([]string{"  key1 ", "", "key2", "key1", "", "  key3 "})
 
-	single := []string{"key1"}
-	if res := roundRobinAPIKeys(single); !reflect.DeepEqual(res, single) {
-		t.Fatalf("expected %#v, got %#v", single, res)
+	expected := []string{"key1", "key2", "key3"}
+	if !reflect.DeepEqual(normalized, expected) {
+		t.Fatalf("expected %#v, got %#v", expected, normalized)
 	}
 }
 
-func TestRoundRobinAPIKeysRotation(t *testing.T) {
+func TestNormalizeAPIKeysEmpty(t *testing.T) {
 	t.Parallel()
 
-	keys := []string{t.Name() + "-k1", t.Name() + "-k2", t.Name() + "-k3"}
-
-	first := roundRobinAPIKeys(keys)
-	if expected := []string{t.Name() + "-k1", t.Name() + "-k2", t.Name() + "-k3"}; !reflect.DeepEqual(first, expected) {
-		t.Fatalf("expected %#v, got %#v", expected, first)
+	if normalized := normalizeAPIKeys(nil); normalized != nil {
+		t.Fatalf("expected nil, got %#v", normalized)
 	}
 
-	second := roundRobinAPIKeys(keys)
-	if expected := []string{t.Name() + "-k2", t.Name() + "-k3", t.Name() + "-k1"}; !reflect.DeepEqual(second, expected) {
-		t.Fatalf("expected %#v, got %#v", expected, second)
-	}
-
-	third := roundRobinAPIKeys(keys)
-	if expected := []string{t.Name() + "-k3", t.Name() + "-k1", t.Name() + "-k2"}; !reflect.DeepEqual(third, expected) {
-		t.Fatalf("expected %#v, got %#v", expected, third)
-	}
-
-	fourth := roundRobinAPIKeys(keys)
-	if expected := []string{t.Name() + "-k1", t.Name() + "-k2", t.Name() + "-k3"}; !reflect.DeepEqual(fourth, expected) {
-		t.Fatalf("expected %#v, got %#v", expected, fourth)
+	if normalized := normalizeAPIKeys([]string{"", " "}); normalized != nil {
+		t.Fatalf("expected nil, got %#v", normalized)
 	}
 }
 
-func TestRoundRobinAPIKeysConcurrent(t *testing.T) {
+func TestFirstAPIKey(t *testing.T) {
 	t.Parallel()
 
-	const (
-		numGoroutines = 10
-		numIterations = 100
-	)
-
-	keys := []string{t.Name() + "-c1", t.Name() + "-c2", t.Name() + "-c3"}
-
-	var waitGroup sync.WaitGroup
-
-	waitGroup.Add(numGoroutines)
-
-	for range numGoroutines {
-		go func() {
-			defer waitGroup.Done()
-
-			for range numIterations {
-				res := roundRobinAPIKeys(keys)
-				if len(res) != 3 {
-					t.Errorf("expected 3 keys, got %d", len(res))
-				}
-			}
-		}()
+	if first := firstAPIKey(nil); first != "" {
+		t.Fatalf("expected empty, got %q", first)
 	}
 
-	waitGroup.Wait()
+	if first := firstAPIKey([]string{"key1", "key2"}); first != "key1" {
+		t.Fatalf("expected key1, got %q", first)
+	}
 }
 
-func TestAPIKeysForAttemptsRoundRobin(t *testing.T) {
+func TestProviderAPIKeys(t *testing.T) {
 	t.Parallel()
 
-	t.Run("providerRequestConfig", func(t *testing.T) {
+	keys := providerAPIKeys("primary", []string{"fallback1", "fallback2"})
+
+	expected := []string{"primary", "fallback1", "fallback2"}
+	if !reflect.DeepEqual(keys, expected) {
+		t.Fatalf("expected %#v, got %#v", expected, keys)
+	}
+}
+
+func TestPrimaryAPIKey(t *testing.T) {
+	t.Parallel()
+
+	t.Run("providerConfig", func(t *testing.T) {
 		t.Parallel()
 
 		provider := providerConfig{
@@ -92,40 +68,28 @@ func TestAPIKeysForAttemptsRoundRobin(t *testing.T) {
 			ExtraBody:       nil,
 		}
 
-		req := chatCompletionRequest{
-			Provider: providerRequestConfig{
-				APIKind:         providerAPIKindOpenAI,
-				BaseURL:         "https://api.openai.com/v1",
-				APIKey:          provider.primaryAPIKey(),
-				APIKeys:         provider.apiKeys(),
-				UseResponsesAPI: false,
-				EnableGrounding: false,
-				ExtraHeaders:    nil,
-				ExtraQuery:      nil,
-				ExtraBody:       nil,
-			},
-			Model:                       "gpt-test",
-			ConfiguredModel:             "gpt-test",
-			ContextWindow:               128000,
-			AutoCompactThresholdPercent: 90,
-			SessionID:                   "",
-			PreviousResponseID:          "",
-			RequestID:                   "",
-			Messages:                    nil,
+		if key := provider.primaryAPIKey(); key != t.Name()+"-p1" {
+			t.Fatalf("expected primary key, got %q", key)
+		}
+	})
+
+	t.Run("providerRequestConfig", func(t *testing.T) {
+		t.Parallel()
+
+		provider := providerRequestConfig{
+			APIKind:         providerAPIKindOpenAI,
+			BaseURL:         "https://api.openai.com/v1",
+			APIKey:          t.Name() + "-r1",
+			APIKeys:         []string{t.Name() + "-r2", t.Name() + "-r3"},
+			UseResponsesAPI: false,
+			EnableGrounding: false,
+			ExtraHeaders:    nil,
+			ExtraQuery:      nil,
+			ExtraBody:       nil,
 		}
 
-		first := req.Provider.apiKeysForAttempts()
-
-		expectedFirst := []string{t.Name() + "-p1", t.Name() + "-p2", t.Name() + "-p3"}
-		if !reflect.DeepEqual(first, expectedFirst) {
-			t.Fatalf("expected %#v, got %#v", expectedFirst, first)
-		}
-
-		second := req.Provider.apiKeysForAttempts()
-
-		expectedSecond := []string{t.Name() + "-p2", t.Name() + "-p3", t.Name() + "-p1"}
-		if !reflect.DeepEqual(second, expectedSecond) {
-			t.Fatalf("expected %#v, got %#v", expectedSecond, second)
+		if key := provider.primaryAPIKey(); key != t.Name()+"-r1" {
+			t.Fatalf("expected primary key, got %q", key)
 		}
 	})
 
@@ -138,19 +102,24 @@ func TestAPIKeysForAttemptsRoundRobin(t *testing.T) {
 			SearchType:        "auto",
 			TextMaxCharacters: 15000,
 		}
-
-		e1 := exaCfg.apiKeysForAttempts()
-
-		expectedE1 := []string{t.Name() + "-e1", t.Name() + "-e2"}
-		if !reflect.DeepEqual(e1, expectedE1) {
-			t.Fatalf("expected %#v, got %#v", expectedE1, e1)
+		if key := exaCfg.primaryAPIKey(); key != t.Name()+"-e1" {
+			t.Fatalf("expected primary exa key, got %q", key)
 		}
 
-		e2 := exaCfg.apiKeysForAttempts()
+		tavilyCfg := tavilySearchConfig{
+			APIKey:  t.Name() + "-t1",
+			APIKeys: []string{t.Name() + "-t2"},
+		}
+		if key := tavilyCfg.primaryAPIKey(); key != t.Name()+"-t1" {
+			t.Fatalf("expected primary tavily key, got %q", key)
+		}
 
-		expectedE2 := []string{t.Name() + "-e2", t.Name() + "-e1"}
-		if !reflect.DeepEqual(e2, expectedE2) {
-			t.Fatalf("expected %#v, got %#v", expectedE2, e2)
+		serpAPICfg := serpAPIVisualSearchConfig{
+			APIKey:  t.Name() + "-s1",
+			APIKeys: []string{t.Name() + "-s2"},
+		}
+		if key := serpAPICfg.primaryAPIKey(); key != t.Name()+"-s1" {
+			t.Fatalf("expected primary serp api key, got %q", key)
 		}
 	})
 }

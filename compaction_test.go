@@ -52,7 +52,7 @@ func TestAutoCompactRequestAddsSummaryAndPreservesRecentMessages(t *testing.T) {
 	originalRequest.ConfiguredModel = testAutoCompactMainModel
 	originalRequest.ContextWindow = 200
 	originalRequest.Messages = []chatMessage{
-		{Role: openAICodexRoleSystem, Content: "Always be helpful."},
+		{Role: messageRoleSystem, Content: "Always be helpful."},
 		{Role: messageRoleUser, Content: repeatedAutoCompactText("older details", 80)},
 		{Role: messageRoleAssistant, Content: "Earlier answer."},
 		{Role: messageRoleUser, Content: "Second question."},
@@ -337,7 +337,7 @@ func TestAutoCompactRequestTruncatesLatestOversizedMessageBeforeSummarizingHisto
 		PreviousResponseID:          "",
 		RequestID:                   "",
 		Messages: []chatMessage{
-			{Role: openAICodexRoleSystem, Content: "Always be helpful."},
+			{Role: messageRoleSystem, Content: "Always be helpful."},
 			{Role: messageRoleUser, Content: autoCompactSizedASCIIText(250)},
 			{Role: messageRoleAssistant, Content: autoCompactSizedASCIIText(40)},
 			{Role: messageRoleUser, Content: autoCompactSizedASCIIText(810)},
@@ -667,7 +667,7 @@ func TestPrepareMessageResponseAutoCompactsMainRequest(t *testing.T) {
 		t.Fatalf("unexpected compacted main request length: %d", len(request.Messages))
 	}
 
-	if request.Messages[0].Role != openAICodexRoleSystem {
+	if request.Messages[0].Role != messageRoleSystem {
 		t.Fatalf("expected system prompt to stay first: %#v", request.Messages[0])
 	}
 

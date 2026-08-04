@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -206,11 +205,8 @@ func (client yandexVisualSearchClient) search(
 		return emptyVisualSearchResult(), err
 	}
 
-	requestContext, cancel := context.WithTimeout(ctx, websiteRequestTimeout)
-	defer cancel()
-
 	httpRequest, err := http.NewRequestWithContext(
-		requestContext,
+		ctx,
 		http.MethodGet,
 		requestURL,
 		nil,
@@ -295,8 +291,8 @@ func (client serpAPIGoogleLensClient) search(
 	loadedConfig config,
 	imageURL string,
 ) (visualSearchResult, error) {
-	apiKeys := loadedConfig.VisualSearch.SerpAPI.apiKeysForAttempts()
-	if len(apiKeys) == 0 {
+	apiKey := loadedConfig.VisualSearch.SerpAPI.primaryAPIKey()
+	if apiKey == "" {
 		return emptyVisualSearchResult(), fmt.Errorf(
 			"missing SerpApi Google Lens API key for %q: %w",
 			imageURL,
@@ -304,45 +300,7 @@ func (client serpAPIGoogleLensClient) search(
 		)
 	}
 
-	attemptErrors := make([]error, 0, len(apiKeys))
-
-	for index, apiKey := range apiKeys {
-		result, err := client.searchOnce(ctx, imageURL, apiKey)
-		if err == nil {
-			return result, nil
-		}
-
-		attemptErrors = append(attemptErrors, err)
-		if ctx.Err() != nil {
-			return emptyVisualSearchResult(), err
-		}
-
-		if index == len(apiKeys)-1 {
-			break
-		}
-
-		if !shouldRetrySerpAPIAttemptWithNextKey(err) {
-			break
-		}
-	}
-
-	if len(attemptErrors) == 1 {
-		return emptyVisualSearchResult(), attemptErrors[0]
-	}
-
-	if len(attemptErrors) == len(apiKeys) {
-		return emptyVisualSearchResult(), fmt.Errorf(
-			"all configured SerpApi Google Lens API keys failed for %q: %w",
-			imageURL,
-			errors.Join(attemptErrors...),
-		)
-	}
-
-	return emptyVisualSearchResult(), fmt.Errorf(
-		"SerpApi Google Lens attempts failed for %q: %w",
-		imageURL,
-		errors.Join(attemptErrors...),
-	)
+	return client.searchOnce(ctx, imageURL, apiKey)
 }
 
 func (client serpAPIGoogleLensClient) searchOnce(
@@ -355,11 +313,8 @@ func (client serpAPIGoogleLensClient) searchOnce(
 		return emptyVisualSearchResult(), err
 	}
 
-	requestContext, cancel := context.WithTimeout(ctx, websiteRequestTimeout)
-	defer cancel()
-
 	httpRequest, err := http.NewRequestWithContext(
-		requestContext,
+		ctx,
 		http.MethodGet,
 		requestURL,
 		nil,
@@ -448,8 +403,7 @@ func (client serpAPIGoogleLensClient) parseResponse(
 					imageURL,
 					responseError,
 				),
-				RetryDelay: 0,
-				Err:        os.ErrInvalid,
+				Err: os.ErrInvalid,
 			}
 		}
 	case strings.EqualFold(status, serpAPISearchStatusSuccess):
@@ -781,7 +735,7 @@ func (instance *bot) visualSearchProvidersForConfig(loadedConfig config) []visua
 		})
 	}
 
-	if instance.serpAPIVisualSearch != nil && len(loadedConfig.VisualSearch.SerpAPI.apiKeysForAttempts()) > 0 {
+	if instance.serpAPIVisualSearch != nil && len(loadedConfig.VisualSearch.SerpAPI.apiKeys()) > 0 {
 		providers = append(providers, visualSearchProvider{
 			name: serpAPIVisualSearchProviderName,
 			search: func(ctx context.Context, imageURL string) (visualSearchResult, error) {

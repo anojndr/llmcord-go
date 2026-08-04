@@ -457,8 +457,6 @@ providers:
     base_url: https://api.example.com/v1
     api_key:
       - ` + testTavilyPrimaryAPIKey + `
-      - ` + testTavilyBackupAPIKey + `
-      - ` + testTavilyPrimaryAPIKey + `
 models:
   openai/first-model:
 `
@@ -479,7 +477,7 @@ models:
 
 	if !slices.Equal(
 		loadedConfig.Providers["openai"].APIKeys,
-		[]string{testTavilyPrimaryAPIKey, testTavilyBackupAPIKey},
+		[]string{testTavilyPrimaryAPIKey},
 	) {
 		t.Fatalf("unexpected provider API keys: %#v", loadedConfig.Providers["openai"].APIKeys)
 	}
@@ -757,45 +755,6 @@ web_search:
 
 	if loadedConfig.WebSearch.Exa.TextMaxCharacters != 9000 {
 		t.Fatalf("unexpected Exa text max characters: %d", loadedConfig.WebSearch.Exa.TextMaxCharacters)
-	}
-}
-
-func TestLoadConfigInheritsContextWindowAcrossAliasModels(t *testing.T) {
-	t.Parallel()
-
-	tempDir := t.TempDir()
-	configPath := filepath.Join(tempDir, "config.yaml")
-	configText := `
-bot_token: discord-token
-providers:
-  openai-codex:
-    api_key: test-token
-models:
-  openai-codex/gpt-5.4:
-    context_window: 400000
-  openai-codex/gpt-5.4-none:
-  openai-codex/gpt-5.4-high:
-    context_window: 400000
-`
-
-	err := os.WriteFile(configPath, []byte(configText), 0o600)
-	if err != nil {
-		t.Fatalf("write config file: %v", err)
-	}
-
-	loadedConfig, err := loadConfig(configPath)
-	if err != nil {
-		t.Fatalf("load config: %v", err)
-	}
-
-	for _, modelName := range []string{
-		"openai-codex/gpt-5.4",
-		"openai-codex/gpt-5.4-none",
-		"openai-codex/gpt-5.4-high",
-	} {
-		if loadedConfig.modelContextWindow(modelName) != 400_000 {
-			t.Fatalf("unexpected context window for %s: %d", modelName, loadedConfig.modelContextWindow(modelName))
-		}
 	}
 }
 
@@ -1150,60 +1109,6 @@ models:
 	}
 }
 
-func TestLoadConfigRejectsModelLocalAutoCompactThresholdPercent(t *testing.T) {
-	t.Parallel()
-
-	tempDir := t.TempDir()
-	configPath := filepath.Join(tempDir, "config.yaml")
-	configText := `
-bot_token: discord-token
-providers:
-  openai-codex:
-    api_key: test-token
-models:
-  openai-codex/gpt-5.4:
-    auto_compact_threshold_percent: 80
-`
-
-	err := os.WriteFile(configPath, []byte(configText), 0o600)
-	if err != nil {
-		t.Fatalf("write config file: %v", err)
-	}
-
-	_, err = loadConfig(configPath)
-	if err == nil {
-		t.Fatal("expected model-local auto compact threshold percent to fail validation")
-	}
-}
-
-func TestLoadConfigRejectsMismatchedContextWindowAcrossAliasModels(t *testing.T) {
-	t.Parallel()
-
-	tempDir := t.TempDir()
-	configPath := filepath.Join(tempDir, "config.yaml")
-	configText := `
-bot_token: discord-token
-providers:
-  openai-codex:
-    api_key: test-token
-models:
-  openai-codex/gpt-5.4:
-    context_window: 400000
-  openai-codex/gpt-5.4-none:
-    context_window: 200000
-`
-
-	err := os.WriteFile(configPath, []byte(configText), 0o600)
-	if err != nil {
-		t.Fatalf("write config file: %v", err)
-	}
-
-	_, err = loadConfig(configPath)
-	if err == nil {
-		t.Fatal("expected mismatched alias context window to fail validation")
-	}
-}
-
 func TestLoadConfigRejectsMismatchedContextWindowAcrossOpenAIAliases(t *testing.T) {
 	t.Parallel()
 
@@ -1331,35 +1236,6 @@ func TestAnyPositiveIntValueRejectsNonPositiveValues(t *testing.T) {
 				t.Fatalf("expected non-positive value %T to fail validation", testCase.value)
 			}
 		})
-	}
-}
-
-func TestLoadConfigAllowsOpenAICodexProviderWithoutBaseURL(t *testing.T) {
-	t.Parallel()
-
-	tempDir := t.TempDir()
-	configPath := filepath.Join(tempDir, "config.yaml")
-	configText := `
-bot_token: discord-token
-providers:
-  openai-codex:
-    api_key: test-token
-models:
-  openai-codex/gpt-5.2-codex:
-`
-
-	err := os.WriteFile(configPath, []byte(configText), 0o600)
-	if err != nil {
-		t.Fatalf("write config file: %v", err)
-	}
-
-	loadedConfig, err := loadConfig(configPath)
-	if err != nil {
-		t.Fatalf("load config: %v", err)
-	}
-
-	if loadedConfig.Providers["openai-codex"].apiKind() != providerAPIKindOpenAICodex {
-		t.Fatalf("unexpected provider API kind: %q", loadedConfig.Providers["openai-codex"].apiKind())
 	}
 }
 

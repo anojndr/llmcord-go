@@ -6,25 +6,15 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 )
 
 const (
-	openAICodexUsageLimitReachedCode = "usage_limit_reached"
-	openAICodexUsageNotIncludedCode  = "usage_not_included"
-	openAIRateLimitExceededCode      = "rate_limit_exceeded"
-	openAIHTTPErrorBodyPreviewRunes  = 512
-	openAIHTTPErrorMetadataCapacity  = 3
-	openAIRetryAfterHeader           = "Retry-After"
-	openAIRetryAfterMilliseconds     = "Retry-After-Ms"
-	openAIRateLimitResetRequests     = "X-Ratelimit-Reset-Requests"
-	openAIRateLimitResetUnits        = "X-Ratelimit-Reset-" + openAIUnitsHeaderSuffix
-	openAIRateLimitRemainingRequests = "X-Ratelimit-Remaining-Requests"
-	openAIRateLimitRemainingUnits    = "X-Ratelimit-Remaining-" + openAIUnitsHeaderSuffix
-	openAIUnitsHeaderSuffix          = "To" + "kens"
-	openAIResetHeaderCapacity        = 2
+	openAIRateLimitExceededCode     = "rate_limit_exceeded"
+	openAIHTTPErrorBodyPreviewRunes = 512
+	openAIHTTPErrorMetadataCapacity = 3
+	providerRequestFailedText       = "Request failed"
 )
 
 type openAIHTTPErrorInfo struct {
@@ -33,7 +23,6 @@ type openAIHTTPErrorInfo struct {
 	Code            string
 	Type            string
 	Param           string
-	RetryDelay      time.Duration
 }
 
 type openAIHTTPErrorEnvelope struct {
@@ -52,11 +41,11 @@ type openAIHTTPErrorPayload struct {
 func parseOpenAIHTTPErrorResponse(
 	statusCode int,
 	statusText string,
-	responseHeaders http.Header,
+	_ http.Header,
 	responseBody []byte,
 	includeFriendlyUsageLimit bool,
 ) openAIHTTPErrorInfo {
-	errorInfo := defaultOpenAIHTTPErrorInfo(statusText, responseHeaders, responseBody)
+	errorInfo := defaultOpenAIHTTPErrorInfo(statusText, responseBody)
 
 	errorPayload, ok := parseOpenAIHTTPErrorPayload(responseBody)
 	if !ok {
@@ -82,7 +71,6 @@ func parseOpenAIHTTPErrorResponse(
 
 func defaultOpenAIHTTPErrorInfo(
 	statusText string,
-	responseHeaders http.Header,
 	responseBody []byte,
 ) openAIHTTPErrorInfo {
 	errorInfo := openAIHTTPErrorInfo{
@@ -91,7 +79,6 @@ func defaultOpenAIHTTPErrorInfo(
 		Code:            "",
 		Type:            "",
 		Param:           "",
-		RetryDelay:      openAIHTTPRetryDelay(responseHeaders),
 	}
 
 	if errorInfo.Message == "" {
@@ -181,13 +168,7 @@ func applyOpenAIFriendlyUsageLimit(
 		return errorInfo
 	}
 
-	friendlyMessage, retryDelay := openAIFriendlyUsageLimitMessage(
-		errorPayload.PlanType,
-		errorPayload.ResetsAt,
-		errorInfo.RetryDelay,
-	)
-	errorInfo.FriendlyMessage = friendlyMessage
-	errorInfo.RetryDelay = retryDelay
+	errorInfo.FriendlyMessage = openAIFriendlyUsageLimitMessage(errorPayload.PlanType, errorPayload.ResetsAt)
 
 	return errorInfo
 }
@@ -199,141 +180,31 @@ func openAIHTTPErrorIsUsageLimit(statusCode int, errorInfo openAIHTTPErrorInfo) 
 	}
 
 	return statusCode == httpStatusTooManyRequests ||
-		strings.EqualFold(codeOrType, openAICodexUsageLimitReachedCode) ||
-		strings.EqualFold(codeOrType, openAICodexUsageNotIncludedCode) ||
 		strings.EqualFold(codeOrType, openAIRateLimitExceededCode)
 }
 
 func openAIFriendlyUsageLimitMessage(
 	planType string,
 	resetsAt *int64,
-	currentDelay time.Duration,
-) (string, time.Duration) {
+) string {
 	planText := ""
 	if strings.TrimSpace(planType) != "" {
 		planText = fmt.Sprintf(" (%s plan)", strings.ToLower(strings.TrimSpace(planType)))
 	}
 
 	retryText := ""
-	retryDelay := currentDelay
 
 	if resetsAt != nil {
 		resetTime := time.Unix(*resetsAt, 0)
 
 		minutesUntilReset := max(0, int(time.Until(resetTime).Round(time.Minute)/time.Minute))
-		if candidateDelay := time.Until(resetTime); candidateDelay > retryDelay {
-			retryDelay = candidateDelay
-		}
 
 		retryText = fmt.Sprintf(" Try again in ~%d min.", minutesUntilReset)
 	}
 
 	return strings.TrimSpace(
 		fmt.Sprintf("You have hit your ChatGPT usage limit%s.%s", planText, retryText),
-	), retryDelay
-}
-
-func openAIHTTPRetryDelay(headers http.Header) time.Duration {
-	if headers == nil {
-		return 0
-	}
-
-	if retryDelay, ok := parseOpenAIRetryAfter(headers); ok {
-		return retryDelay
-	}
-
-	requestReset, requestResetOK := parseRetryDelayText(headers.Get(openAIRateLimitResetRequests))
-	tokenReset, tokenResetOK := parseRetryDelayText(headers.Get(openAIRateLimitResetUnits))
-
-	exhaustedDurations := make([]time.Duration, 0, openAIResetHeaderCapacity)
-
-	if remainingRequests, ok := parseOpenAIHeaderInteger(headers.Get(openAIRateLimitRemainingRequests)); ok &&
-		remainingRequests == 0 && requestResetOK {
-		exhaustedDurations = append(exhaustedDurations, requestReset)
-	}
-
-	if remainingTokens, ok := parseOpenAIHeaderInteger(headers.Get(openAIRateLimitRemainingUnits)); ok &&
-		remainingTokens == 0 && tokenResetOK {
-		exhaustedDurations = append(exhaustedDurations, tokenReset)
-	}
-
-	if len(exhaustedDurations) > 0 {
-		return maxDuration(exhaustedDurations...)
-	}
-
-	switch {
-	case requestResetOK && tokenResetOK:
-		return max(requestReset, tokenReset)
-	case requestResetOK:
-		return requestReset
-	case tokenResetOK:
-		return tokenReset
-	default:
-		return 0
-	}
-}
-
-func parseOpenAIRetryAfter(headers http.Header) (time.Duration, bool) {
-	retryAfterMilliseconds := strings.TrimSpace(headers.Get(openAIRetryAfterMilliseconds))
-	if retryAfterMilliseconds != "" {
-		milliseconds, err := strconv.ParseFloat(retryAfterMilliseconds, 64)
-		if err == nil && milliseconds > 0 {
-			return time.Duration(milliseconds * float64(time.Millisecond)), true
-		}
-	}
-
-	retryAfter := strings.TrimSpace(headers.Get(openAIRetryAfterHeader))
-	if retryAfter == "" {
-		return 0, false
-	}
-
-	seconds, err := strconv.ParseFloat(retryAfter, 64)
-	if err == nil && seconds > 0 {
-		return time.Duration(seconds * float64(time.Second)), true
-	}
-
-	for _, layout := range []string{time.RFC1123, time.RFC1123Z, time.RFC850, time.ANSIC} {
-		retryTime, err := time.Parse(layout, retryAfter)
-		if err != nil {
-			continue
-		}
-
-		retryDelay := time.Until(retryTime)
-		if retryDelay > 0 {
-			return retryDelay, true
-		}
-	}
-
-	return 0, false
-}
-
-func parseOpenAIHeaderInteger(value string) (int64, bool) {
-	trimmedValue := strings.TrimSpace(value)
-	if trimmedValue == "" {
-		return 0, false
-	}
-
-	parsedValue, err := strconv.ParseInt(trimmedValue, 10, 64)
-	if err != nil || parsedValue < 0 {
-		return 0, false
-	}
-
-	return parsedValue, true
-}
-
-func maxDuration(durations ...time.Duration) time.Duration {
-	if len(durations) == 0 {
-		return 0
-	}
-
-	maximum := durations[0]
-	for _, duration := range durations[1:] {
-		if duration > maximum {
-			maximum = duration
-		}
-	}
-
-	return maximum
+	)
 }
 
 func openAIErrorStringValue(value any) string {
@@ -400,8 +271,7 @@ func newOpenAIProviderStatusError(
 			statusCode,
 			formatOpenAIHTTPError(errorInfo),
 		),
-		RetryDelay: errorInfo.RetryDelay,
-		Err:        os.ErrInvalid,
+		Err: os.ErrInvalid,
 	}
 }
 

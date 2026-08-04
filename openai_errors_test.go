@@ -29,10 +29,6 @@ func TestParseOpenAIHTTPErrorResponseBuildsFriendlyUsageLimit(t *testing.T) {
 		t.Fatalf("unexpected friendly usage limit message: %#v", errorInfo)
 	}
 
-	if errorInfo.RetryDelay <= 0 {
-		t.Fatalf("expected retry delay to be populated: %#v", errorInfo)
-	}
-
 	if errorInfo.Message != errorInfo.FriendlyMessage {
 		t.Fatalf("expected friendly message to be surfaced: %#v", errorInfo)
 	}

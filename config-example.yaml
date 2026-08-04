@@ -30,7 +30,7 @@ providers:
   # Remote providers:
   azure-openai:
     base_url: https://<resource name>.openai.azure.com/openai/deployments/<deployment name>
-    # `api_key` also accepts a YAML list. Keys rotate round-robin per request, falling back to remaining keys on failure.
+    # `api_key` also accepts a YAML list; the first key is used for requests.
     # api_key:
     #   - primary-key
     #   - backup-key
@@ -40,7 +40,7 @@ providers:
 
   # Provider names containing `gemini` use the native Gemini API.
   gemini:
-    # `api_key` also accepts a YAML list. Keys rotate round-robin per request, falling back to remaining keys on failure.
+    # `api_key` also accepts a YAML list; the first key is used for requests.
     # api_key:
     #   - primary-key
     #   - backup-key
@@ -88,18 +88,6 @@ providers:
     api_key:
     # Optional:
     # base_url: https://api.exa.ai
-
-  # Provider names containing `openai-codex` default to https://chatgpt.com/backend-api.
-  openai-codex:
-    # Optional:
-    # base_url: https://chatgpt.com/backend-api
-    api_key:
-    # Requests default to `verbosity: low`, and reasoning summaries default to
-    # `auto`. To override either for every request:
-    # extra_body:
-    #   verbosity: medium
-    #   reasoning:
-    #     summary: concise
 
   openrouter:
     base_url: https://openrouter.ai/api/v1
@@ -156,10 +144,6 @@ models:
 
   exa/exa-research-pro:
 
-  openai-codex/gpt-5.4:
-    context_window: 400000
-    reasoning_effort: high
-
   openrouter/x-ai/grok-4-fast:online:
 
   ollama/llama4:
@@ -180,10 +164,10 @@ web_search:
   max_urls: 5
   exa:
     # Optional. When set, the web search flow uses Exa's Search API instead of
-    # Exa MCP, and generic website extraction prefers Exa's Contents API first.
+    # Exa MCP, and generic website extraction uses Exa's Contents API.
     # Use `/searchtype` to switch between `instant`, `fast`, `auto`, `deep-lite`,
     # `deep`, and `deep-reasoning` at runtime (ordered lowest to highest latency).
-    # `api_key` also accepts a YAML list. Keys rotate round-robin per request, falling back to remaining keys on failure.
+    # `api_key` also accepts a YAML list; the first key is used for requests.
     # Optional max characters to request for Exa's full page text per result.
     # Default: 15000
     text_max_characters: 15000
@@ -194,8 +178,8 @@ web_search:
   tavily:
     # Optional when `primary_provider: mcp`; required if you want Tavily as either
     # primary or fallback. Generic website extraction uses Tavily Extract when no
-    # Exa API key is set, and as fallback when Exa Contents fails. `api_key`
-    # also accepts a YAML list. Keys rotate round-robin per request, falling back to remaining keys on failure.
+    # Exa API key is set. `api_key` also accepts a YAML list; the first key is
+    # used for requests.
     # api_key:
     #   - tvly-primary-key
     #   - tvly-backup-key
@@ -205,7 +189,7 @@ visual_search:
   serpapi:
     # Optional. When set, `vsearch` runs SerpApi Google Lens concurrently with
     # the default Yandex Images visual search and combines both result sets.
-    # `api_key` also accepts a YAML list. Keys rotate round-robin per request, falling back to remaining keys on failure.
+    # `api_key` also accepts a YAML list; the first key is used for requests.
     # api_key:
     #   - serpapi-primary-key
     #   - serpapi-backup-key

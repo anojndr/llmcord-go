@@ -167,7 +167,6 @@ type providerAPIKind string
 
 const (
 	providerAPIKindOpenAI                     providerAPIKind = "openai"
-	providerAPIKindOpenAICodex                providerAPIKind = "openai-codex"
 	providerAPIKindGemini                     providerAPIKind = "gemini"
 	modelConfigContextWindowKey                               = "context_window"
 	modelConfigAutoCompactThresholdPercentKey                 = "auto_compact_threshold_percent"
@@ -679,10 +678,6 @@ func modelLocalSettingBaseModel(provider providerConfig, modelName string) (stri
 		}
 
 		return baseModelName, nil
-	case providerAPIKindOpenAICodex:
-		baseModelName, _ := normalizeOpenAICodexModelAlias(modelName, nil)
-
-		return baseModelName, nil
 	default:
 		return modelName, nil
 	}
@@ -876,7 +871,7 @@ func (loadedConfig webSearchConfig) maxURLs() int {
 }
 
 func (loadedConfig webSearchConfig) exaUsesAPI() bool {
-	return len(loadedConfig.Exa.apiKeysForAttempts()) > 0
+	return len(loadedConfig.Exa.apiKeys()) > 0
 }
 
 func (settings exaSearchConfig) textMaxCharacters() int {
@@ -1149,23 +1144,19 @@ func (loadedConfig config) lockedModelForChannelIDs(channelIDs []string) (string
 
 const (
 	providerNameSuffixGemini = "gemini"
-	providerNameSuffixCodex  = "openai-codex"
 	providerNameSuffixExa    = "exa"
 )
 
 // apiKind infers the API kind from the provider name: names containing
-// "gemini" use the native Gemini API, "openai-codex" uses the Codex API, and
-// "exa" is an OpenAI-compatible research provider. Everything else is treated
-// as OpenAI-compatible, unless the base URL points at Gemini's OpenAI
-// compatibility endpoint.
+// "gemini" use the native Gemini API, and "exa" is an OpenAI-compatible
+// research provider. Everything else is treated as OpenAI-compatible, unless
+// the base URL points at Gemini's OpenAI compatibility endpoint.
 func (provider providerConfig) apiKind() providerAPIKind {
 	providerName := strings.ToLower(strings.TrimSpace(provider.Name))
 
 	switch {
 	case strings.Contains(providerName, providerNameSuffixGemini):
 		return providerAPIKindGemini
-	case strings.Contains(providerName, providerNameSuffixCodex):
-		return providerAPIKindOpenAICodex
 	case strings.Contains(providerName, providerNameSuffixExa):
 		return providerAPIKindOpenAI
 	default:

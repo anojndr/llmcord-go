@@ -46,9 +46,6 @@ func newRentryClient(httpClient *http.Client, endpoint string) *httpRentryClient
 }
 
 func (client *httpRentryClient) createEntry(ctx context.Context, text string) (string, error) {
-	requestContext, cancel := context.WithTimeout(ctx, rentryRequestTimeout)
-	defer cancel()
-
 	endpointURL, err := url.Parse(client.endpoint)
 	if err != nil {
 		return "", fmt.Errorf("parse Rentry endpoint %q: %w", client.endpoint, err)
@@ -59,12 +56,12 @@ func (client *httpRentryClient) createEntry(ctx context.Context, text string) (s
 		return "", err
 	}
 
-	csrfToken, err := client.loadCSRFToken(requestContext, httpClient, endpointURL)
+	csrfToken, err := client.loadCSRFToken(ctx, httpClient, endpointURL)
 	if err != nil {
 		return "", err
 	}
 
-	return client.submitEntry(requestContext, httpClient, endpointURL, csrfToken, text)
+	return client.submitEntry(ctx, httpClient, endpointURL, csrfToken, text)
 }
 
 func (client *httpRentryClient) newHTTPClient() (*http.Client, error) {

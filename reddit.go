@@ -235,10 +235,7 @@ func (client redditClient) fetch(ctx context.Context, rawURL string) (redditThre
 		return redditThreadContent{}, fmt.Errorf("resolve reddit request url for %q: %w", rawURL, err)
 	}
 
-	requestContext, cancel := context.WithTimeout(ctx, redditRequestTimeout)
-	defer cancel()
-
-	responseBody, err := client.doRequest(requestContext, requestURL)
+	responseBody, err := client.doRequest(ctx, requestURL)
 	if err != nil {
 		return redditThreadContent{}, fmt.Errorf("fetch reddit thread for %q: %w", rawURL, err)
 	}

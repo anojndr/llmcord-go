@@ -9,7 +9,6 @@ import (
 )
 
 const (
-	openAICodexPromptCacheKeyPrefix    = "llmcord-go-codex"
 	openAIProviderPromptCacheKeyPrefix = "llmcord-go-openai"
 )
 
@@ -46,19 +45,6 @@ func assignOpenAIPromptCacheKeyWithScope(
 		maxMessages,
 		scope,
 	)
-}
-
-func assignOpenAICodexSessionID(
-	request *chatCompletionRequest,
-	sourceMessage *discordgo.Message,
-	store *messageNodeStore,
-	maxMessages int,
-) {
-	if request == nil || request.Provider.APIKind != providerAPIKindOpenAICodex {
-		return
-	}
-
-	assignOpenAIPromptCacheKey(request, sourceMessage, store, maxMessages)
 }
 
 func addOpenAIPromptCacheKey(requestBody map[string]any, request chatCompletionRequest) {
@@ -100,8 +86,6 @@ func openAIConversationPromptCacheKey(
 
 func openAIRequestPromptCacheKeyPrefix(request chatCompletionRequest) string {
 	switch request.Provider.APIKind {
-	case providerAPIKindOpenAICodex:
-		return openAICodexPromptCacheKeyPrefix
 	case providerAPIKindOpenAI:
 		if openAIConfiguredModel(request.ConfiguredModel) {
 			return openAIProviderPromptCacheKeyPrefix

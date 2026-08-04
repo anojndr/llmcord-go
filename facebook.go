@@ -215,15 +215,12 @@ func (client facebookClient) fetch(
 	ctx context.Context,
 	rawURL string,
 ) (facebookVideoContent, error) {
-	requestContext, cancel := context.WithTimeout(ctx, facebookRequestTimeout)
-	defer cancel()
-
 	normalizedURL, err := normalizeFacebookURL(rawURL)
 	if err != nil {
 		return facebookVideoContent{}, err
 	}
 
-	videoContent, err := client.fetchWithGetMyFB(requestContext, normalizedURL)
+	videoContent, err := client.fetchWithGetMyFB(ctx, normalizedURL)
 	if err != nil {
 		return facebookVideoContent{}, fmt.Errorf("fetch facebook content: %w", err)
 	}
