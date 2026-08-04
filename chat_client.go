@@ -168,12 +168,21 @@ func (client chatCompletionRouter) streamChatCompletionForKey(
 			return streamStarted, nil
 		}
 
-		if streamStarted || ctx.Err() != nil {
-			return streamStarted, err
+		// The caller's stream deadline is exhausted. Every retry derives its
+		// remaining time from this same deadline and would fail immediately, so
+		// re-routing attempts below only spins until the watchdog deadline and
+		// reports this same error again. Fail fast so a transient blip can't
+		// consume the whole budget.
+		if ctx.Err() != nil {
+			return streamStarted, fmt.Errorf("stream retry budget exhausted: %w", ctx.Err())
 		}
 
-		if errors.Is(err, context.DeadlineExceeded) || errors.Is(attemptCtx.Err(), context.DeadlineExceeded) {
+		if err != nil && (errors.Is(err, context.DeadlineExceeded) || errors.Is(attemptCtx.Err(), context.DeadlineExceeded)) {
 			return streamStarted, fmt.Errorf("stream attempt timeout: %w", err)
+		}
+
+		if streamStarted {
+			return streamStarted, err
 		}
 
 		emptyResponse := errors.Is(err, errEmptyModelResponse)
