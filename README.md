@@ -81,6 +81,7 @@ Providers are declared with `base_url` (OpenAI-compatible) or a `type` of `exa`,
 | --- | --- |
 | `providers` | Keyed by name. OpenAI-compatible providers use `base_url`; `type: exa` defaults to `https://api.exa.ai`; `type: openai-codex` to `https://chatgpt.com/backend-api`; `type: gemini` supports `enable_grounding: true` for the native Google Search tool. |
 | `models` | Ordered `<provider>/<model>` map. The first entry is the startup default. `:vision` is a local hint for image-capability heuristics. |
+| `context_window` | Optional per-provider context windows (plain ints or `k`/`m` suffixes), applied to models without their own value. See model notes. |
 | `channel_model_locks` | Map of channel IDs to configured models. `/model` is disabled in locked channels. |
 | `search_decider_model` | Model used to decide whether web search is needed. Defaults to the first configured model. |
 | `media_analysis_model` | Gemini model used to preprocess audio and video for non-Gemini replies; auto-selected when unset. |
@@ -92,6 +93,7 @@ Providers are declared with `base_url` (OpenAI-compatible) or a `type` of `exa`,
 Model notes:
 
 - `context_window` is local metadata for retained-context reply-footers and compaction. Provider-only tokens (hidden reasoning) aren't counted; punctuation-heavy text (CSV, logs) is budgeted more conservatively.
+- Context windows can be set per provider with the top-level `context_window` map (e.g. `context_window: { router: 200k, openai: 200k }`); models without their own value inherit their provider's. A per-model `context_window` always wins over the provider value.
 - OpenAI GPT-5 aliases (`openai/gpt-5.4-low`, `-none`, `-minimal`, `-medium`, `-high`, `-xhigh`) control reasoning effort: `reasoning.effort` on the built-in `openai` provider, `reasoning_effort` elsewhere; `-minimal` normalizes to `low`. Gemini aliases (`-minimal`–`-high`) control thought effort; Codex aliases (`-none`–`-xhigh`) control reasoning effort.
 - `openai/...` models always send a stable `prompt_cache_key` (even with a custom `base_url`) and use the Priority inference tier (`service_tier: "priority"`). `prompt_cache_retention: 24h` can be set via `extra_body`.
 
