@@ -468,7 +468,7 @@ const errPositiveIntMustBeGreaterThanZero = "must be greater than zero: %w"
 // provider name, into plain integers. Values accept "200k"-style suffixes.
 func providerContextWindows(rawValues map[string]any) (map[string]int, error) {
 	if len(rawValues) == 0 {
-		return nil, nil
+		return map[string]int{}, nil
 	}
 
 	values := make(map[string]int, len(rawValues))
