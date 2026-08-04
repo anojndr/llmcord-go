@@ -60,6 +60,7 @@ func newWebsiteTestClient(httpClient *http.Client, exaURL string, tavilyURL stri
 		exaContentsEndpoint:   exaURL,
 		tavilyExtractEndpoint: tavilyURL,
 		lookupIP:              testWebsiteLookupIP,
+		keys:                  newAPIKeyRotator(),
 	}
 }
 

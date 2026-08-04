@@ -30,20 +30,20 @@ providers:
   # Remote providers:
   azure-openai:
     base_url: https://<resource name>.openai.azure.com/openai/deployments/<deployment name>
-    # `api_key` also accepts a YAML list; the first key is used for requests.
+    # `api_key` also accepts a YAML list; requests are round-robin across them.
     # api_key:
-    #   - primary-key
-    #   - backup-key
-    api_key: 
+    #   - key-1
+    #   - key-2
+    api_key:
     extra_query:
       api-version: 2024-12-01-preview
 
   # Provider names containing `gemini` use the native Gemini API.
   gemini:
-    # `api_key` also accepts a YAML list; the first key is used for requests.
+    # `api_key` also accepts a YAML list; requests are round-robin across them.
     # api_key:
-    #   - primary-key
-    #   - backup-key
+    #   - key-1
+    #   - key-2
     api_key:
     # enable_grounding: true
     # Thought summaries are disabled by default. To turn them on:
@@ -167,7 +167,7 @@ web_search:
     # Exa MCP, and generic website extraction uses Exa's Contents API.
     # Use `/searchtype` to switch between `instant`, `fast`, `auto`, `deep-lite`,
     # `deep`, and `deep-reasoning` at runtime (ordered lowest to highest latency).
-    # `api_key` also accepts a YAML list; the first key is used for requests.
+    # `api_key` also accepts a YAML list; requests are round-robin across them.
     # Optional max characters to request for Exa's full page text per result.
     # Default: 15000
     text_max_characters: 15000
@@ -178,8 +178,8 @@ web_search:
   tavily:
     # Optional when `primary_provider: mcp`; required if you want Tavily as either
     # primary or fallback. Generic website extraction uses Tavily Extract when no
-    # Exa API key is set. `api_key` also accepts a YAML list; the first key is
-    # used for requests.
+    # Exa API key is set. `api_key` also accepts a YAML list; requests are
+    # round-robin across them.
     # api_key:
     #   - tvly-primary-key
     #   - tvly-backup-key
@@ -189,7 +189,7 @@ visual_search:
   serpapi:
     # Optional. When set, `vsearch` runs SerpApi Google Lens concurrently with
     # the default Yandex Images visual search and combines both result sets.
-    # `api_key` also accepts a YAML list; the first key is used for requests.
+    # `api_key` also accepts a YAML list; requests are round-robin across them.
     # api_key:
     #   - serpapi-primary-key
     #   - serpapi-backup-key

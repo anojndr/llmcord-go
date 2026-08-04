@@ -109,6 +109,7 @@ type serpAPIGoogleLensClient struct {
 	endpoint   string
 	httpClient *http.Client
 	userAgent  string
+	keys       *apiKeyRotator
 }
 
 const visualSearchNumberedTitleFormat = "%d. %s"
@@ -193,6 +194,7 @@ func newSerpAPIVisualSearchClient(httpClient *http.Client) serpAPIGoogleLensClie
 		endpoint:   defaultSerpAPIGoogleLensEndpoint,
 		httpClient: httpClient,
 		userAgent:  youtubeUserAgent,
+		keys:       newAPIKeyRotator(),
 	}
 }
 
@@ -291,14 +293,16 @@ func (client serpAPIGoogleLensClient) search(
 	loadedConfig config,
 	imageURL string,
 ) (visualSearchResult, error) {
-	apiKey := loadedConfig.VisualSearch.SerpAPI.primaryAPIKey()
-	if apiKey == "" {
+	apiKeys := loadedConfig.VisualSearch.SerpAPI.apiKeys()
+	if len(apiKeys) == 0 {
 		return emptyVisualSearchResult(), fmt.Errorf(
 			"missing SerpApi Google Lens API key for %q: %w",
 			imageURL,
 			os.ErrNotExist,
 		)
 	}
+
+	apiKey := firstAPIKey(client.keys.rotate(apiKeys))
 
 	return client.searchOnce(ctx, imageURL, apiKey)
 }

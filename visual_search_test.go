@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -1209,6 +1210,68 @@ func TestSerpAPIGoogleLensParseResponseRejectsNonSuccessSearchStatuses(t *testin
 
 			runSerpAPIGoogleLensNonSuccessStatusTest(t, testCase.status)
 		})
+	}
+}
+
+func TestSerpAPIGoogleLensSearchRotatesAPIKeysAcrossCalls(t *testing.T) {
+	t.Parallel()
+
+	var (
+		apiKeys []string
+		keyMu   sync.Mutex
+	)
+
+	httpServer := httptest.NewServer(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		request *http.Request,
+	) {
+		keyMu.Lock()
+
+		apiKeys = append(apiKeys, request.URL.Query().Get("api_key"))
+		keyMu.Unlock()
+
+		responseWriter.Header().Set("Content-Type", "application/json")
+
+		_, err := responseWriter.Write([]byte(`{"search_metadata":{"status":"Success"},"visual_matches":[]}`))
+		if err != nil {
+			t.Errorf("write SerpApi response: %v", err)
+		}
+	}))
+	defer httpServer.Close()
+
+	client := serpAPIGoogleLensClient{
+		endpoint:   httpServer.URL,
+		httpClient: httpServer.Client(),
+		userAgent:  youtubeUserAgent,
+		keys:       newAPIKeyRotator(),
+	}
+
+	loadedConfig := testSearchConfig()
+
+	serpPrimaryKey := t.Name() + "-s1"
+	serpSecondaryKey := t.Name() + "-s2"
+	serpTertiaryKey := t.Name() + "-s3"
+
+	loadedConfig.VisualSearch.SerpAPI = serpAPIVisualSearchConfig{
+		APIKey:  serpPrimaryKey,
+		APIKeys: []string{serpPrimaryKey, serpSecondaryKey, serpTertiaryKey},
+	}
+
+	for range 3 {
+		_, err := client.search(context.Background(), loadedConfig, testVisualSearchAttachmentURL)
+		if err != nil {
+			t.Fatalf("search: %v", err)
+		}
+	}
+
+	keyMu.Lock()
+	defer keyMu.Unlock()
+
+	expectedKeys := []string{serpPrimaryKey, serpSecondaryKey, serpTertiaryKey}
+	for index, expected := range expectedKeys {
+		if apiKeys[index] != expected {
+			t.Fatalf("search %d: expected api_key %q, got %q", index, expected, apiKeys[index])
+		}
 	}
 }
 

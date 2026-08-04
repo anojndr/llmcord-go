@@ -2,6 +2,7 @@ package main
 
 import (
 	"reflect"
+	"slices"
 	"testing"
 )
 
@@ -49,6 +50,99 @@ func TestProviderAPIKeys(t *testing.T) {
 	if !reflect.DeepEqual(keys, expected) {
 		t.Fatalf("expected %#v, got %#v", expected, keys)
 	}
+}
+
+func TestRoundRobinAPIKeys(t *testing.T) {
+	t.Parallel()
+
+	t.Run("single key", func(t *testing.T) {
+		t.Parallel()
+
+		rotator := newAPIKeyRotator()
+
+		keys := rotator.rotate([]string{"key1"})
+		if !slices.Equal(keys, []string{"key1"}) {
+			t.Fatalf("expected single key unchanged, got %#v", keys)
+		}
+	})
+
+	t.Run("empty", func(t *testing.T) {
+		t.Parallel()
+
+		rotator := newAPIKeyRotator()
+
+		if keys := rotator.rotate(nil); len(keys) != 0 {
+			t.Fatalf("expected no keys, got %#v", keys)
+		}
+	})
+
+	t.Run("distinct key sets rotate independently", func(t *testing.T) {
+		t.Parallel()
+
+		rotator := newAPIKeyRotator()
+
+		set := []string{"a", "b", "c"}
+		other := []string{"x", "y"}
+
+		firstCall := rotator.rotate(set)
+		secondCall := rotator.rotate(set)
+		otherFirst := rotator.rotate(other)
+		otherSecond := rotator.rotate(other)
+
+		if !slices.Equal(firstCall, []string{"a", "b", "c"}) {
+			t.Fatalf("expected first rotation to start with the primary key, got %#v", firstCall)
+		}
+
+		if !slices.Equal(secondCall, []string{"b", "c", "a"}) {
+			t.Fatalf("expected second rotation to start with the second key, got %#v", secondCall)
+		}
+
+		if !slices.Equal(otherFirst, []string{"x", "y"}) || !slices.Equal(otherSecond, []string{"y", "x"}) {
+			t.Fatalf("expected independent rotation for a distinct key set, got %#v and %#v", otherFirst, otherSecond)
+		}
+	})
+
+	t.Run("wraps around to the first key", func(t *testing.T) {
+		t.Parallel()
+
+		rotator := newAPIKeyRotator()
+
+		set := []string{"a", "b"}
+
+		first := rotator.rotate(set)
+		if !slices.Equal(first, []string{"a", "b"}) {
+			t.Fatalf("expected first rotation to start with the primary key, got %#v", first)
+		}
+
+		second := rotator.rotate(set)
+		if !slices.Equal(second, []string{"b", "a"}) {
+			t.Fatalf("expected second rotation to swap the keys, got %#v", second)
+		}
+
+		wrapped := rotator.rotate(set)
+		if !slices.Equal(wrapped, []string{"a", "b"}) {
+			t.Fatalf("expected rotation to wrap around, got %#v", wrapped)
+		}
+	})
+
+	t.Run("never mutates the input", func(t *testing.T) {
+		t.Parallel()
+
+		rotator := newAPIKeyRotator()
+
+		input := []string{"a", "b", "c"}
+		rotated := rotator.rotate(input)
+
+		if !slices.Equal(input, []string{"a", "b", "c"}) {
+			t.Fatalf("expected input unchanged, got %#v", input)
+		}
+
+		rotated[0] = "changed"
+
+		if !slices.Equal(input, []string{"a", "b", "c"}) {
+			t.Fatalf("expected rotation result to be a copy, got %#v", input)
+		}
+	})
 }
 
 func TestPrimaryAPIKey(t *testing.T) {
