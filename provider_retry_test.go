@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"fmt"
 	"net/http"
 	"os"
 	"testing"
@@ -136,6 +138,16 @@ func TestIsTransientErrorMatchesTransientErrorMessageText(t *testing.T) {
 			name:     "empty model response",
 			err:      transientTextError("model returned an empty response"),
 			expected: true,
+		},
+		{
+			name:     "context deadline exceeded is not retried",
+			err:      context.DeadlineExceeded,
+			expected: false,
+		},
+		{
+			name:     "wrapped context deadline exceeded is not retried",
+			err:      fmt.Errorf("stream gemini content: %w", context.DeadlineExceeded),
+			expected: false,
 		},
 	}
 

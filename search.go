@@ -495,6 +495,9 @@ func (instance *bot) decideWebSearch(
 	searchContext, cancel := context.WithTimeout(ctx, searchDeciderTimeout)
 	defer cancel()
 
+	searchContext, cancel = context.WithCancel(searchContext)
+	defer cancel()
+
 	request, autoCompactResult := instance.autoCompactRequest(searchContext, request)
 
 	var warnings []string

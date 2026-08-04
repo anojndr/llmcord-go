@@ -109,6 +109,12 @@ func isTransientError(_ providerAPIKind, err error) bool {
 		return true
 	}
 
+	// Context deadline exceeded means the timeout budget is exhausted;
+	// retrying would only consume the remaining budget on another attempt.
+	if errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+
 	// 1. Check for network errors.
 	var netErr net.Error
 	if errors.As(err, &netErr) {
@@ -129,7 +135,6 @@ func isTransientError(_ providerAPIKind, err error) bool {
 		"broken pipe",
 		"EOF",
 		"unexpected EOF",
-		"context deadline exceeded",
 		"malformed_function_call",
 		"model returned an empty response",
 		"request queue is full",
