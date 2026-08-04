@@ -12,7 +12,7 @@ import (
 const (
 	firstTestModel         = "openai/first-model"
 	secondTestModel        = "openai/second-model"
-	testMediaAnalysisModel = "google/gemini-3.5-flash-lite"
+	testMediaAnalysisModel = "gemini/gemini-3.5-flash-lite"
 )
 
 func TestLoadConfigAppliesDefaultsAndPreservesModelOrder(t *testing.T) {
@@ -334,8 +334,7 @@ func TestLoadConfigUsesConfiguredMediaAnalysisModel(t *testing.T) {
 	configText := `
 bot_token: discord-token
 providers:
-  google:
-    type: gemini
+  gemini:
 models:
   ` + testMediaAnalysisModel + `:
 media_analysis_model: ` + testMediaAnalysisModel + `
@@ -364,11 +363,10 @@ func TestLoadConfigAllowsGeminiProviderWithoutBaseURL(t *testing.T) {
 	configText := `
 bot_token: discord-token
 providers:
-  google:
-    type: gemini
+  gemini:
     api_key: gemini-key
 models:
-  google/gemini-3-flash-preview:
+  gemini/gemini-3-flash-preview:
 `
 
 	err := os.WriteFile(configPath, []byte(configText), 0o600)
@@ -381,8 +379,8 @@ models:
 		t.Fatalf("load config: %v", err)
 	}
 
-	if loadedConfig.Providers["google"].apiKind() != providerAPIKindGemini {
-		t.Fatalf("unexpected provider API kind: %q", loadedConfig.Providers["google"].apiKind())
+	if loadedConfig.Providers["gemini"].apiKind() != providerAPIKindGemini {
+		t.Fatalf("unexpected provider API kind: %q", loadedConfig.Providers["gemini"].apiKind())
 	}
 }
 
@@ -395,7 +393,6 @@ func TestLoadConfigAllowsExaProviderWithoutBaseURL(t *testing.T) {
 bot_token: discord-token
 providers:
   exa:
-    type: exa
     api_key: exa-key
 models:
   exa/exa-research-pro:
@@ -775,14 +772,13 @@ func TestLoadConfigInheritsContextWindowAcrossAliasModels(t *testing.T) {
 	configText := `
 bot_token: discord-token
 providers:
-  codex:
-    type: openai-codex
+  openai-codex:
     api_key: test-token
 models:
-  codex/gpt-5.4:
+  openai-codex/gpt-5.4:
     context_window: 400000
-  codex/gpt-5.4-none:
-  codex/gpt-5.4-high:
+  openai-codex/gpt-5.4-none:
+  openai-codex/gpt-5.4-high:
     context_window: 400000
 `
 
@@ -797,9 +793,9 @@ models:
 	}
 
 	for _, modelName := range []string{
-		"codex/gpt-5.4",
-		"codex/gpt-5.4-none",
-		"codex/gpt-5.4-high",
+		"openai-codex/gpt-5.4",
+		"openai-codex/gpt-5.4-none",
+		"openai-codex/gpt-5.4-high",
 	} {
 		if loadedConfig.modelContextWindow(modelName) != 400_000 {
 			t.Fatalf("unexpected context window for %s: %d", modelName, loadedConfig.modelContextWindow(modelName))
@@ -895,13 +891,12 @@ func TestLoadConfigInheritsContextWindowAcrossGeminiAliases(t *testing.T) {
 	configText := `
 bot_token: discord-token
 providers:
-  google:
-    type: gemini
+  gemini:
     api_key: test-token
 models:
-  google/gemini-3.5-flash-lite:
+  gemini/gemini-3.5-flash-lite:
     context_window: 1000000
-  google/gemini-3.5-flash-lite-minimal:
+  gemini/gemini-3.5-flash-lite-minimal:
 `
 
 	err := os.WriteFile(configPath, []byte(configText), 0o600)
@@ -914,10 +909,10 @@ models:
 		t.Fatalf("load config: %v", err)
 	}
 
-	if loadedConfig.modelContextWindow("google/gemini-3.5-flash-lite-minimal") != 1_000_000 {
+	if loadedConfig.modelContextWindow("gemini/gemini-3.5-flash-lite-minimal") != 1_000_000 {
 		t.Fatalf(
 			"unexpected gemini alias context window: %d",
-			loadedConfig.modelContextWindow("google/gemini-3.5-flash-lite-minimal"),
+			loadedConfig.modelContextWindow("gemini/gemini-3.5-flash-lite-minimal"),
 		)
 	}
 }
@@ -930,16 +925,15 @@ func TestLoadConfigUsesConfiguredProviderContextWindows(t *testing.T) {
 	configText := `
 bot_token: discord-token
 providers:
-  google:
-    type: gemini
+  gemini:
     api_key: test-token
   openai:
     base_url: https://api.openai.com/v1
 context_window:
-  google: 1m
+  gemini: 1m
   openai: 200k
 models:
-  google/gemini-3.5-flash-lite:
+  gemini/gemini-3.5-flash-lite:
   openai/gpt-5.4:
   openai/gpt-5.4-low:
 `
@@ -955,7 +949,7 @@ models:
 	}
 
 	for modelName, expectedWindow := range map[string]int{
-		"google/gemini-3.5-flash-lite": 1_000_000,
+		"gemini/gemini-3.5-flash-lite": 1_000_000,
 		"openai/gpt-5.4":               200_000,
 		"openai/gpt-5.4-low":           200_000,
 	} {
@@ -1168,11 +1162,10 @@ func TestLoadConfigRejectsModelLocalAutoCompactThresholdPercent(t *testing.T) {
 	configText := `
 bot_token: discord-token
 providers:
-  codex:
-    type: openai-codex
+  openai-codex:
     api_key: test-token
 models:
-  codex/gpt-5.4:
+  openai-codex/gpt-5.4:
     auto_compact_threshold_percent: 80
 `
 
@@ -1195,13 +1188,12 @@ func TestLoadConfigRejectsMismatchedContextWindowAcrossAliasModels(t *testing.T)
 	configText := `
 bot_token: discord-token
 providers:
-  codex:
-    type: openai-codex
+  openai-codex:
     api_key: test-token
 models:
-  codex/gpt-5.4:
+  openai-codex/gpt-5.4:
     context_window: 400000
-  codex/gpt-5.4-none:
+  openai-codex/gpt-5.4-none:
     context_window: 200000
 `
 
@@ -1354,11 +1346,10 @@ func TestLoadConfigAllowsOpenAICodexProviderWithoutBaseURL(t *testing.T) {
 	configText := `
 bot_token: discord-token
 providers:
-  codex:
-    type: openai-codex
+  openai-codex:
     api_key: test-token
 models:
-  codex/gpt-5.2-codex:
+  openai-codex/gpt-5.2-codex:
 `
 
 	err := os.WriteFile(configPath, []byte(configText), 0o600)
@@ -1371,34 +1362,8 @@ models:
 		t.Fatalf("load config: %v", err)
 	}
 
-	if loadedConfig.Providers["codex"].apiKind() != providerAPIKindOpenAICodex {
-		t.Fatalf("unexpected provider API kind: %q", loadedConfig.Providers["codex"].apiKind())
-	}
-}
-
-func TestLoadConfigRejectsUnsupportedProviderType(t *testing.T) {
-	t.Parallel()
-
-	tempDir := t.TempDir()
-	configPath := filepath.Join(tempDir, "config.yaml")
-	configText := `
-bot_token: discord-token
-providers:
-  provider:
-    type: unsupported
-    base_url: https://api.example.com/v1
-models:
-  provider/model:
-`
-
-	err := os.WriteFile(configPath, []byte(configText), 0o600)
-	if err != nil {
-		t.Fatalf("write config file: %v", err)
-	}
-
-	_, err = loadConfig(configPath)
-	if err == nil {
-		t.Fatal("expected unsupported provider type to fail validation")
+	if loadedConfig.Providers["openai-codex"].apiKind() != providerAPIKindOpenAICodex {
+		t.Fatalf("unexpected provider API kind: %q", loadedConfig.Providers["openai-codex"].apiKind())
 	}
 }
 

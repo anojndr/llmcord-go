@@ -130,7 +130,7 @@ func TestBuildOpenAICodexRequestBodyDefaultsVerbosityToLow(t *testing.T) {
 	t.Parallel()
 
 	provider := new(providerConfig)
-	provider.Type = string(providerAPIKindOpenAICodex)
+	provider.Name = "openai-codex"
 
 	var loadedConfig config
 

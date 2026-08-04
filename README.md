@@ -59,7 +59,7 @@ When `PORT` or `LLMCORD_HTTP_ADDR` is set, the bot exposes JSON health responses
 
 ## Configuration
 
-Providers are declared with `base_url` (OpenAI-compatible) or a `type` of `exa`, `gemini`, or `openai-codex`. `api_key` accepts a string or a YAML list; multiple keys rotate in round-robin and fall back to remaining keys on failure.
+Providers are declared with `base_url` (OpenAI-compatible). The provider name selects the API kind: names containing `gemini` use the native Gemini API (no `base_url` needed), `openai-codex` uses the OpenAI Codex API, and `exa` is an OpenAI-compatible research provider with a default base URL. `api_key` accepts a string or a YAML list; multiple keys rotate in round-robin and fall back to remaining keys on failure.
 
 ### Discord and Runtime
 
@@ -79,7 +79,7 @@ Providers are declared with `base_url` (OpenAI-compatible) or a `type` of `exa`,
 
 | Setting | Purpose |
 | --- | --- |
-| `providers` | Keyed by name. OpenAI-compatible providers use `base_url`; `type: exa` defaults to `https://api.exa.ai`; `type: openai-codex` to `https://chatgpt.com/backend-api`; `type: gemini` supports `enable_grounding: true` for the native Google Search tool. |
+| `providers` | Keyed by name. OpenAI-compatible providers use `base_url`; names containing `gemini` use the native Gemini API (with `enable_grounding: true` for the Google Search tool), `openai-codex` defaults to `https://chatgpt.com/backend-api`, and `exa` defaults to `https://api.exa.ai`. |
 | `models` | Ordered `<provider>/<model>` map. The first entry is the startup default. `:vision` is a local hint for image-capability heuristics. |
 | `context_window` | Optional per-provider context windows (plain ints or `k`/`m` suffixes), applied to models without their own value. See model notes. |
 | `channel_model_locks` | Map of channel IDs to configured models. `/model` is disabled in locked channels. |
