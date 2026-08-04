@@ -57,7 +57,7 @@ The bot's pipeline is: Discord message → conversation build → augmentation �
 
 `chatCompletionRouter` (chat_client.go) dispatches a `chatCompletionRequest` to one of two clients, chosen by `providerAPIKind` inferred from the provider name: `openai.go` (chat completions and Responses API, incl. `UseResponsesAPI`) and `gemini.go` (native `google.golang.org/genai`). `streamDelta` is the provider-neutral stream event; handlers consume it to update the embed.
 
-The router performs no retries, no key rotation, and no attempt timeouts: each request streams exactly once with the provider's primary API key (the first key in `api_keys`, if multiple are configured) and runs until it finishes or the caller cancels the context. There are no artificial context deadlines anywhere — a stream only stops when it completes, errors, or the surrounding pipeline cancels it.
+The router performs no retries and no attempt timeouts, but it round-robins the provider's API keys: `streamChatCompletion` rotates `request.Provider.apiKeys()` through the router's `apiKeyRotator` (api_keys.go) before dispatching, so each request picks one key and concurrent prompts spread across every configured key. A request still streams exactly once with its selected key and runs until it finishes or the caller cancels the context. There are no artificial context deadlines anywhere — a stream only stops when it completes, errors, or the surrounding pipeline cancels it. The same rotation applies to the search/fetch helpers: `exaSearchClient`, `tavilySearchClient`, `serpAPIGoogleLensClient`, and `websiteClient` each hold an `apiKeyRotator` and rotate `Exa`/`Tavily`/`SerpAPI` keys across calls (search.go, visual_search.go, website.go).
 
 ### Rendering and responses
 

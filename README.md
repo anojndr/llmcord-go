@@ -53,7 +53,7 @@ When `PORT` or `LLMCORD_HTTP_ADDR` is set, the bot exposes JSON health responses
 
 ## Configuration
 
-Providers are declared with `base_url` (OpenAI-compatible). The provider name selects the API kind: names containing `gemini` use the native Gemini API (no `base_url` needed), and `exa` is an OpenAI-compatible research provider with a default base URL. `api_key` accepts a string or a YAML list; the first key is used for requests.
+Providers are declared with `base_url` (OpenAI-compatible). The provider name selects the API kind: names containing `gemini` use the native Gemini API (no `base_url` needed), and `exa` is an OpenAI-compatible research provider with a default base URL. `api_key` accepts a string or a YAML list; when multiple keys are configured, the bot round-robins them across requests so concurrent prompts spread over every key. The same round-robin applies to `web_search.exa.api_key`, `web_search.tavily.api_key`, and `visual_search.serpapi.api_key`.
 
 ### Discord and Runtime
 
@@ -123,7 +123,7 @@ Model notes:
 - Generic website fetching rejects localhost, private, link-local, and unsafe redirects.
 - AliExpress product pages are replaced with the embedded product ID, OG title, and image list.
 - OpenRouter providers send `transforms: ["middle-out"]` unless overridden; unauthenticated 9Router setups omit the `Authorization` header.
-- Provider requests are sent once: no retries, no key rotation, and no artificial context deadlines. External request fan-out is bounded at 8 concurrent operations.
+- Provider requests are sent once: no retries and no artificial context deadlines. When a provider or search service (Exa, Tavily, SerpApi) has multiple `api_key` values, requests are round-robin across them; otherwise the single key is used. External request fan-out is bounded at 8 concurrent operations.
 
 ## Development
 
