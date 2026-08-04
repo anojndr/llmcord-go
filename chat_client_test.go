@@ -1919,6 +1919,146 @@ func TestChatCompletionRouter_GeminiEmptyResponseTriggersKeyFallback(t *testing.
 	}
 }
 
+func TestChatCompletionRouterStopsRoutingWhenAttemptBudgetExhausted(t *testing.T) {
+	t.Parallel()
+
+	var (
+		attemptsMu sync.Mutex
+		attempts   int
+	)
+
+	attemptCapture := new(stringCapture)
+	router := newGeminiRetryRouterWithFactory(
+		attemptCapture,
+		nil,
+		func(_ string, _ int) func(
+			context.Context,
+			string,
+			[]*genai.Content,
+			*genai.GenerateContentConfig,
+		) iter.Seq2[*genai.GenerateContentResponse, error] {
+			return func(
+				ctx context.Context,
+				_ string,
+				_ []*genai.Content,
+				_ *genai.GenerateContentConfig,
+			) iter.Seq2[*genai.GenerateContentResponse, error] {
+				return func(yield func(*genai.GenerateContentResponse, error) bool) {
+					attemptsMu.Lock()
+					attempts++
+					attempt := attempts
+					attemptsMu.Unlock()
+
+					if attempt > 1 {
+						t.Errorf("attempts continued after the attempt budget was exhausted")
+					}
+
+					// Report an overloaded error, then consume the attempt
+					// budget idly. The router must not route a second attempt;
+					// it returns once the budget is exhausted.
+					_ = yield(nil, newTestGeminiRetryDelayError(
+						"overloaded, retry later",
+						"1s",
+					))
+
+					<-ctx.Done()
+				}
+			}
+		},
+	)
+
+	req := newGeminiRetryRequest()
+	req.Provider.APIKeys = []string{"single-key"}
+
+	parentCtx, cancel := context.WithDeadline(context.Background(), time.Now().Add(2*time.Second))
+	defer cancel()
+
+	_, err := collectStreamedContent(parentCtx, router, req)
+	if err == nil {
+		t.Fatal("expected an error when the attempt budget is exhausted")
+	}
+
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected context deadline exceeded, got: %v", err)
+	}
+
+	attemptsMu.Lock()
+	gotAttempts := attempts
+	attemptsMu.Unlock()
+
+	if gotAttempts != 1 {
+		t.Fatalf("expected 1 attempt, got %d", gotAttempts)
+	}
+}
+
+func TestChatCompletionRouterContentSurvivesAttemptTimeout(t *testing.T) {
+	t.Parallel()
+
+	var (
+		attemptsMu sync.Mutex
+		attempts   int
+	)
+
+	attemptCapture := new(stringCapture)
+	router := newGeminiRetryRouterWithFactory(
+		attemptCapture,
+		nil,
+		func(_ string, _ int) func(
+			context.Context,
+			string,
+			[]*genai.Content,
+			*genai.GenerateContentConfig,
+		) iter.Seq2[*genai.GenerateContentResponse, error] {
+			return func(
+				ctx context.Context,
+				_ string,
+				_ []*genai.Content,
+				_ *genai.GenerateContentConfig,
+			) iter.Seq2[*genai.GenerateContentResponse, error] {
+				return func(yield func(*genai.GenerateContentResponse, error) bool) {
+					attemptsMu.Lock()
+					attempts++
+					attempt := attempts
+					attemptsMu.Unlock()
+
+					if attempt > 1 {
+						t.Errorf("attempts continued after the attempt budget was exhausted")
+					}
+
+					// Content is delivered first, then the stream stalls until
+					// the attempt budget is exhausted.
+					_ = yield(newGeminiGenerateContentResponse("Hello", genai.FinishReasonUnspecified), nil)
+
+					<-ctx.Done()
+				}
+			}
+		},
+	)
+
+	req := newGeminiRetryRequest()
+	req.Provider.APIKeys = []string{"single-key"}
+
+	parentCtx, cancel := context.WithDeadline(context.Background(), time.Now().Add(2*time.Second))
+	defer cancel()
+
+	_, err := collectStreamedContent(parentCtx, router, req)
+	if err == nil {
+		t.Fatal("expected an error when the attempt budget is exhausted")
+	}
+
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected context deadline exceeded, got: %v", err)
+	}
+
+	attemptsMu.Lock()
+	gotAttempts := attempts
+	attemptsMu.Unlock()
+
+	if gotAttempts != 1 {
+		t.Fatalf("expected 1 attempt, got %d", gotAttempts)
+	}
+}
+
 func TestChatCompletionRouter_OpenAIEmptyResponseRetriesUntilSuccess(t *testing.T) {
 	t.Parallel()
 
