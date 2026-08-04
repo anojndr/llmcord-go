@@ -486,7 +486,7 @@ func xAIResponsesMessage(message chatMessage) (map[string]any, bool, error) {
 	}
 
 	switch role {
-	case openAICodexRoleSystem, "developer":
+	case messageRoleSystem, "developer":
 		content, ok, err := xAIResponsesTextContent(message.Content)
 		if err != nil {
 			return nil, false, err

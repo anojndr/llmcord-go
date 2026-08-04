@@ -1012,10 +1012,6 @@ func usesBuiltInOpenAIProvider(
 }
 
 func usesDefaultProviderVerbosity(providerName string, providerAPIKind providerAPIKind) bool {
-	if providerAPIKind == providerAPIKindOpenAICodex {
-		return true
-	}
-
 	return usesBuiltInOpenAIProvider(providerName, providerAPIKind)
 }
 
@@ -1124,10 +1120,6 @@ func buildChatCompletionRequest(
 
 		modelName = resolvedModelName
 		extraBody = normalizedExtraBody
-	}
-
-	if providerAPIKind == providerAPIKindOpenAICodex {
-		modelName, extraBody = normalizeOpenAICodexModelAlias(modelName, extraBody)
 	}
 
 	if providerAPIKind == providerAPIKindOpenAI {

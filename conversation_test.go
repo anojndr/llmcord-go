@@ -49,7 +49,7 @@ func TestBuildMessageTextReadsTextDisplayInsideSection(t *testing.T) {
 	}
 }
 
-func TestFetchSupportedAttachmentsRetriesTransientDownloadError(t *testing.T) {
+func TestFetchSupportedAttachmentsFailsFastOnDownloadError(t *testing.T) {
 	t.Parallel()
 
 	const attachmentURL = "https://cdn.discordapp.com/attachments/test/context.txt"
@@ -66,11 +66,8 @@ func TestFetchSupportedAttachmentsRetriesTransientDownloadError(t *testing.T) {
 		}
 
 		attemptCount++
-		if attemptCount == 1 {
-			return nil, temporaryAttachmentNetError{}
-		}
 
-		return newTextResponse(request, "retried attachment body"), nil
+		return nil, temporaryAttachmentNetError{}
 	})
 
 	attachment := new(discordgo.MessageAttachment)
@@ -83,20 +80,16 @@ func TestFetchSupportedAttachmentsRetriesTransientDownloadError(t *testing.T) {
 		[]*discordgo.MessageAttachment{attachment},
 	)
 
-	if failed {
-		t.Fatal("expected attachment retry to succeed")
+	if !failed {
+		t.Fatal("expected attachment download to fail")
 	}
 
-	if attemptCount != 2 {
+	if attemptCount != 1 {
 		t.Fatalf("unexpected download attempts: %d", attemptCount)
 	}
 
-	if len(payloads) != 1 {
+	if len(payloads) != 0 {
 		t.Fatalf("unexpected payload count: %d", len(payloads))
-	}
-
-	if got := string(payloads[0].body); got != "retried attachment body" {
-		t.Fatalf("unexpected payload body: %q", got)
 	}
 }
 

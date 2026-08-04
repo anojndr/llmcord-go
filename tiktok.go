@@ -291,26 +291,23 @@ func (client tiktokClient) fetch(
 	ctx context.Context,
 	rawURL string,
 ) (tiktokVideoContent, error) {
-	requestContext, cancel := context.WithTimeout(ctx, tikTokRequestTimeout)
-	defer cancel()
-
-	resolvedURL, err := client.resolveURL(requestContext, rawURL)
+	resolvedURL, err := client.resolveURL(ctx, rawURL)
 	if err != nil {
 		return tiktokVideoContent{}, fmt.Errorf("resolve tiktok url %q: %w", rawURL, err)
 	}
 
-	verifyCode, err := client.fetchToken(requestContext)
+	verifyCode, err := client.fetchToken(ctx)
 	if err != nil {
 		return tiktokVideoContent{}, fmt.Errorf("fetch snaptik token: %w", err)
 	}
 
-	extractData, err := client.extractMedia(requestContext, resolvedURL, verifyCode)
+	extractData, err := client.extractMedia(ctx, resolvedURL, verifyCode)
 	if err != nil {
 		return tiktokVideoContent{}, fmt.Errorf("extract snaptik media: %w", err)
 	}
 
 	videoBytes, mimeType, filename, err := client.downloadVideo(
-		requestContext,
+		ctx,
 		extractData.DownloadURL,
 		resolvedURL,
 		extractData.Headers,

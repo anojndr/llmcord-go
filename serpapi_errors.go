@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -76,8 +75,7 @@ func newSerpAPIProviderError(
 			statusCode,
 			parseSerpAPIHTTPErrorMessage(statusCode, statusText, responseBody),
 		),
-		RetryDelay: 0,
-		Err:        os.ErrInvalid,
+		Err: os.ErrInvalid,
 	}
 
 	switch statusCode {
@@ -104,25 +102,6 @@ func newSerpAPISearchStatusError(imageURL, status, responseError string) error {
 			trimmedStatus,
 			trimmedError,
 		),
-		RetryDelay: 0,
-		Err:        os.ErrInvalid,
+		Err: os.ErrInvalid,
 	}
-}
-
-func shouldRetrySerpAPIAttemptWithNextKey(err error) bool {
-	if err == nil {
-		return false
-	}
-
-	var apiKeyErr providerAPIKeyError
-	if errors.As(err, &apiKeyErr) {
-		return true
-	}
-
-	var statusErr providerStatusError
-	if errors.As(err, &statusErr) {
-		return statusErr.StatusCode == http.StatusTooManyRequests
-	}
-
-	return false
 }

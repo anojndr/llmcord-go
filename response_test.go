@@ -100,7 +100,6 @@ func userFacingResponseErrorRawTextCases() []struct {
 			err: providerStatusError{
 				StatusCode: http.StatusNotFound,
 				Message:    "model not found",
-				RetryDelay: 0,
 				Err:        os.ErrInvalid,
 			},
 			expected: "model not found",
@@ -121,9 +120,9 @@ func userFacingResponseErrorRawTextCases() []struct {
 			expected: newTestUnavailableGeminiAPIErrorPointer("service unavailable").Error(),
 		},
 		{
-			name:     "context deadline exceeded returns timeout message",
+			name:     "context deadline exceeded returns raw message",
 			err:      context.DeadlineExceeded,
-			expected: "The model timed out while processing the request. Try again.",
+			expected: "context deadline exceeded",
 		},
 		{
 			name:     "unknown error returns raw message",
@@ -135,7 +134,6 @@ func userFacingResponseErrorRawTextCases() []struct {
 			err: providerStatusError{
 				StatusCode: http.StatusBadGateway,
 				Message:    strings.Repeat("A", userFacingErrorMaxRunes+200),
-				RetryDelay: 0,
 				Err:        os.ErrInvalid,
 			},
 			expected: "The provider returned an invalid or oversized error response. Try again.",
@@ -145,7 +143,6 @@ func userFacingResponseErrorRawTextCases() []struct {
 			err: providerStatusError{
 				StatusCode: http.StatusBadGateway,
 				Message:    strings.Repeat("readable error ", 200),
-				RetryDelay: 0,
 				Err:        os.ErrInvalid,
 			},
 			expected: truncateRunes(
@@ -153,85 +150,6 @@ func userFacingResponseErrorRawTextCases() []struct {
 				userFacingErrorMaxRunes-runeCount(" [truncated]"),
 			) + " [truncated]",
 		},
-	}
-}
-
-func TestStreamChatCompletionContextAddsDefaultDeadline(t *testing.T) {
-	t.Parallel()
-
-	request := newStreamTimeoutTestRequest(
-		providerAPIKindGemini,
-		false,
-		"gemini/gemini-test",
-	)
-
-	assertStreamChatCompletionContextTimeout(t, request, chatCompletionTimeout)
-}
-
-func TestStreamChatCompletionContextAllowsLongOpenAIResponses(t *testing.T) {
-	t.Parallel()
-
-	request := newStreamTimeoutTestRequest(providerAPIKindOpenAI, true, "openai/gpt-5")
-
-	assertStreamChatCompletionContextTimeout(t, request, openAIResponsesChatCompletionTimeout)
-}
-
-func TestStreamChatCompletionContextKeepsCompatibleResponsesDefault(t *testing.T) {
-	t.Parallel()
-
-	request := newStreamTimeoutTestRequest(providerAPIKindOpenAI, true, "x-ai/grok-4")
-
-	assertStreamChatCompletionContextTimeout(t, request, chatCompletionTimeout)
-}
-
-func assertStreamChatCompletionContextTimeout(
-	t *testing.T,
-	request chatCompletionRequest,
-	expected time.Duration,
-) {
-	t.Helper()
-
-	startedAt := time.Now()
-
-	ctx, cancel := streamChatCompletionContext(context.Background(), request)
-	defer cancel()
-
-	deadline, ok := ctx.Deadline()
-	if !ok {
-		t.Fatal("expected stream context deadline")
-	}
-
-	actual := deadline.Sub(startedAt)
-	if actual <= expected-time.Second || actual > expected+time.Second {
-		t.Fatalf("unexpected stream timeout: got %s want %s", actual, expected)
-	}
-}
-
-func newStreamTimeoutTestRequest(
-	apiKind providerAPIKind,
-	useResponsesAPI bool,
-	configuredModel string,
-) chatCompletionRequest {
-	return chatCompletionRequest{
-		Provider: providerRequestConfig{
-			APIKind:         apiKind,
-			BaseURL:         "",
-			APIKey:          "",
-			APIKeys:         nil,
-			UseResponsesAPI: useResponsesAPI,
-			EnableGrounding: false,
-			ExtraHeaders:    nil,
-			ExtraQuery:      nil,
-			ExtraBody:       nil,
-		},
-		Model:                       "",
-		ConfiguredModel:             configuredModel,
-		ContextWindow:               0,
-		AutoCompactThresholdPercent: 0,
-		SessionID:                   "",
-		PreviousResponseID:          "",
-		RequestID:                   "",
-		Messages:                    nil,
 	}
 }
 
@@ -370,15 +288,14 @@ func TestHandleGeneratedStreamDeltaMergesSearchMetadataFromStream(t *testing.T) 
 	finishReason := ""
 	lastRenderTime := time.Time{}
 	state := generatedStreamState{
-		request:               emptyChatCompletionRequest(),
-		warnings:              nil,
-		answerAccumulator:     &segmentAccumulator{maxLength: embedResponseMaxLength, segments: []string{""}},
-		thinkingAccumulator:   &segmentAccumulator{maxLength: embedResponseMaxLength, segments: []string{""}},
-		finishReason:          &finishReason,
-		lastRenderTime:        &lastRenderTime,
-		initialSearchMetadata: nil,
-		rawAnswerText:         "",
-		renderedAnswerText:    "",
+		request:             emptyChatCompletionRequest(),
+		warnings:            nil,
+		answerAccumulator:   &segmentAccumulator{maxLength: embedResponseMaxLength, segments: []string{""}},
+		thinkingAccumulator: &segmentAccumulator{maxLength: embedResponseMaxLength, segments: []string{""}},
+		finishReason:        &finishReason,
+		lastRenderTime:      &lastRenderTime,
+		rawAnswerText:       "",
+		renderedAnswerText:  "",
 	}
 
 	err := instance.handleGeneratedStreamDelta(
@@ -421,215 +338,6 @@ func TestHandleGeneratedStreamDeltaMergesSearchMetadataFromStream(t *testing.T) 
 	if len(tracker.searchMetadata.VisualSearchSources) != 1 {
 		t.Fatalf("expected existing visual search metadata to be preserved: %#v", tracker.searchMetadata.VisualSearchSources)
 	}
-}
-
-func TestGenerateAndSendResponseKeepsSearchDeciderSourcesAfterGeminiRetryReset(t *testing.T) {
-	t.Parallel()
-
-	const (
-		botUserID          = "bot-user"
-		channelID          = "channel-1"
-		userID             = "user-1"
-		sourceMessageID    = "user-message-1"
-		assistantMessageID = "assistant-message-1"
-		query              = "latest Gemini news"
-		sourceURL          = "https://example.com/gemini-news"
-	)
-
-	sourceMessage := newPromptMessage(sourceMessageID, channelID, userID, botUserID)
-	assistantMessage := new(discordgo.Message)
-	assistantMessage.ID = assistantMessageID
-	assistantMessage.ChannelID = channelID
-	assistantMessage.Author = newDiscordUser(botUserID, true)
-
-	sourcesButtonShown := false
-	session := newDirectMessageTestSession(t, channelID, botUserID, roundTripFunc(func(
-		request *http.Request,
-	) (*http.Response, error) {
-		t.Helper()
-
-		switch {
-		case request.Method == http.MethodPost &&
-			request.URL.Path == "/api/v9/channels/"+channelID+"/messages":
-			return newJSONResponse(t, request, assistantMessage), nil
-		case request.Method == http.MethodPatch &&
-			request.URL.Path == "/api/v9/channels/"+channelID+"/messages/"+assistantMessageID:
-			sourcesButtonShown = sourcesButtonShown || requestHasResponseButton(
-				t,
-				request,
-				showSourcesButtonCustomID,
-			)
-
-			return newJSONResponse(t, request, assistantMessage), nil
-		default:
-			t.Fatalf("unexpected request: %s %s", request.Method, request.URL.Path)
-
-			return nil, errUnexpectedTestRequest
-		}
-	}))
-
-	instance, loadedConfig := newGeminiSearchDeciderRetryTestBot(t, query, sourceURL)
-	instance.session = session
-
-	conversation := []chatMessage{{Role: messageRoleUser, Content: "What is new with Gemini?"}}
-
-	augmentedConversation, searchMetadata, warnings := instance.maybeAugmentConversationWithWebSearch(
-		context.Background(),
-		loadedConfig,
-		geminiSearchDeciderRetryMainModel,
-		sourceMessage,
-		conversation,
-	)
-	if len(warnings) != 0 {
-		t.Fatalf("unexpected search warnings: %#v", warnings)
-	}
-
-	if searchMetadata == nil || countSearchSources(searchMetadata) != 1 {
-		t.Fatalf("expected Search Decider sources: %#v", searchMetadata)
-	}
-
-	request, err := buildChatCompletionRequest(
-		loadedConfig,
-		geminiSearchDeciderRetryMainModel,
-		augmentedConversation,
-		false,
-	)
-	if err != nil {
-		t.Fatalf("build Gemini request: %v", err)
-	}
-
-	tracker := newResponseTracker(sourceMessage, request.ConfiguredModel)
-	tracker.searchMetadata = searchMetadata
-
-	err = instance.generateAndSendResponse(context.Background(), request, tracker, nil)
-	if err != nil {
-		t.Fatalf("generate and send response: %v", err)
-	}
-
-	if !sourcesButtonShown {
-		t.Fatal("expected Show Sources button after Gemini retry reset")
-	}
-
-	if tracker.searchMetadata == nil || countSearchSources(tracker.searchMetadata) != 1 {
-		t.Fatalf("expected Search Decider sources to be retained: %#v", tracker.searchMetadata)
-	}
-}
-
-const (
-	geminiSearchDeciderRetryMainModel    = "gemini/main-model"
-	geminiSearchDeciderRetryDeciderModel = "gemini/search-decider-model"
-)
-
-func newGeminiSearchDeciderRetryTestBot(
-	t *testing.T,
-	query string,
-	sourceURL string,
-) (*bot, config) {
-	t.Helper()
-
-	loadedConfig := testSearchConfig()
-	loadedConfig.Providers = map[string]providerConfig{
-		"gemini": {
-			Name:            "gemini",
-			BaseURL:         "",
-			APIKey:          "",
-			APIKeys:         nil,
-			EnableGrounding: false,
-			ExtraHeaders:    nil,
-			ExtraQuery:      nil,
-			ExtraBody:       nil,
-		},
-	}
-	loadedConfig.Models = map[string]map[string]any{
-		geminiSearchDeciderRetryMainModel:    nil,
-		geminiSearchDeciderRetryDeciderModel: nil,
-	}
-	loadedConfig.ModelOrder = []string{
-		geminiSearchDeciderRetryMainModel,
-		geminiSearchDeciderRetryDeciderModel,
-	}
-	loadedConfig.SearchDeciderModel = geminiSearchDeciderRetryDeciderModel
-
-	instance := new(bot)
-	instance.nodes = newMessageNodeStore(10)
-	instance.chatCompletions = newStubChatClient(func(
-		_ context.Context,
-		request chatCompletionRequest,
-		handle func(streamDelta) error,
-	) error {
-		switch request.ConfiguredModel {
-		case geminiSearchDeciderRetryDeciderModel:
-			if request.Provider.EnableGrounding {
-				t.Fatal("expected native grounding to stay disabled for the Search Decider")
-			}
-
-			return handle(newStreamDelta(`{"needs_search":true,"queries":["`+query+`"]}`, ""))
-		case geminiSearchDeciderRetryMainModel:
-			if request.Provider.EnableGrounding {
-				t.Fatal("expected native grounding to stay disabled for the Gemini reply")
-			}
-
-			for _, delta := range []streamDelta{
-				newStreamDelta("", finishReasonRetryReset),
-				newStreamDelta("Gemini answer.", ""),
-				newStreamDelta("", finishReasonStop),
-			} {
-				err := handle(delta)
-				if err != nil {
-					return err
-				}
-			}
-
-			return nil
-		default:
-			t.Fatalf("unexpected model request: %q", request.ConfiguredModel)
-
-			return errUnexpectedTestRequest
-		}
-	})
-	instance.webSearch = newStubWebSearchClient(func(
-		_ context.Context,
-		_ config,
-		queries []string,
-	) ([]webSearchResult, error) {
-		if len(queries) != 1 || queries[0] != query {
-			t.Fatalf("unexpected search queries: %#v", queries)
-		}
-
-		return []webSearchResult{{
-			Query: query,
-			Text:  "Title: Gemini News\nURL: " + sourceURL + "\n",
-		}}, nil
-	})
-
-	return instance, loadedConfig
-}
-
-func requestHasResponseButton(t *testing.T, request *http.Request, customID string) bool {
-	t.Helper()
-
-	var payload struct {
-		Components []struct {
-			Components []struct {
-				CustomID string `json:"custom_id"`
-			} `json:"components"`
-		} `json:"components"`
-	}
-
-	err := json.NewDecoder(request.Body).Decode(&payload)
-	if err != nil {
-		t.Fatalf("decode response request: %v", err)
-	}
-
-	for _, row := range payload.Components {
-		for _, component := range row.Components {
-			if component.CustomID == customID {
-				return true
-			}
-		}
-	}
-
-	return false
 }
 
 func TestNewReplyMessageDisablesReplyAuthorMention(t *testing.T) {
@@ -1078,7 +786,7 @@ func TestRetainedContextWindowUsageGrowsAcrossFollowUpWhenProviderTotalsShrink(t
 
 	firstRequest := emptyChatCompletionRequest()
 	firstRequest.Messages = []chatMessage{
-		{Role: openAICodexRoleSystem, Content: "You are concise."},
+		{Role: messageRoleSystem, Content: "You are concise."},
 		{Role: messageRoleUser, Content: "How do I keep OBS audio channels separated in one recording file?"},
 	}
 	firstUsage := retainedContextWindowUsage(firstRequest, firstAnswer)

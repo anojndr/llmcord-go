@@ -9,7 +9,7 @@ const (
 	openAIReasoningEffortNone     = "none"
 	openAIReasoningEffortMinimal  = "minimal"
 	openAIReasoningEffortLow      = defaultProviderVerbosityLow
-	openAIReasoningEffortMedium   = openAICodexVerbosityMedium
+	openAIReasoningEffortMedium   = "medium"
 	openAIReasoningEffortXHigh    = "xhigh"
 	openAIReasoningSummaryAuto    = "auto"
 	openAIReasoningSummaryConcise = "concise"
@@ -169,7 +169,7 @@ func normalizeOpenAIReasoningEffort(model, effort string) string {
 
 	switch {
 	case modelID == openAIReasoningModelGPT51 && normalizedEffort == openAIReasoningEffortXHigh:
-		return openAICodexReasoningHigh
+		return "high"
 	case (strings.HasPrefix(modelID, "gpt-5.2") ||
 		strings.HasPrefix(modelID, "gpt-5.3") ||
 		strings.HasPrefix(modelID, openAIReasoningModelGPT54)) &&

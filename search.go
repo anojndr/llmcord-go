@@ -492,10 +492,7 @@ func (instance *bot) decideWebSearch(
 		"search-decider",
 	)
 
-	searchContext, cancel := context.WithTimeout(ctx, searchDeciderTimeout)
-	defer cancel()
-
-	searchContext, cancel = context.WithCancel(searchContext)
+	searchContext, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	request, autoCompactResult := instance.autoCompactRequest(searchContext, request)
@@ -1417,21 +1414,18 @@ func (client exaSearchClient) search(
 	loadedConfig config,
 	queries []string,
 ) ([]webSearchResult, error) {
-	searchContext, cancel := context.WithTimeout(ctx, webSearchTimeout)
-	defer cancel()
-
 	maxURLs := loadedConfig.WebSearch.maxURLs()
-	exaAPIKeys := loadedConfig.WebSearch.Exa.apiKeysForAttempts()
+	exaAPIKey := loadedConfig.WebSearch.Exa.primaryAPIKey()
 	searchType := loadedConfig.WebSearch.Exa.searchType()
 
-	return searchQueriesConcurrently(searchContext, queries, func(
+	return searchQueriesConcurrently(ctx, queries, func(
 		queryContext context.Context,
 		query string,
 	) (webSearchResult, error) {
 		if loadedConfig.WebSearch.exaUsesAPI() {
 			return client.searchAPIQuery(
 				queryContext,
-				exaAPIKeys,
+				exaAPIKey,
 				query,
 				maxURLs,
 				searchType,
@@ -1448,21 +1442,18 @@ func (client tavilySearchClient) search(
 	loadedConfig config,
 	queries []string,
 ) ([]webSearchResult, error) {
-	apiKeys := loadedConfig.WebSearch.Tavily.apiKeysForAttempts()
-	if len(apiKeys) == 0 {
+	apiKey := loadedConfig.WebSearch.Tavily.primaryAPIKey()
+	if apiKey == "" {
 		return nil, fmt.Errorf("tavily fallback is not configured: %w", os.ErrNotExist)
 	}
 
-	searchContext, cancel := context.WithTimeout(ctx, webSearchTimeout)
-	defer cancel()
-
 	maxURLs := loadedConfig.WebSearch.maxURLs()
 
-	return searchQueriesConcurrently(searchContext, queries, func(
+	return searchQueriesConcurrently(ctx, queries, func(
 		queryContext context.Context,
 		query string,
 	) (webSearchResult, error) {
-		return client.searchQuery(queryContext, apiKeys, query, maxURLs)
+		return client.searchQuery(queryContext, apiKey, query, maxURLs)
 	})
 }
 
@@ -1564,46 +1555,20 @@ func (client exaSearchClient) searchMCPQuery(
 
 func (client exaSearchClient) searchAPIQuery(
 	ctx context.Context,
-	apiKeys []string,
+	apiKey string,
 	query string,
 	maxURLs int,
 	searchType string,
 	textMaxCharacters int,
 ) (webSearchResult, error) {
-	attemptErrors := make([]error, 0, len(apiKeys))
-
-	for index, apiKey := range apiKeys {
-		result, err := client.searchAPIQueryOnce(
-			ctx,
-			query,
-			apiKey,
-			maxURLs,
-			searchType,
-			textMaxCharacters,
-		)
-		if err == nil {
-			return result, nil
-		}
-
-		attemptErrors = append(attemptErrors, err)
-		if ctx.Err() != nil || index == len(apiKeys)-1 {
-			if len(attemptErrors) == 1 {
-				return webSearchResult{}, err
-			}
-
-			if ctx.Err() != nil {
-				return webSearchResult{}, err
-			}
-
-			return webSearchResult{}, fmt.Errorf(
-				"all configured Exa API keys failed for %q: %w",
-				query,
-				errors.Join(attemptErrors...),
-			)
-		}
-	}
-
-	return webSearchResult{}, fmt.Errorf("missing Exa API key attempt for %q: %w", query, os.ErrInvalid)
+	return client.searchAPIQueryOnce(
+		ctx,
+		query,
+		apiKey,
+		maxURLs,
+		searchType,
+		textMaxCharacters,
+	)
 }
 
 func marshalExaSearchRequest(requestBody exaSearchRequest) ([]byte, error) {
@@ -1728,37 +1693,11 @@ func (client exaSearchClient) searchAPIQueryOnce(
 
 func (client tavilySearchClient) searchQuery(
 	ctx context.Context,
-	apiKeys []string,
+	apiKey string,
 	query string,
 	maxURLs int,
 ) (webSearchResult, error) {
-	attemptErrors := make([]error, 0, len(apiKeys))
-
-	for index, apiKey := range apiKeys {
-		result, err := client.searchQueryOnce(ctx, query, apiKey, maxURLs)
-		if err == nil {
-			return result, nil
-		}
-
-		attemptErrors = append(attemptErrors, err)
-		if ctx.Err() != nil || index == len(apiKeys)-1 {
-			if len(attemptErrors) == 1 {
-				return webSearchResult{}, err
-			}
-
-			if ctx.Err() != nil {
-				return webSearchResult{}, err
-			}
-
-			return webSearchResult{}, fmt.Errorf(
-				"all configured Tavily API keys failed for %q: %w",
-				query,
-				errors.Join(attemptErrors...),
-			)
-		}
-	}
-
-	return webSearchResult{}, fmt.Errorf("missing Tavily API key attempt for %q: %w", query, os.ErrInvalid)
+	return client.searchQueryOnce(ctx, query, apiKey, maxURLs)
 }
 
 func (client tavilySearchClient) searchQueryOnce(

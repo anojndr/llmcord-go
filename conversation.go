@@ -3,18 +3,15 @@ package main
 import (
 	"context"
 	"encoding/base64"
-	"errors"
 	"fmt"
 	"io"
 	"mime"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"path"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/bwmarrin/discordgo"
 )
@@ -42,14 +39,11 @@ type messageContentSummary struct {
 const (
 	attachmentDownloadWarningText  = "Warning: failed to download some attachments"
 	attachmentDownloadFallbackText = "I couldn't download one or more attachments, so I may miss attachment details."
-	maxAttachmentRetryShift        = 6
 	discordAttachmentCDNHost       = "cdn.discordapp.com"
 	discordAttachmentMediaHost     = "media.discordapp.net"
 	attachmentDownloadConcurrency  = 4
 	nodeInitializationTaskCount    = 2
 )
-
-var errAttachmentRetryContextDone = errors.New("attachment retry context done")
 
 func (instance *bot) buildConversation(
 	ctx context.Context,
@@ -514,11 +508,8 @@ func (instance *bot) fetchSupportedAttachments(
 	ctx context.Context,
 	attachments []*discordgo.MessageAttachment,
 ) ([]attachmentPayload, bool) {
-	timeoutContext, cancelTimeout := context.WithTimeout(ctx, attachmentRequestTimeout)
-	defer cancelTimeout()
-
 	results := runTasksConcurrently(
-		timeoutContext,
+		ctx,
 		attachmentDownloadConcurrency,
 		len(attachments),
 		func(taskContext context.Context, index int) (attachmentPayload, error) {
@@ -534,7 +525,7 @@ func (instance *bot) fetchSupportedAttachments(
 				return attachmentPayload{}, err
 			}
 
-			body, err := instance.fetchAttachmentWithRetry(taskContext, downloadURL)
+			body, err := instance.fetchAttachment(taskContext, downloadURL)
 			if err != nil {
 				return attachmentPayload{}, err
 			}
@@ -563,62 +554,7 @@ func (instance *bot) fetchSupportedAttachments(
 	return payloads, anyDownloadFailed
 }
 
-func (instance *bot) fetchAttachmentWithRetry(
-	ctx context.Context,
-	attachmentURL string,
-) ([]byte, error) {
-	maxAttempts := attachmentDownloadMaxAttempts
-	if maxAttempts <= 0 {
-		maxAttempts = 1
-	}
-
-	var lastErr error
-
-	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		body, err := instance.fetchAttachmentAttempt(ctx, attachmentURL)
-		if err == nil {
-			return body, nil
-		}
-
-		lastErr = err
-
-		logWarn(
-			"download attachment",
-			lastErr,
-			"attempt",
-			attempt,
-			"max_attempts",
-			maxAttempts,
-		)
-
-		if !attachmentDownloadShouldRetry(lastErr) || attempt == maxAttempts {
-			return nil, lastErr
-		}
-
-		retryDelay := attachmentRetryDelay(attempt)
-		if retryDelay <= 0 {
-			continue
-		}
-
-		timer := time.NewTimer(retryDelay)
-
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-
-			return nil, fmt.Errorf("%w: %w", errAttachmentRetryContextDone, ctx.Err())
-		case <-timer.C:
-		}
-	}
-
-	if lastErr != nil {
-		return nil, lastErr
-	}
-
-	return nil, os.ErrInvalid
-}
-
-func (instance *bot) fetchAttachmentAttempt(
+func (instance *bot) fetchAttachment(
 	ctx context.Context,
 	attachmentURL string,
 ) ([]byte, error) {
@@ -673,40 +609,6 @@ func (instance *bot) performAttachmentRequest(httpRequest *http.Request) (*http.
 	}
 
 	return httpResponse, nil
-}
-
-func attachmentDownloadShouldRetry(err error) bool {
-	var statusErr attachmentDownloadStatusError
-	if errors.As(err, &statusErr) {
-		if statusErr.statusCode == http.StatusTooManyRequests {
-			return true
-		}
-
-		return statusErr.statusCode >= http.StatusInternalServerError
-	}
-
-	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
-		return false
-	}
-
-	var netErr net.Error
-
-	return errors.As(err, &netErr)
-}
-
-func attachmentRetryDelay(attempt int) time.Duration {
-	if attempt <= 0 {
-		return 0
-	}
-
-	baseDelay := attachmentRetryBaseDelay
-	if baseDelay <= 0 {
-		return 0
-	}
-
-	shift := min(attempt-1, maxAttachmentRetryShift)
-
-	return baseDelay << shift
 }
 
 func discordAttachmentDownloadURL(rawURL string) (string, error) {

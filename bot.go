@@ -85,10 +85,6 @@ func newBot(ctx context.Context, configPath string, loadedConfig config) (*bot, 
 		}
 	}
 
-	discordSession.Client.Transport = &resilientTransport{
-		transport: discordSession.Client.Transport,
-	}
-
 	httpClient := newOptimizedHTTPClient()
 
 	instance := new(bot)

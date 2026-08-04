@@ -1338,22 +1338,19 @@ func geminiWaitForFileActive(
 		return currentFile, nil
 	}
 
-	waitContext, cancel := context.WithTimeout(ctx, geminiFileProcessingTimeout)
-	defer cancel()
-
 	ticker := time.NewTicker(geminiFilePollInterval)
 	defer ticker.Stop()
 
 	for {
 		select {
-		case <-waitContext.Done():
+		case <-ctx.Done():
 			return nil, fmt.Errorf(
 				"wait for gemini file %q to become active: %w",
 				currentFile.Name,
-				waitContext.Err(),
+				ctx.Err(),
 			)
 		case <-ticker.C:
-			updatedFile, err := files.GetFile(waitContext, currentFile.Name, nil)
+			updatedFile, err := files.GetFile(ctx, currentFile.Name, nil)
 			if err != nil {
 				return nil, fmt.Errorf("refresh gemini file %q: %w", currentFile.Name, err)
 			}
