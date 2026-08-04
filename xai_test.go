@@ -572,7 +572,7 @@ func TestCanExtractPDFContentsDisablesLocalExtractionForXAI(t *testing.T) {
 
 	loadedConfig.Providers = map[string]providerConfig{
 		xAIProviderName: {
-			Type:            "",
+			Name:            xAIProviderName,
 			BaseURL:         "https://api.x.ai/v1",
 			APIKey:          "",
 			APIKeys:         nil,
@@ -2020,7 +2020,7 @@ func TestGrokBridgeCustomProvider(t *testing.T) {
 	t.Parallel()
 
 	provider := providerConfig{
-		Type:            "openai",
+		Name:            "grok-bridge",
 		BaseURL:         "http://127.0.0.1:8787/v1",
 		APIKey:          "test-key",
 		APIKeys:         nil,
@@ -2050,7 +2050,7 @@ func TestGrokReasoningEffortNormalization(t *testing.T) {
 
 	loadedConfig.Providers = map[string]providerConfig{
 		"x-ai": {
-			Type:            "openai",
+			Name:            "x-ai",
 			BaseURL:         "http://127.0.0.1:8787/v1",
 			APIKey:          "test-key",
 			APIKeys:         nil,
@@ -2060,7 +2060,7 @@ func TestGrokReasoningEffortNormalization(t *testing.T) {
 			ExtraBody:       nil,
 		},
 		"grok-bridge": {
-			Type:            "openai",
+			Name:            "grok-bridge",
 			BaseURL:         "http://127.0.0.1:8787/v1",
 			APIKey:          "test-key",
 			APIKeys:         nil,

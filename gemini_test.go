@@ -289,19 +289,19 @@ func TestBuildGeminiGenerateContentRequestIncludesThinkingAliasLevel(t *testing.
 	t.Parallel()
 
 	provider := new(providerConfig)
-	provider.Type = string(providerAPIKindGemini)
+	provider.Name = "gemini"
 
 	var loadedConfig config
 
 	loadedConfig.Providers = map[string]providerConfig{
-		"google": *provider,
+		"gemini": *provider,
 	}
 	loadedConfig.Models = map[string]map[string]any{
-		"google/gemini-3.5-flash-lite-minimal": nil,
+		"gemini/gemini-3.5-flash-lite-minimal": nil,
 	}
 
 	request, err := buildChatCompletionRequest(loadedConfig,
-		"google/gemini-3.5-flash-lite-minimal",
+		"gemini/gemini-3.5-flash-lite-minimal",
 		[]chatMessage{{Role: messageRoleUser, Content: testGeminiHelloPrompt}}, false)
 	if err != nil {
 		t.Fatalf("build chat completion request: %v", err)

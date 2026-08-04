@@ -142,7 +142,7 @@ func testGroundingConfig() config {
 		},
 		Providers: map[string]providerConfig{
 			"gemini": {
-				Type:            "gemini",
+				Name:            "gemini",
 				BaseURL:         "",
 				APIKey:          "",
 				APIKeys:         nil,

@@ -75,7 +75,6 @@ type permissionsConfig struct {
 }
 
 type rawProviderConfig struct {
-	Type            scalarString     `yaml:"type"`
 	BaseURL         scalarString     `yaml:"base_url"`
 	APIKey          scalarStringList `yaml:"api_key"`
 	EnableGrounding *bool            `yaml:"enable_grounding"`
@@ -114,7 +113,7 @@ type rawDatabaseConfig struct {
 }
 
 type providerConfig struct {
-	Type            string
+	Name            string
 	BaseURL         string
 	APIKey          string
 	APIKeys         []string
@@ -170,7 +169,6 @@ const (
 	providerAPIKindOpenAI                     providerAPIKind = "openai"
 	providerAPIKindOpenAICodex                providerAPIKind = "openai-codex"
 	providerAPIKindGemini                     providerAPIKind = "gemini"
-	providerTypeExa                                           = "exa"
 	modelConfigContextWindowKey                               = "context_window"
 	modelConfigAutoCompactThresholdPercentKey                 = "auto_compact_threshold_percent"
 )
@@ -263,7 +261,7 @@ func buildLoadedConfig(
 
 	loadedProviders := make(map[string]providerConfig, len(rawLoadedConfig.Providers))
 	for providerName, rawProvider := range rawLoadedConfig.Providers {
-		loadedProviders[providerName] = normalizeProviderConfig(rawProvider)
+		loadedProviders[providerName] = normalizeProviderConfig(providerName, rawProvider)
 	}
 
 	serpAPIVisualSearchKeys := normalizeAPIKeys([]string(rawLoadedConfig.VisualSearch.SerpAPI.APIKey))
@@ -426,17 +424,16 @@ func normalizedSearchDeciderModel(rawValue scalarString, modelOrder []string) st
 	return searchDeciderModel
 }
 
-func normalizeProviderConfig(rawProvider rawProviderConfig) providerConfig {
+func normalizeProviderConfig(providerName string, rawProvider rawProviderConfig) providerConfig {
 	apiKeys := normalizeAPIKeys([]string(rawProvider.APIKey))
-	providerType := strings.TrimSpace(string(rawProvider.Type))
 	baseURL := strings.TrimSpace(string(rawProvider.BaseURL))
 
-	if strings.EqualFold(providerType, providerTypeExa) && baseURL == "" {
+	if strings.Contains(strings.ToLower(providerName), providerNameSuffixExa) && baseURL == "" {
 		baseURL = defaultExaResearchBaseURL
 	}
 
 	return providerConfig{
-		Type:            providerType,
+		Name:            strings.TrimSpace(providerName),
 		BaseURL:         baseURL,
 		APIKey:          firstAPIKey(apiKeys),
 		APIKeys:         apiKeys,
@@ -1145,22 +1142,33 @@ func (loadedConfig config) lockedModelForChannelIDs(channelIDs []string) (string
 	return "", false
 }
 
+const (
+	providerNameSuffixGemini = "gemini"
+	providerNameSuffixCodex  = "openai-codex"
+	providerNameSuffixExa    = "exa"
+)
+
+// apiKind infers the API kind from the provider name: names containing
+// "gemini" use the native Gemini API, "openai-codex" uses the Codex API, and
+// "exa" is an OpenAI-compatible research provider. Everything else is treated
+// as OpenAI-compatible, unless the base URL points at Gemini's OpenAI
+// compatibility endpoint.
 func (provider providerConfig) apiKind() providerAPIKind {
-	switch strings.ToLower(strings.TrimSpace(provider.Type)) {
-	case "", string(providerAPIKindOpenAI):
+	providerName := strings.ToLower(strings.TrimSpace(provider.Name))
+
+	switch {
+	case strings.Contains(providerName, providerNameSuffixGemini):
+		return providerAPIKindGemini
+	case strings.Contains(providerName, providerNameSuffixCodex):
+		return providerAPIKindOpenAICodex
+	case strings.Contains(providerName, providerNameSuffixExa):
+		return providerAPIKindOpenAI
+	default:
 		if looksLikeGeminiCompatibilityBaseURL(provider.BaseURL) {
 			return providerAPIKindGemini
 		}
 
 		return providerAPIKindOpenAI
-	case providerTypeExa:
-		return providerAPIKindOpenAI
-	case string(providerAPIKindOpenAICodex):
-		return providerAPIKindOpenAICodex
-	case string(providerAPIKindGemini):
-		return providerAPIKindGemini
-	default:
-		return providerAPIKind(strings.ToLower(strings.TrimSpace(provider.Type)))
 	}
 }
 
@@ -1180,25 +1188,15 @@ func (provider providerConfig) usesOpenRouter() bool {
 }
 
 func (provider providerConfig) validate(providerName string) error {
-	switch provider.apiKind() {
-	case providerAPIKindOpenAI:
-		if strings.TrimSpace(provider.BaseURL) == "" {
-			return fmt.Errorf("provider %q is missing base_url: %w", providerName, os.ErrInvalid)
-		}
-
+	if provider.apiKind() != providerAPIKindOpenAI {
 		return nil
-	case providerAPIKindOpenAICodex:
-		return nil
-	case providerAPIKindGemini:
-		return nil
-	default:
-		return fmt.Errorf(
-			"provider %q has unsupported type %q: %w",
-			providerName,
-			strings.TrimSpace(provider.Type),
-			os.ErrInvalid,
-		)
 	}
+
+	if strings.TrimSpace(provider.BaseURL) == "" {
+		return fmt.Errorf("provider %q is missing base_url: %w", providerName, os.ErrInvalid)
+	}
+
+	return nil
 }
 
 func looksLikeGeminiCompatibilityBaseURL(baseURL string) bool {

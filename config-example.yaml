@@ -40,13 +40,13 @@ providers:
     extra_query:
       api-version: 2024-12-01-preview
 
-  google:
-    type: gemini
+  # Provider names containing `gemini` use the native Gemini API.
+  gemini:
     # `api_key` also accepts a YAML list. Keys rotate round-robin per request, falling back to remaining keys on failure.
     # api_key:
     #   - primary-key
     #   - backup-key
-    api_key: 
+    api_key:
     # enable_grounding: true
     # Thought summaries are disabled by default. To turn them on:
     # extra_body:
@@ -85,14 +85,14 @@ providers:
     # `reasoning.effort`; on other OpenAI-compatible providers they map to
     # `reasoning_effort`.
 
+  # Provider names containing `exa` default to https://api.exa.ai.
   exa:
-    type: exa
     api_key:
     # Optional:
     # base_url: https://api.exa.ai
 
+  # Provider names containing `openai-codex` default to https://chatgpt.com/backend-api.
   openai-codex:
-    type: openai-codex
     # Optional:
     # base_url: https://chatgpt.com/backend-api
     api_key:
