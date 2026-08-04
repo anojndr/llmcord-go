@@ -68,10 +68,8 @@ Providers are declared with `base_url` (OpenAI-compatible). The provider name se
 | `bot_token` | Discord bot token. The Message Content intent must be enabled. |
 | `client_id` | Optional application client ID for the startup invite URL log. |
 | `status_message` | Optional custom Discord status text. |
-| `max_text` | Max characters taken from one message, including text attachments. Default: `100000`. |
 | `max_images` | Max images taken from one message for vision-capable models. Default: `5`. |
 | `max_messages` | Max reply-chain messages loaded per request. Default: `25`. |
-| `use_plain_responses` | Replaces the final embed response with a plain text-display response. |
 | `allow_dms` | Allows non-admin DMs. Default: `true`. |
 | `permissions` | Access control lists for users, roles, and channels. |
 
@@ -92,7 +90,7 @@ Providers are declared with `base_url` (OpenAI-compatible). The provider name se
 
 Model notes:
 
-- `context_window` is local metadata for retained-context reply-footers and compaction. Provider-only tokens (hidden reasoning) aren't counted; punctuation-heavy text (CSV, logs) is budgeted more conservatively.
+- `context_window` is local metadata for retained-context reply-footers and compaction. Provider-only tokens (hidden reasoning) aren't counted; punctuation-heavy text (CSV, logs) is budgeted more conservatively. It also derives the per-message character limit: one message is capped at roughly one window of text, so oversized pastes and text attachments are truncated to fit. Without a configured window there is no per-message cap.
 - Context windows can be set per provider with the top-level `context_window` map (e.g. `context_window: { router: 200k, openai: 200k }`); models without their own value inherit their provider's. A per-model `context_window` always wins over the provider value.
 - OpenAI GPT-5 aliases (`openai/gpt-5.4-low`, `-none`, `-minimal`, `-medium`, `-high`, `-xhigh`) control reasoning effort: `reasoning.effort` on the built-in `openai` provider, `reasoning_effort` elsewhere; `-minimal` normalizes to `low`. Gemini aliases (`-minimal`–`-high`) control thought effort; Codex aliases (`-none`–`-xhigh`) control reasoning effort.
 - `openai/...` models always send a stable `prompt_cache_key` (even with a custom `base_url`) and use the Priority inference tier (`service_tier: "priority"`). `prompt_cache_retention: 24h` can be set via `extra_body`.

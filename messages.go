@@ -209,13 +209,7 @@ func (instance *bot) respondToMessage(
 		return err
 	}
 
-	err = instance.generateAndSendResponse(
-		ctx,
-		request,
-		tracker,
-		warnings,
-		loadedConfig.UsePlainResponses,
-	)
+	err = instance.generateAndSendResponse(ctx, request, tracker, warnings)
 	if err != nil {
 		return fmt.Errorf("generate and send response: %w", err)
 	}
@@ -627,7 +621,7 @@ func (instance *bot) buildMessageConversation(
 	messages, warnings := instance.buildConversation(
 		ctx,
 		message,
-		loadedConfig.MaxText,
+		loadedConfig.messageTextLimitForModel(providerSlashModel),
 		contentOptions,
 		loadedConfig.MaxMessages,
 		useGeminiMediaAnalysis,
