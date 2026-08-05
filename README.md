@@ -7,7 +7,7 @@ It turns Discord reply chains into a frontend for OpenAI-compatible chat-complet
 ## Highlights
 
 - Reply-chain conversations in guilds, DMs, and public threads; triggered by bot mentions or `at ai`
-- Real-time streaming replies with a live progress embed (stage checklist, progress bar, elapsed timer), plus `Show Thinking`, `Show Sources`, and `View on Rentry`
+- Real-time streaming replies with a live progress embed (stage checklist, progress bar, elapsed timer), plus `Show Thinking`, `Show Sources`, and `View on Rentry` (falls back to a headless-browser publish when Cloudflare challenges plain HTTP)
 - Multimodal input: images, audio, video, PDFs, DOCX, PPTX, and generic file attachments
 - URL enrichment for TikTok, Facebook, YouTube, Reddit, and generic websites
 - Web-search augmentation (Exa or Tavily), reverse-image lookup (`vsearch`), and native Gemini grounding
@@ -80,6 +80,8 @@ Providers are declared with `base_url` (OpenAI-compatible). The provider name se
 | `auto_compact_threshold_percent` | Compaction threshold relative to a model's `context_window`. Default: `90`. |
 | `database.connection_string` | PostgreSQL connection string for persisted history (`postgres://` or `postgresql://`). |
 | `database.store_key` | Logical key selecting the persisted history row. |
+| `rentry.endpoint` | Rentry.co instance used by the "View on Rentry" button. Default: `https://rentry.co/`. |
+| `rentry.browser_path` | Chrome/Chromium binary used by the headless-browser fallback when Cloudflare challenges the bot's plain HTTP publish. Leave blank to auto-detect or disable the fallback. |
 | `system_prompt` | Prompt prepended to every request. `{date}` and `{time}` are expanded in the host time zone. |
 
 Model notes:
