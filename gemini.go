@@ -1522,7 +1522,7 @@ func geminiStreamUsage(metadata *genai.GenerateContentResponseUsageMetadata) *to
 	return &tokenUsage{
 		Input:            int(metadata.PromptTokenCount + metadata.ToolUsePromptTokenCount),
 		Output:           int(metadata.CandidatesTokenCount + metadata.ThoughtsTokenCount),
-		CachedInput:      0,
+		CachedInput:      int(metadata.CachedContentTokenCount),
 		CacheWriteTokens: 0,
 	}
 }

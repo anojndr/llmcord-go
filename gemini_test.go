@@ -1899,3 +1899,77 @@ func TestGeminiClientStreamChatCompletionPreservesMetadataOnMarkerOnlyChunk(t *t
 		t.Fatalf("unexpected search queries: %#v", metadata.Queries)
 	}
 }
+
+func TestGeminiStreamUsageIncludesCachedContentTokens(t *testing.T) {
+	t.Parallel()
+
+	usage := geminiStreamUsage(&genai.GenerateContentResponseUsageMetadata{
+		CacheTokensDetails:         nil,
+		CachedContentTokenCount:    12_000,
+		CandidatesTokenCount:       500,
+		CandidatesTokensDetails:    nil,
+		PromptTokenCount:           20_000,
+		PromptTokensDetails:        nil,
+		ThoughtsTokenCount:         0,
+		ToolUsePromptTokenCount:    0,
+		ToolUsePromptTokensDetails: nil,
+		TotalTokenCount:            20_500,
+		TrafficType:                "",
+	})
+	if usage == nil {
+		t.Fatal("expected token usage from gemini usage metadata")
+	}
+
+	if usage.Input != 20_000 {
+		t.Fatalf("unexpected gemini input tokens: %d", usage.Input)
+	}
+
+	if usage.Output != 500 {
+		t.Fatalf("unexpected gemini output tokens: %d", usage.Output)
+	}
+
+	if usage.CachedInput != 12_000 {
+		t.Fatalf("unexpected gemini cached input tokens: %d", usage.CachedInput)
+	}
+}
+
+func TestGeminiStreamUsageTracksToolUseAndThoughts(t *testing.T) {
+	t.Parallel()
+
+	usage := geminiStreamUsage(&genai.GenerateContentResponseUsageMetadata{
+		CacheTokensDetails:         nil,
+		CachedContentTokenCount:    0,
+		CandidatesTokenCount:       800,
+		CandidatesTokensDetails:    nil,
+		PromptTokenCount:           3_000,
+		PromptTokensDetails:        nil,
+		ThoughtsTokenCount:         400,
+		ToolUsePromptTokenCount:    200,
+		ToolUsePromptTokensDetails: nil,
+		TotalTokenCount:            4_400,
+		TrafficType:                "",
+	})
+	if usage == nil {
+		t.Fatal("expected token usage from gemini usage metadata")
+	}
+
+	if usage.Input != 3_200 {
+		t.Fatalf("unexpected gemini input tokens including tool use: %d", usage.Input)
+	}
+
+	if usage.Output != 1_200 {
+		t.Fatalf("unexpected gemini output tokens including thoughts: %d", usage.Output)
+	}
+
+	if usage.CachedInput != 0 {
+		t.Fatalf("unexpected gemini cached input tokens: %d", usage.CachedInput)
+	}
+}
+
+func TestGeminiStreamUsageReturnsNilForNilMetadata(t *testing.T) {
+	t.Parallel()
+
+	if usage := geminiStreamUsage(nil); usage != nil {
+		t.Fatalf("expected nil token usage for nil metadata: %#v", usage)
+	}
+}
