@@ -123,7 +123,7 @@ Model notes:
 - Generic website fetching rejects localhost, private, link-local, and unsafe redirects.
 - AliExpress product pages are replaced with the embedded product ID, OG title, and image list.
 - OpenRouter providers send `transforms: ["middle-out"]` unless overridden; unauthenticated 9Router setups omit the `Authorization` header.
-- Provider requests are sent once: no retries and no artificial context deadlines. When a provider or search service (Exa, Tavily, SerpApi) has multiple `api_key` values, requests are round-robin across them; otherwise the single key is used. External request fan-out is bounded at 8 concurrent operations.
+- Provider requests are sent once with no artificial context deadlines, except one: when a stream ends before any content with a 503 "request queue is full" error, the request is retried once after a 3-second delay (up to two attempts total) — this is the router's upstream-queue full signal and a retry usually succeeds. When a provider or search service (Exa, Tavily, SerpApi) has multiple `api_key` values, requests are round-robin across them; otherwise the single key is used. External request fan-out is bounded at 8 concurrent operations.
 
 ## Development
 

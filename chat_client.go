@@ -2,9 +2,17 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
+	"time"
+)
+
+const (
+	queueFullRetryMaxAttempts = 2
+	queueFullRetryFixedDelay  = 3 * time.Second
 )
 
 type chatCompletionRouter struct {
@@ -30,7 +38,71 @@ func (client chatCompletionRouter) streamChatCompletion(
 	request.Provider.APIKeys = rotatedKeys
 	request.Provider.APIKey = firstAPIKey(rotatedKeys)
 
-	return client.streamChatCompletionOnce(ctx, request, handle)
+	attempt := 1
+
+	for {
+		anyDeltaSent := false
+		wrappedHandle := func(delta streamDelta) error {
+			anyDeltaSent = true
+
+			return handle(delta)
+		}
+
+		err := client.streamChatCompletionOnce(ctx, request, wrappedHandle)
+
+		if err != nil && (attempt >= queueFullRetryMaxAttempts || anyDeltaSent || !isQueueFullQueueError(err)) {
+			return err
+		}
+
+		if err == nil {
+			return nil
+		}
+
+		logWarn(
+			"queue-full stream error; retrying chat completion",
+			err,
+			"attempt",
+			attempt,
+			"max_attempts",
+			queueFullRetryMaxAttempts,
+		)
+
+		sleepErr := sleepQueueFullRetryDelay(ctx)
+		if sleepErr != nil {
+			return sleepErr
+		}
+
+		attempt++
+	}
+}
+
+func isQueueFullQueueError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	var statusErr providerStatusError
+	if !errors.As(err, &statusErr) {
+		return false
+	}
+
+	if statusErr.StatusCode != http.StatusServiceUnavailable {
+		return false
+	}
+
+	return strings.Contains(strings.ToLower(statusErr.Message), "request queue is full")
+}
+
+func sleepQueueFullRetryDelay(ctx context.Context) error {
+	timer := time.NewTimer(queueFullRetryFixedDelay)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return fmt.Errorf("wait for queue-full retry: %w", ctx.Err())
+	case <-timer.C:
+		return nil
+	}
 }
 
 func (client chatCompletionRouter) streamChatCompletionOnce(
