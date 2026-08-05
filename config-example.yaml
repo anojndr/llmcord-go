@@ -176,6 +176,11 @@ web_search:
     # Optional max characters to request for Exa's full page text per result.
     # Default: 15000
     text_max_characters: 15000
+    # Optional livecrawl timeout in milliseconds for Exa Contents. Slow pages
+    # that outlive it are retried once with a double timeout, then fetched from
+    # Exa's cache, so a first attempt may succeed on a later try.
+    # Default: 15000 (Exa's recommended maximum)
+    # livecrawl_timeout_ms: 15000
     # api_key:
     #   - exa-primary-key
     #   - exa-backup-key
