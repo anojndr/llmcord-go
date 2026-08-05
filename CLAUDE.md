@@ -18,7 +18,7 @@ These are hard requirements for every change to this repository — the final st
 
 ## Build / test / lint
 
-Requires Go 1.26+. All application code is one `package main` in the repo root (plus `cmd/chatgpt-api-key`), so everything builds with `go build .` and runs with `go run .` (config from `config.yaml`, or `LLMCORD_CONFIG_PATH`).
+Requires Go 1.26+. All application code is one `package main` in the repo root, so everything builds with `go build .` and runs with `go run .` (config from `config.yaml`, or `LLMCORD_CONFIG_PATH`).
 
 The quality gate from README.md — run after changes:
 
