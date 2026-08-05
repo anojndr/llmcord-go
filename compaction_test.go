@@ -816,6 +816,312 @@ func newPrepareMessageResponseAutoCompactClient(
 	})
 }
 
+func TestAutoCompactRequestReliesOnContextWindowForLimit(t *testing.T) {
+	t.Parallel()
+
+	originalRequest := chatCompletionRequest{
+		Provider: providerRequestConfig{
+			APIKind:         "",
+			BaseURL:         "",
+			APIKey:          "",
+			APIKeys:         nil,
+			UseResponsesAPI: false,
+			EnableGrounding: false,
+			ExtraHeaders:    nil,
+			ExtraQuery:      nil,
+			ExtraBody:       nil,
+		},
+		Model:                       "",
+		ConfiguredModel:             testAutoCompactMainModel,
+		ContextWindow:               1_000,
+		AutoCompactThresholdPercent: 0,
+		SessionID:                   "",
+		PreviousResponseID:          "",
+		RequestID:                   "",
+		Messages: []chatMessage{
+			{Role: messageRoleSystem, Content: "Always be helpful."},
+			{Role: messageRoleUser, Content: repeatedAutoCompactText("very old details", 120)},
+			{Role: messageRoleAssistant, Content: "Earlier answer."},
+			{Role: messageRoleUser, Content: "Latest question."},
+		},
+	}
+
+	tokenLimit := autoCompactTokenLimit(originalRequest.ContextWindow, 0)
+	if tokenLimit != 900 {
+		t.Fatalf("unexpected default limit for context window 1000: %d", tokenLimit)
+	}
+
+	instance := new(bot)
+	instance.chatCompletions = newUnexpectedCompactionClient(t)
+
+	uncompactedRequest, result := instance.autoCompactRequest(context.Background(), originalRequest)
+	if result.Applied {
+		t.Fatal("did not expect auto compaction with a small context window at the default threshold")
+	}
+
+	if uncompactedRequest.ContextWindow != originalRequest.ContextWindow {
+		t.Fatalf("context window must stay untouched: %d", uncompactedRequest.ContextWindow)
+	}
+}
+
+func TestAutoCompactRequestCompactsWhenContextWindowIsLarge(t *testing.T) {
+	t.Parallel()
+
+	originalRequest := chatCompletionRequest{
+		Provider: providerRequestConfig{
+			APIKind:         "",
+			BaseURL:         "",
+			APIKey:          "",
+			APIKeys:         nil,
+			UseResponsesAPI: false,
+			EnableGrounding: false,
+			ExtraHeaders:    nil,
+			ExtraQuery:      nil,
+			ExtraBody:       nil,
+		},
+		Model:                       "",
+		ConfiguredModel:             testAutoCompactMainModel,
+		ContextWindow:               1_000,
+		AutoCompactThresholdPercent: 0,
+		SessionID:                   "",
+		PreviousResponseID:          "",
+		RequestID:                   "",
+		Messages: []chatMessage{
+			{Role: messageRoleUser, Content: repeatedAutoCompactText("user details", 5_000)},
+			{Role: messageRoleAssistant, Content: "Assistant answer."},
+			{Role: messageRoleUser, Content: "Follow-up question."},
+		},
+	}
+
+	tokenLimit := autoCompactTokenLimit(originalRequest.ContextWindow, 0)
+	if estimateChatCompletionRequestTokens(originalRequest) <= tokenLimit {
+		t.Fatalf(
+			"unexpected test setup: estimated %d <= limit %d",
+			estimateChatCompletionRequestTokens(originalRequest),
+			tokenLimit,
+		)
+	}
+
+	instance := new(bot)
+	instance.chatCompletions = newStubChatClient(func(
+		_ context.Context,
+		request chatCompletionRequest,
+		handle func(streamDelta) error,
+	) error {
+		t.Helper()
+
+		if len(request.Messages) != 2 {
+			t.Fatalf("unexpected compaction request message count: %d", len(request.Messages))
+		}
+
+		return handle(newStreamDelta(testAutoCompactSummaryText, ""))
+	})
+
+	compactedRequest, result := instance.autoCompactRequest(context.Background(), originalRequest)
+	if !result.Applied {
+		t.Fatal("expected auto compaction to apply for a large context window")
+	}
+
+	if result.Strategy != autoCompactStrategySummary {
+		t.Fatalf(testUnexpectedAutoCompactStrategyFormat, result.Strategy)
+	}
+
+	if len(compactedRequest.Messages) != 3 {
+		t.Fatalf(testUnexpectedCompactedRequestLengthFormat, len(compactedRequest.Messages))
+	}
+
+	assertAutoCompactSummaryContains(t, compactedRequest.Messages[0], testAutoCompactSummaryText)
+}
+
+func TestAutoCompactRequestWithoutContextWindowLeavesRequestUnchanged(t *testing.T) {
+	t.Parallel()
+
+	request := chatCompletionRequest{
+		Provider: providerRequestConfig{
+			APIKind:         "",
+			BaseURL:         "",
+			APIKey:          "",
+			APIKeys:         nil,
+			UseResponsesAPI: false,
+			EnableGrounding: false,
+			ExtraHeaders:    nil,
+			ExtraQuery:      nil,
+			ExtraBody:       nil,
+		},
+		Model:                       "",
+		ConfiguredModel:             testAutoCompactMainModel,
+		ContextWindow:               0,
+		AutoCompactThresholdPercent: 0,
+		SessionID:                   "",
+		PreviousResponseID:          "",
+		RequestID:                   "",
+		Messages: []chatMessage{
+			{Role: messageRoleUser, Content: repeatedAutoCompactText("older context", 120)},
+			{Role: messageRoleAssistant, Content: "Assistant answer."},
+			{Role: messageRoleUser, Content: "Latest follow-up."},
+		},
+	}
+
+	instance := new(bot)
+	instance.chatCompletions = newUnexpectedCompactionClient(t)
+
+	compactedRequest, result := instance.autoCompactRequest(context.Background(), request)
+	if result.Applied {
+		t.Fatal("did not expect auto compaction without a context window")
+	}
+
+	if !chatMessagesEqual(compactedRequest.Messages, request.Messages) {
+		t.Fatalf("request must be unchanged without a context window: %#v", compactedRequest.Messages)
+	}
+}
+
+func TestAutoCompactRequestCountsExternalPartsAgainstLimit(t *testing.T) {
+	t.Parallel()
+
+	request := chatCompletionRequest{
+		Provider: providerRequestConfig{
+			APIKind:         "",
+			BaseURL:         "",
+			APIKey:          "",
+			APIKeys:         nil,
+			UseResponsesAPI: false,
+			EnableGrounding: false,
+			ExtraHeaders:    nil,
+			ExtraQuery:      nil,
+			ExtraBody:       nil,
+		},
+		Model:                       "",
+		ConfiguredModel:             testAutoCompactMainModel,
+		ContextWindow:               5_000,
+		AutoCompactThresholdPercent: 50,
+		SessionID:                   "",
+		PreviousResponseID:          "",
+		RequestID:                   "",
+		Messages: []chatMessage{
+			{Role: messageRoleUser, Content: repeatedAutoCompactText("older context", 600)},
+			{Role: messageRoleUser, Content: []contentPart{
+				{"type": contentTypeImageURL, "image_url": map[string]string{"url": "https://example.com/image.png"}},
+				{"type": contentTypeText, "text": "Latest image query."},
+			}},
+		},
+	}
+
+	if estimateChatCompletionRequestTokens(request) <= autoCompactTokenLimit(
+		request.ContextWindow,
+		request.AutoCompactThresholdPercent,
+	) {
+		t.Fatalf(
+			"unexpected test setup: estimated %d <= limit %d",
+			estimateChatCompletionRequestTokens(request),
+			autoCompactTokenLimit(request.ContextWindow, request.AutoCompactThresholdPercent),
+		)
+	}
+
+	instance := new(bot)
+	instance.chatCompletions = newStubChatClient(func(
+		_ context.Context,
+		request chatCompletionRequest,
+		handle func(streamDelta) error,
+	) error {
+		t.Helper()
+
+		if len(request.Messages) != 2 {
+			t.Fatalf("unexpected compaction request message count: %d", len(request.Messages))
+		}
+
+		return handle(newStreamDelta(testAutoCompactSummaryText, ""))
+	})
+
+	compactedRequest, result := instance.autoCompactRequest(context.Background(), request)
+	if !result.Applied {
+		t.Fatal("expected auto compaction to apply")
+	}
+
+	limit := autoCompactTokenLimit(request.ContextWindow, request.AutoCompactThresholdPercent)
+	if estimateChatMessagesTokens(compactedRequest.Messages) > limit {
+		t.Fatalf(
+			"compacted request exceeds token limit: %d > %d",
+			estimateChatMessagesTokens(compactedRequest.Messages),
+			limit,
+		)
+	}
+}
+
+func TestAutoCompactSummaryPromptIsNeutralForUniversalUse(t *testing.T) {
+	t.Parallel()
+
+	systemPrompt := autoCompactSummarySystemPrompt()
+
+	for _, forbidden := range []string{"coding", "code", "programming", "repository", "software"} {
+		if containsFold(systemPrompt, forbidden) {
+			t.Fatalf("expected neutral universal summary prompt without %q: %q", forbidden, systemPrompt)
+		}
+	}
+
+	for _, expected := range []string{
+		"conversation",
+		"topic",
+		"facts",
+		"decisions",
+		"questions",
+	} {
+		if !containsFold(systemPrompt, expected) {
+			t.Fatalf("expected universal summary prompt to include %q: %q", expected, systemPrompt)
+		}
+	}
+}
+
+func TestAutoCompactMergePromptIsNeutralForUniversalUse(t *testing.T) {
+	t.Parallel()
+
+	mergePrompt := autoCompactMergeSystemPrompt()
+
+	for _, forbidden := range []string{"coding", "code", "programming", "repository", "software"} {
+		if containsFold(mergePrompt, forbidden) {
+			t.Fatalf("expected neutral universal merge prompt without %q: %q", forbidden, mergePrompt)
+		}
+	}
+
+	for _, expected := range []string{
+		"summaries",
+		"decisions",
+		"preferences",
+		"questions",
+	} {
+		if !containsFold(mergePrompt, expected) {
+			t.Fatalf("expected universal merge prompt to include %q: %q", expected, mergePrompt)
+		}
+	}
+}
+
+func TestAutoCompactPromptsUseCheckpointHandoffWording(t *testing.T) {
+	t.Parallel()
+
+	systemPrompt := autoCompactSummarySystemPrompt()
+
+	if !containsFold(systemPrompt, "checkpoint") {
+		t.Fatalf("expected summary prompt to use checkpoint framing: %q", systemPrompt)
+	}
+
+	if !containsFold(systemPrompt, "other assistant") && !containsFold(systemPrompt, "next assistant") {
+		t.Fatalf("expected summary prompt to hand off to a next assistant: %q", systemPrompt)
+	}
+
+	mergePrompt := autoCompactMergeSystemPrompt()
+
+	if !containsFold(mergePrompt, "handoff") && !containsFold(mergePrompt, "carry forward") {
+		t.Fatalf("expected merge prompt to carry the summary forward: %q", mergePrompt)
+	}
+
+	if !strings.Contains(autoCompactSummaryPrefix, "handoff") &&
+		!strings.Contains(autoCompactSummaryPrefix, "checkpoint") {
+		t.Fatalf(
+			"expected universal summary prefix to use handoff or checkpoint framing: %q",
+			autoCompactSummaryPrefix,
+		)
+	}
+}
+
 func repeatedAutoCompactText(fragment string, repeats int) string {
 	return strings.TrimSpace(strings.Repeat(fragment+" ", repeats))
 }
