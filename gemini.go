@@ -93,6 +93,19 @@ func (client liveGeminiAPIClient) GetFile(
 	return file, nil
 }
 
+func (client liveGeminiAPIClient) CreateCachedContent(
+	ctx context.Context,
+	model string,
+	config *genai.CreateCachedContentConfig,
+) (*genai.CachedContent, error) {
+	cachedContent, err := client.client.Caches.Create(ctx, model, config)
+	if err != nil {
+		return nil, fmt.Errorf("create gemini cached content: %w", err)
+	}
+
+	return cachedContent, nil
+}
+
 type geminiClientFactory func(
 	context.Context,
 	*genai.ClientConfig,
@@ -135,9 +148,10 @@ func (client geminiClient) streamChatCompletion(
 		return fmt.Errorf("create gemini client: %w", err)
 	}
 
-	contents, generateConfig, err := buildGeminiGenerateContentRequest(
+	contents, generateConfig, err := buildGeminiGenerateContentRequestWithCaching(
 		ctx,
 		request,
+		apiClient,
 		apiClient,
 	)
 	if err != nil {
