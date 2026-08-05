@@ -1307,6 +1307,66 @@ func TestGenerateAndSendResponseKeepsAssistantReplyInConversationHistory(t *test
 	)
 }
 
+func TestGenerateAndSendResponsePlumbsContextWindowIntoFooter(t *testing.T) {
+	t.Parallel()
+
+	const (
+		botUserID          = "bot-user"
+		channelID          = "channel-1"
+		userID             = "user-1"
+		sourceMessageID    = "user-message-1"
+		assistantMessageID = "assistant-message-1"
+		modelName          = "openai/gpt-5.1"
+		answerText         = "Final answer."
+	)
+
+	sourceMessage := newPromptMessage(sourceMessageID, channelID, userID, botUserID)
+	assistantMessage := newAssistantReplyMessage(
+		assistantMessageID,
+		newDiscordUser(botUserID, true),
+		sourceMessage,
+	)
+	messageDescriptions := make([]string, 0, 2)
+	patchDescriptions := make([]string, 0, 2)
+	messageSendCount := 0
+	session := newPartialFailureResponseSession(
+		t,
+		channelID,
+		botUserID,
+		assistantMessage,
+		&messageDescriptions,
+		&patchDescriptions,
+		&messageSendCount,
+	)
+
+	instance := new(bot)
+	instance.session = session
+	instance.nodes = newMessageNodeStore(10)
+	instance.chatCompletions = fakeChatCompletionClient{
+		deltas: thinkingAnswerResponseDeltas("", answerText),
+	}
+
+	request := emptyChatCompletionRequest()
+	request.ConfiguredModel = modelName
+	request.ContextWindow = 400_000
+
+	tracker := newResponseTracker(sourceMessage, "")
+
+	err := instance.generateAndSendResponse(
+		context.Background(),
+		request,
+		tracker,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("generate and send response: %v", err)
+	}
+
+	if tracker.contextWindow != 400_000 {
+		t.Fatalf("unexpected tracker context window: %d", tracker.contextWindow)
+	}
+}
+
 func TestGenerateAndSendResponseShowsThinkingDuringStreamButNotFinalResponse(t *testing.T) {
 	t.Parallel()
 
