@@ -311,6 +311,7 @@ func (instance *bot) generateAndSendResponse(
 	warnings []string,
 ) error {
 	tracker.modelName = strings.TrimSpace(request.ConfiguredModel)
+	tracker.contextWindow = request.ContextWindow
 
 	cleanedText, thinkingText, _, responseErr := instance.runGenerationAttempt(
 		ctx,
