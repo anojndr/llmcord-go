@@ -24,6 +24,7 @@ type bot struct {
 	visualSearch                 visualSearcher
 	serpAPIVisualSearch          serpAPIVisualSearcher
 	rentry                       rentryCreator
+	rentryBrowser                rentryBrowserCreator
 	tiktok                       tiktokFetcher
 	facebook                     facebookFetcher
 	youtubeShorts                youtubeShortsFetcher
@@ -95,7 +96,8 @@ func newBot(ctx context.Context, configPath string, loadedConfig config) (*bot, 
 	instance.webSearch = newWebSearchClient(httpClient)
 	instance.visualSearch = newVisualSearchClient(httpClient)
 	instance.serpAPIVisualSearch = newSerpAPIVisualSearchClient(httpClient)
-	instance.rentry = newRentryClient(httpClient, defaultRentryEndpoint)
+	instance.rentryBrowser = newChromedpRentryBrowserCreator(loadedConfig.Rentry.BrowserPath)
+	instance.rentry = newRentryClient(httpClient, loadedConfig.Rentry.Endpoint, instance.rentryBrowser)
 	instance.tiktok = newTikTokClient(httpClient)
 
 	instance.facebook = newFacebookClient(httpClient)

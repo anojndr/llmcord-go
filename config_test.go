@@ -151,6 +151,75 @@ database:
 	}
 }
 
+func TestLoadConfigUsesConfiguredRentryEndpointAndBrowserPath(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	configText := `
+bot_token: discord-token
+providers:
+  openai:
+    base_url: https://api.example.com/v1
+models:
+  openai/first-model:
+rentry:
+  endpoint: https://rentry.example.com/
+  browser_path: /usr/bin/custom-chrome
+`
+
+	err := os.WriteFile(configPath, []byte(configText), 0o600)
+	if err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	loadedConfig, err := loadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	if loadedConfig.Rentry.Endpoint != "https://rentry.example.com/" {
+		t.Fatalf("unexpected Rentry endpoint: %q", loadedConfig.Rentry.Endpoint)
+	}
+
+	if loadedConfig.Rentry.BrowserPath != "/usr/bin/custom-chrome" {
+		t.Fatalf("unexpected Rentry browser path: %q", loadedConfig.Rentry.BrowserPath)
+	}
+}
+
+func TestLoadConfigDefaultsRentryEndpointWhenUnset(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	configText := `
+bot_token: discord-token
+providers:
+  openai:
+    base_url: https://api.example.com/v1
+models:
+  openai/first-model:
+`
+
+	err := os.WriteFile(configPath, []byte(configText), 0o600)
+	if err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	loadedConfig, err := loadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	if loadedConfig.Rentry.Endpoint != defaultRentryEndpoint {
+		t.Fatalf("unexpected default Rentry endpoint: %q", loadedConfig.Rentry.Endpoint)
+	}
+
+	if loadedConfig.Rentry.BrowserPath != "" {
+		t.Fatalf("unexpected default Rentry browser path: %q", loadedConfig.Rentry.BrowserPath)
+	}
+}
+
 func TestLoadConfigUsesConfiguredDatabaseStoreKey(t *testing.T) {
 	t.Parallel()
 

@@ -110,6 +110,10 @@ func testPermissionsConfig() config {
 			ConnectionString: "",
 			StoreKey:         "",
 		},
+		Rentry: rentryConfig{
+			Endpoint:    "",
+			BrowserPath: "",
+		},
 		VisualSearch: visualSearchConfig{
 			SerpAPI: serpAPIVisualSearchConfig{APIKey: "", APIKeys: nil},
 		},

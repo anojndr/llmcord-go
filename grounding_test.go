@@ -174,6 +174,10 @@ func testGroundingConfig() config {
 			ConnectionString: "",
 			StoreKey:         "",
 		},
+		Rentry: rentryConfig{
+			Endpoint:    "",
+			BrowserPath: "",
+		},
 		AutoCompactThresholdPercent: 0,
 		Models: map[string]map[string]any{
 			"gemini/gemini-3.6-flash": {},
