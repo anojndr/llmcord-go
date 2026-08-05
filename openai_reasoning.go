@@ -11,6 +11,7 @@ const (
 	openAIReasoningEffortLow      = defaultProviderVerbosityLow
 	openAIReasoningEffortMedium   = "medium"
 	openAIReasoningEffortXHigh    = "xhigh"
+	openAIReasoningEffortMax      = "max"
 	openAIReasoningSummaryAuto    = "auto"
 	openAIReasoningSummaryConcise = "concise"
 	openAIReasoningModelGPT51     = "gpt-5.1"
@@ -139,6 +140,10 @@ func openAIReasoningEffortAlias(model string) (string, string, bool) {
 			suffix:          "-xhigh",
 			reasoningEffort: openAIReasoningEffortXHigh,
 		},
+		{
+			suffix:          "-max",
+			reasoningEffort: openAIReasoningEffortMax,
+		},
 	} {
 		if !strings.HasSuffix(lowerModel, alias.suffix) || len(model) <= len(alias.suffix) {
 			continue
@@ -168,7 +173,8 @@ func normalizeOpenAIReasoningEffort(model, effort string) string {
 	modelID := openAIReasoningModelID(model)
 
 	switch {
-	case modelID == openAIReasoningModelGPT51 && normalizedEffort == openAIReasoningEffortXHigh:
+	case modelID == openAIReasoningModelGPT51 &&
+		(normalizedEffort == openAIReasoningEffortXHigh || normalizedEffort == openAIReasoningEffortMax):
 		return "high"
 	case (strings.HasPrefix(modelID, "gpt-5.2") ||
 		strings.HasPrefix(modelID, "gpt-5.3") ||

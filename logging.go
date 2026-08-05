@@ -58,10 +58,10 @@ func newLogHandler(output io.Writer, rawFormat string, level slog.Level) slog.Ha
 	switch strings.ToLower(strings.TrimSpace(rawFormat)) {
 	case "json":
 		return slog.NewJSONHandler(output, options)
-	case "text", "":
+	case messageTextKey, "":
 		return slog.NewTextHandler(output, options)
 	default:
-		slog.Warn("invalid log format", "value", rawFormat, "fallback", "text")
+		slog.Warn("invalid log format", "value", rawFormat, "fallback", messageTextKey)
 
 		return slog.NewTextHandler(output, options)
 	}

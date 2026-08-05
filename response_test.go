@@ -303,6 +303,7 @@ func TestHandleGeneratedStreamDeltaMergesSearchMetadataFromStream(t *testing.T) 
 		tracker,
 		&state,
 		streamDelta{
+			ReasoningTokens:    0,
 			Thinking:           "",
 			Content:            "",
 			FinishReason:       "",
@@ -766,7 +767,33 @@ func TestContextWindowFooterFormatsCompactUsage(t *testing.T) {
 	t.Parallel()
 
 	footerText := contextWindowFooter(
-		&tokenUsage{Input: 15_000, Output: 5_000},
+		&tokenUsage{Input: 15_000, Output: 5_000, CachedInput: 0, CacheWriteTokens: 0},
+		400_000,
+	)
+
+	if footerText != "context window: 20k/400k (5% used)" {
+		t.Fatalf("unexpected context window footer: %q", footerText)
+	}
+}
+
+func TestContextWindowFooterShowsCachedTokens(t *testing.T) {
+	t.Parallel()
+
+	footerText := contextWindowFooter(
+		&tokenUsage{Input: 15_000, Output: 5_000, CachedInput: 12_800, CacheWriteTokens: 0},
+		400_000,
+	)
+
+	if footerText != "context window: 20k/400k (5% used) · cached 12.8k" {
+		t.Fatalf("unexpected context window footer: %q", footerText)
+	}
+}
+
+func TestContextWindowFooterOmitsCachedTokensWhenZero(t *testing.T) {
+	t.Parallel()
+
+	footerText := contextWindowFooter(
+		&tokenUsage{Input: 15_000, Output: 5_000, CachedInput: 0, CacheWriteTokens: 0},
 		400_000,
 	)
 
@@ -798,8 +825,18 @@ func TestRetainedContextWindowUsageGrowsAcrossFollowUpWhenProviderTotalsShrink(t
 	})
 	secondUsage := retainedContextWindowUsage(secondRequest, secondAnswer)
 
-	firstProviderUsage := &tokenUsage{Input: firstUsage.Input, Output: firstUsage.Output + 800}
-	secondProviderUsage := &tokenUsage{Input: secondUsage.Input, Output: secondUsage.Output}
+	firstProviderUsage := &tokenUsage{
+		Input:            firstUsage.Input,
+		Output:           firstUsage.Output + 800,
+		CachedInput:      0,
+		CacheWriteTokens: 0,
+	}
+	secondProviderUsage := &tokenUsage{
+		Input:            secondUsage.Input,
+		Output:           secondUsage.Output,
+		CachedInput:      0,
+		CacheWriteTokens: 0,
+	}
 
 	if tokenUsageTotal(secondProviderUsage) >= tokenUsageTotal(firstProviderUsage) {
 		t.Fatalf(
@@ -927,7 +964,7 @@ func TestRenderEmbedResponseIncludesContextWindowFooter(t *testing.T) {
 
 	tracker := newResponseTracker(sourceMessage, modelName)
 	tracker.contextWindow = 400_000
-	tracker.usage = &tokenUsage{Input: 15_000, Output: 5_000}
+	tracker.usage = &tokenUsage{Input: 15_000, Output: 5_000, CachedInput: 0, CacheWriteTokens: 0}
 
 	err = instance.renderEmbedResponse(
 		context.Background(),
@@ -1912,6 +1949,7 @@ func thinkingAnswerResponseDeltas(thinkingText, answerText string) []streamDelta
 			Content:            "",
 			FinishReason:       "",
 			Usage:              nil,
+			ReasoningTokens:    0,
 			ProviderResponseID: "",
 			SearchMetadata:     nil,
 		},
@@ -1920,6 +1958,7 @@ func thinkingAnswerResponseDeltas(thinkingText, answerText string) []streamDelta
 			Content:            answerText,
 			FinishReason:       "",
 			Usage:              nil,
+			ReasoningTokens:    0,
 			ProviderResponseID: "",
 			SearchMetadata:     nil,
 		},
@@ -1928,6 +1967,7 @@ func thinkingAnswerResponseDeltas(thinkingText, answerText string) []streamDelta
 			Content:            "",
 			FinishReason:       finishReasonStop,
 			Usage:              nil,
+			ReasoningTokens:    0,
 			ProviderResponseID: "",
 			SearchMetadata:     nil,
 		},

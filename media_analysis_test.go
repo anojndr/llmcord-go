@@ -634,6 +634,7 @@ func newGeminiMediaAnalysisChatClient(
 		}
 
 		err := handle(streamDelta{
+			ReasoningTokens:    0,
 			Thinking:           "",
 			Content:            partAnalyses[analysisIndex],
 			FinishReason:       finishReasonStop,
@@ -705,6 +706,7 @@ func newConcurrentGeminiMediaAnalysisChatClient(
 		}
 
 		return handle(streamDelta{
+			ReasoningTokens:    0,
 			Thinking:           "",
 			Content:            analysis,
 			FinishReason:       finishReasonStop,

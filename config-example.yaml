@@ -68,18 +68,22 @@ providers:
     # `openai` provider also uses the Responses API regardless of `base_url`.
     # To override verbosity for every request, pin a default GPT-5 reasoning
     # level without model aliases, disable the default reasoning summaries, or
-    # request extended prompt-cache retention:
+    # tune prompt caching:
     # extra_body:
     #   verbosity: medium
     #   reasoning:
     #     effort: high
     #     summary: none
-    #   prompt_cache_retention: 24h
+    #   prompt_cache_options:
+    #     mode: implicit  # or "explicit" for breakpoint-only caching
+    #     ttl: 30m        # only supported value
+    # `prompt_cache_retention: 24h` is deprecated on gpt-5.6+; it still works
+    # on earlier models.
     # When the Responses API emits reasoning summary deltas, they stream into
     # the bot's thinking output.
     # GPT-5 aliases such as `openai/gpt-5.4-none`, `-low`, `-medium`, `-high`,
-    # and `-xhigh` normalize to the base GPT-5 model and set reasoning effort.
-    # On the built-in `openai` provider they map to Responses API
+    # `-xhigh`, and `-max` normalize to the base GPT-5 model and set reasoning
+    # effort. On the built-in `openai` provider they map to Responses API
     # `reasoning.effort`; on other OpenAI-compatible providers they map to
     # `reasoning_effort`.
 
@@ -130,8 +134,9 @@ models:
   # context_window: 400000
   # This value is not sent to the provider.
   # Alias models inherit the base model's context window, so
-  # `openai/gpt-5.4-low`, `openai/gpt-5.4-high`, and
-  # `openai/gpt-5.4-none` should use the same value as `openai/gpt-5.4`.
+  # `openai/gpt-5.4-low`, `openai/gpt-5.4-high`, `openai/gpt-5.4-none`,
+  # `openai/gpt-5.4-xhigh`, and `openai/gpt-5.4-max` should use the same value
+  # as `openai/gpt-5.4`.
   # Models without their own value fall back to the provider-level
   # `context_window` entry above.
   google/gemini-3.6-flash:
