@@ -783,6 +783,7 @@ func newCountingGeminiVideoAnalysisChatClient(
 		callCount.Add(1)
 
 		return handle(streamDelta{
+			ReasoningTokens:    0,
 			Thinking:           "",
 			Content:            expectedAnalysis,
 			FinishReason:       finishReasonStop,
@@ -971,6 +972,7 @@ func newNoSearchDecisionChatClient(
 		}
 
 		return handle(streamDelta{
+			ReasoningTokens:    0,
 			Thinking:           "",
 			Content:            `{"needs_search":false,"queries":[]}`,
 			FinishReason:       finishReasonStop,

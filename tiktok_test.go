@@ -577,6 +577,7 @@ func newGeminiVideoAnalysisChatClient(
 		callCount++
 
 		return handle(streamDelta{
+			ReasoningTokens:    0,
 			Thinking:           "",
 			Content:            expectedAnalysis,
 			FinishReason:       finishReasonStop,
@@ -799,6 +800,7 @@ func TestMaybeAugmentConversationWithTikTokPreprocessesForNonGeminiModels(t *tes
 		callCount++
 
 		return handle(streamDelta{
+			ReasoningTokens:    0,
 			Thinking:           "",
 			Content:            expectedAnalysis[0],
 			FinishReason:       finishReasonStop,
