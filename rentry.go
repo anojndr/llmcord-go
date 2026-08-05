@@ -19,28 +19,40 @@ const (
 )
 
 var (
-	errRentryCSRFTokenMissing = errors.New("rentry csrf token missing")
-	errRentryFormStatus       = errors.New("unexpected Rentry form status")
-	errRentryCreateStatus     = errors.New("unexpected Rentry create status")
-	rentryCSRFTokenRegexp     = regexp.MustCompile(`name="csrfmiddlewaretoken" value="([^"]+)"`)
+	errRentryCSRFTokenMissing    = errors.New("rentry csrf token missing")
+	errRentryFormStatus          = errors.New("unexpected Rentry form status")
+	errRentryCreateStatus        = errors.New("unexpected Rentry create status")
+	errRentryCloudflareChallenge = errors.New("rentry Cloudflare challenge")
+	rentryCSRFTokenRegexp        = regexp.MustCompile(`name="csrfmiddlewaretoken" value="([^"]+)"`)
 )
 
 type rentryCreator interface {
 	createEntry(ctx context.Context, text string) (string, error)
 }
 
-type httpRentryClient struct {
-	endpoint  string
-	transport http.RoundTripper
+type rentryBrowserCreator interface {
+	createEntry(ctx context.Context, endpoint string, text string) (string, error)
 }
 
-func newRentryClient(httpClient *http.Client, endpoint string) *httpRentryClient {
+type httpRentryClient struct {
+	endpoint       string
+	transport      http.RoundTripper
+	browserCreator rentryBrowserCreator
+}
+
+func newRentryClient(
+	httpClient *http.Client,
+	endpoint string,
+	browserCreator rentryBrowserCreator,
+) *httpRentryClient {
 	client := new(httpRentryClient)
 	client.endpoint = strings.TrimSpace(endpoint)
 
 	if httpClient != nil {
 		client.transport = httpClient.Transport
 	}
+
+	client.browserCreator = browserCreator
 
 	return client
 }
@@ -58,10 +70,73 @@ func (client *httpRentryClient) createEntry(ctx context.Context, text string) (s
 
 	csrfToken, err := client.loadCSRFToken(ctx, httpClient, endpointURL)
 	if err != nil {
+		if isRentryCloudflareChallenge(err) {
+			return client.createEntryWithBrowserFallback(ctx, text, err)
+		}
+
 		return "", err
 	}
 
-	return client.submitEntry(ctx, httpClient, endpointURL, csrfToken, text)
+	entryURL, err := client.submitEntry(ctx, httpClient, endpointURL, csrfToken, text)
+	if err != nil {
+		if isRentryCloudflareChallenge(err) {
+			return client.createEntryWithBrowserFallback(ctx, text, err)
+		}
+
+		return "", err
+	}
+
+	return entryURL, nil
+}
+
+func (client *httpRentryClient) createEntryWithBrowserFallback(
+	ctx context.Context,
+	text string,
+	httpErr error,
+) (string, error) {
+	if client.browserCreator == nil {
+		return "", httpErr
+	}
+
+	entryURL, browserErr := client.browserCreator.createEntry(ctx, client.endpoint, text)
+	if browserErr != nil {
+		return "", fmt.Errorf("%w; browser fallback: %w", httpErr, browserErr)
+	}
+
+	return entryURL, nil
+}
+
+func isRentryCloudflareChallenge(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	if errors.Is(err, errRentryCloudflareChallenge) {
+		return true
+	}
+
+	errorText := strings.ToLower(err.Error())
+
+	if !strings.Contains(errorText, "just a moment") {
+		return false
+	}
+
+	var statusError *rentryStatusError
+
+	if errors.As(err, &statusError) {
+		switch statusError.statusCode {
+		case http.StatusForbidden, http.StatusServiceUnavailable:
+			return true
+		}
+
+		return false
+	}
+
+	return true
+}
+
+func isCloudflareChallengeBody(responseBody []byte) bool {
+	return strings.Contains(strings.ToLower(string(responseBody)), "just a moment")
 }
 
 func (client *httpRentryClient) newHTTPClient() (*http.Client, error) {
@@ -99,13 +174,17 @@ func (client *httpRentryClient) loadCSRFToken(
 		_ = httpResponse.Body.Close()
 	}()
 
-	if httpResponse.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("%w: %d", errRentryFormStatus, httpResponse.StatusCode)
-	}
-
 	responseBody, err := io.ReadAll(httpResponse.Body)
 	if err != nil {
 		return "", fmt.Errorf("read Rentry form response: %w", err)
+	}
+
+	if httpResponse.StatusCode != http.StatusOK {
+		if isCloudflareChallengeBody(responseBody) {
+			return "", newRentryStatusError(httpResponse.StatusCode, responseBody)
+		}
+
+		return "", fmt.Errorf("%w: %d", errRentryFormStatus, httpResponse.StatusCode)
 	}
 
 	csrfToken, err := extractRentryCSRFToken(responseBody)
@@ -160,6 +239,15 @@ func (client *httpRentryClient) submitEntry(
 		return "", newRentryStatusError(httpResponse.StatusCode, responseBody)
 	}
 
+	responseBody, readErr := io.ReadAll(httpResponse.Body)
+	if readErr != nil {
+		return "", fmt.Errorf("read Rentry create response: %w", readErr)
+	}
+
+	if isCloudflareChallengeBody(responseBody) {
+		return "", newRentryStatusError(httpResponse.StatusCode, responseBody)
+	}
+
 	locationURL, err := httpResponse.Location()
 	if err != nil {
 		return "", fmt.Errorf("read Rentry location header: %w", err)
@@ -168,15 +256,32 @@ func (client *httpRentryClient) submitEntry(
 	return locationURL.String(), nil
 }
 
+type rentryStatusError struct {
+	statusCode int
+	message    string
+}
+
+func (statusError *rentryStatusError) Error() string {
+	return statusError.message
+}
+
+func (statusError *rentryStatusError) Unwrap() error {
+	return errRentryCreateStatus
+}
+
 func newRentryStatusError(statusCode int, responseBody []byte) error {
 	errorText := strings.Join(strings.Fields(string(responseBody)), " ")
 	errorText = truncateRunes(errorText, rentryErrorTextMaxLength)
 
-	if errorText == "" {
-		return fmt.Errorf("%w: %d", errRentryCreateStatus, statusCode)
+	message := fmt.Sprintf("%s: %d", errRentryCreateStatus, statusCode)
+	if errorText != "" {
+		message = fmt.Sprintf("%s: %d: %s", errRentryCreateStatus, statusCode, errorText)
 	}
 
-	return fmt.Errorf("%w: %d: %s", errRentryCreateStatus, statusCode, errorText)
+	return &rentryStatusError{
+		statusCode: statusCode,
+		message:    message,
+	}
 }
 
 func extractRentryCSRFToken(responseBody []byte) (string, error) {

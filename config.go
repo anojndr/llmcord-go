@@ -112,6 +112,11 @@ type rawDatabaseConfig struct {
 	StoreKey         scalarString `yaml:"store_key"`
 }
 
+type rawRentryConfig struct {
+	Endpoint    scalarString `yaml:"endpoint"`
+	BrowserPath scalarString `yaml:"browser_path"`
+}
+
 type providerConfig struct {
 	Name            string
 	BaseURL         string
@@ -163,6 +168,11 @@ type databaseConfig struct {
 	StoreKey         string
 }
 
+type rentryConfig struct {
+	Endpoint    string
+	BrowserPath string
+}
+
 type providerAPIKind string
 
 const (
@@ -184,6 +194,7 @@ type rawConfig struct {
 	WebSearch                   rawWebSearchConfig           `yaml:"web_search"`
 	VisualSearch                rawVisualSearchConfig        `yaml:"visual_search"`
 	Database                    rawDatabaseConfig            `yaml:"database"`
+	Rentry                      rawRentryConfig              `yaml:"rentry"`
 	AutoCompactThresholdPercent *int                         `yaml:"auto_compact_threshold_percent"`
 	Models                      map[string]map[string]any    `yaml:"models"`
 	ChannelModelLocks           map[string]scalarString      `yaml:"channel_model_locks"`
@@ -205,6 +216,7 @@ type config struct {
 	WebSearch                   webSearchConfig
 	VisualSearch                visualSearchConfig
 	Database                    databaseConfig
+	Rentry                      rentryConfig
 	AutoCompactThresholdPercent int
 	Models                      map[string]map[string]any
 	ModelContextWindows         map[string]int
@@ -302,6 +314,7 @@ func buildLoadedConfig(
 			},
 		},
 		Database: normalizeDatabaseConfig(rawLoadedConfig.Database),
+		Rentry:   normalizeRentryConfig(rawLoadedConfig.Rentry),
 		AutoCompactThresholdPercent: intValueOrDefault(
 			rawLoadedConfig.AutoCompactThresholdPercent,
 			autoCompactDefaultThresholdPercent,
@@ -830,6 +843,18 @@ func normalizeDatabaseConfig(rawLoadedConfig rawDatabaseConfig) databaseConfig {
 	return databaseConfig{
 		ConnectionString: strings.TrimSpace(string(rawLoadedConfig.ConnectionString)),
 		StoreKey:         string(rawLoadedConfig.StoreKey),
+	}
+}
+
+func normalizeRentryConfig(rawLoadedConfig rawRentryConfig) rentryConfig {
+	endpoint := strings.TrimSpace(string(rawLoadedConfig.Endpoint))
+	if endpoint == "" {
+		endpoint = defaultRentryEndpoint
+	}
+
+	return rentryConfig{
+		Endpoint:    endpoint,
+		BrowserPath: strings.TrimSpace(string(rawLoadedConfig.BrowserPath)),
 	}
 }
 
