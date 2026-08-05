@@ -504,6 +504,7 @@ func assertYouTubeShortsAugmentationForProvider(
 		callCount++
 
 		return handle(streamDelta{
+			ReasoningTokens:    0,
 			Thinking:           "",
 			Content:            expectedAnalysis,
 			FinishReason:       finishReasonStop,

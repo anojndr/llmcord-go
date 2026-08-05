@@ -78,10 +78,14 @@ const (
 )
 
 type xAIResponsesUsage struct {
-	InputTokens      int `json:"input_tokens"`
-	OutputTokens     int `json:"output_tokens"`
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
+	InputTokens        int `json:"input_tokens"`
+	OutputTokens       int `json:"output_tokens"`
+	PromptTokens       int `json:"prompt_tokens"`
+	CompletionTokens   int `json:"completion_tokens"`
+	InputTokensDetails *struct {
+		CachedTokens     int `json:"cached_tokens"`
+		CacheWriteTokens int `json:"cache_write_tokens"`
+	} `json:"input_tokens_details"`
 }
 
 type xAIResponsesError struct {
@@ -420,9 +424,15 @@ func prepareXAIResponsesRequestBody(
 }
 
 func buildXAIResponsesRequestBody(request chatCompletionRequest) (map[string]any, error) {
-	input, err := xAIResponsesInput(
-		requestMessagesWithFileOrImageOnlyQueryPlaceholder(request.Messages),
-	)
+	messages := requestMessagesWithFileOrImageOnlyQueryPlaceholder(request.Messages)
+	messages = openAIReplaceSystemRoleWithDeveloper(messages, request.Model)
+
+	if openAIRequestPromptCacheKeyPrefix(request) != "" &&
+		!openAICacheOptionsModeIsExplicit(request.Provider.ExtraBody) {
+		messages = openAIResponsesCacheBreakpointMessages(messages)
+	}
+
+	input, err := xAIResponsesInput(messages)
 	if err != nil {
 		return nil, err
 	}
@@ -445,11 +455,99 @@ func buildXAIResponsesRequestBody(request chatCompletionRequest) (map[string]any
 
 	maps.Copy(requestBody, extraBody)
 
+	if request.Provider.APIKind == providerAPIKindOpenAI && openAIConfiguredModel(request.ConfiguredModel) {
+		addOpenAICacheOptions(requestBody, request)
+	}
+
 	if shouldDefaultXAIBridgeSourceAttribution(request) {
 		requestBody["source_attribution"] = defaultXAIBridgeSourceAttributionRequest()
 	}
 
 	return requestBody, nil
+}
+
+func openAICacheOptionsModeIsExplicit(extraBody map[string]any) bool {
+	mode, hasMode := openAICacheOptionsMode(extraBody)
+
+	return hasMode && strings.EqualFold(mode, openAICacheBreakpointModeExplicit)
+}
+
+func openAIResponsesCacheBreakpointMessages(messages []chatMessage) []chatMessage {
+	if len(messages) == 0 {
+		return messages
+	}
+
+	breakpointIndex := openAIStablePrefixBreakpointIndex(messages)
+
+	breakpointContent := openAIResponsesMessageContentWithCacheBreakpoint(
+		messages[breakpointIndex].Content,
+	)
+	if breakpointContent == messages[breakpointIndex].Content {
+		return messages
+	}
+
+	normalizedMessages := append([]chatMessage(nil), messages...)
+	normalizedMessages[breakpointIndex].Content = breakpointContent
+
+	return normalizedMessages
+}
+
+func openAIStablePrefixBreakpointIndex(messages []chatMessage) int {
+	breakpointIndex := 0
+
+	for index, message := range messages {
+		if index == 0 {
+			continue
+		}
+
+		if message.Role == messageRoleAssistant {
+			breakpointIndex = index + 1
+		}
+	}
+
+	if breakpointIndex >= len(messages) {
+		return len(messages) - 1
+	}
+
+	return breakpointIndex
+}
+
+func openAIResponsesMessageContentWithCacheBreakpoint(content any) any {
+	switch typedContent := content.(type) {
+	case string:
+		if strings.TrimSpace(typedContent) == "" {
+			return content
+		}
+
+		return []map[string]any{
+			{
+				messageTypeKey:           xAIResponsesInputTextType,
+				messageTextKey:           typedContent,
+				openAICacheBreakpointKey: map[string]any{openAICacheOptionsModeKey: openAICacheBreakpointModeExplicit},
+			},
+		}
+
+	case []map[string]any:
+		if len(typedContent) == 0 {
+			return content
+		}
+
+		parts := make([]map[string]any, len(typedContent))
+		copy(parts, typedContent)
+
+		if _, alreadyMarked := parts[len(parts)-1][openAICacheBreakpointKey]; alreadyMarked {
+			return content
+		}
+
+		markedPart := maps.Clone(parts[len(parts)-1])
+		markedPart[openAICacheBreakpointKey] = map[string]any{openAICacheOptionsModeKey: openAICacheBreakpointModeExplicit}
+		parts[len(parts)-1] = markedPart
+
+		return parts
+
+	default:
+		return content
+	}
 }
 
 func xAIResponsesShouldUploadImageFiles(request chatCompletionRequest) bool {
@@ -515,12 +613,23 @@ func xAIResponsesMessage(message chatMessage) (map[string]any, bool, error) {
 			"content": content,
 		}, true, nil
 	case messageRoleUser:
-		content, ok, err := xAIResponsesUserContent(message.Content)
-		if err != nil {
-			return nil, false, err
+		content, contentOK, contentErr := xAIResponsesUserContent(message.Content)
+		if contentErr != nil {
+			breakpointParts, isBreakpointParts := message.Content.([]map[string]any)
+			if !isBreakpointParts {
+				return nil, false, contentErr
+			}
+
+			content, contentOK, contentErr = openAIResponsesBreakpointTextContent(
+				breakpointParts,
+				message.Content,
+			)
+			if contentErr != nil {
+				return nil, false, contentErr
+			}
 		}
 
-		if !ok {
+		if !contentOK {
 			return nil, false, nil
 		}
 
@@ -554,9 +663,46 @@ func xAIResponsesTextContent(content any) (string, bool, error) {
 		}
 
 		return textContent, true, nil
+	case []map[string]any:
+		return openAIResponsesBreakpointTextContent(typedContent, content)
 	default:
 		return "", false, fmt.Errorf("unsupported xAI text content type %T: %w", content, os.ErrInvalid)
 	}
+}
+
+func openAIResponsesBreakpointTextContent(
+	parts []map[string]any,
+	originalContent any,
+) (string, bool, error) {
+	if len(parts) == 0 {
+		return "", false, nil
+	}
+
+	textParts := make([]string, 0, len(parts))
+
+	for _, part := range parts {
+		partType, _ := part["type"].(string)
+		if partType != xAIResponsesInputTextType && partType != contentTypeText {
+			return "", false, fmt.Errorf(
+				"unsupported xAI text content part type %T: %w",
+				originalContent,
+				os.ErrInvalid,
+			)
+		}
+
+		textValue, _ := part["text"].(string)
+		if strings.TrimSpace(textValue) == "" {
+			return "", false, nil
+		}
+
+		textParts = append(textParts, textValue)
+	}
+
+	if len(textParts) == 0 {
+		return "", false, nil
+	}
+
+	return strings.Join(textParts, "\n\n"), true, nil
 }
 
 func xAIResponsesUserContent(content any) (any, bool, error) {
@@ -1151,6 +1297,7 @@ func emptyStreamDelta() streamDelta {
 		Content:            "",
 		FinishReason:       "",
 		Usage:              nil,
+		ReasoningTokens:    0,
 		ProviderResponseID: "",
 		SearchMetadata:     nil,
 	}
@@ -1163,6 +1310,7 @@ func xAIResponsesCompletedDelta(
 ) (streamDelta, error) {
 	if response == nil {
 		return streamDelta{
+			ReasoningTokens:    0,
 			Thinking:           "",
 			Content:            "",
 			FinishReason:       finishReasonStop,
@@ -1174,6 +1322,7 @@ func xAIResponsesCompletedDelta(
 
 	if response.Error != nil {
 		return streamDelta{
+				ReasoningTokens:    0,
 				Thinking:           "",
 				Content:            "",
 				FinishReason:       "",
@@ -1195,6 +1344,7 @@ func xAIResponsesCompletedDelta(
 		}
 
 		return streamDelta{
+			ReasoningTokens:    0,
 			Thinking:           "",
 			Content:            "",
 			FinishReason:       "",
@@ -1208,6 +1358,7 @@ func xAIResponsesCompletedDelta(
 	content := xAIResponsesOutputItemsText(response.Output, state, true)
 
 	return streamDelta{
+		ReasoningTokens:    0,
 		Thinking:           thinking,
 		Content:            content,
 		FinishReason:       finishReasonStop,
@@ -1524,10 +1675,19 @@ func xAIResponsesTokenUsage(usage *xAIResponsesUsage) *tokenUsage {
 		outputTokens = usage.CompletionTokens
 	}
 
-	return &tokenUsage{
-		Input:  inputTokens,
-		Output: outputTokens,
+	convertedUsage := &tokenUsage{
+		Input:            inputTokens,
+		Output:           outputTokens,
+		CachedInput:      0,
+		CacheWriteTokens: 0,
 	}
+
+	if usage.InputTokensDetails != nil {
+		convertedUsage.CachedInput = usage.InputTokensDetails.CachedTokens
+		convertedUsage.CacheWriteTokens = usage.InputTokensDetails.CacheWriteTokens
+	}
+
+	return convertedUsage
 }
 
 func xAISourceAttributionSearchMetadata(attribution *xAISourceAttribution) *searchMetadata {

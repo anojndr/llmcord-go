@@ -60,13 +60,16 @@ type streamDelta struct {
 	Content            string
 	FinishReason       string
 	Usage              *tokenUsage
+	ReasoningTokens    int
 	ProviderResponseID string
 	SearchMetadata     *searchMetadata
 }
 
 type tokenUsage struct {
-	Input  int
-	Output int
+	Input            int
+	Output           int
+	CachedInput      int
+	CacheWriteTokens int
 }
 
 type openAIClient struct {
@@ -241,7 +244,13 @@ func buildChatCompletionRequestBodyWithUsageOption(
 ) map[string]any {
 	requestBody := make(map[string]any, len(request.Provider.ExtraBody)+requestBodyBaseFields)
 	requestBody["messages"] = openAINormalizeRequestMessages(
-		requestMessagesWithFileOrImageOnlyQueryPlaceholder(request.Messages),
+		openAIReplaceSystemRoleWithDeveloper(
+			openAICacheBreakpointMessages(
+				requestMessagesWithFileOrImageOnlyQueryPlaceholder(request.Messages),
+				request,
+			),
+			request.Model,
+		),
 	)
 	requestBody["model"] = request.Model
 	requestBody["stream"] = true
@@ -249,8 +258,9 @@ func buildChatCompletionRequestBodyWithUsageOption(
 
 	maps.Copy(requestBody, request.Provider.ExtraBody)
 
-	if request.Provider.APIKind == providerAPIKindOpenAI {
+	if request.Provider.APIKind == providerAPIKindOpenAI && !request.Provider.UseResponsesAPI {
 		defaultOpenAIServiceTier(requestBody)
+		addOpenAICacheOptions(requestBody, request)
 	}
 
 	if includeStreamingUsage {
@@ -258,6 +268,115 @@ func buildChatCompletionRequestBodyWithUsageOption(
 	}
 
 	return requestBody
+}
+
+func openAIReplaceSystemRoleWithDeveloper(messages []chatMessage, model string) []chatMessage {
+	if !openAIModelIsGPT56Family(model) {
+		return messages
+	}
+
+	changed := false
+	normalizedMessages := make([]chatMessage, len(messages))
+
+	for index, message := range messages {
+		if message.Role == messageRoleSystem {
+			message.Role = "developer"
+			changed = true
+		}
+
+		normalizedMessages[index] = message
+	}
+
+	if !changed {
+		return messages
+	}
+
+	return normalizedMessages
+}
+
+func openAICacheBreakpointMessages(
+	messages []chatMessage,
+	request chatCompletionRequest,
+) []chatMessage {
+	if request.Provider.UseResponsesAPI {
+		return messages
+	}
+
+	if openAIRequestPromptCacheKeyPrefix(request) == "" || strings.TrimSpace(request.SessionID) == "" {
+		return messages
+	}
+
+	mode, hasExplicitOptions := openAICacheOptionsMode(request.Provider.ExtraBody)
+	if len(messages) == 0 || (hasExplicitOptions && !strings.EqualFold(mode, openAICacheBreakpointModeExplicit)) {
+		return messages
+	}
+
+	breakpointIndex := openAIStablePrefixBreakpointIndex(messages)
+
+	content, breakpointAdded := openAIContentPartWithCacheBreakpoint(messages[breakpointIndex].Content)
+	if !breakpointAdded {
+		return messages
+	}
+
+	normalizedMessages := append([]chatMessage(nil), messages...)
+	normalizedMessages[breakpointIndex].Content = content
+
+	return normalizedMessages
+}
+
+func openAIContentPartWithCacheBreakpoint(content any) (any, bool) {
+	switch typedContent := content.(type) {
+	case string:
+		if strings.TrimSpace(typedContent) == "" {
+			return content, false
+		}
+
+		return []map[string]any{
+			{
+				messageTypeKey:           contentTypeText,
+				messageTextKey:           typedContent,
+				openAICacheBreakpointKey: map[string]any{openAICacheOptionsModeKey: openAICacheBreakpointModeExplicit},
+			},
+		}, true
+
+	case []map[string]any:
+		if len(typedContent) == 0 {
+			return content, false
+		}
+
+		parts := make([]map[string]any, len(typedContent))
+		copy(parts, typedContent)
+
+		if _, alreadyMarked := parts[len(parts)-1][openAICacheBreakpointKey]; alreadyMarked {
+			return content, false
+		}
+
+		markedPart := maps.Clone(parts[len(parts)-1])
+		markedPart[openAICacheBreakpointKey] = map[string]any{openAICacheOptionsModeKey: openAICacheBreakpointModeExplicit}
+		parts[len(parts)-1] = markedPart
+
+		return parts, true
+
+	default:
+		return content, false
+	}
+}
+
+func addOpenAICacheOptions(requestBody map[string]any, request chatCompletionRequest) {
+	if requestBody == nil ||
+		openAIRequestPromptCacheKeyPrefix(request) == "" ||
+		strings.TrimSpace(request.SessionID) == "" {
+		return
+	}
+
+	if _, exists := requestBody["prompt_cache_options"]; exists {
+		return
+	}
+
+	requestBody["prompt_cache_options"] = map[string]any{
+		"mode": "implicit",
+		"ttl":  "30m",
+	}
 }
 
 func openAINormalizeRequestMessages(messages []chatMessage) []chatMessage {
@@ -623,6 +742,7 @@ func handleStreamPayload(payload []byte, handle func(streamDelta) error) error {
 			Content:            delta.Content,
 			FinishReason:       "",
 			Usage:              nil,
+			ReasoningTokens:    delta.ReasoningTokens,
 			ProviderResponseID: "",
 			SearchMetadata:     nil,
 		})
@@ -637,6 +757,7 @@ func handleStreamPayload(payload []byte, handle func(streamDelta) error) error {
 			Content:            "",
 			FinishReason:       "",
 			Usage:              cloneTokenUsage(delta.Usage),
+			ReasoningTokens:    delta.ReasoningTokens,
 			ProviderResponseID: "",
 			SearchMetadata:     nil,
 		})
@@ -656,6 +777,7 @@ func handleStreamPayload(payload []byte, handle func(streamDelta) error) error {
 			Content:            "",
 			FinishReason:       delta.FinishReason,
 			Usage:              nil,
+			ReasoningTokens:    delta.ReasoningTokens,
 			ProviderResponseID: "",
 			SearchMetadata:     nil,
 		})
@@ -686,10 +808,7 @@ func openAIStreamPayloadDelta(payload []byte) (streamDelta, error) {
 	type streamEnvelope struct {
 		Choices []streamChoice `json:"choices"`
 		Error   *streamError   `json:"error"`
-		Usage   *struct {
-			PromptTokens     int `json:"prompt_tokens"`
-			CompletionTokens int `json:"completion_tokens"`
-		} `json:"usage"`
+		Usage   *streamUsage   `json:"usage"`
 	}
 
 	var envelope streamEnvelope
@@ -697,6 +816,7 @@ func openAIStreamPayloadDelta(payload []byte) (streamDelta, error) {
 	err := json.Unmarshal(payload, &envelope)
 	if err != nil {
 		return streamDelta{
+			ReasoningTokens:    0,
 			Thinking:           "",
 			Content:            "",
 			FinishReason:       "",
@@ -708,6 +828,7 @@ func openAIStreamPayloadDelta(payload []byte) (streamDelta, error) {
 
 	if envelope.Error != nil {
 		return streamDelta{
+				ReasoningTokens:    0,
 				Thinking:           "",
 				Content:            "",
 				FinishReason:       "",
@@ -726,6 +847,7 @@ func openAIStreamPayloadDelta(payload []byte) (streamDelta, error) {
 		Content:            "",
 		FinishReason:       "",
 		Usage:              openAIStreamUsage(envelope.Usage),
+		ReasoningTokens:    openAIStreamReasoningTokens(envelope.Usage),
 		ProviderResponseID: "",
 		SearchMetadata:     nil,
 	}
@@ -742,18 +864,44 @@ func openAIStreamPayloadDelta(payload []byte) (streamDelta, error) {
 	return delta, nil
 }
 
-func openAIStreamUsage(usage *struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-}) *tokenUsage {
+type streamUsage struct {
+	PromptTokens        int `json:"prompt_tokens"`
+	CompletionTokens    int `json:"completion_tokens"`
+	PromptTokensDetails *struct {
+		CachedTokens     int `json:"cached_tokens"`
+		CacheWriteTokens int `json:"cache_write_tokens"`
+	} `json:"prompt_tokens_details"`
+	CompletionTokensDetails *struct {
+		ReasoningTokens int `json:"reasoning_tokens"`
+	} `json:"completion_tokens_details"`
+}
+
+func openAIStreamUsage(usage *streamUsage) *tokenUsage {
 	if usage == nil {
 		return nil
 	}
 
-	return &tokenUsage{
-		Input:  usage.PromptTokens,
-		Output: usage.CompletionTokens,
+	convertedUsage := &tokenUsage{
+		Input:            usage.PromptTokens,
+		Output:           usage.CompletionTokens,
+		CachedInput:      0,
+		CacheWriteTokens: 0,
 	}
+
+	if usage.PromptTokensDetails != nil {
+		convertedUsage.CachedInput = usage.PromptTokensDetails.CachedTokens
+		convertedUsage.CacheWriteTokens = usage.PromptTokensDetails.CacheWriteTokens
+	}
+
+	return convertedUsage
+}
+
+func openAIStreamReasoningTokens(usage *streamUsage) int {
+	if usage == nil || usage.CompletionTokensDetails == nil {
+		return 0
+	}
+
+	return usage.CompletionTokensDetails.ReasoningTokens
 }
 
 func cloneTokenUsage(usage *tokenUsage) *tokenUsage {

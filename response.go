@@ -1117,12 +1117,18 @@ func contextWindowFooter(usage *tokenUsage, contextWindow int) string {
 		return ""
 	}
 
-	return fmt.Sprintf(
+	footerText := fmt.Sprintf(
 		"context window: %s/%s (%s used)",
 		formatCompactTokenCount(usedTokens),
 		formatCompactTokenCount(contextWindow),
 		formatContextWindowUsagePercent(usedTokens, contextWindow),
 	)
+
+	if usage.CachedInput > 0 {
+		footerText += " · cached " + formatCompactTokenCount(usage.CachedInput)
+	}
+
+	return footerText
 }
 
 func retainedContextWindowUsage(request chatCompletionRequest, responseText string) *tokenUsage {

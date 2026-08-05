@@ -1591,14 +1591,14 @@ func marshalExaSearchRequest(requestBody exaSearchRequest) ([]byte, error) {
 			textMap["verbosity"] = requestBody.Contents.Text.Verbosity
 		}
 
-		contentsMap["text"] = textMap
+		contentsMap[messageTextKey] = textMap
 	}
 
 	requestBytes, err := json.Marshal(map[string]any{
-		"query":      requestBody.Query,
-		"type":       requestBody.Type,
-		"numResults": requestBody.NumResults,
-		"contents":   contentsMap,
+		"query":              requestBody.Query,
+		searchTypeOptionName: requestBody.Type,
+		"numResults":         requestBody.NumResults,
+		"contents":           contentsMap,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("marshal Exa search request payload: %w", err)

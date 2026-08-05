@@ -10,7 +10,29 @@ import (
 
 const (
 	openAIProviderPromptCacheKeyPrefix = "llmcord-go-openai"
+	openAICacheBreakpointKey           = "prompt_cache_breakpoint"
+	openAICacheOptionsModeKey          = "mode"
 )
+
+func openAIModelIsGPT56Family(model string) bool {
+	return strings.HasPrefix(openAIReasoningModelID(model), "gpt-5.6")
+}
+
+func openAICacheOptionsMode(extraBody map[string]any) (string, bool) {
+	rawCacheOptions, cacheOptionsOK := extraBody["prompt_cache_options"]
+	if !cacheOptionsOK || rawCacheOptions == nil {
+		return "", false
+	}
+
+	cacheOptions, cacheOptionsMapOK := rawCacheOptions.(map[string]any)
+	if !cacheOptionsMapOK {
+		return "", false
+	}
+
+	mode, modeOK := cacheOptions[openAICacheOptionsModeKey].(string)
+
+	return strings.TrimSpace(mode), modeOK
+}
 
 func assignOpenAIPromptCacheKey(
 	request *chatCompletionRequest,

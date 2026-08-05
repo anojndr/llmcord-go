@@ -202,6 +202,7 @@ func (splitter *geminiStreamHandleSplitter) handleDelta(delta streamDelta) error
 	parts := make([]streamDelta, 0, geminiSplitDeltaCapacity)
 	if delta.Thinking != "" {
 		parts = append(parts, streamDelta{
+			ReasoningTokens:    0,
 			Thinking:           delta.Thinking,
 			Content:            "",
 			FinishReason:       "",
@@ -213,6 +214,7 @@ func (splitter *geminiStreamHandleSplitter) handleDelta(delta streamDelta) error
 
 	if splitThinking != "" {
 		parts = append(parts, streamDelta{
+			ReasoningTokens:    0,
 			Thinking:           splitThinking,
 			Content:            "",
 			FinishReason:       "",
@@ -224,6 +226,7 @@ func (splitter *geminiStreamHandleSplitter) handleDelta(delta streamDelta) error
 
 	if splitAnswer != "" {
 		parts = append(parts, streamDelta{
+			ReasoningTokens:    0,
 			Thinking:           "",
 			Content:            splitAnswer,
 			FinishReason:       "",
@@ -239,6 +242,7 @@ func (splitter *geminiStreamHandleSplitter) handleDelta(delta streamDelta) error
 		}
 
 		parts = append(parts, streamDelta{
+			ReasoningTokens:    0,
 			Thinking:           "",
 			Content:            "",
 			FinishReason:       "",
@@ -266,6 +270,7 @@ func (splitter *geminiStreamHandleSplitter) finalize() error {
 	splitThinking, splitAnswer := splitter.splitter.finalize()
 	if splitThinking != "" {
 		err := splitter.emit(streamDelta{
+			ReasoningTokens:    0,
 			Thinking:           splitThinking,
 			Content:            "",
 			FinishReason:       "",
@@ -280,6 +285,7 @@ func (splitter *geminiStreamHandleSplitter) finalize() error {
 
 	if splitAnswer != "" {
 		err := splitter.emit(streamDelta{
+			ReasoningTokens:    0,
 			Thinking:           "",
 			Content:            splitAnswer,
 			FinishReason:       "",
@@ -434,6 +440,7 @@ func processGeminiStreamResponse(
 func geminiHandleStreamUpdate(handle func(streamDelta) error, delta streamDelta) error {
 	if delta.Thinking != "" || delta.Content != "" || delta.SearchMetadata != nil {
 		err := handle(streamDelta{
+			ReasoningTokens:    0,
 			Thinking:           delta.Thinking,
 			Content:            delta.Content,
 			FinishReason:       "",
@@ -448,6 +455,7 @@ func geminiHandleStreamUpdate(handle func(streamDelta) error, delta streamDelta)
 
 	if delta.Usage != nil {
 		err := handle(streamDelta{
+			ReasoningTokens:    0,
 			Thinking:           "",
 			Content:            "",
 			FinishReason:       "",
@@ -465,6 +473,7 @@ func geminiHandleStreamUpdate(handle func(streamDelta) error, delta streamDelta)
 
 func geminiHandleFinishReason(handle func(streamDelta) error, finishReason string) error {
 	err := handle(streamDelta{
+		ReasoningTokens:    0,
 		Thinking:           "",
 		Content:            "",
 		FinishReason:       finishReason,
@@ -1438,6 +1447,7 @@ func geminiStreamDelta(response *genai.GenerateContentResponse) (streamDelta, er
 		err = geminiFinishReasonError(candidate)
 		if err != nil {
 			return streamDelta{
+				ReasoningTokens:    0,
 				Thinking:           delta.Thinking,
 				Content:            delta.Content,
 				FinishReason:       "",
@@ -1510,8 +1520,10 @@ func geminiStreamUsage(metadata *genai.GenerateContentResponseUsageMetadata) *to
 	}
 
 	return &tokenUsage{
-		Input:  int(metadata.PromptTokenCount + metadata.ToolUsePromptTokenCount),
-		Output: int(metadata.CandidatesTokenCount + metadata.ThoughtsTokenCount),
+		Input:            int(metadata.PromptTokenCount + metadata.ToolUsePromptTokenCount),
+		Output:           int(metadata.CandidatesTokenCount + metadata.ThoughtsTokenCount),
+		CachedInput:      0,
+		CacheWriteTokens: 0,
 	}
 }
 

@@ -3,6 +3,7 @@ package main
 import "time"
 
 const (
+	openAICacheBreakpointModeExplicit    = "explicit"
 	defaultConfigPath                    = "config.yaml"
 	configPathEnvironmentVariable        = "LLMCORD_CONFIG_PATH"
 	legacyConfigPathEnvironmentVariable  = "CONFIG_PATH"

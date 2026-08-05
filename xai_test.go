@@ -883,6 +883,7 @@ func TestGenerateAndSendResponseStoresProviderResponseIDForXAIContinuation(t *te
 				Content:            "",
 				FinishReason:       finishReasonStop,
 				Usage:              nil,
+				ReasoningTokens:    0,
 				ProviderResponseID: testXAIProviderResponseID,
 				SearchMetadata:     nil,
 			},
