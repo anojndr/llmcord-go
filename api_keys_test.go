@@ -191,10 +191,11 @@ func TestPrimaryAPIKey(t *testing.T) {
 		t.Parallel()
 
 		exaCfg := exaSearchConfig{
-			APIKey:            t.Name() + "-e1",
-			APIKeys:           []string{t.Name() + "-e2"},
-			SearchType:        "auto",
-			TextMaxCharacters: 15000,
+			APIKey:             t.Name() + "-e1",
+			APIKeys:            []string{t.Name() + "-e2"},
+			SearchType:         "auto",
+			TextMaxCharacters:  15000,
+			LivecrawlTimeoutMS: 15000,
 		}
 		if key := exaCfg.primaryAPIKey(); key != t.Name()+"-e1" {
 			t.Fatalf("expected primary exa key, got %q", key)

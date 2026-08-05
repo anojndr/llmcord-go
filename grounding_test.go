@@ -154,10 +154,11 @@ func testGroundingConfig() config {
 			PrimaryProvider: "",
 			MaxURLs:         0,
 			Exa: exaSearchConfig{
-				APIKey:            "",
-				APIKeys:           nil,
-				SearchType:        "",
-				TextMaxCharacters: 0,
+				APIKey:             "",
+				APIKeys:            nil,
+				SearchType:         "",
+				TextMaxCharacters:  0,
+				LivecrawlTimeoutMS: 0,
 			},
 			Tavily: tavilySearchConfig{
 				APIKey:  "",

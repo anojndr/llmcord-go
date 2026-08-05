@@ -29,10 +29,11 @@ func testExaAPIWebSearchConfig() config {
 	loadedConfig := testSearchConfig()
 	loadedConfig.WebSearch.MaxURLs = testWebSearchMaxURLs
 	loadedConfig.WebSearch.Exa = exaSearchConfig{
-		APIKey:            testExaPrimaryValue,
-		APIKeys:           []string{testExaPrimaryValue},
-		SearchType:        defaultExaSearchType,
-		TextMaxCharacters: defaultExaSearchTextMaxCharacters,
+		APIKey:             testExaPrimaryValue,
+		APIKeys:            []string{testExaPrimaryValue},
+		SearchType:         defaultExaSearchType,
+		TextMaxCharacters:  defaultExaSearchTextMaxCharacters,
+		LivecrawlTimeoutMS: defaultExaContentsLivecrawlTimeoutMS,
 	}
 
 	return loadedConfig
@@ -2170,10 +2171,11 @@ func testSearchConfig() config {
 	loadedConfig.WebSearch.PrimaryProvider = webSearchProviderKindMCP
 	loadedConfig.WebSearch.MaxURLs = defaultWebSearchMaxURLs
 	loadedConfig.WebSearch.Exa = exaSearchConfig{
-		APIKey:            "",
-		APIKeys:           nil,
-		SearchType:        defaultExaSearchType,
-		TextMaxCharacters: defaultExaSearchTextMaxCharacters,
+		APIKey:             "",
+		APIKeys:            nil,
+		SearchType:         defaultExaSearchType,
+		TextMaxCharacters:  defaultExaSearchTextMaxCharacters,
+		LivecrawlTimeoutMS: defaultExaContentsLivecrawlTimeoutMS,
 	}
 	loadedConfig.ModelOrder = []string{"openai/main-model", "openai/decider-model"}
 	loadedConfig.SearchDeciderModel = "openai/decider-model"
@@ -2187,10 +2189,11 @@ func testGeminiSearchConfig() config {
 	loadedConfig.WebSearch.PrimaryProvider = webSearchProviderKindMCP
 	loadedConfig.WebSearch.MaxURLs = defaultWebSearchMaxURLs
 	loadedConfig.WebSearch.Exa = exaSearchConfig{
-		APIKey:            "",
-		APIKeys:           nil,
-		SearchType:        defaultExaSearchType,
-		TextMaxCharacters: defaultExaSearchTextMaxCharacters,
+		APIKey:             "",
+		APIKeys:            nil,
+		SearchType:         defaultExaSearchType,
+		TextMaxCharacters:  defaultExaSearchTextMaxCharacters,
+		LivecrawlTimeoutMS: defaultExaContentsLivecrawlTimeoutMS,
 	}
 
 	geminiProvider := new(providerConfig)

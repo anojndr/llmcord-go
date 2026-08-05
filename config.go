@@ -88,8 +88,9 @@ type rawTavilySearchConfig struct {
 }
 
 type rawExaSearchConfig struct {
-	APIKey            scalarStringList `yaml:"api_key"`
-	TextMaxCharacters *int             `yaml:"text_max_characters"`
+	APIKey             scalarStringList `yaml:"api_key"`
+	TextMaxCharacters  *int             `yaml:"text_max_characters"`
+	LivecrawlTimeoutMS *int             `yaml:"livecrawl_timeout_ms"`
 }
 
 type rawSerpAPIVisualSearchConfig struct {
@@ -134,10 +135,11 @@ type tavilySearchConfig struct {
 }
 
 type exaSearchConfig struct {
-	APIKey            string
-	APIKeys           []string
-	SearchType        string
-	TextMaxCharacters int
+	APIKey             string
+	APIKeys            []string
+	SearchType         string
+	TextMaxCharacters  int
+	LivecrawlTimeoutMS int
 }
 
 type serpAPIVisualSearchConfig struct {
@@ -866,10 +868,11 @@ func normalizeWebSearchConfig(rawLoadedConfig rawWebSearchConfig) webSearchConfi
 		PrimaryProvider: normalizeWebSearchProvider(rawLoadedConfig.PrimaryProvider),
 		MaxURLs:         intValueOrDefault(rawLoadedConfig.MaxURLs, defaultWebSearchMaxURLs),
 		Exa: exaSearchConfig{
-			APIKey:            firstAPIKey(exaAPIKeys),
-			APIKeys:           exaAPIKeys,
-			SearchType:        defaultExaSearchType,
-			TextMaxCharacters: intValueOrDefault(rawLoadedConfig.Exa.TextMaxCharacters, defaultExaSearchTextMaxCharacters),
+			APIKey:             firstAPIKey(exaAPIKeys),
+			APIKeys:            exaAPIKeys,
+			SearchType:         defaultExaSearchType,
+			TextMaxCharacters:  intValueOrDefault(rawLoadedConfig.Exa.TextMaxCharacters, defaultExaSearchTextMaxCharacters),
+			LivecrawlTimeoutMS: intValueOrDefault(rawLoadedConfig.Exa.LivecrawlTimeoutMS, defaultExaContentsLivecrawlTimeoutMS),
 		},
 		Tavily: tavilySearchConfig{
 			APIKey:  firstAPIKey(tavilyAPIKeys),
@@ -905,6 +908,14 @@ func (settings exaSearchConfig) textMaxCharacters() int {
 	}
 
 	return settings.TextMaxCharacters
+}
+
+func (settings exaSearchConfig) livecrawlTimeoutMS() int {
+	if settings.LivecrawlTimeoutMS <= 0 {
+		return defaultExaContentsLivecrawlTimeoutMS
+	}
+
+	return settings.LivecrawlTimeoutMS
 }
 
 func validateConfig(loadedConfig config) error {
@@ -1018,6 +1029,13 @@ func validateWebSearchConfig(loadedConfig webSearchConfig) error {
 	if loadedConfig.Exa.TextMaxCharacters <= 0 {
 		return fmt.Errorf(
 			"web_search.exa.text_max_characters must be greater than zero: %w",
+			os.ErrInvalid,
+		)
+	}
+
+	if loadedConfig.Exa.LivecrawlTimeoutMS <= 0 {
+		return fmt.Errorf(
+			"web_search.exa.livecrawl_timeout_ms must be greater than zero: %w",
 			os.ErrInvalid,
 		)
 	}
