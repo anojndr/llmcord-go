@@ -50,6 +50,13 @@ providers:
     # extra_body:
     #   thinkingConfig:
     #     includeThoughts: true
+    # Explicit context caching is on by default for the stable reply-chain
+    # prefix when it clears the model's minimum cacheable tokens; it is
+    # re-created per request so the cached prefix always matches the prompt.
+    # To disable it, or to tune the cache TTL (default 1h, the API default):
+    # extra_body:
+    #   context_caching: off            # or "auto"
+    #   # context_caching: { ttl: 30m }
 
   groq:
     base_url: https://api.groq.com/openai/v1
