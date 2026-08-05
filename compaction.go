@@ -30,10 +30,11 @@ const (
 	autoCompactDocumentTokens          = 4096
 	autoCompactFileTokens              = 4096
 	autoCompactVideoTokens             = 8192
-	autoCompactSummaryPrefix           = "Earlier conversation summary " +
-		"(auto-compacted to fit the model context window):"
-	autoCompactSummaryUserPrefix     = "Summarize this earlier conversation context so it can be carried forward:\n\n"
-	autoCompactMergeUserPrefix       = "Merge these partial conversation summaries into one concise summary:\n\n"
+	autoCompactSummaryPrefix           = "Earlier conversation summary (handoff checkpoint for continued context):"
+	autoCompactSummaryUserPrefix       = "Create a compact handoff summary of the earlier conversation so another " +
+		"assistant can continue seamlessly:\n\n"
+	autoCompactMergeUserPrefix = "Merge these partial handoff summaries into one concise summary that " +
+		"carries the conversation forward:\n\n"
 	autoCompactMessageBlockSeparator = "\n\n"
 	autoCompactImagePlaceholder      = "[image attachment]"
 	autoCompactAudioPlaceholder      = "[audio attachment]"
@@ -710,25 +711,26 @@ func maxTextPrefixRunesForApproxTokens(text string, tokenLimit int) int {
 
 func autoCompactSummarySystemPrompt() string {
 	return strings.Join([]string{
-		"You are compressing earlier conversation context so another assistant can continue helping the user.",
+		"You are performing a context checkpoint compaction: create a handoff summary " +
+			"for another assistant so it can seamlessly continue the conversation.",
 		"",
-		"Create a concise plain-text summary that preserves:",
+		"Write a concise plain-text summary that preserves:",
 		"- the current topic or request",
 		"- important facts, answers, decisions, and conclusions already given",
 		"- unresolved questions or next steps",
 		"- user preferences or constraints",
 		"- notable findings from attachments, websites, visual search, or web search when relevant",
 		"",
-		"Do not assume this is a coding task. Keep the summary neutral, factual, and compact.",
+		"Keep the summary neutral, factual, and compact regardless of the topic.",
 	}, "\n")
 }
 
 func autoCompactMergeSystemPrompt() string {
 	return strings.Join([]string{
-		"You are merging partial conversation summaries into one plain-text summary for a later assistant.",
+		"You are merging partial conversation summaries into one plain-text handoff summary for another assistant.",
 		"",
 		"Keep only the important facts, decisions, user preferences, unresolved questions, and notable findings.",
-		"Do not assume this is a coding task. Keep the result concise and neutral.",
+		"Keep the result concise and neutral regardless of the topic.",
 	}, "\n")
 }
 
