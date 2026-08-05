@@ -100,6 +100,7 @@ Model notes:
 | `web_search.max_urls` | Max URLs per query and in `Show Sources`. Default: `5`. |
 | `web_search.exa.api_key` | Enables Exa Search; generic website extraction then prefers Exa Contents. |
 | `web_search.exa.text_max_characters` | Max full-page text from Exa per result. Default: `15000`. |
+| `web_search.exa.livecrawl_timeout_ms` | Exa Contents livecrawl timeout. Default: `15000`. If a page's livecrawl exceeds it, the fetch is retried once with a doubled timeout, then falls back to Exa's cache (the request is re-sent without `livecrawlTimeout`), so slow pages still usually resolve. |
 | `web_search.tavily.api_key` | Enables Tavily search and Tavily Extract fallback. |
 | `visual_search.serpapi.api_key` | Enables concurrent Google Lens results for `vsearch`. |
 

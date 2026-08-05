@@ -207,6 +207,7 @@ func (client websiteClient) fetch(
 			ctx,
 			normalizedURL,
 			exaAPIKey,
+			loadedConfig.WebSearch.Exa.livecrawlTimeoutMS(),
 		)
 		if exaErr == nil {
 			return pageContent, nil
@@ -271,16 +272,44 @@ func (client websiteClient) fetchWithExaContents(
 	ctx context.Context,
 	requestURL string,
 	apiKey string,
+	livecrawlTimeoutMS int,
 ) (websitePageContent, error) {
-	return client.fetchWithExaContentsOnce(ctx, requestURL, apiKey)
+	pageContent, err := client.fetchWithExaContentsOnce(ctx, requestURL, apiKey, livecrawlTimeoutMS)
+	if err == nil || !isExaLivecrawlTimeoutError(err) {
+		return pageContent, err
+	}
+
+	logWarn(
+		"Exa contents livecrawl timed out; retrying with extended timeout",
+		err,
+		"url",
+		requestURL,
+	)
+
+	extendedTimeout := exaContentsLivecrawlExtendedTimeoutMultiplier * livecrawlTimeoutMS
+
+	pageContent, err = client.fetchWithExaContentsOnce(ctx, requestURL, apiKey, extendedTimeout)
+	if err == nil || !isExaLivecrawlTimeoutError(err) {
+		return pageContent, err
+	}
+
+	logWarn(
+		"Exa contents livecrawl timed out with extended timeout; falling back to cached content",
+		err,
+		"url",
+		requestURL,
+	)
+
+	return client.fetchWithExaContentsOnce(ctx, requestURL, apiKey, 0)
 }
 
 func (client websiteClient) fetchWithExaContentsOnce(
 	ctx context.Context,
 	requestURL string,
 	apiKey string,
+	livecrawlTimeoutMS int,
 ) (websitePageContent, error) {
-	requestBytes, err := json.Marshal(exaContentsRequestBody(requestURL))
+	requestBytes, err := json.Marshal(exaContentsRequestBody(requestURL, livecrawlTimeoutMS))
 	if err != nil {
 		return websitePageContent{}, fmt.Errorf("marshal Exa contents request for %q: %w", requestURL, err)
 	}
@@ -363,8 +392,8 @@ func (client websiteClient) fetchWithExaContentsOnce(
 	return newWebsitePageContent(resultURL, result.Title, "", result.Text)
 }
 
-func exaContentsRequestBody(requestURL string) map[string]any {
-	return map[string]any{
+func exaContentsRequestBody(requestURL string, livecrawlTimeoutMS int) map[string]any {
+	requestBody := map[string]any{
 		"urls": []string{requestURL},
 		messageTextKey: map[string]any{
 			"maxCharacters": maxWebsiteContentRunes,
@@ -377,8 +406,13 @@ func exaContentsRequestBody(requestURL string) map[string]any {
 				"footer",
 			},
 		},
-		"livecrawlTimeout": exaContentsLivecrawlTimeoutMS,
 	}
+
+	if livecrawlTimeoutMS > 0 {
+		requestBody["livecrawlTimeout"] = livecrawlTimeoutMS
+	}
+
+	return requestBody
 }
 
 func parseExaContentsResponse(rawResponse map[string]any) (exaContentsResponse, error) {
@@ -485,6 +519,13 @@ func exaContentsResponseError(response exaContentsResponse, requestURL string) e
 	}
 
 	return nil
+}
+
+func isExaLivecrawlTimeoutError(err error) bool {
+	return err != nil && strings.Contains(
+		strings.ToLower(err.Error()),
+		strings.ToLower("CRAWL_LIVECRAWL_TIMEOUT"),
+	)
 }
 
 func exaContentsStatusMatchesURL(status exaContentsResponseStatus, requestURL string) bool {
