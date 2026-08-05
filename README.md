@@ -12,7 +12,7 @@ It turns Discord reply chains into a frontend for OpenAI-compatible chat-complet
 - URL enrichment for TikTok, Facebook, YouTube, Reddit, and generic websites
 - Web-search augmentation (Exa or Tavily), reverse-image lookup (`vsearch`), and native Gemini grounding
 - Hot-reloaded `config.yaml`, permissions, channel model locks, and PostgreSQL-backed history
-- Automatic context compaction using each model's `context_window`
+- Automatic context compaction using each model's `context_window`, producing a Codex-style handoff summary
 
 ## Quick Start
 
@@ -77,7 +77,7 @@ Providers are declared with `base_url` (OpenAI-compatible). The provider name se
 | `channel_model_locks` | Map of channel IDs to configured models. `/model` is disabled in locked channels. |
 | `search_decider_model` | Model used to decide whether web search is needed. Defaults to the first configured model. |
 | `media_analysis_model` | Gemini model used to preprocess audio and video for non-Gemini replies; auto-selected when unset. |
-| `auto_compact_threshold_percent` | Compaction threshold relative to a model's `context_window`. Default: `90`. |
+| `auto_compact_threshold_percent` | Compaction threshold relative to a model's `context_window`. Default: `90`. When the estimated conversation exceeds the threshold, older turns are summarized into a compact handoff summary tagged with `Earlier conversation summary (handoff checkpoint …)` so the next assistant can pick up seamlessly — sized to stay within the configured `context_window`. |
 | `database.connection_string` | PostgreSQL connection string for persisted history (`postgres://` or `postgresql://`). |
 | `database.store_key` | Logical key selecting the persisted history row. |
 | `rentry.endpoint` | Rentry.co instance used by the "View on Rentry" button. Default: `https://rentry.co/`. |
