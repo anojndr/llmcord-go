@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -22,12 +23,26 @@ type messageNode struct {
 	providerResponseModel    string
 	media                    []contentPart
 	searchMetadata           *searchMetadata
+	compactionSummary        *messageNodeCompactionSummary
 	hasBadAttachments        bool
 	attachmentDownloadFailed bool
 	fetchParentFailed        bool
 	parentMessage            *discordgo.Message
 	initialized              bool
 	mu                       sync.Mutex
+}
+
+// messageNodeCompactionSummary records the auto-compaction boundary for a
+// user message: the handoff summary text produced by compacting the older
+// history. A later request that re-walks the reply chain stops at the message
+// carrying the boundary, renders the recorded summary for everything before
+// it, and keeps the tail — instead of re-summarizing the entire history again.
+// `anchor` is the message ID the boundary belongs to (the message whose older
+// history the summary replaces).
+type messageNodeCompactionSummary struct {
+	text    string
+	anchor  string
+	applied bool
 }
 
 type messageNodeStore struct {
@@ -89,6 +104,38 @@ func (store *messageNodeStore) addPending(messageID string, parentMessage *disco
 	store.mu.Unlock()
 
 	return node
+}
+
+// recordCompactionSummary publishes a compaction boundary for a user message
+// under a fresh node lock so worker goroutines never mutate a node that
+// another goroutine holds.
+func (store *messageNodeStore) recordCompactionSummary(
+	messageID string,
+	summary *messageNodeCompactionSummary,
+) {
+	if store == nil || strings.TrimSpace(messageID) == "" || summary == nil {
+		return
+	}
+
+	node, ok := store.get(messageID)
+	if !ok || node == nil {
+		return
+	}
+
+	node.mu.Lock()
+
+	stored := summary
+	if stored.applied {
+		stored = &messageNodeCompactionSummary{
+			text:    stored.text,
+			anchor:  strings.TrimSpace(stored.anchor),
+			applied: true,
+		}
+	}
+
+	node.compactionSummary = stored
+	store.cacheLockedNodeLocked(messageID, node)
+	node.mu.Unlock()
 }
 
 func (store *messageNodeStore) evictExcess() {
