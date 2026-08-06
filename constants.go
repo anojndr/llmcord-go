@@ -18,7 +18,7 @@ const (
 	defaultSerpAPIGoogleLensEndpoint     = "https://serpapi.com/search.json"
 	defaultTavilySearchEndpoint          = "https://api.tavily.com/search"
 	defaultTavilyExtractEndpoint         = "https://api.tavily.com/extract"
-	defaultRentryEndpoint                = "https://rentry.co/"
+	defaultPastebinEndpoint              = "https://pastebin.com/api/api_post.php"
 	defaultStatusMessage                 = "github.com/jakobdylanc/llmcord"
 	defaultMaxImages                     = 5
 	defaultMaxMessages                   = 25
@@ -91,8 +91,8 @@ const (
 	showThinkingButtonLabel                       = "Show Thinking"
 	showSourcesPreviousButtonLabel                = "Previous"
 	showSourcesNextButtonLabel                    = "Next"
-	viewOnRentryButtonCustomID                    = "view_on_rentry"
-	viewOnRentryButtonLabel                       = "View on Rentry"
+	viewOnPastebinButtonCustomID                  = "view_on_pastebin"
+	viewOnPastebinButtonLabel                     = "View on Pastebin"
 	messageRoleAssistant                          = "assistant"
 	finishReasonStop                              = "stop"
 	finishReasonLength                            = "length"

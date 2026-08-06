@@ -111,9 +111,11 @@ func testPermissionsConfig() config {
 			ConnectionString: "",
 			StoreKey:         "",
 		},
-		Rentry: rentryConfig{
-			Endpoint:    "",
-			BrowserPath: "",
+		Pastebin: pastebinConfig{
+			Endpoint:   "",
+			DevKey:     "",
+			ExpireDate: "",
+			Name:       "",
 		},
 		VisualSearch: visualSearchConfig{
 			SerpAPI: serpAPIVisualSearchConfig{APIKey: "", APIKeys: nil},

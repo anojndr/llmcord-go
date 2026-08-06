@@ -21,7 +21,7 @@ func (function roundTripFunc) RoundTrip(request *http.Request) (*http.Response, 
 	return function(request)
 }
 
-type fakeRentryClient struct {
+type fakePastebinClient struct {
 	url       string
 	err       error
 	callCount int
@@ -38,9 +38,9 @@ type deferredInteractionCapture struct {
 	editedResponse   editedInteractionResponse
 }
 
-var errFakeRentryUnavailable = errors.New("rentry unavailable")
+var errFakePastebinUnavailable = errors.New("pastebin unavailable")
 
-func (client *fakeRentryClient) createEntry(_ context.Context, text string) (string, error) {
+func (client *fakePastebinClient) createPaste(_ context.Context, text string) (string, error) {
 	client.callCount++
 	client.texts = append(client.texts, text)
 
@@ -1382,11 +1382,11 @@ func TestHandleInteractionCreateUpdatesShowSourcesPaginationPage(t *testing.T) {
 	}
 }
 
-func TestHandleInteractionCreateRespondsToViewOnRentryButton(t *testing.T) {
+func TestHandleInteractionCreateRespondsToViewOnPastebinButton(t *testing.T) {
 	t.Parallel()
 
-	rentry := new(fakeRentryClient)
-	rentry.url = "https://rentry.co/example"
+	pastebin := new(fakePastebinClient)
+	pastebin.url = "https://pastebin.com/example"
 
 	var capture deferredInteractionCapture
 
@@ -1394,7 +1394,7 @@ func TestHandleInteractionCreateRespondsToViewOnRentryButton(t *testing.T) {
 
 	instance := new(bot)
 	instance.nodes = newMessageNodeStore(10)
-	instance.rentry = rentry
+	instance.pastebin = pastebin
 
 	node := instance.nodes.getOrCreate("response-message")
 	node.mu.Lock()
@@ -1402,29 +1402,29 @@ func TestHandleInteractionCreateRespondsToViewOnRentryButton(t *testing.T) {
 	node.initialized = true
 	node.mu.Unlock()
 
-	interaction := newComponentInteraction("response-message", viewOnRentryButtonCustomID)
+	interaction := newComponentInteraction("response-message", viewOnPastebinButtonCustomID)
 
 	instance.handleInteractionCreate(session, interaction)
 
 	assertDeferredEphemeralInteractionResponse(t, &capture.deferredResponse)
 
-	if !containsFold(capture.editedResponse.Content, rentry.url) {
-		t.Fatalf("expected Rentry url in edited response content: %q", capture.editedResponse.Content)
+	if !containsFold(capture.editedResponse.Content, pastebin.url) {
+		t.Fatalf("expected Pastebin url in edited response content: %q", capture.editedResponse.Content)
 	}
 
-	if rentry.callCount != 1 {
-		t.Fatalf("unexpected Rentry call count: %d", rentry.callCount)
+	if pastebin.callCount != 1 {
+		t.Fatalf("unexpected Pastebin call count: %d", pastebin.callCount)
 	}
 
-	if len(rentry.texts) != 1 || rentry.texts[0] != testAssistantReply {
-		t.Fatalf("unexpected Rentry request texts: %#v", rentry.texts)
+	if len(pastebin.texts) != 1 || pastebin.texts[0] != testAssistantReply {
+		t.Fatalf("unexpected Pastebin request texts: %#v", pastebin.texts)
 	}
 
 	node.mu.Lock()
 	defer node.mu.Unlock()
 
-	if node.rentryURL != rentry.url {
-		t.Fatalf("unexpected cached Rentry url: %q", node.rentryURL)
+	if node.pastebinURL != pastebin.url {
+		t.Fatalf("unexpected cached Pastebin url: %q", node.pastebinURL)
 	}
 
 	if capture.requestCount != 2 {
@@ -1432,26 +1432,26 @@ func TestHandleInteractionCreateRespondsToViewOnRentryButton(t *testing.T) {
 	}
 }
 
-func TestHandleInteractionCreateReusesCachedRentryURL(t *testing.T) {
+func TestHandleInteractionCreateReusesCachedPastebinURL(t *testing.T) {
 	t.Parallel()
 
 	var response discordgo.InteractionResponse
 
 	session := newInteractionTestSession(t, &response)
-	rentry := new(fakeRentryClient)
+	pastebin := new(fakePastebinClient)
 
 	instance := new(bot)
 	instance.nodes = newMessageNodeStore(10)
-	instance.rentry = rentry
+	instance.pastebin = pastebin
 
 	node := instance.nodes.getOrCreate("response-message")
 	node.mu.Lock()
 	node.text = testAssistantReply
 	node.initialized = true
-	node.rentryURL = "https://rentry.co/cached"
+	node.pastebinURL = "https://pastebin.com/cached"
 	node.mu.Unlock()
 
-	interaction := newComponentInteraction("response-message", viewOnRentryButtonCustomID)
+	interaction := newComponentInteraction("response-message", viewOnPastebinButtonCustomID)
 
 	instance.handleInteractionCreate(session, interaction)
 
@@ -1459,20 +1459,20 @@ func TestHandleInteractionCreateReusesCachedRentryURL(t *testing.T) {
 		t.Fatal("expected interaction response data")
 	}
 
-	if !containsFold(response.Data.Content, node.rentryURL) {
-		t.Fatalf("expected cached Rentry url in response content: %q", response.Data.Content)
+	if !containsFold(response.Data.Content, node.pastebinURL) {
+		t.Fatalf("expected cached Pastebin url in response content: %q", response.Data.Content)
 	}
 
-	if rentry.callCount != 0 {
-		t.Fatalf("expected cached Rentry url to skip creation, got %d calls", rentry.callCount)
+	if pastebin.callCount != 0 {
+		t.Fatalf("expected cached Pastebin url to skip creation, got %d calls", pastebin.callCount)
 	}
 }
 
-func TestHandleInteractionCreateRespondsToViewOnRentryButtonFailure(t *testing.T) {
+func TestHandleInteractionCreateRespondsToViewOnPastebinButtonFailure(t *testing.T) {
 	t.Parallel()
 
-	rentry := new(fakeRentryClient)
-	rentry.err = errFakeRentryUnavailable
+	pastebin := new(fakePastebinClient)
+	pastebin.err = errFakePastebinUnavailable
 
 	var capture deferredInteractionCapture
 
@@ -1480,7 +1480,7 @@ func TestHandleInteractionCreateRespondsToViewOnRentryButtonFailure(t *testing.T
 
 	instance := new(bot)
 	instance.nodes = newMessageNodeStore(10)
-	instance.rentry = rentry
+	instance.pastebin = pastebin
 
 	node := instance.nodes.getOrCreate("response-message")
 	node.mu.Lock()
@@ -1488,13 +1488,13 @@ func TestHandleInteractionCreateRespondsToViewOnRentryButtonFailure(t *testing.T
 	node.initialized = true
 	node.mu.Unlock()
 
-	interaction := newComponentInteraction("response-message", viewOnRentryButtonCustomID)
+	interaction := newComponentInteraction("response-message", viewOnPastebinButtonCustomID)
 
 	instance.handleInteractionCreate(session, interaction)
 
 	assertDeferredEphemeralInteractionResponse(t, &capture.deferredResponse)
 
-	expectedContent := "Couldn't create a Rentry page right now."
+	expectedContent := "Couldn't create a Pastebin page right now."
 	if capture.editedResponse.Content != expectedContent {
 		t.Fatalf(
 			"unexpected edited failure response content: got %q want %q",
@@ -1506,8 +1506,8 @@ func TestHandleInteractionCreateRespondsToViewOnRentryButtonFailure(t *testing.T
 	node.mu.Lock()
 	defer node.mu.Unlock()
 
-	if node.rentryURL != "" {
-		t.Fatalf("expected empty cached Rentry url, got %q", node.rentryURL)
+	if node.pastebinURL != "" {
+		t.Fatalf("expected empty cached Pastebin url, got %q", node.pastebinURL)
 	}
 
 	if capture.requestCount != 2 {
