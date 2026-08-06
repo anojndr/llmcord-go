@@ -23,7 +23,7 @@ const (
 	autoCompactMinimumMessages         = 2
 	autoCompactMaxTailMessages         = 4
 	autoCompactMinChunkTokens          = 512
-	autoCompactMaxChunkTokens          = 3000
+	autoCompactMaxChunkTokens          = 16_000
 	autoCompactChunkDivisor            = 3
 	autoCompactCharsPerToken           = 4
 	autoCompactLetterRunBytesPerToken  = 6
