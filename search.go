@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -756,12 +757,24 @@ func truncateSearchDeciderConversation(conversation []chatMessage) []chatMessage
 		conversation[lastIndex],
 		conversationBudget,
 	)
-	if latestMessage.Content != conversation[lastIndex].Content {
+	// Content is an interface{} whose dynamic type can be []contentPart;
+	// direct != comparison panics on such uncomparable values, so compare
+	// with a non-panicking deep equality instead.
+	if !chatMessageContentsEqual(latestMessage.Content, conversation[lastIndex].Content) {
 		conversation = append([]chatMessage(nil), conversation...)
 		conversation[lastIndex] = latestMessage
 	}
 
 	return conversation
+}
+
+// chatMessageContentsEqual reports whether two chatMessage Content values
+// carry the same payload. Content is an interface{} that may hold
+// uncomparable dynamic types such as []contentPart, on which a direct !=
+// comparison panics; reflect.DeepEqual handles those safely and is exact
+// for the concrete types used here (string, []contentPart, nil).
+func chatMessageContentsEqual(left, right any) bool {
+	return reflect.DeepEqual(left, right)
 }
 
 // truncateSearchDeciderMessageContent bounds a single oversized message for

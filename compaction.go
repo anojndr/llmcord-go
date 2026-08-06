@@ -1160,7 +1160,7 @@ func chatMessagesEqual(left, right []chatMessage) bool {
 			return false
 		}
 
-		if renderAutoCompactMessageContent(left[index].Content) != renderAutoCompactMessageContent(right[index].Content) {
+		if !chatMessageContentsEqual(left[index].Content, right[index].Content) {
 			return false
 		}
 	}
