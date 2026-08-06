@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"net/http"
+	"reflect"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -826,6 +827,49 @@ func TestTruncateSearchDeciderConversationBoundsOversizedLatestMessage(t *testin
 			"expected latest message to fit the decider context budget: %d",
 			estimateChatMessageTokens(truncated[len(truncated)-1]),
 		)
+	}
+}
+
+func TestTruncateSearchDeciderConversationWithPartsContent(t *testing.T) {
+	t.Parallel()
+
+	// Regression test: the latest message's Content is []contentPart, whose
+	// dynamic type is an uncomparable slice. Comparing two such interface
+	// values directly used to panic with "runtime error: comparing
+	// uncomparable type []main.contentPart"; truncation must instead treat
+	// untouched parts content as a no-op rather than compare it.
+	conversation := []chatMessage{
+		{Role: messageRoleUser, Content: "Earlier question."},
+		{Role: messageRoleAssistant, Content: "Earlier answer."},
+		{Role: messageRoleUser, Content: []contentPart{
+			{"type": contentTypeText, "text": "Latest prompt."},
+			{"type": contentTypeImageURL, "image_url": map[string]string{"url": "data:image/png;base64,abc"}},
+		}},
+	}
+
+	truncated := truncateSearchDeciderConversation(conversation)
+
+	if len(truncated) != len(conversation) {
+		t.Fatalf(
+			"expected all messages to survive truncation: got %d, want %d",
+			len(truncated),
+			len(conversation),
+		)
+	}
+
+	for index := range truncated {
+		if truncated[index].Role != conversation[index].Role {
+			t.Fatalf("message %d role changed: got %q, want %q", index, truncated[index].Role, conversation[index].Role)
+		}
+
+		if !reflect.DeepEqual(truncated[index].Content, conversation[index].Content) {
+			t.Fatalf(
+				"message %d content changed: got %#v, want %#v",
+				index,
+				truncated[index].Content,
+				conversation[index].Content,
+			)
+		}
 	}
 }
 
