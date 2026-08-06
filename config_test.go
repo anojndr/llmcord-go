@@ -158,7 +158,7 @@ database:
 	}
 }
 
-func TestLoadConfigUsesConfiguredRentryEndpointAndBrowserPath(t *testing.T) {
+func TestLoadConfigUsesConfiguredPastebinSettings(t *testing.T) {
 	t.Parallel()
 
 	tempDir := t.TempDir()
@@ -170,9 +170,11 @@ providers:
     base_url: https://api.example.com/v1
 models:
   openai/first-model:
-rentry:
-  endpoint: https://rentry.example.com/
-  browser_path: /usr/bin/custom-chrome
+pastebin:
+  endpoint: https://pastebin.example.com/api/api_post.php
+  dev_key: abc123
+  expire_date: 1W
+  name: llmcord-go reply
 `
 
 	err := os.WriteFile(configPath, []byte(configText), 0o600)
@@ -185,16 +187,24 @@ rentry:
 		t.Fatalf("load config: %v", err)
 	}
 
-	if loadedConfig.Rentry.Endpoint != "https://rentry.example.com/" {
-		t.Fatalf("unexpected Rentry endpoint: %q", loadedConfig.Rentry.Endpoint)
+	if loadedConfig.Pastebin.Endpoint != "https://pastebin.example.com/api/api_post.php" {
+		t.Fatalf("unexpected Pastebin endpoint: %q", loadedConfig.Pastebin.Endpoint)
 	}
 
-	if loadedConfig.Rentry.BrowserPath != "/usr/bin/custom-chrome" {
-		t.Fatalf("unexpected Rentry browser path: %q", loadedConfig.Rentry.BrowserPath)
+	if loadedConfig.Pastebin.DevKey != "abc123" {
+		t.Fatalf("unexpected Pastebin dev key: %q", loadedConfig.Pastebin.DevKey)
+	}
+
+	if loadedConfig.Pastebin.ExpireDate != "1W" {
+		t.Fatalf("unexpected Pastebin expire date: %q", loadedConfig.Pastebin.ExpireDate)
+	}
+
+	if loadedConfig.Pastebin.Name != "llmcord-go reply" {
+		t.Fatalf("unexpected Pastebin name: %q", loadedConfig.Pastebin.Name)
 	}
 }
 
-func TestLoadConfigDefaultsRentryEndpointWhenUnset(t *testing.T) {
+func TestLoadConfigDefaultsPastebinEndpointWhenUnset(t *testing.T) {
 	t.Parallel()
 
 	tempDir := t.TempDir()
@@ -218,12 +228,12 @@ models:
 		t.Fatalf("load config: %v", err)
 	}
 
-	if loadedConfig.Rentry.Endpoint != defaultRentryEndpoint {
-		t.Fatalf("unexpected default Rentry endpoint: %q", loadedConfig.Rentry.Endpoint)
+	if loadedConfig.Pastebin.Endpoint != defaultPastebinEndpoint {
+		t.Fatalf("unexpected default Pastebin endpoint: %q", loadedConfig.Pastebin.Endpoint)
 	}
 
-	if loadedConfig.Rentry.BrowserPath != "" {
-		t.Fatalf("unexpected default Rentry browser path: %q", loadedConfig.Rentry.BrowserPath)
+	if loadedConfig.Pastebin.DevKey != "" {
+		t.Fatalf("unexpected default Pastebin dev key: %q", loadedConfig.Pastebin.DevKey)
 	}
 }
 

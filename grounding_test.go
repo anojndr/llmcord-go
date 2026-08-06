@@ -175,9 +175,11 @@ func testGroundingConfig() config {
 			ConnectionString: "",
 			StoreKey:         "",
 		},
-		Rentry: rentryConfig{
-			Endpoint:    "",
-			BrowserPath: "",
+		Pastebin: pastebinConfig{
+			Endpoint:   "",
+			DevKey:     "",
+			ExpireDate: "",
+			Name:       "",
 		},
 		AutoCompactThresholdPercent: 0,
 		Models: map[string]map[string]any{

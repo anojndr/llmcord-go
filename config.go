@@ -113,9 +113,11 @@ type rawDatabaseConfig struct {
 	StoreKey         scalarString `yaml:"store_key"`
 }
 
-type rawRentryConfig struct {
-	Endpoint    scalarString `yaml:"endpoint"`
-	BrowserPath scalarString `yaml:"browser_path"`
+type rawPastebinConfig struct {
+	Endpoint   scalarString `yaml:"endpoint"`
+	DevKey     scalarString `yaml:"dev_key"`
+	ExpireDate scalarString `yaml:"expire_date"`
+	Name       scalarString `yaml:"name"`
 }
 
 type providerConfig struct {
@@ -170,9 +172,11 @@ type databaseConfig struct {
 	StoreKey         string
 }
 
-type rentryConfig struct {
-	Endpoint    string
-	BrowserPath string
+type pastebinConfig struct {
+	Endpoint   string
+	DevKey     string
+	ExpireDate string
+	Name       string
 }
 
 type providerAPIKind string
@@ -196,7 +200,7 @@ type rawConfig struct {
 	WebSearch                   rawWebSearchConfig           `yaml:"web_search"`
 	VisualSearch                rawVisualSearchConfig        `yaml:"visual_search"`
 	Database                    rawDatabaseConfig            `yaml:"database"`
-	Rentry                      rawRentryConfig              `yaml:"rentry"`
+	Pastebin                    rawPastebinConfig            `yaml:"pastebin"`
 	AutoCompactThresholdPercent *int                         `yaml:"auto_compact_threshold_percent"`
 	Models                      map[string]map[string]any    `yaml:"models"`
 	ChannelModelLocks           map[string]scalarString      `yaml:"channel_model_locks"`
@@ -218,7 +222,7 @@ type config struct {
 	WebSearch                   webSearchConfig
 	VisualSearch                visualSearchConfig
 	Database                    databaseConfig
-	Rentry                      rentryConfig
+	Pastebin                    pastebinConfig
 	AutoCompactThresholdPercent int
 	Models                      map[string]map[string]any
 	ModelContextWindows         map[string]int
@@ -316,7 +320,7 @@ func buildLoadedConfig(
 			},
 		},
 		Database: normalizeDatabaseConfig(rawLoadedConfig.Database),
-		Rentry:   normalizeRentryConfig(rawLoadedConfig.Rentry),
+		Pastebin: normalizePastebinConfig(rawLoadedConfig.Pastebin),
 		AutoCompactThresholdPercent: intValueOrDefault(
 			rawLoadedConfig.AutoCompactThresholdPercent,
 			autoCompactDefaultThresholdPercent,
@@ -848,15 +852,17 @@ func normalizeDatabaseConfig(rawLoadedConfig rawDatabaseConfig) databaseConfig {
 	}
 }
 
-func normalizeRentryConfig(rawLoadedConfig rawRentryConfig) rentryConfig {
+func normalizePastebinConfig(rawLoadedConfig rawPastebinConfig) pastebinConfig {
 	endpoint := strings.TrimSpace(string(rawLoadedConfig.Endpoint))
 	if endpoint == "" {
-		endpoint = defaultRentryEndpoint
+		endpoint = defaultPastebinEndpoint
 	}
 
-	return rentryConfig{
-		Endpoint:    endpoint,
-		BrowserPath: strings.TrimSpace(string(rawLoadedConfig.BrowserPath)),
+	return pastebinConfig{
+		Endpoint:   endpoint,
+		DevKey:     strings.TrimSpace(string(rawLoadedConfig.DevKey)),
+		ExpireDate: strings.TrimSpace(string(rawLoadedConfig.ExpireDate)),
+		Name:       strings.TrimSpace(string(rawLoadedConfig.Name)),
 	}
 }
 
