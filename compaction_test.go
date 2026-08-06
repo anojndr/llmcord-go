@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/bwmarrin/discordgo"
@@ -670,6 +671,161 @@ func TestDecideWebSearchAutoCompactsSearchDeciderRequest(t *testing.T) {
 
 	if len(client.requests) < 2 {
 		t.Fatalf("expected compaction and final search decider requests: %d", len(client.requests))
+	}
+}
+
+func TestDecideWebSearchTruncatesNearWindowConversation(t *testing.T) {
+	t.Parallel()
+
+	const (
+		contextWindow              = 200_000
+		historyTokens              = 139_000
+		newInputTokens             = 100_000
+		expectedCompactionCalls    = 0
+		expectedSearchDeciderCalls = 1
+	)
+
+	client, counter := newTruncatedSearchDeciderClient(t)
+
+	instance := newSearchTestBot(client, newStubWebSearchClient(func(
+		context.Context,
+		config,
+		[]string,
+	) ([]webSearchResult, error) {
+		return nil, nil
+	}))
+
+	loadedConfig := testSearchConfig()
+	loadedConfig.ModelContextWindows = map[string]int{
+		testAutoCompactMainModel: contextWindow,
+		testSearchDeciderModel:   contextWindow,
+	}
+
+	conversation := []chatMessage{
+		{Role: messageRoleUser, Content: repeatedAutoCompactText("older context", historyTokens)},
+		{Role: messageRoleAssistant, Content: "Earlier answer."},
+		{Role: messageRoleUser, Content: repeatedAutoCompactText("new input", newInputTokens)},
+	}
+
+	decision, _, err := instance.decideWebSearch(
+		context.Background(),
+		loadedConfig,
+		testAutoCompactMainModel,
+		nil,
+		conversation,
+	)
+	if err != nil {
+		t.Fatalf("decide web search: %v", err)
+	}
+
+	if deciderCalls := counter.deciderCalls.Load(); deciderCalls != expectedSearchDeciderCalls {
+		t.Fatalf(
+			"expected exactly one search decider request: %d",
+			deciderCalls,
+		)
+	}
+
+	if compactionCalls := counter.compactionCalls.Load(); compactionCalls != expectedCompactionCalls {
+		t.Fatalf(
+			"near-window conversations must not trigger search-decider compaction: %d calls",
+			compactionCalls,
+		)
+	}
+
+	if decision.NeedsSearch {
+		t.Fatal("expected decider to skip web search")
+	}
+}
+
+type truncatedSearchDeciderCounter struct {
+	compactionCalls atomic.Int64
+	deciderCalls    atomic.Int64
+}
+
+func newTruncatedSearchDeciderClient(
+	t *testing.T,
+) (*stubChatCompletionClient, *truncatedSearchDeciderCounter) {
+	t.Helper()
+
+	counter := new(truncatedSearchDeciderCounter)
+
+	client := newStubChatClient(func(
+		_ context.Context,
+		request chatCompletionRequest,
+		handle func(streamDelta) error,
+	) error {
+		t.Helper()
+
+		if len(request.Messages) >= 1 {
+			systemPrompt, _ := request.Messages[0].Content.(string)
+			if systemPrompt == autoCompactSummarySystemPrompt() ||
+				systemPrompt == autoCompactMergeSystemPrompt() {
+				counter.compactionCalls.Add(1)
+
+				return handle(newStreamDelta("Condensed history.", ""))
+			}
+		}
+
+		if request.ConfiguredModel != testSearchDeciderModel {
+			t.Fatalf("unexpected configured model: %q", request.ConfiguredModel)
+		}
+
+		counter.deciderCalls.Add(1)
+
+		requestTokens := estimateChatMessagesTokens(request.Messages)
+		if requestTokens > searchDeciderMaxRequestTokens {
+			t.Fatalf(
+				"search decider request exceeds bounded context budget: %d > %d",
+				requestTokens,
+				searchDeciderMaxRequestTokens,
+			)
+		}
+
+		return handle(newStreamDelta(`{"needs_search":false,"queries":[]}`, ""))
+	})
+
+	return client, counter
+}
+
+func TestTruncateSearchDeciderConversationBoundsOversizedLatestMessage(t *testing.T) {
+	t.Parallel()
+
+	conversation := []chatMessage{
+		{Role: messageRoleUser, Content: "Earlier question."},
+		{Role: messageRoleAssistant, Content: "Earlier answer."},
+		{Role: messageRoleUser, Content: repeatedAutoCompactText("pasted report", 8_000)},
+	}
+
+	truncated := truncateSearchDeciderConversation(conversation)
+
+	if len(truncated) == 0 {
+		t.Fatal("expected at least the latest message to survive truncation")
+	}
+
+	if truncated[len(truncated)-1].Role != messageRoleUser {
+		t.Fatalf("expected latest user message to be preserved: %#v", truncated[len(truncated)-1])
+	}
+
+	originalText, foundOriginal := conversation[2].Content.(string)
+	if !foundOriginal {
+		t.Fatalf("unexpected original content type: %T", conversation[2].Content)
+	}
+
+	latestText, foundLatest := truncated[len(truncated)-1].Content.(string)
+	if !foundLatest {
+		t.Fatalf("unexpected latest content type: %T", truncated[len(truncated)-1].Content)
+	}
+
+	if latestText == originalText {
+		t.Fatal("expected oversized latest message text to be truncated for the decider")
+	}
+
+	if estimateChatMessageTokens(truncated[len(truncated)-1]) >
+		searchDeciderMaxRequestTokens-searchDeciderPromptOverheadTokens {
+		t.Fatalf(
+			"expected latest message to fit the decider context budget: %d",
+			estimateChatMessageTokens(truncated[len(truncated)-1]),
+		)
 	}
 }
 

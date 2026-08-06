@@ -48,7 +48,18 @@ const (
 		"and do not include any conversational filler, explanation, " +
 		"introductory text, or markdown code fences. " +
 		"Your response must be a single valid JSON object."
-	searchAnswerTemplate = `Answer the user's query based on the web search results.
+	// searchDeciderMaxRequestTokens bounds the assembled search-decider
+	// request. The decider only needs the recent context plus the latest
+	// query to decide whether to search, so near the context window it must
+	// not drag (and then auto-compact) the full conversation — that
+	// compaction alone can cost hundreds of model calls and stall the
+	// pipeline at "Gathering context" for minutes.
+	searchDeciderMaxRequestTokens = 8_000
+	// searchDeciderPromptOverheadTokens reserves room for the fixed decider
+	// prompt text (searchDeciderPrompt.txt) and the decision instruction
+	// appended on top of the recent conversation.
+	searchDeciderPromptOverheadTokens = 2_048
+	searchAnswerTemplate              = `Answer the user's query based on the web search results.
 
 User query:
 %s
@@ -693,6 +704,8 @@ func (instance *bot) buildSearchDeciderConversation(
 	sourceMessage *discordgo.Message,
 	conversation []chatMessage,
 ) ([]chatMessage, error) {
+	conversation = truncateSearchDeciderConversation(conversation)
+
 	searchDeciderConversationWithImages, err := instance.maybeAugmentConversationWithSearchDeciderImages(
 		ctx,
 		loadedConfig,
@@ -715,6 +728,70 @@ func (instance *bot) buildSearchDeciderConversation(
 	}
 
 	return sanitizedConversation, nil
+}
+
+// truncateSearchDeciderConversation keeps only the recent tail of the
+// conversation (source-message-first order, so the newest turn is last) up
+// to a bounded token budget that reserves room for the fixed decider
+// prompt text. The decider decides "should we search?" from the recent
+// context and the latest query; a near-window conversation must not be
+// passed through whole, or its auto-compaction would summarize the entire
+// history with a large number of model calls before the decider can answer
+// at all.
+func truncateSearchDeciderConversation(conversation []chatMessage) []chatMessage {
+	conversationBudget := searchDeciderMaxRequestTokens - searchDeciderPromptOverheadTokens
+
+	if len(conversation) == 0 {
+		return conversation
+	}
+
+	for len(conversation) > 1 &&
+		estimateChatMessagesTokens(conversation) > conversationBudget {
+		conversation = conversation[1:]
+	}
+
+	lastIndex := len(conversation) - 1
+
+	latestMessage := truncateSearchDeciderMessageContent(
+		conversation[lastIndex],
+		conversationBudget,
+	)
+	if latestMessage.Content != conversation[lastIndex].Content {
+		conversation = append([]chatMessage(nil), conversation...)
+		conversation[lastIndex] = latestMessage
+	}
+
+	return conversation
+}
+
+// truncateSearchDeciderMessageContent bounds a single oversized message for
+// the search decider, keeping its leading content up to the context budget.
+// A single latest message can dwarf the whole history (e.g. a pasted file
+// or report), and without bounding it the decider would either send an
+// enormous prompt or trigger the expensive full-conversation compaction.
+// Only string content is truncated: parts content is bounded by the model
+// image/document limits and its text is typically short, so it is left as-is
+// rather than risking a dropped text part.
+func truncateSearchDeciderMessageContent(
+	message chatMessage,
+	tokenLimit int,
+) chatMessage {
+	if estimateChatMessageTokens(message) <= tokenLimit {
+		return message
+	}
+
+	typedContent, isString := message.Content.(string)
+	if !isString {
+		return message
+	}
+
+	contentTokenLimit := tokenLimit - autoCompactMessageOverheadTokens
+	contentTokenLimit = max(contentTokenLimit, 0)
+
+	clonedMessage := message
+	clonedMessage.Content = truncateTextToApproxTokens(typedContent, contentTokenLimit)
+
+	return clonedMessage
 }
 
 func (instance *bot) maybeAugmentConversationWithSearchDeciderImages(
