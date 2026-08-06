@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -2119,5 +2120,85 @@ func TestGrokReasoningEffortNormalization(t *testing.T) {
 
 	if reqGrok.Model != "gpt-5" {
 		t.Errorf("expected model to be normalized to gpt-5, got %q", reqGrok.Model)
+	}
+}
+
+func TestOpenAIResponsesCacheBreakpointMessagesUncomparableContent(t *testing.T) {
+	t.Parallel()
+
+	// Regression test: when the breakpoint message's Content is a slice
+	// ([]map[string]any or []contentPart), the breakpoint comparison used to
+	// panic with "runtime error: comparing uncomparable type ...". Slices
+	// that are already fully marked must pass through unchanged instead.
+	messages := []chatMessage{
+		{Role: messageRoleUser, Content: "older user"},
+		{Role: messageRoleAssistant, Content: "assistant turn"},
+		{Role: messageRoleUser, Content: []map[string]any{
+			{"type": xAIResponsesInputTextType, "text": "latest user"},
+			{
+				"type": xAIResponsesInputTextType,
+				"text": "second part",
+				openAICacheBreakpointKey: map[string]any{
+					openAICacheOptionsModeKey: openAICacheBreakpointModeExplicit,
+				},
+			},
+		}},
+	}
+
+	assertSameContent := func(t *testing.T, before, after []chatMessage) {
+		t.Helper()
+
+		if len(before) != len(after) {
+			t.Fatalf(
+				"expected post-breakpoint message count to match input: got %d, want %d",
+				len(after),
+				len(before),
+			)
+		}
+
+		for index := range before {
+			if after[index].Role != before[index].Role {
+				t.Fatalf("message %d role changed: got %q, want %q", index, after[index].Role, before[index].Role)
+			}
+
+			if !reflect.DeepEqual(after[index].Content, before[index].Content) {
+				t.Fatalf("message %d content changed: got %#v, want %#v", index, after[index].Content, before[index].Content)
+			}
+		}
+	}
+
+	// The stable-prefix breakpoint lands on the message after the last
+	// assistant turn, i.e. the tail user slice message. Its last part is
+	// already marked, so the conversion is a pass-through that must not
+	// panic while comparing the uncomparable slice.
+	normalized := openAIResponsesCacheBreakpointMessages(messages)
+	assertSameContent(t, messages, normalized)
+}
+
+func TestOpenAIResponsesCacheBreakpointMessagesThreadsThroughMapSlice(t *testing.T) {
+	t.Parallel()
+
+	// An unmarked tail part gets marked once; the breakpoint is sitting on
+	// the message after the last assistant turn, whose Content is an
+	// uncomparable []map[string]any slice. The comparison must not panic.
+	messages := []chatMessage{
+		{Role: messageRoleUser, Content: "older user"},
+		{Role: messageRoleAssistant, Content: "assistant turn"},
+		{Role: messageRoleUser, Content: []map[string]any{
+			{"type": xAIResponsesInputTextType, "text": "latest user"},
+			{"type": xAIResponsesInputTextType, "text": "plain tail"},
+		}},
+	}
+
+	normalized := openAIResponsesCacheBreakpointMessages(messages)
+
+	content, ok := normalized[2].Content.([]map[string]any)
+	if !ok {
+		t.Fatalf("expected []map[string]any content, got %T", normalized[2].Content)
+	}
+
+	lastPart := content[len(content)-1]
+	if _, marked := lastPart[openAICacheBreakpointKey]; !marked {
+		t.Fatal("expected last content part to be marked with a cache breakpoint")
 	}
 }

@@ -482,7 +482,10 @@ func openAIResponsesCacheBreakpointMessages(messages []chatMessage) []chatMessag
 	breakpointContent := openAIResponsesMessageContentWithCacheBreakpoint(
 		messages[breakpointIndex].Content,
 	)
-	if breakpointContent == messages[breakpointIndex].Content {
+	// Content is an interface{} that may hold uncomparable slices
+	// ([]map[string]any or []contentPart); direct == comparison panics on
+	// such values, so compare with a non-panicking deep equality instead.
+	if chatMessageContentsEqual(breakpointContent, messages[breakpointIndex].Content) {
 		return messages
 	}
 
