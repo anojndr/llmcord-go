@@ -122,8 +122,10 @@ providers:
   vllm:
     base_url: http://localhost:8000/v1
 
-# Optional global percent threshold for starting auto compaction.
-# Default: 90
+# Optional global percent threshold for starting auto compaction, relative to a
+# model's `context_window`. Default: 90. Like Codex's auto-compaction trigger,
+# the effective threshold is capped at 90% of the context window, so setting a
+# value above 90 has no additional effect.
 auto_compact_threshold_percent: 90
 
 # Optional per-provider context windows, used for reply embeds and auto

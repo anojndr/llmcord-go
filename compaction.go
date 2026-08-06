@@ -10,7 +10,11 @@ import (
 )
 
 const (
-	autoCompactDefaultThresholdPercent = 90
+	// Codex derives its auto-compact trigger at 90% of the context window and
+	// clamps any configured limit to that same 90% ceiling (see
+	// ModelInfo::auto_compact_token_limit in the Codex codebase).
+	autoCompactCodexCapPercent         = 90
+	autoCompactDefaultThresholdPercent = autoCompactCodexCapPercent
 	autoCompactPercentBase             = 100
 	autoCompactSingleMessageMargin     = 10
 	autoCompactWarningCapacity         = 2
@@ -74,17 +78,30 @@ func effectiveAutoCompactThresholdPercent(thresholdPercent int) int {
 	return thresholdPercent
 }
 
+// autoCompactCodexCappedThresholdPercent mirrors Codex's auto-compaction
+// trigger semantics: the effective threshold is capped at 90% of the context
+// window, so auto-compaction never starts beyond Codex's (window * 9) / 10
+// ceiling regardless of the configured percentage.
+func autoCompactCodexCappedThresholdPercent(thresholdPercent int) int {
+	percentage := effectiveAutoCompactThresholdPercent(thresholdPercent)
+	if percentage > autoCompactCodexCapPercent {
+		return autoCompactCodexCapPercent
+	}
+
+	return percentage
+}
+
 func autoCompactTokenLimit(contextWindow, thresholdPercent int) int {
 	if contextWindow <= 0 {
 		return 0
 	}
 
-	return (contextWindow * effectiveAutoCompactThresholdPercent(thresholdPercent)) /
+	return (contextWindow * autoCompactCodexCappedThresholdPercent(thresholdPercent)) /
 		autoCompactPercentBase
 }
 
 func autoCompactSingleMessageThresholdPercent(thresholdPercent int) int {
-	singleMessagePercent := effectiveAutoCompactThresholdPercent(thresholdPercent) -
+	singleMessagePercent := autoCompactCodexCappedThresholdPercent(thresholdPercent) -
 		autoCompactSingleMessageMargin
 	if singleMessagePercent <= 0 {
 		return 1
@@ -111,7 +128,7 @@ func (instance *bot) autoCompactRequest(
 	ctx context.Context,
 	request chatCompletionRequest,
 ) (chatCompletionRequest, autoCompactResult) {
-	thresholdPercent := effectiveAutoCompactThresholdPercent(
+	thresholdPercent := autoCompactCodexCappedThresholdPercent(
 		request.AutoCompactThresholdPercent,
 	)
 	limit := autoCompactTokenLimit(request.ContextWindow, thresholdPercent)
