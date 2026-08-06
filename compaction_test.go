@@ -153,6 +153,59 @@ func TestAutoCompactRequestUsesConfiguredThresholdPercent(t *testing.T) {
 	assertAutoCompactSummaryContains(t, compactedRequest.Messages[0], testAutoCompactSummaryText)
 }
 
+func TestAutoCompactThresholdMatchesCodexWindowCap(t *testing.T) {
+	t.Parallel()
+
+	const (
+		contextWindow      = 1_000
+		aboveCodexPercent  = 95
+		codexExpectedLimit = 900 // Codex auto-compacts at (window * 9) / 10.
+	)
+
+	limit := autoCompactTokenLimit(contextWindow, aboveCodexPercent)
+	if limit != codexExpectedLimit {
+		t.Fatalf(
+			"expected threshold above 90%% to clamp to Codex's (window*9)/10: got %d want %d",
+			limit,
+			codexExpectedLimit,
+		)
+	}
+
+	defaultLimit := autoCompactTokenLimit(contextWindow, 0)
+	if defaultLimit != codexExpectedLimit {
+		t.Fatalf(
+			"expected default threshold to equal Codex's (window*9)/10: got %d want %d",
+			defaultLimit,
+			codexExpectedLimit,
+		)
+	}
+}
+
+func TestAutoCompactSingleMessageLimitFollowsCodexCappedThreshold(t *testing.T) {
+	t.Parallel()
+
+	const contextWindow = 1_000
+
+	// At the Codex cap the latest-message truncation budget stays 10
+	// percentage points below the capped threshold: 80% of the window.
+	cappedPercent := autoCompactCodexCappedThresholdPercent(95)
+	if cappedPercent != autoCompactCodexCapPercent {
+		t.Fatalf("unexpected capped threshold percent: %d", cappedPercent)
+	}
+
+	singleMessageLimit := autoCompactSingleMessageTokenLimit(contextWindow, 95)
+
+	expectedLimit := (contextWindow * (autoCompactCodexCapPercent - autoCompactSingleMessageMargin)) /
+		autoCompactPercentBase
+	if singleMessageLimit != expectedLimit {
+		t.Fatalf(
+			"unexpected single-message limit for capped threshold: got %d want %d",
+			singleMessageLimit,
+			expectedLimit,
+		)
+	}
+}
+
 func TestAutoCompactRequestTruncatesLatestOversizedMessage(t *testing.T) {
 	t.Parallel()
 
