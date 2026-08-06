@@ -18,7 +18,7 @@ type messageNode struct {
 	text                     string
 	thinkingText             string
 	urlScanText              string
-	rentryURL                string
+	pastebinURL              string
 	providerResponseID       string
 	providerResponseModel    string
 	media                    []contentPart

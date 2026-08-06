@@ -112,8 +112,8 @@ func (instance *bot) handleMessageComponentInteraction(
 		return instance.handleShowSourcesButton(session, interaction)
 	case componentData.CustomID == showThinkingButtonCustomID:
 		return instance.handleShowThinkingButton(session, interaction)
-	case componentData.CustomID == viewOnRentryButtonCustomID:
-		return instance.handleViewOnRentryButton(session, interaction)
+	case componentData.CustomID == viewOnPastebinButtonCustomID:
+		return instance.handleViewOnPastebinButton(session, interaction)
 	case strings.HasPrefix(componentData.CustomID, showSourcesPageButtonCustomIDPrefix):
 		return instance.handleShowSourcesPageButton(session, interaction)
 	case strings.HasPrefix(componentData.CustomID, showThinkingPageButtonCustomIDPrefix):
@@ -428,12 +428,12 @@ func formatThinkingPageContent(pages []string, pageIndex int) string {
 	return fmt.Sprintf("Thinking Process (page %d/%d)\n\n%s", pageIndex+1, len(pages), pages[pageIndex])
 }
 
-func (instance *bot) handleViewOnRentryButton(
+func (instance *bot) handleViewOnPastebinButton(
 	session *discordgo.Session,
 	interaction *discordgo.InteractionCreate,
 ) error {
 	if interaction == nil || interaction.Message == nil {
-		return fmt.Errorf("view on Rentry interaction without message: %w", os.ErrInvalid)
+		return fmt.Errorf("view on Pastebin interaction without message: %w", os.ErrInvalid)
 	}
 
 	messageNode, ok := instance.nodes.get(interaction.Message.ID)
@@ -447,7 +447,7 @@ func (instance *bot) handleViewOnRentryButton(
 	}
 
 	messageNode.mu.Lock()
-	cachedURL := strings.TrimSpace(messageNode.rentryURL)
+	cachedURL := strings.TrimSpace(messageNode.pastebinURL)
 	responseText := messageNode.text
 	initialized := messageNode.initialized
 	messageNode.mu.Unlock()
@@ -456,7 +456,7 @@ func (instance *bot) handleViewOnRentryButton(
 		return respondInteractionTextWithFlags(
 			session,
 			interaction.Interaction,
-			"View on Rentry: "+cachedURL,
+			"View on Pastebin: "+cachedURL,
 			discordgo.MessageFlagsEphemeral,
 		)
 	}
@@ -470,11 +470,11 @@ func (instance *bot) handleViewOnRentryButton(
 		)
 	}
 
-	if instance.rentry == nil {
+	if instance.pastebin == nil {
 		return respondInteractionTextWithFlags(
 			session,
 			interaction.Interaction,
-			"Rentry is unavailable right now.",
+			"Pastebin is unavailable right now.",
 			discordgo.MessageFlagsEphemeral,
 		)
 	}
@@ -485,25 +485,25 @@ func (instance *bot) handleViewOnRentryButton(
 		discordgo.MessageFlagsEphemeral,
 	)
 	if err != nil {
-		return fmt.Errorf("defer Rentry interaction response: %w", err)
+		return fmt.Errorf("defer Pastebin interaction response: %w", err)
 	}
 
-	rentryURL, err := instance.rentry.createEntry(context.Background(), responseText)
+	pastebinURL, err := instance.pastebin.createPaste(context.Background(), responseText)
 	if err != nil {
-		logWarn("create Rentry entry", err, "message_id", interaction.Message.ID)
+		logWarn("create Pastebin paste", err, "message_id", interaction.Message.ID)
 
 		return editInteractionResponseText(
 			session,
 			interaction.Interaction,
-			"Couldn't create a Rentry page right now.",
+			"Couldn't create a Pastebin page right now.",
 		)
 	}
 
 	messageNode.mu.Lock()
-	if strings.TrimSpace(messageNode.rentryURL) == "" {
-		messageNode.rentryURL = rentryURL
+	if strings.TrimSpace(messageNode.pastebinURL) == "" {
+		messageNode.pastebinURL = pastebinURL
 	} else {
-		rentryURL = messageNode.rentryURL
+		pastebinURL = messageNode.pastebinURL
 	}
 
 	instance.nodes.cacheLockedNode(interaction.Message.ID, messageNode)
@@ -514,7 +514,7 @@ func (instance *bot) handleViewOnRentryButton(
 	return editInteractionResponseText(
 		session,
 		interaction.Interaction,
-		"View on Rentry: "+rentryURL,
+		"View on Pastebin: "+pastebinURL,
 	)
 }
 

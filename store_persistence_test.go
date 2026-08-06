@@ -463,7 +463,7 @@ func testMessageNodeSnapshotsWithNULs() map[string]messageNodeSnapshot {
 			Text:                     "reply\x00text",
 			ThinkingText:             "thinking\x00text",
 			URLScanText:              "scan\x00text",
-			RentryURL:                "https://example.com/\x00notes",
+			PastebinURL:              "https://example.com/\x00notes",
 			ProviderResponseID:       "resp-\x00id",
 			ProviderResponseModel:    "x-ai/grok-\x004",
 			Media:                    testContentPartSnapshotsWithNULs(),
@@ -695,7 +695,7 @@ func testAssistantMessageNodeSnapshot() messageNodeSnapshot {
 		Text:                     testAssistantReply,
 		ThinkingText:             testThinkingReply,
 		URLScanText:              "",
-		RentryURL:                "",
+		PastebinURL:              "",
 		ProviderResponseID:       "",
 		ProviderResponseModel:    "",
 		Media:                    nil,
@@ -761,12 +761,12 @@ func TestPersistentMessageNodeStoreRestoresRetainedSearchHistoryAfterRestart(t *
 	assistantMessage.MessageReference = sourceMessage.Reference()
 	assistantMessage.Type = discordgo.MessageTypeReply
 	setCachedAssistantNode(initialInstance, assistantMessage, sourceMessage)
-	setAssistantNodeSearchMetadataAndRentry(
+	setAssistantNodeSearchMetadataAndPastebin(
 		t,
 		initialInstance,
 		assistantMessage.ID,
 		expectedMetadata,
-		"https://rentry.co/example",
+		"https://pastebin.com/example",
 	)
 
 	err := initialInstance.nodes.persist()
@@ -806,7 +806,7 @@ func TestPersistentMessageNodeStoreRestoresRetainedSearchHistoryAfterRestart(t *
 		expectedMetadata.Queries,
 		expectedMetadata.Results,
 		expectedMetadata.VisualSearchSources,
-		"https://rentry.co/example",
+		"https://pastebin.com/example",
 	)
 
 	gotThinkingText := restartedInstance.thinkingTextForMessage(assistantMessageID)
@@ -902,12 +902,12 @@ func newPersistentHistoryTestBot(
 	return instance
 }
 
-func setAssistantNodeSearchMetadataAndRentry(
+func setAssistantNodeSearchMetadataAndPastebin(
 	t *testing.T,
 	instance *bot,
 	messageID string,
 	metadata *searchMetadata,
-	rentryURL string,
+	pastebinURL string,
 ) {
 	t.Helper()
 
@@ -918,7 +918,7 @@ func setAssistantNodeSearchMetadataAndRentry(
 
 	node.mu.Lock()
 	node.searchMetadata = cloneSearchMetadata(metadata)
-	node.rentryURL = rentryURL
+	node.pastebinURL = pastebinURL
 	instance.nodes.cacheLockedNode(messageID, node)
 	node.mu.Unlock()
 }
@@ -995,7 +995,7 @@ func assertPersistedAssistantMetadata(
 	expectedQueries []string,
 	expectedResults []webSearchResult,
 	expectedVisualSearchSources []visualSearchSourceGroup,
-	expectedRentryURL string,
+	expectedPastebinURL string,
 ) {
 	t.Helper()
 
@@ -1034,8 +1034,8 @@ func assertPersistedAssistantMetadata(
 	node.mu.Lock()
 	defer node.mu.Unlock()
 
-	if node.rentryURL != expectedRentryURL {
-		t.Fatalf("unexpected persisted rentry url: %q", node.rentryURL)
+	if node.pastebinURL != expectedPastebinURL {
+		t.Fatalf("unexpected persisted pastebin url: %q", node.pastebinURL)
 	}
 }
 
