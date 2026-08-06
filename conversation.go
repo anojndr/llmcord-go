@@ -72,6 +72,21 @@ func (instance *bot) buildConversation(
 			instance.initializeNode(ctx, currentMessage, node)
 		}
 
+		// A user message inside the chain may anchor an auto-compaction
+		// boundary: the older history was already summarized on a previous
+		// request, and re-summarizing it is the stall we are removing. When a
+		// boundary is found the chain walk stops there and the recorded
+		// handoff summary is carried forward as its own turn. The source
+		// message is never a boundary anchor; its boundary is refreshed by the
+		// current request.
+		var boundary *messageNodeCompactionSummary
+		if node.role != messageRoleUser || currentMessageID == sourceMessageID {
+			boundary = nil
+		} else if candidate := node.compactionSummary; candidate != nil && candidate.applied &&
+			strings.TrimSpace(candidate.text) != "" {
+			boundary = candidate
+		}
+
 		content, summary := buildMessageContent(node, maxText, contentOptions)
 		if _, ok := preprocessedMessageIDs[currentMessageID]; ok &&
 			(useGeminiMediaAnalysis || usePDFExtraction) {
@@ -98,6 +113,18 @@ func (instance *bot) buildConversation(
 			messages = append(messages, message)
 		}
 
+		// The boundary message itself is part of the preserved tail, so its
+		// real content stays. The recorded handoff summary replaces the older
+		// history (everything before this message) and is appended after it;
+		// the list is reversed later, so the summary lands first.
+		if boundary != nil {
+			summaryMessage := chatMessage{
+				Role:    messageRoleUser,
+				Content: buildBoundaryReplacedContent(boundary.text),
+			}
+			messages = append(messages, summaryMessage)
+		}
+
 		appendConversationWarnings(
 			warningSet,
 			node,
@@ -109,7 +136,7 @@ func (instance *bot) buildConversation(
 		)
 
 		parentMessage := node.parentMessage
-		if stopsAtDirectReplyTarget(sourceMessage, currentMessage, node.role) {
+		if boundary != nil || stopsAtDirectReplyTarget(sourceMessage, currentMessage, node.role) {
 			parentMessage = nil
 		}
 		node.mu.Unlock()
@@ -120,6 +147,21 @@ func (instance *bot) buildConversation(
 	reverseChatMessages(messages)
 
 	return messages, sortedWarnings(warningSet)
+}
+
+// buildBoundaryReplacedContent renders the replacement content for a user
+// message that carries an auto-compaction boundary: the recorded handoff
+// summary text. The boundary replaces the older history the message anchored,
+// so future requests read the compacted context instead of re-summarizing it.
+// An empty boundary text collapses to an instruction-free fallback so the
+// message still renders as a user turn.
+func buildBoundaryReplacedContent(boundaryText string) any {
+	trimmed := strings.TrimSpace(autoCompactSummaryMessageText(boundaryText))
+	if trimmed == "" {
+		return "\n"
+	}
+
+	return trimmed
 }
 
 func appendConversationWarnings(

@@ -166,7 +166,7 @@ func (instance *bot) autoCompactRequest(
 		return request, result
 	}
 
-	compactedMessages, warning, err := instance.compactMessagesForRequest(
+	compactedMessages, warning, boundaryText, err := instance.compactMessagesForRequest(
 		ctx,
 		request,
 		systemMessages,
@@ -201,7 +201,40 @@ func (instance *bot) autoCompactRequest(
 	result.Applied = true
 	result.Strategy = warning
 
+	instance.recordCompactionBoundary(request, boundaryText, result)
+
 	return request, result
+}
+
+// recordCompactionBoundary persists the auto-compaction boundary produced for
+// the request so a later request over the same reply chain reuses the summary
+// instead of re-summarizing the entire history. The boundary is anchored to
+// the source message (the request's latest message): from now on walking the
+// chain to that message renders the recorded handoff summary for the older
+// history and stops, which is what keeps post-compaction requests fast.
+func (instance *bot) recordCompactionBoundary(
+	request chatCompletionRequest,
+	summaryText string,
+	result autoCompactResult,
+) {
+	if !result.Applied || instance == nil || instance.nodes == nil {
+		return
+	}
+
+	sourceMessageID := strings.TrimSpace(request.RequestID)
+	if sourceMessageID == "" {
+		return
+	}
+
+	if strings.TrimSpace(summaryText) == "" {
+		return
+	}
+
+	instance.nodes.recordCompactionSummary(sourceMessageID, &messageNodeCompactionSummary{
+		text:    strings.TrimSpace(summaryText),
+		anchor:  sourceMessageID,
+		applied: true,
+	})
 }
 
 func (instance *bot) compactMessagesForRequest(
@@ -210,7 +243,7 @@ func (instance *bot) compactMessagesForRequest(
 	systemMessages []chatMessage,
 	conversationMessages []chatMessage,
 	limit int,
-) ([]chatMessage, autoCompactStrategy, error) {
+) ([]chatMessage, autoCompactStrategy, string, error) {
 	maxTailMessages := minInt(autoCompactMaxTailMessages, len(conversationMessages)-1)
 
 	var lastErr error
@@ -237,7 +270,7 @@ func (instance *bot) compactMessagesForRequest(
 			limit,
 		)
 		if fits {
-			return candidateMessages, autoCompactStrategySummary, nil
+			return candidateMessages, autoCompactStrategySummary, strings.TrimSpace(summaryText), nil
 		}
 	}
 
@@ -247,14 +280,14 @@ func (instance *bot) compactMessagesForRequest(
 		limit,
 	)
 	if fits {
-		return tailOnlyMessages, autoCompactStrategyTrimmed, nil
+		return tailOnlyMessages, autoCompactStrategyTrimmed, "", nil
 	}
 
 	if lastErr != nil {
-		return nil, "", lastErr
+		return nil, "", "", lastErr
 	}
 
-	return nil, "", errAutoCompactRequestTooLarge
+	return nil, "", "", errAutoCompactRequestTooLarge
 }
 
 func buildAutoCompactedMessages(
