@@ -23,7 +23,7 @@ type bot struct {
 	webSearch                    webSearcher
 	visualSearch                 visualSearcher
 	serpAPIVisualSearch          serpAPIVisualSearcher
-	pastebin                     pastebinCreator
+	gist                         gistCreator
 	tiktok                       tiktokFetcher
 	facebook                     facebookFetcher
 	youtubeShorts                youtubeShortsFetcher
@@ -95,12 +95,13 @@ func newBot(ctx context.Context, configPath string, loadedConfig config) (*bot, 
 	instance.webSearch = newWebSearchClient(httpClient)
 	instance.visualSearch = newVisualSearchClient(httpClient)
 	instance.serpAPIVisualSearch = newSerpAPIVisualSearchClient(httpClient)
-	instance.pastebin = newPastebinClient(
+	instance.gist = newGistClient(
 		httpClient,
-		loadedConfig.Pastebin.Endpoint,
-		loadedConfig.Pastebin.DevKey,
-		loadedConfig.Pastebin.Name,
-		loadedConfig.Pastebin.ExpireDate,
+		loadedConfig.Gist.Endpoint,
+		loadedConfig.Gist.APIKeys,
+		loadedConfig.Gist.Description,
+		loadedConfig.Gist.Filename,
+		loadedConfig.Gist.Public,
 	)
 	instance.tiktok = newTikTokClient(httpClient)
 
