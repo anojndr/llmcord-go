@@ -35,6 +35,7 @@ type bot struct {
 	currentExaSearchTypeValue    string
 	currentSearchDeciderModel    string
 	currentGroundingEnabledValue *bool
+	decidingSearch               bool
 	modelMu                      sync.RWMutex
 	editMu                       sync.Mutex
 	nextEditAtByMessage          map[string]time.Time

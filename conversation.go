@@ -801,56 +801,6 @@ func attachmentURLPath(rawURL string) string {
 	return parsedURL.Path
 }
 
-func filterContentPartsForOptions(
-	parts []contentPart,
-	options messageContentOptions,
-) []contentPart {
-	filteredParts := make([]contentPart, 0, len(parts))
-	imageCount := 0
-
-	for _, part := range parts {
-		partType, _ := part["type"].(string)
-
-		switch partType {
-		case contentTypeText:
-			filteredParts = append(filteredParts, part)
-		case contentTypeImageURL:
-			if imageCount >= options.maxImages {
-				continue
-			}
-
-			filteredParts = append(filteredParts, part)
-			imageCount++
-		case contentTypeAudioData:
-			if options.allowAudio {
-				filteredParts = append(filteredParts, part)
-			}
-		case contentTypeDocument:
-			if attachmentPartShouldInlineAsText(part, options) {
-				continue
-			}
-
-			if messageContentOptionsAllowsDocumentPart(options, part) {
-				filteredParts = append(filteredParts, part)
-			}
-		case contentTypeFileData:
-			if attachmentPartShouldInlineAsText(part, options) {
-				continue
-			}
-
-			if options.allowFiles {
-				filteredParts = append(filteredParts, part)
-			}
-		case contentTypeVideoData:
-			if options.allowVideo {
-				filteredParts = append(filteredParts, part)
-			}
-		}
-	}
-
-	return filteredParts
-}
-
 func inlineTextAttachmentContent(parts []contentPart, options messageContentOptions) string {
 	textParts := make([]string, 0, len(parts))
 
