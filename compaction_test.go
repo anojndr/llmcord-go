@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"net/http"
-	"reflect"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -598,7 +597,7 @@ func TestTruncateContentPartsToApproxTokensPreservesNonTextParts(t *testing.T) {
 	}
 }
 
-func TestDecideWebSearchAutoCompactsSearchDeciderRequest(t *testing.T) {
+func TestDecideAutoCompactsSearchDeciderRequest(t *testing.T) {
 	t.Parallel()
 
 	client := newStubChatClient(func(
@@ -628,30 +627,25 @@ func TestDecideWebSearchAutoCompactsSearchDeciderRequest(t *testing.T) {
 		return handle(newStreamDelta(`{"needs_search":false,"queries":[]}`, ""))
 	})
 
-	instance := newSearchTestBot(client, newStubWebSearchClient(func(
-		context.Context,
-		config,
-		[]string,
-	) ([]webSearchResult, error) {
-		return nil, nil
-	}))
+	instance := newSearchTestBot(client, newNoOpWebSearchClient())
 	loadedConfig := testSearchConfig()
 	loadedConfig.ModelContextWindows = map[string]int{
 		testSearchDeciderModel: 2200,
 	}
 
-	conversation := []chatMessage{
-		{Role: messageRoleUser, Content: repeatedAutoCompactText("very old context", 100)},
-		{Role: messageRoleAssistant, Content: "Assistant reply about the older context."},
-		{Role: messageRoleUser, Content: "Should we search for the latest version?"},
-	}
+	sourceMessage := newDeciderTestConversationChain(
+		instance,
+		repeatedAutoCompactText("very old context", 100),
+		"Assistant reply about the older context.",
+		"Should we search for the latest version?",
+	)
 
 	decision, warnings, err := instance.decideWebSearch(
 		context.Background(),
 		loadedConfig,
 		"openai/main-model",
+		sourceMessage,
 		nil,
-		conversation,
 	)
 	if err != nil {
 		t.Fatalf("decide web search: %v", err)
@@ -675,26 +669,72 @@ func TestDecideWebSearchAutoCompactsSearchDeciderRequest(t *testing.T) {
 	}
 }
 
-func TestDecideWebSearchTruncatesNearWindowConversation(t *testing.T) {
-	t.Parallel()
-
-	const (
-		contextWindow              = 200_000
-		historyTokens              = 139_000
-		newInputTokens             = 100_000
-		expectedCompactionCalls    = 0
-		expectedSearchDeciderCalls = 1
-	)
-
-	client, counter := newTruncatedSearchDeciderClient(t)
-
-	instance := newSearchTestBot(client, newStubWebSearchClient(func(
+func newNoOpWebSearchClient() *stubWebSearchClient {
+	return newStubWebSearchClient(func(
 		context.Context,
 		config,
 		[]string,
 	) ([]webSearchResult, error) {
 		return nil, nil
-	}))
+	})
+}
+
+// newDeciderTestConversationChain seeds a reply chain (oldest user -> assistant
+// -> latest user) in the instance's node store and returns the latest source
+// message, which is what the search decider rebuilds its conversation from.
+func newDeciderTestConversationChain(
+	instance *bot,
+	oldestText string,
+	assistantText string,
+	latestText string,
+) *discordgo.Message {
+	oldestMessage := new(discordgo.Message)
+	oldestMessage.ID = "oldest-user-message"
+	oldestMessage.ChannelID = "channel-1"
+	oldestMessage.Author = newDiscordUser("user-1", false)
+	oldestMessage.Content = oldestText
+
+	assistantMessage := new(discordgo.Message)
+	assistantMessage.ID = "decider-assistant-message"
+	assistantMessage.ChannelID = "channel-1"
+	assistantMessage.Author = newDiscordUser("bot-user", true)
+	assistantMessage.Type = discordgo.MessageTypeReply
+	assistantMessage.Content = assistantText
+	assistantMessage.MessageReference = oldestMessage.Reference()
+	assistantMessage.ReferencedMessage = oldestMessage
+
+	sourceMessage := new(discordgo.Message)
+	sourceMessage.ID = "search-decider-latest-user-message"
+	sourceMessage.ChannelID = "channel-1"
+	sourceMessage.Author = newDiscordUser("user-1", false)
+	sourceMessage.Content = latestText
+	sourceMessage.MessageReference = assistantMessage.Reference()
+	sourceMessage.ReferencedMessage = assistantMessage
+
+	setCachedUserNode(instance, oldestMessage, nil, oldestMessage.Content)
+	setCachedAssistantNode(instance, assistantMessage, oldestMessage)
+	setCachedUserNode(instance, sourceMessage, assistantMessage, sourceMessage.Content)
+
+	return sourceMessage
+}
+
+// TestDecideWebSearchAutoCompactsNearWindowConversation asserts that a
+// near-window conversation is auto-compacted for the search decider exactly
+// like the main model: the decider pipeline runs the same conversation build
+// and augmentation, then auto-compacts against the decider model's own
+// context window before streaming the decision request.
+func TestDecideWebSearchAutoCompactsNearWindowConversation(t *testing.T) {
+	t.Parallel()
+
+	const (
+		contextWindow  = 200_000
+		historyTokens  = 139_000
+		newInputTokens = 100_000
+	)
+
+	client, counter := newAutoCompactingSearchDeciderClient(t)
+
+	instance := newSearchTestBot(client, newNoOpWebSearchClient())
 
 	loadedConfig := testSearchConfig()
 	loadedConfig.ModelContextWindows = map[string]int{
@@ -702,53 +742,48 @@ func TestDecideWebSearchTruncatesNearWindowConversation(t *testing.T) {
 		testSearchDeciderModel:   contextWindow,
 	}
 
-	conversation := []chatMessage{
-		{Role: messageRoleUser, Content: repeatedAutoCompactText("older context", historyTokens)},
-		{Role: messageRoleAssistant, Content: "Earlier answer."},
-		{Role: messageRoleUser, Content: repeatedAutoCompactText("new input", newInputTokens)},
-	}
+	sourceMessage := newDeciderTestConversationChain(
+		instance,
+		repeatedAutoCompactText("older context", historyTokens),
+		"Earlier answer.",
+		repeatedAutoCompactText("new input", newInputTokens),
+	)
 
-	decision, _, err := instance.decideWebSearch(
+	decision, warnings, err := instance.decideWebSearch(
 		context.Background(),
 		loadedConfig,
 		testAutoCompactMainModel,
+		sourceMessage,
 		nil,
-		conversation,
 	)
 	if err != nil {
 		t.Fatalf("decide web search: %v", err)
 	}
 
-	if deciderCalls := counter.deciderCalls.Load(); deciderCalls != expectedSearchDeciderCalls {
-		t.Fatalf(
-			"expected exactly one search decider request: %d",
-			deciderCalls,
-		)
-	}
-
-	if compactionCalls := counter.compactionCalls.Load(); compactionCalls != expectedCompactionCalls {
-		t.Fatalf(
-			"near-window conversations must not trigger search-decider compaction: %d calls",
-			compactionCalls,
-		)
-	}
-
 	if decision.NeedsSearch {
 		t.Fatal("expected decider to skip web search")
 	}
+
+	if deciderCalls := counter.deciderCalls.Load(); deciderCalls == 0 {
+		t.Fatal("expected at least one search decider request")
+	}
+
+	if len(warnings) == 0 {
+		t.Fatal("expected auto-compaction warnings for the search decider")
+	}
 }
 
-type truncatedSearchDeciderCounter struct {
+type autoCompactingSearchDeciderCounter struct {
 	compactionCalls atomic.Int64
 	deciderCalls    atomic.Int64
 }
 
-func newTruncatedSearchDeciderClient(
+func newAutoCompactingSearchDeciderClient(
 	t *testing.T,
-) (*stubChatCompletionClient, *truncatedSearchDeciderCounter) {
+) (*stubChatCompletionClient, *autoCompactingSearchDeciderCounter) {
 	t.Helper()
 
-	counter := new(truncatedSearchDeciderCounter)
+	counter := new(autoCompactingSearchDeciderCounter)
 
 	client := newStubChatClient(func(
 		_ context.Context,
@@ -773,104 +808,10 @@ func newTruncatedSearchDeciderClient(
 
 		counter.deciderCalls.Add(1)
 
-		requestTokens := estimateChatMessagesTokens(request.Messages)
-		if requestTokens > searchDeciderMaxRequestTokens {
-			t.Fatalf(
-				"search decider request exceeds bounded context budget: %d > %d",
-				requestTokens,
-				searchDeciderMaxRequestTokens,
-			)
-		}
-
 		return handle(newStreamDelta(`{"needs_search":false,"queries":[]}`, ""))
 	})
 
 	return client, counter
-}
-
-func TestTruncateSearchDeciderConversationBoundsOversizedLatestMessage(t *testing.T) {
-	t.Parallel()
-
-	conversation := []chatMessage{
-		{Role: messageRoleUser, Content: "Earlier question."},
-		{Role: messageRoleAssistant, Content: "Earlier answer."},
-		{Role: messageRoleUser, Content: repeatedAutoCompactText("pasted report", 8_000)},
-	}
-
-	truncated := truncateSearchDeciderConversation(conversation)
-
-	if len(truncated) == 0 {
-		t.Fatal("expected at least the latest message to survive truncation")
-	}
-
-	if truncated[len(truncated)-1].Role != messageRoleUser {
-		t.Fatalf("expected latest user message to be preserved: %#v", truncated[len(truncated)-1])
-	}
-
-	originalText, foundOriginal := conversation[2].Content.(string)
-	if !foundOriginal {
-		t.Fatalf("unexpected original content type: %T", conversation[2].Content)
-	}
-
-	latestText, foundLatest := truncated[len(truncated)-1].Content.(string)
-	if !foundLatest {
-		t.Fatalf("unexpected latest content type: %T", truncated[len(truncated)-1].Content)
-	}
-
-	if latestText == originalText {
-		t.Fatal("expected oversized latest message text to be truncated for the decider")
-	}
-
-	if estimateChatMessageTokens(truncated[len(truncated)-1]) >
-		searchDeciderMaxRequestTokens-searchDeciderPromptOverheadTokens {
-		t.Fatalf(
-			"expected latest message to fit the decider context budget: %d",
-			estimateChatMessageTokens(truncated[len(truncated)-1]),
-		)
-	}
-}
-
-func TestTruncateSearchDeciderConversationWithPartsContent(t *testing.T) {
-	t.Parallel()
-
-	// Regression test: the latest message's Content is []contentPart, whose
-	// dynamic type is an uncomparable slice. Comparing two such interface
-	// values directly used to panic with "runtime error: comparing
-	// uncomparable type []main.contentPart"; truncation must instead treat
-	// untouched parts content as a no-op rather than compare it.
-	conversation := []chatMessage{
-		{Role: messageRoleUser, Content: "Earlier question."},
-		{Role: messageRoleAssistant, Content: "Earlier answer."},
-		{Role: messageRoleUser, Content: []contentPart{
-			{"type": contentTypeText, "text": "Latest prompt."},
-			{"type": contentTypeImageURL, "image_url": map[string]string{"url": "data:image/png;base64,abc"}},
-		}},
-	}
-
-	truncated := truncateSearchDeciderConversation(conversation)
-
-	if len(truncated) != len(conversation) {
-		t.Fatalf(
-			"expected all messages to survive truncation: got %d, want %d",
-			len(truncated),
-			len(conversation),
-		)
-	}
-
-	for index := range truncated {
-		if truncated[index].Role != conversation[index].Role {
-			t.Fatalf("message %d role changed: got %q, want %q", index, truncated[index].Role, conversation[index].Role)
-		}
-
-		if !reflect.DeepEqual(truncated[index].Content, conversation[index].Content) {
-			t.Fatalf(
-				"message %d content changed: got %#v, want %#v",
-				index,
-				truncated[index].Content,
-				conversation[index].Content,
-			)
-		}
-	}
 }
 
 type prepareMessageResponseAutoCompactFixture struct {
