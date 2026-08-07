@@ -11,6 +11,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -2221,4 +2222,91 @@ func newStreamableHTTPOptions() *mcp.StreamableHTTPOptions {
 	options.JSONResponse = true
 
 	return options
+}
+
+// TestDecideWebSearchRetriesEmptyDeciderResponse verifies that an empty model
+// response from the search-decider stream is retried end to end (through the
+// router's transient retry loop) and the retried decision is used.
+func TestDecideWebSearchRetriesEmptyDeciderResponse(t *testing.T) {
+	t.Parallel()
+
+	var attempts atomic.Int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		_ *http.Request,
+	) {
+		t.Helper()
+
+		attempts.Add(1)
+
+		responseWriter.Header().Set("Content-Type", "text/event-stream")
+
+		if attempts.Load() == 1 {
+			// Completes cleanly but with an empty response: no output text,
+			// no usage. This is the "empty model response" the decider sees.
+			writeStreamChunk(
+				t,
+				responseWriter,
+				"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_x\","+
+					"\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\n",
+			)
+			writeStreamChunk(t, responseWriter, "data: [DONE]\n\n")
+
+			return
+		}
+
+		writeStreamChunk(
+			t,
+			responseWriter,
+			"data: {\"type\":\"response.output_text.delta\",\"delta\":\"{\\\"needs_search\\\":false}\"}\n\n",
+		)
+		writeStreamChunk(
+			t,
+			responseWriter,
+			"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_x\","+
+				"\"status\":\"completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n",
+		)
+		writeStreamChunk(t, responseWriter, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	router := chatCompletionRouterRetryTestClient(server)
+
+	instance := newSearchTestBot(router, newStubWebSearchClient(func(
+		context.Context,
+		config,
+		[]string,
+	) ([]webSearchResult, error) {
+		t.Fatalf("did not expect web search to run")
+
+		return nil, nil
+	}))
+
+	loadedConfig := testSearchConfig()
+
+	// Point the openai provider at the test server so the decider stream
+	// reaches it and the main-model call stays within context.
+	openAIProvider := loadedConfig.Providers["openai"]
+	openAIProvider.BaseURL = server.URL
+	loadedConfig.Providers["openai"] = openAIProvider
+
+	decision, _, err := instance.decideWebSearch(
+		context.Background(),
+		loadedConfig,
+		"openai/main-model",
+		nil,
+		[]chatMessage{{Role: messageRoleUser, Content: "Check the latest news."}},
+	)
+	if err != nil {
+		t.Fatalf("decide web search: %v", err)
+	}
+
+	if decision.NeedsSearch {
+		t.Fatal("expected decider to skip web search after retry")
+	}
+
+	if attempts.Load() != 2 {
+		t.Fatalf("attempts = %d, want 2 (empty decider response then retry)", attempts.Load())
+	}
 }

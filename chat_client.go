@@ -13,6 +13,15 @@ import (
 const (
 	queueFullRetryMaxAttempts = 2
 	queueFullRetryFixedDelay  = 3 * time.Second
+
+	// transientRetryMaxAttempts bounds re-sends for streams that fail without
+	// producing any visible content: dropped mid-stream connections (EOF
+	// before [DONE] / before response.completed), Gemini upstream NetworkError
+	// interruptions, and clean-but-empty model responses. Once any content
+	// has been delivered a stream is never re-sent, so a partial reply is
+	// never duplicated.
+	transientRetryMaxAttempts = 2
+	transientRetryFixedDelay  = 1 * time.Second
 )
 
 type chatCompletionRouter struct {
@@ -38,42 +47,136 @@ func (client chatCompletionRouter) streamChatCompletion(
 	request.Provider.APIKeys = rotatedKeys
 	request.Provider.APIKey = firstAPIKey(rotatedKeys)
 
-	attempt := 1
-
-	for {
-		anyDeltaSent := false
+	for attempt := 1; ; attempt++ {
+		contentSent := false
 		wrappedHandle := func(delta streamDelta) error {
-			anyDeltaSent = true
+			if deltaReferencesContent(delta) {
+				contentSent = true
+			}
 
 			return handle(delta)
 		}
 
 		err := client.streamChatCompletionOnce(ctx, request, wrappedHandle)
 
-		if err != nil && (attempt >= queueFullRetryMaxAttempts || anyDeltaSent || !isQueueFullQueueError(err)) {
+		// A stream that delivered any content is final: retrying would
+		// duplicate a partial reply in the user's chat.
+		if contentSent {
+			if err == nil {
+				return nil
+			}
+
 			return err
 		}
 
-		if err == nil {
-			return nil
+		// A clean-but-empty stream is an empty model response, classified as a
+		// transient retry: it is re-sent once before being surfaced as
+		// errEmptyModelResponse.
+		retry := streamRetryAction(err)
+		if retry.giveUp {
+			if err == nil {
+				return errEmptyModelResponse
+			}
+
+			return err
+		}
+
+		if attempt >= retry.maxAttempts {
+			if err == nil {
+				return errEmptyModelResponse
+			}
+
+			return err
 		}
 
 		logWarn(
-			"queue-full stream error; retrying chat completion",
+			"stream result; retrying chat completion",
 			err,
 			"attempt",
 			attempt,
 			"max_attempts",
-			queueFullRetryMaxAttempts,
+			retry.maxAttempts,
+			"kind",
+			retry.kind,
 		)
 
-		sleepErr := sleepQueueFullRetryDelay(ctx)
+		sleepErr := sleepStreamRetryDelay(ctx, retry.fixedDelay)
 		if sleepErr != nil {
 			return sleepErr
 		}
-
-		attempt++
 	}
+}
+
+const (
+	streamRetryKindTransient = "transient"
+	streamRetryKindQueueFull = "queue-full"
+	streamRetryKindEmpty     = "empty"
+)
+
+type streamRetry struct {
+	kind        string
+	maxAttempts int
+	fixedDelay  time.Duration
+	giveUp      bool
+}
+
+// streamRetryAction classifies a stream attempt that delivered no content
+// into a retry policy. Provider-side request-queue saturation keeps its
+// dedicated budget and delay; a clean-but-empty response (err == nil) is an
+// empty model response and reuses the transient budget, as do disconnected
+// streams before [DONE] / before response.completed and Gemini upstream
+// NetworkError interruptions. Anything else is returned unchanged.
+func streamRetryAction(err error) streamRetry {
+	transient := streamRetry{
+		kind:        streamRetryKindTransient,
+		maxAttempts: transientRetryMaxAttempts,
+		fixedDelay:  transientRetryFixedDelay,
+		giveUp:      false,
+	}
+
+	switch {
+	case err == nil:
+		transient.kind = streamRetryKindEmpty
+
+		return transient
+	case isQueueFullQueueError(err):
+		return streamRetry{
+			kind:        streamRetryKindQueueFull,
+			maxAttempts: queueFullRetryMaxAttempts,
+			fixedDelay:  queueFullRetryFixedDelay,
+			giveUp:      false,
+		}
+	case isTransientStreamError(err) || errors.Is(err, errEmptyModelResponse):
+		return transient
+	default:
+		return streamRetry{
+			kind:        "",
+			maxAttempts: 0,
+			fixedDelay:  0,
+			giveUp:      true,
+		}
+	}
+}
+
+func deltaReferencesContent(delta streamDelta) bool {
+	return delta.Thinking != "" || delta.Content != "" || delta.SearchMetadata != nil
+}
+
+// isTransientStreamError reports whether a stream failure is safe to retry:
+// the proxy connection dropped mid-stream (chat completions ending before
+// [DONE], Responses ending before response.completed) or the Gemini upstream
+// NetworkError interruption observed in production logs. Explicit provider
+// errors (status codes, finish reasons, stream event errors) are not
+// transient, and an empty model response is handled separately.
+func isTransientStreamError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	text := strings.ToLower(err.Error())
+
+	return strings.Contains(text, "ended before") ||
+		strings.Contains(text, "stream interrupted: networkerror")
 }
 
 func isQueueFullQueueError(err error) bool {
@@ -93,13 +196,13 @@ func isQueueFullQueueError(err error) bool {
 	return strings.Contains(strings.ToLower(statusErr.Message), "request queue is full")
 }
 
-func sleepQueueFullRetryDelay(ctx context.Context) error {
-	timer := time.NewTimer(queueFullRetryFixedDelay)
+func sleepStreamRetryDelay(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
 	defer timer.Stop()
 
 	select {
 	case <-ctx.Done():
-		return fmt.Errorf("wait for queue-full retry: %w", ctx.Err())
+		return fmt.Errorf("wait for stream retry: %w", ctx.Err())
 	case <-timer.C:
 		return nil
 	}
