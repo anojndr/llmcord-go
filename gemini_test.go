@@ -5,10 +5,12 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"io"
 	"iter"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1971,5 +1973,201 @@ func TestGeminiStreamUsageReturnsNilForNilMetadata(t *testing.T) {
 
 	if usage := geminiStreamUsage(nil); usage != nil {
 		t.Fatalf("expected nil token usage for nil metadata: %#v", usage)
+	}
+}
+
+// testGeminiTransientStreamError builds a Gemini back-end error shaped like
+// the one observed in production logs: "Stream interrupted: NetworkError
+// type=upstream_error: invalid argument", which surfaces through the genai
+// iterator as a stream error and is wrapped by "stream gemini content:".
+func testGeminiTransientStreamError() error {
+	return fmt.Errorf(
+		"Stream interrupted: NetworkError type=upstream_error: invalid argument: %w",
+		io.ErrUnexpectedEOF,
+	)
+}
+
+// newStubGeminiStreamingRouter builds a chatCompletionRouter that dispatches
+// gemini-kind requests to a geminiClient whose GenerateContentStream stub is
+// `streamFn`, and routes openai requests nowhere (an error). The stub is
+// re-created per attempt so each retry gets its own iterator.
+func newStubGeminiStreamingRouter(
+	streamFn func() iter.Seq2[*genai.GenerateContentResponse, error],
+) chatCompletionRouter {
+	return chatCompletionRouter{
+		openAI: newOpenAIClient(nil),
+		keys:   newAPIKeyRotator(),
+		gemini: geminiClient{
+			httpClient: new(http.Client),
+			newClient: func(
+				_ context.Context,
+				_ *genai.ClientConfig,
+			) (geminiAPIClient, error) {
+				var stubClient stubGeminiAPIClient
+
+				stubClient.generateContentStream = func(
+					_ context.Context,
+					_ string,
+					_ []*genai.Content,
+					_ *genai.GenerateContentConfig,
+				) iter.Seq2[*genai.GenerateContentResponse, error] {
+					return streamFn()
+				}
+
+				return stubClient, nil
+			},
+		},
+	}
+}
+
+func TestGeminiClientRetriesStreamInterruptedNetworkError(t *testing.T) {
+	t.Parallel()
+
+	calls := new(atomic.Int32)
+
+	router := newStubGeminiStreamingRouter(func() iter.Seq2[*genai.GenerateContentResponse, error] {
+		return func(yield func(*genai.GenerateContentResponse, error) bool) {
+			if calls.Add(1) == 1 {
+				// First attempt yields the upstream NetworkError, then the
+				// stream ends. The retry proceeds to a stop.
+				_ = yield(nil, testGeminiTransientStreamError())
+
+				return
+			}
+
+			_ = yield(newGeminiGenerateContentResponse("retried", genai.FinishReasonStop), nil)
+		}
+	})
+
+	var joinedText strings.Builder
+
+	err := router.streamChatCompletion(
+		context.Background(),
+		newSimpleGeminiStreamRequest(),
+		func(delta streamDelta) error {
+			joinedText.WriteString(delta.Content)
+
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("stream gemini completion: %v", err)
+	}
+
+	if calls.Load() != 2 {
+		t.Fatalf("gemini calls = %d, want 2 (transient error then retry)", calls.Load())
+	}
+
+	if joinedText.String() != "retried" {
+		t.Fatalf("unexpected gemini content: %q", joinedText.String())
+	}
+}
+
+func TestGeminiClientExhaustsStreamInterruptedRetries(t *testing.T) {
+	t.Parallel()
+
+	calls := new(atomic.Int32)
+
+	router := newStubGeminiStreamingRouter(func() iter.Seq2[*genai.GenerateContentResponse, error] {
+		return func(yield func(*genai.GenerateContentResponse, error) bool) {
+			calls.Add(1)
+
+			_ = yield(nil, testGeminiTransientStreamError())
+		}
+	})
+
+	err := router.streamChatCompletion(
+		context.Background(),
+		newSimpleGeminiStreamRequest(),
+		func(streamDelta) error { return nil },
+	)
+	if err == nil {
+		t.Fatal("expected exhausted gemini transient retries to fail")
+	}
+
+	if calls.Load() != 2 {
+		t.Fatalf("gemini calls = %d, want 2 (retry budget exhausted)", calls.Load())
+	}
+
+	if !containsFold(err.Error(), "Stream interrupted") {
+		t.Fatalf("unexpected gemini error: %v", err)
+	}
+}
+
+func TestGeminiClientDoesNotRetryAfterContentProduced(t *testing.T) {
+	t.Parallel()
+
+	calls := new(atomic.Int32)
+
+	router := newStubGeminiStreamingRouter(func() iter.Seq2[*genai.GenerateContentResponse, error] {
+		return func(yield func(*genai.GenerateContentResponse, error) bool) {
+			calls.Add(1)
+
+			// The transient-yielding attempt streams content first, so it
+			// must never be retried.
+			_ = yield(newGeminiGenerateContentResponse("partial", genai.FinishReasonUnspecified), nil)
+			_ = yield(nil, testGeminiTransientStreamError())
+		}
+	})
+
+	err := router.streamChatCompletion(
+		context.Background(),
+		newSimpleGeminiStreamRequest(),
+		func(streamDelta) error { return nil },
+	)
+	if err == nil {
+		t.Fatal("expected gemini stream to fail after partial content")
+	}
+
+	if calls.Load() != 1 {
+		t.Fatalf("gemini calls = %d, want 1 (no retry after content produced)", calls.Load())
+	}
+
+	if !containsFold(err.Error(), "Stream interrupted") {
+		t.Fatalf("unexpected gemini error: %v", err)
+	}
+}
+
+func TestGeminiClientRetriesEmptyModelResponse(t *testing.T) {
+	t.Parallel()
+
+	calls := new(atomic.Int32)
+
+	router := newStubGeminiStreamingRouter(func() iter.Seq2[*genai.GenerateContentResponse, error] {
+		return func(yield func(*genai.GenerateContentResponse, error) bool) {
+			calls.Add(1)
+
+			if calls.Load() == 1 {
+				// No content and a finish reason: empty model response.
+				_ = yield(newGeminiGenerateContentResponse("", genai.FinishReasonStop), nil)
+
+				return
+			}
+
+			_ = yield(newGeminiGenerateContentResponse("retried", genai.FinishReasonStop), nil)
+		}
+	})
+
+	var joinedText strings.Builder
+
+	err := router.streamChatCompletion(
+		context.Background(),
+		newSimpleGeminiStreamRequest(),
+		func(delta streamDelta) error {
+			joinedText.WriteString(delta.Content)
+
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("stream gemini completion: %v", err)
+	}
+
+	if calls.Load() != 2 {
+		t.Fatalf("gemini calls = %d, want 2 (empty response then retry)", calls.Load())
+	}
+
+	if joinedText.String() != "retried" {
+		t.Fatalf("unexpected gemini content: %q", joinedText.String())
 	}
 }
