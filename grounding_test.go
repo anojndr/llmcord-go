@@ -153,6 +153,7 @@ func testGroundingConfig() config {
 		WebSearch: webSearchConfig{
 			PrimaryProvider: "",
 			MaxURLs:         0,
+			Freeweb:         freewebSearchConfig{Enabled: false},
 			Exa: exaSearchConfig{
 				APIKey:             "",
 				APIKeys:            nil,

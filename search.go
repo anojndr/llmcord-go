@@ -22,6 +22,8 @@ import (
 
 const (
 	exaSearchToolName                = "web_search_exa"
+	searchQueryArgumentKey           = "query"
+	exaNumResultsKey                 = "numResults"
 	searchWarningText                = "Warning: web search unavailable"
 	searchSourcesSectionCapacity     = 2
 	searchSourcesUnavailableText     = "No sources available."
@@ -131,8 +133,9 @@ type tavilySearchClient struct {
 }
 
 type routedWebSearchClient struct {
-	exa    webSearcher
-	tavily webSearcher
+	freeweb webSearcher
+	exa     webSearcher
+	tavily  webSearcher
 }
 
 type exaSearchRequest struct {
@@ -247,8 +250,9 @@ func newTavilySearchClient(httpClient *http.Client) tavilySearchClient {
 
 func newWebSearchClient(httpClient *http.Client) routedWebSearchClient {
 	return routedWebSearchClient{
-		exa:    newExaSearchClient(httpClient),
-		tavily: newTavilySearchClient(httpClient),
+		freeweb: newFreewebSearchClient(),
+		exa:     newExaSearchClient(httpClient),
+		tavily:  newTavilySearchClient(httpClient),
 	}
 }
 
@@ -446,6 +450,12 @@ func (client routedWebSearchClient) searchWithProvider(
 	queries []string,
 ) ([]webSearchResult, error) {
 	switch provider {
+	case webSearchProviderKindFreeweb:
+		if client.freeweb == nil {
+			return nil, fmt.Errorf("freeweb search provider is not configured: %w", os.ErrNotExist)
+		}
+
+		return client.freeweb.search(ctx, loadedConfig, queries)
 	case webSearchProviderKindMCP:
 		return client.exa.search(ctx, loadedConfig, queries)
 	case webSearchProviderKindTavily:
@@ -1607,7 +1617,7 @@ func (client exaSearchClient) searchMCPQuery(
 	maxURLs int,
 ) (webSearchResult, error) {
 	implementation := new(mcp.Implementation)
-	implementation.Name = "llmcord-go"
+	implementation.Name = geminiCacheDefaultDisplayName
 	implementation.Version = "1.0.0"
 
 	searchClient := mcp.NewClient(implementation, nil)
@@ -1630,8 +1640,8 @@ func (client exaSearchClient) searchMCPQuery(
 	params := new(mcp.CallToolParams)
 	params.Name = exaSearchToolName
 	params.Arguments = map[string]any{
-		"query":      query,
-		"numResults": maxURLs,
+		searchQueryArgumentKey: query,
+		exaNumResultsKey:       maxURLs,
 	}
 
 	result, err := session.CallTool(ctx, params)
@@ -2250,15 +2260,22 @@ func mapStringSliceValue(values map[string]any, key string) []string {
 }
 
 func (settings webSearchConfig) providersInOrder() (webSearchProviderKind, webSearchProviderKind) {
-	if settings.PrimaryProvider == webSearchProviderKindTavily {
+	switch settings.PrimaryProvider {
+	case webSearchProviderKindFreeweb:
+		return webSearchProviderKindFreeweb, webSearchProviderKindMCP
+	case webSearchProviderKindTavily:
 		return webSearchProviderKindTavily, webSearchProviderKindMCP
+	case webSearchProviderKindMCP:
+		return webSearchProviderKindMCP, webSearchProviderKindTavily
+	default:
+		return webSearchProviderKindFreeweb, webSearchProviderKindMCP
 	}
-
-	return webSearchProviderKindMCP, webSearchProviderKindTavily
 }
 
 func (provider webSearchProviderKind) displayName(loadedConfig config) string {
 	switch provider {
+	case webSearchProviderKindFreeweb:
+		return "FreeWeb"
 	case webSearchProviderKindTavily:
 		return "Tavily"
 	case webSearchProviderKindMCP:

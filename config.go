@@ -102,10 +102,15 @@ type rawVisualSearchConfig struct {
 }
 
 type rawWebSearchConfig struct {
-	PrimaryProvider scalarString          `yaml:"primary_provider"`
-	MaxURLs         *int                  `yaml:"max_urls"`
-	Exa             rawExaSearchConfig    `yaml:"exa"`
-	Tavily          rawTavilySearchConfig `yaml:"tavily"`
+	PrimaryProvider scalarString           `yaml:"primary_provider"`
+	MaxURLs         *int                   `yaml:"max_urls"`
+	Freeweb         rawFreewebSearchConfig `yaml:"freeweb"`
+	Exa             rawExaSearchConfig     `yaml:"exa"`
+	Tavily          rawTavilySearchConfig  `yaml:"tavily"`
+}
+
+type rawFreewebSearchConfig struct {
+	Enabled *bool `yaml:"enabled"`
 }
 
 type rawDatabaseConfig struct {
@@ -156,13 +161,19 @@ type visualSearchConfig struct {
 type webSearchProviderKind string
 
 const (
-	webSearchProviderKindMCP    webSearchProviderKind = "mcp"
-	webSearchProviderKindTavily webSearchProviderKind = "tavily"
+	webSearchProviderKindFreeweb webSearchProviderKind = "freeweb"
+	webSearchProviderKindMCP     webSearchProviderKind = "mcp"
+	webSearchProviderKindTavily  webSearchProviderKind = "tavily"
 )
+
+type freewebSearchConfig struct {
+	Enabled bool
+}
 
 type webSearchConfig struct {
 	PrimaryProvider webSearchProviderKind
 	MaxURLs         int
+	Freeweb         freewebSearchConfig
 	Exa             exaSearchConfig
 	Tavily          tavilySearchConfig
 }
@@ -873,6 +884,9 @@ func normalizeWebSearchConfig(rawLoadedConfig rawWebSearchConfig) webSearchConfi
 	return webSearchConfig{
 		PrimaryProvider: normalizeWebSearchProvider(rawLoadedConfig.PrimaryProvider),
 		MaxURLs:         intValueOrDefault(rawLoadedConfig.MaxURLs, defaultWebSearchMaxURLs),
+		Freeweb: freewebSearchConfig{
+			Enabled: boolValueOrDefault(rawLoadedConfig.Freeweb.Enabled, true),
+		},
 		Exa: exaSearchConfig{
 			APIKey:             firstAPIKey(exaAPIKeys),
 			APIKeys:            exaAPIKeys,
@@ -906,6 +920,10 @@ func (loadedConfig webSearchConfig) maxURLs() int {
 
 func (loadedConfig webSearchConfig) exaUsesAPI() bool {
 	return len(loadedConfig.Exa.apiKeys()) > 0
+}
+
+func (loadedConfig webSearchConfig) freewebEnabled() bool {
+	return loadedConfig.Freeweb.Enabled
 }
 
 func (settings exaSearchConfig) textMaxCharacters() int {
@@ -1047,7 +1065,7 @@ func validateWebSearchConfig(loadedConfig webSearchConfig) error {
 	}
 
 	switch loadedConfig.PrimaryProvider {
-	case webSearchProviderKindMCP, webSearchProviderKindTavily:
+	case webSearchProviderKindFreeweb, webSearchProviderKindMCP, webSearchProviderKindTavily:
 		return nil
 	default:
 		return fmt.Errorf(
