@@ -285,9 +285,9 @@ func (instance *bot) prepareMessageResponse(
 	assignOpenAIPromptCacheKey(&request, message, instance.nodes, loadedConfig.MaxMessages)
 	assignXAIPreviousResponseID(&request, message, instance.nodes, loadedConfig.MaxMessages)
 
-	request, autoCompactResult := instance.autoCompactRequest(ctx, request)
-	if autoCompactResult.Applied {
-		warnings = append(warnings, autoCompactResult.warningsForPath("main model")...)
+	limitErr := checkContextWindowLimit(request)
+	if limitErr != nil {
+		return chatCompletionRequest{}, nil, nil, limitErr
 	}
 
 	progress.advance(requestProgressStageGeneratingResponse)
@@ -1144,15 +1144,12 @@ func buildChatCompletionRequest(
 			ExtraQuery:      provider.ExtraQuery,
 			ExtraBody:       extraBody,
 		},
-		Model:                      modelName,
-		ConfiguredModel:            providerSlashModel,
-		ContextWindow:              loadedConfig.modelContextWindow(providerSlashModel),
-		AutoCompactTokenLimit:      loadedConfig.AutoCompactTokenLimit,
-		AutoCompactTokenLimitScope: loadedConfig.AutoCompactTokenLimitScope,
-		CompactPrompt:              loadedConfig.CompactPrompt,
-		SessionID:                  "",
-		PreviousResponseID:         "",
-		RequestID:                  "",
-		Messages:                   messages,
+		Model:              modelName,
+		ConfiguredModel:    providerSlashModel,
+		ContextWindow:      loadedConfig.modelContextWindow(providerSlashModel),
+		SessionID:          "",
+		PreviousResponseID: "",
+		RequestID:          "",
+		Messages:           messages,
 	}, nil
 }

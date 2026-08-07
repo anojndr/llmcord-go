@@ -32,17 +32,14 @@ type chatMessage struct {
 }
 
 type chatCompletionRequest struct {
-	Provider                   providerRequestConfig
-	Model                      string
-	ConfiguredModel            string
-	ContextWindow              int
-	AutoCompactTokenLimit      int
-	AutoCompactTokenLimitScope autoCompactTokenLimitScope
-	CompactPrompt              string
-	SessionID                  string
-	PreviousResponseID         string
-	RequestID                  string
-	Messages                   []chatMessage
+	Provider           providerRequestConfig
+	Model              string
+	ConfiguredModel    string
+	ContextWindow      int
+	SessionID          string
+	PreviousResponseID string
+	RequestID          string
+	Messages           []chatMessage
 }
 
 type providerRequestConfig struct {
