@@ -216,16 +216,13 @@ func emptyChatCompletionRequest() chatCompletionRequest {
 			ExtraQuery:      nil,
 			ExtraBody:       nil,
 		},
-		Model:                      "",
-		ConfiguredModel:            "",
-		ContextWindow:              0,
-		AutoCompactTokenLimit:      0,
-		AutoCompactTokenLimitScope: autoCompactTokenLimitScopeTotal,
-		CompactPrompt:              "",
-		SessionID:                  "",
-		PreviousResponseID:         "",
-		RequestID:                  "",
-		Messages:                   nil,
+		Model:              "",
+		ConfiguredModel:    "",
+		ContextWindow:      0,
+		SessionID:          "",
+		PreviousResponseID: "",
+		RequestID:          "",
+		Messages:           nil,
 	}
 }
 

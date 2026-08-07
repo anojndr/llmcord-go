@@ -518,12 +518,12 @@ func (instance *bot) decideWebSearch(
 	searchContext, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	request, autoCompactResult := instance.autoCompactRequest(searchContext, request)
+	limitErr := checkContextWindowLimit(request)
+	if limitErr != nil {
+		return searchDecision{}, nil, limitErr
+	}
 
 	var warnings []string
-	if autoCompactResult.Applied {
-		warnings = append(warnings, autoCompactResult.warningsForPath("search decider")...)
-	}
 
 	responseText, err := collectChatCompletionText(searchContext, instance.chatCompletions, request)
 	if err != nil {

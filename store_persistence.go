@@ -51,29 +51,20 @@ type messageNodeSnapshotPayload struct {
 }
 
 type messageNodeSnapshot struct {
-	Role                     string                            `json:"role"`
-	Text                     string                            `json:"text"`
-	ThinkingText             string                            `json:"thinking_text"`
-	URLScanText              string                            `json:"url_scan_text"`
-	GistURL                  string                            `json:"gist_url"`
-	ProviderResponseID       string                            `json:"provider_response_id"`
-	ProviderResponseModel    string                            `json:"provider_response_model"`
-	Media                    []contentPartSnapshot             `json:"media"`
-	SearchMetadata           *searchMetadata                   `json:"search_metadata"`
-	CompactionSummary        *messageNodeCompactionSummaryJSON `json:"compaction_summary,omitempty"`
-	HasBadAttachments        bool                              `json:"has_bad_attachments"`
-	AttachmentDownloadFailed bool                              `json:"attachment_download_failed"`
-	FetchParentFailed        bool                              `json:"fetch_parent_failed"`
-	ParentMessage            *discordMessageSnapshot           `json:"parent_message"`
-	Initialized              bool                              `json:"initialized"`
-}
-
-// messageNodeCompactionSummaryJSON is the persisted form of a node's
-// auto-compaction boundary.
-type messageNodeCompactionSummaryJSON struct {
-	Text    string `json:"text"`
-	Anchor  string `json:"anchor"`
-	Applied bool   `json:"applied"`
+	Role                     string                  `json:"role"`
+	Text                     string                  `json:"text"`
+	ThinkingText             string                  `json:"thinking_text"`
+	URLScanText              string                  `json:"url_scan_text"`
+	GistURL                  string                  `json:"gist_url"`
+	ProviderResponseID       string                  `json:"provider_response_id"`
+	ProviderResponseModel    string                  `json:"provider_response_model"`
+	Media                    []contentPartSnapshot   `json:"media"`
+	SearchMetadata           *searchMetadata         `json:"search_metadata"`
+	HasBadAttachments        bool                    `json:"has_bad_attachments"`
+	AttachmentDownloadFailed bool                    `json:"attachment_download_failed"`
+	FetchParentFailed        bool                    `json:"fetch_parent_failed"`
+	ParentMessage            *discordMessageSnapshot `json:"parent_message"`
+	Initialized              bool                    `json:"initialized"`
 }
 
 type contentPartSnapshot struct {
@@ -347,7 +338,6 @@ func sanitizeMessageNodeSnapshot(snapshot messageNodeSnapshot) messageNodeSnapsh
 	snapshot.ProviderResponseModel = sanitizePostgresJSONString(snapshot.ProviderResponseModel)
 	snapshot.Media = sanitizeContentPartSnapshots(snapshot.Media)
 	snapshot.SearchMetadata = sanitizeSearchMetadata(snapshot.SearchMetadata)
-	snapshot.CompactionSummary = sanitizeCompactionSummary(snapshot.CompactionSummary)
 	snapshot.ParentMessage = sanitizeDiscordMessageSnapshot(snapshot.ParentMessage)
 
 	return snapshot
@@ -374,20 +364,6 @@ func sanitizeContentPartSnapshot(snapshot contentPartSnapshot) contentPartSnapsh
 	snapshot.Filename = sanitizePostgresJSONString(snapshot.Filename)
 
 	return snapshot
-}
-
-func sanitizeCompactionSummary(
-	summary *messageNodeCompactionSummaryJSON,
-) *messageNodeCompactionSummaryJSON {
-	if summary == nil {
-		return nil
-	}
-
-	return &messageNodeCompactionSummaryJSON{
-		Text:    sanitizePostgresJSONString(summary.Text),
-		Anchor:  sanitizePostgresJSONString(summary.Anchor),
-		Applied: summary.Applied,
-	}
 }
 
 func sanitizeSearchMetadata(metadata *searchMetadata) *searchMetadata {
@@ -1015,7 +991,6 @@ func messageNodeSnapshotFromLockedNode(node *messageNode) (messageNodeSnapshot, 
 		ProviderResponseModel:    node.providerResponseModel,
 		Media:                    mediaSnapshots,
 		SearchMetadata:           cloneSearchMetadata(node.searchMetadata),
-		CompactionSummary:        compactionSummarySnapshot(node.compactionSummary),
 		HasBadAttachments:        node.hasBadAttachments,
 		AttachmentDownloadFailed: node.attachmentDownloadFailed,
 		FetchParentFailed:        node.fetchParentFailed,
@@ -1024,34 +999,6 @@ func messageNodeSnapshotFromLockedNode(node *messageNode) (messageNodeSnapshot, 
 	}
 
 	return snapshot, true
-}
-
-func compactionSummarySnapshot(
-	summary *messageNodeCompactionSummary,
-) *messageNodeCompactionSummaryJSON {
-	if summary == nil {
-		return nil
-	}
-
-	return &messageNodeCompactionSummaryJSON{
-		Text:    summary.text,
-		Anchor:  summary.anchor,
-		Applied: summary.applied,
-	}
-}
-
-func nodeCompactionSummaryFromSnapshot(
-	snapshot *messageNodeCompactionSummaryJSON,
-) *messageNodeCompactionSummary {
-	if snapshot == nil {
-		return nil
-	}
-
-	return &messageNodeCompactionSummary{
-		text:    snapshot.Text,
-		anchor:  snapshot.Anchor,
-		applied: snapshot.Applied,
-	}
 }
 
 func (snapshot messageNodeSnapshot) messageNode() *messageNode {
@@ -1075,7 +1022,6 @@ func (snapshot messageNodeSnapshot) messageNode() *messageNode {
 	}
 
 	node.searchMetadata = cloneSearchMetadata(snapshot.SearchMetadata)
-	node.compactionSummary = nodeCompactionSummaryFromSnapshot(snapshot.CompactionSummary)
 	node.hasBadAttachments = snapshot.HasBadAttachments
 	node.attachmentDownloadFailed = snapshot.AttachmentDownloadFailed
 	node.fetchParentFailed = snapshot.FetchParentFailed
