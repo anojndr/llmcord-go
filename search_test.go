@@ -1613,8 +1613,9 @@ func TestRoutedWebSearchClientFallsBackToTavilyWhenMCPFails(t *testing.T) {
 	})
 
 	client := routedWebSearchClient{
-		exa:    exaClient,
-		tavily: tavilyClient,
+		freeweb: nil,
+		exa:     exaClient,
+		tavily:  tavilyClient,
 	}
 
 	const query = "latest ai news"
@@ -1659,8 +1660,9 @@ func TestRoutedWebSearchClientUsesTavilyAsPrimaryWhenConfigured(t *testing.T) {
 	loadedConfig.WebSearch.PrimaryProvider = webSearchProviderKindTavily
 
 	client := routedWebSearchClient{
-		exa:    mcpClient,
-		tavily: tavilyClient,
+		freeweb: nil,
+		exa:     mcpClient,
+		tavily:  tavilyClient,
 	}
 
 	results, err := client.search(context.Background(), loadedConfig, []string{"latest ai news"})
@@ -1770,8 +1772,9 @@ func TestRoutedWebSearchClientFallsBackToMCPWhenTavilyFails(t *testing.T) {
 	loadedConfig.WebSearch.PrimaryProvider = webSearchProviderKindTavily
 
 	client := routedWebSearchClient{
-		exa:    mcpClient,
-		tavily: tavilyClient,
+		freeweb: nil,
+		exa:     mcpClient,
+		tavily:  tavilyClient,
 	}
 
 	results, err := client.search(context.Background(), loadedConfig, []string{"latest ai news"})
@@ -2170,6 +2173,7 @@ func testSearchConfig() config {
 	}
 	loadedConfig.WebSearch.PrimaryProvider = webSearchProviderKindMCP
 	loadedConfig.WebSearch.MaxURLs = defaultWebSearchMaxURLs
+	loadedConfig.WebSearch.Freeweb = freewebSearchConfig{Enabled: true}
 	loadedConfig.WebSearch.Exa = exaSearchConfig{
 		APIKey:             "",
 		APIKeys:            nil,
@@ -2188,6 +2192,7 @@ func testGeminiSearchConfig() config {
 	loadedConfig.MaxImages = defaultMaxImages
 	loadedConfig.WebSearch.PrimaryProvider = webSearchProviderKindMCP
 	loadedConfig.WebSearch.MaxURLs = defaultWebSearchMaxURLs
+	loadedConfig.WebSearch.Freeweb = freewebSearchConfig{Enabled: true}
 	loadedConfig.WebSearch.Exa = exaSearchConfig{
 		APIKey:             "",
 		APIKeys:            nil,

@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -55,13 +56,41 @@ func newWebsiteTestBot(website websiteFetcher) *bot {
 
 func newWebsiteTestClient(httpClient *http.Client, exaURL string, tavilyURL string) websiteClient {
 	return websiteClient{
-		httpClient:            httpClient,
-		userAgent:             youtubeUserAgent,
-		exaContentsEndpoint:   exaURL,
-		tavilyExtractEndpoint: tavilyURL,
-		lookupIP:              testWebsiteLookupIP,
-		keys:                  newAPIKeyRotator(),
+		httpClient:                  httpClient,
+		userAgent:                   youtubeUserAgent,
+		exaContentsEndpoint:         exaURL,
+		tavilyExtractEndpoint:       tavilyURL,
+		lookupIP:                    testWebsiteLookupIP,
+		keys:                        newAPIKeyRotator(),
+		freeweb:                     nil,
+		freewebMissingBrowserLogged: new(atomic.Bool),
 	}
+}
+
+func newStubFreewebBrowser(
+	browseFn func(context.Context, string) (websitePageContent, error),
+) *stubFreewebBrowser {
+	client := new(stubFreewebBrowser)
+	client.browseFn = browseFn
+
+	return client
+}
+
+type stubFreewebBrowser struct {
+	mu       sync.Mutex
+	calls    []string
+	browseFn func(context.Context, string) (websitePageContent, error)
+}
+
+func (client *stubFreewebBrowser) browse(
+	ctx context.Context,
+	rawURL string,
+) (websitePageContent, error) {
+	client.mu.Lock()
+	client.calls = append(client.calls, rawURL)
+	client.mu.Unlock()
+
+	return client.browseFn(ctx, rawURL)
 }
 
 func testWebsiteLookupIP(_ context.Context, host string) ([]netip.Addr, error) {
@@ -1224,6 +1253,198 @@ func TestWebsiteClientFetchUsesTavilyWhenNoExaAPIKeyConfigured(t *testing.T) {
 
 	if !containsFold(result.Content, "Tavily extracted body.") {
 		t.Fatalf("unexpected content: %q", result.Content)
+	}
+}
+
+func TestWebsiteClientFetchUsesFreewebBrowseAsPrimaryExtractor(t *testing.T) {
+	t.Parallel()
+
+	exaCallCount := 0
+	tavilyCallCount := 0
+
+	exaServer := httptest.NewServer(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		_ *http.Request,
+	) {
+		exaCallCount++
+
+		http.Error(responseWriter, "unexpected Exa call", http.StatusInternalServerError)
+	}))
+	defer exaServer.Close()
+
+	tavilyServer := httptest.NewServer(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		_ *http.Request,
+	) {
+		tavilyCallCount++
+
+		http.Error(responseWriter, "unexpected Tavily call", http.StatusInternalServerError)
+	}))
+	defer tavilyServer.Close()
+
+	freewebBrowser := newStubFreewebBrowser(func(
+		_ context.Context,
+		rawURL string,
+	) (websitePageContent, error) {
+		return websitePageContent{
+			URL:         rawURL,
+			Title:       "FreeWeb Article",
+			Description: "FreeWeb description",
+			Content:     "FreeWeb extracted body.",
+		}, nil
+	})
+
+	client := newWebsiteTestClient(exaServer.Client(), exaServer.URL, tavilyServer.URL)
+	client.freeweb = freewebBrowser
+
+	loadedConfig := testWebsiteExaAndTavilyConfig()
+
+	result, err := client.fetch(context.Background(), loadedConfig, "https://example.com/article")
+	if err != nil {
+		t.Fatalf("fetch website content: %v", err)
+	}
+
+	if len(freewebBrowser.calls) != 1 || freewebBrowser.calls[0] != "https://example.com/article" {
+		t.Fatalf("unexpected freeweb browse calls: %#v", freewebBrowser.calls)
+	}
+
+	if exaCallCount != 0 {
+		t.Fatalf("unexpected Exa call count: %d", exaCallCount)
+	}
+
+	if tavilyCallCount != 0 {
+		t.Fatalf("unexpected Tavily call count: %d", tavilyCallCount)
+	}
+
+	if result.Title != "FreeWeb Article" {
+		t.Fatalf("unexpected title: %q", result.Title)
+	}
+
+	if !containsFold(result.Content, "FreeWeb extracted body.") {
+		t.Fatalf("unexpected content: %q", result.Content)
+	}
+}
+
+func TestWebsiteClientFetchSkipsFreewebWhenDisabled(t *testing.T) {
+	t.Parallel()
+
+	freewebBrowser := newStubFreewebBrowser(func(
+		_ context.Context,
+		rawURL string,
+	) (websitePageContent, error) {
+		t.Fatalf("expected freeweb browse to be skipped, got url %q", rawURL)
+
+		return websitePageContent{}, os.ErrNotExist
+	})
+
+	exaServer := httptest.NewServer(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		_ *http.Request,
+	) {
+		responseWriter.Header().Set("Content-Type", "application/json")
+
+		responseBody := map[string]any{
+			"results": []map[string]any{{
+				"title": "Example Article",
+				"url":   "https://example.com/article",
+				"id":    "https://example.com/article",
+				"text":  "# Example Article\n\nExa extracted body.",
+			}},
+			"statuses": []map[string]any{{
+				"id":     "https://example.com/article",
+				"status": "success",
+			}},
+		}
+
+		err := json.NewEncoder(responseWriter).Encode(responseBody)
+		if err != nil {
+			t.Fatalf("encode Exa contents response: %v", err)
+		}
+	}))
+	defer exaServer.Close()
+
+	tavilyServer := httptest.NewServer(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		_ *http.Request,
+	) {
+		http.Error(responseWriter, "unexpected Tavily call", http.StatusInternalServerError)
+	}))
+	defer tavilyServer.Close()
+
+	client := newWebsiteTestClient(exaServer.Client(), exaServer.URL, tavilyServer.URL)
+	client.freeweb = freewebBrowser
+
+	loadedConfig := testWebsiteExaAndTavilyConfig()
+	loadedConfig.WebSearch.Freeweb.Enabled = false
+
+	result := mustFetchWebsiteArticle(t, client, loadedConfig)
+
+	if len(freewebBrowser.calls) != 0 {
+		t.Fatalf("unexpected freeweb browse calls: %#v", freewebBrowser.calls)
+	}
+
+	if !containsFold(result.Content, "Exa extracted body.") {
+		t.Fatalf("expected Exa fallback content: %q", result.Content)
+	}
+}
+
+func TestWebsiteClientFetchFallsBackToExaWhenFreewebFails(t *testing.T) {
+	t.Parallel()
+
+	freewebBrowser := newStubFreewebBrowser(func(
+		context.Context,
+		string,
+	) (websitePageContent, error) {
+		return websitePageContent{}, os.ErrNotExist
+	})
+
+	exaServer := httptest.NewServer(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		_ *http.Request,
+	) {
+		responseWriter.Header().Set("Content-Type", "application/json")
+
+		responseBody := map[string]any{
+			"results": []map[string]any{{
+				"title": "Example Article",
+				"url":   "https://example.com/article",
+				"id":    "https://example.com/article",
+				"text":  "# Example Article\n\nExa extracted body.",
+			}},
+			"statuses": []map[string]any{{
+				"id":     "https://example.com/article",
+				"status": "success",
+			}},
+		}
+
+		err := json.NewEncoder(responseWriter).Encode(responseBody)
+		if err != nil {
+			t.Fatalf("encode Exa contents response: %v", err)
+		}
+	}))
+	defer exaServer.Close()
+
+	tavilyServer := httptest.NewServer(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		_ *http.Request,
+	) {
+		http.Error(responseWriter, "unexpected Tavily call", http.StatusInternalServerError)
+	}))
+	defer tavilyServer.Close()
+
+	client := newWebsiteTestClient(exaServer.Client(), exaServer.URL, tavilyServer.URL)
+	client.freeweb = freewebBrowser
+
+	loadedConfig := testWebsiteExaAndTavilyConfig()
+
+	result := mustFetchWebsiteArticle(t, client, loadedConfig)
+
+	if len(freewebBrowser.calls) != 1 {
+		t.Fatalf("unexpected freeweb browse call count: %d", len(freewebBrowser.calls))
+	}
+
+	if !containsFold(result.Content, "Exa extracted body.") {
+		t.Fatalf("expected Exa fallback content: %q", result.Content)
 	}
 }
 

@@ -70,6 +70,7 @@ func testPermissionsConfig() config {
 	searchConfig := webSearchConfig{
 		PrimaryProvider: webSearchProviderKindMCP,
 		MaxURLs:         defaultWebSearchMaxURLs,
+		Freeweb:         freewebSearchConfig{Enabled: false},
 		Exa: exaSearchConfig{
 			APIKey:             "",
 			APIKeys:            nil,
