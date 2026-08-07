@@ -1,86 +1,8 @@
 package main
 
 import (
-	"context"
-	"encoding/json"
-	"net/http"
-	"net/http/httptest"
-	"strings"
 	"testing"
 )
-
-func TestOpenAIStreamPayloadDeltaParsesCachedTokenUsage(t *testing.T) {
-	t.Parallel()
-
-	payload := []byte(`{
-		"choices": [],
-		"usage": {
-			"prompt_tokens": 2006,
-			"completion_tokens": 300,
-			"prompt_tokens_details": {
-				"cached_tokens": 1920,
-				"cache_write_tokens": 0
-			},
-			"completion_tokens_details": {
-				"reasoning_tokens": 84
-			}
-		}
-	}`)
-
-	delta, err := openAIStreamPayloadDelta(payload)
-	if err != nil {
-		t.Fatalf("decode stream payload: %v", err)
-	}
-
-	if delta.Usage == nil {
-		t.Fatal("expected usage payload")
-	}
-
-	if delta.Usage.Input != 2006 || delta.Usage.Output != 300 {
-		t.Fatalf("unexpected usage: %#v", delta.Usage)
-	}
-
-	if delta.Usage.CachedInput != 1920 {
-		t.Fatalf("unexpected cached input tokens: %d", delta.Usage.CachedInput)
-	}
-
-	if delta.Usage.CacheWriteTokens != 0 {
-		t.Fatalf("unexpected cache write tokens: %d", delta.Usage.CacheWriteTokens)
-	}
-
-	if delta.ReasoningTokens != 84 {
-		t.Fatalf("unexpected reasoning tokens: %d", delta.ReasoningTokens)
-	}
-}
-
-func TestOpenAIStreamPayloadDeltaZeroCachedTokensWhenDetailsMissing(t *testing.T) {
-	t.Parallel()
-
-	payload := []byte(`{
-		"choices": [],
-		"usage": {
-			"prompt_tokens": 12,
-			"completion_tokens": 34
-		}
-	}`)
-
-	delta, err := openAIStreamPayloadDelta(payload)
-	if err != nil {
-		t.Fatalf("decode stream payload: %v", err)
-	}
-
-	if delta.Usage == nil {
-		t.Fatal("expected usage payload")
-	}
-
-	if delta.Usage.CachedInput != 0 || delta.Usage.CacheWriteTokens != 0 {
-		t.Fatalf("unexpected cached usage: %#v", delta.Usage)
-	}
-
-	if delta.ReasoningTokens != 0 {
-		t.Fatalf("unexpected reasoning tokens: %d", delta.ReasoningTokens)
-	}
-}
 
 func TestBuildChatCompletionRequestBodySkipsCacheOptionsWithoutSessionID(t *testing.T) {
 	t.Parallel()
@@ -103,7 +25,6 @@ func TestBuildChatCompletionRequestBodySkipsCacheOptionsWithoutSessionID(t *test
 		Messages: []chatMessage{
 			{Role: messageRoleUser, Content: "hello"},
 		},
-		ContextWindow:      0,
 		PreviousResponseID: "",
 		RequestID:          "",
 	}
@@ -150,7 +71,6 @@ func TestBuildChatCompletionRequestBodySkipsCacheBreakpointWithoutSessionID(t *t
 			{Role: messageRoleSystem, Content: "You are concise."},
 			{Role: messageRoleUser, Content: "hello"},
 		},
-		ContextWindow:      0,
 		PreviousResponseID: "",
 		RequestID:          "",
 	}
@@ -197,7 +117,6 @@ func TestBuildChatCompletionRequestBodySkipsCacheBreakpointForNonExplicitMode(t 
 			{Role: messageRoleSystem, Content: "You are concise."},
 			{Role: messageRoleUser, Content: "hello"},
 		},
-		ContextWindow:      0,
 		PreviousResponseID: "",
 		RequestID:          "",
 	}
@@ -240,7 +159,6 @@ func TestBuildChatCompletionRequestBodyAddsCacheOptionsForOpenAIProvider(t *test
 			{Role: messageRoleSystem, Content: "You are concise."},
 			{Role: messageRoleUser, Content: "hello"},
 		},
-		ContextWindow:      0,
 		PreviousResponseID: "",
 		RequestID:          "",
 	}
@@ -303,7 +221,6 @@ func TestBuildChatCompletionRequestBodyPlacesStablePrefixCacheBreakpoint(t *test
 			{Role: messageRoleAssistant, Content: "previous answer"},
 			{Role: messageRoleUser, Content: "hello"},
 		},
-		ContextWindow:      0,
 		PreviousResponseID: "",
 		RequestID:          "",
 	}
@@ -359,7 +276,6 @@ func TestBuildChatCompletionRequestBodyExplicitModePlacesBreakpointOnFirstMessag
 		Messages: []chatMessage{
 			{Role: messageRoleUser, Content: "hello"},
 		},
-		ContextWindow:      0,
 		PreviousResponseID: "",
 		RequestID:          "",
 	}
@@ -424,7 +340,6 @@ func TestBuildChatCompletionRequestBodySkipsCacheOptionsForOtherProviders(t *tes
 				},
 				Model:              "gpt-test",
 				ConfiguredModel:    testCase.configuredModel,
-				ContextWindow:      0,
 				SessionID:          testOpenAIPromptCacheKey,
 				PreviousResponseID: "",
 				RequestID:          "",
@@ -471,7 +386,6 @@ func TestBuildChatCompletionRequestBodySkipsCacheOptionsForResponsesAPI(t *testi
 		},
 		Model:              "gpt-test",
 		ConfiguredModel:    "openai/gpt-test",
-		ContextWindow:      0,
 		SessionID:          testOpenAIPromptCacheKey,
 		PreviousResponseID: "",
 		RequestID:          "",
@@ -484,153 +398,6 @@ func TestBuildChatCompletionRequestBodySkipsCacheOptionsForResponsesAPI(t *testi
 
 	if _, exists := requestBody["prompt_cache_options"]; exists {
 		t.Fatalf("unexpected prompt_cache_options for responses api: %#v", requestBody["prompt_cache_options"])
-	}
-}
-
-func TestOpenAIClientStreamChatCompletionParsesCachedUsage(t *testing.T) {
-	t.Parallel()
-
-	server := newCachedUsageStreamingTestServer(t)
-	defer server.Close()
-
-	client := newOpenAIClient(server.Client())
-	request := chatCompletionRequest{
-		Provider: providerRequestConfig{
-			APIKind:         providerAPIKindOpenAI,
-			BaseURL:         server.URL + "/v1",
-			APIKey:          "test-key",
-			UseResponsesAPI: false,
-			ExtraQuery: map[string]any{
-				"api-version": testXAIAPIVersion,
-			},
-			ExtraHeaders: map[string]any{
-				"X-Test": testHeaderPresent,
-			},
-			ExtraBody: map[string]any{
-				"temperature": 0.2,
-			},
-			APIKeys:         nil,
-			EnableGrounding: false,
-		},
-		Model:              "gpt-test",
-		ConfiguredModel:    "",
-		ContextWindow:      0,
-		SessionID:          "",
-		PreviousResponseID: "",
-		RequestID:          "",
-		Messages: []chatMessage{
-			{Role: messageRoleUser, Content: "hello"},
-		},
-	}
-
-	var (
-		cachedUsage     *tokenUsage
-		reasoningTokens int
-	)
-
-	err := client.streamChatCompletion(context.Background(), request, func(delta streamDelta) error {
-		if delta.Usage != nil {
-			cachedUsage = cloneTokenUsage(delta.Usage)
-		}
-
-		reasoningTokens = delta.ReasoningTokens
-
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("stream chat completion: %v", err)
-	}
-
-	if cachedUsage == nil {
-		t.Fatal("expected usage payload")
-	}
-
-	if cachedUsage.Input != 2006 || cachedUsage.Output != 300 || cachedUsage.CachedInput != 1920 {
-		t.Fatalf("unexpected cached usage: %#v", cachedUsage)
-	}
-
-	if reasoningTokens != 84 {
-		t.Fatalf("unexpected reasoning tokens: %d", reasoningTokens)
-	}
-}
-
-func newCachedUsageStreamingTestServer(t *testing.T) *httptest.Server {
-	t.Helper()
-
-	return httptest.NewServer(http.HandlerFunc(func(
-		responseWriter http.ResponseWriter,
-		request *http.Request,
-	) {
-		t.Helper()
-
-		assertStreamingRequest(t, request)
-
-		responseWriter.Header().Set("Content-Type", "text/event-stream")
-
-		flusher, ok := responseWriter.(http.Flusher)
-		if !ok {
-			t.Fatal("expected response writer to support flushing")
-		}
-
-		writeStreamChunk(t, responseWriter, "data: {\"choices\":[{\"delta\":{\"content\":\"Hi\"}}]}\n\n")
-		flusher.Flush()
-		writeStreamChunk(
-			t,
-			responseWriter,
-			"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":2006,\"completion_tokens\":300,"+
-				"\"prompt_tokens_details\":{\"cached_tokens\":1920,\"cache_write_tokens\":0},"+
-				"\"completion_tokens_details\":{\"reasoning_tokens\":84}}}\n\n",
-		)
-		flusher.Flush()
-		writeStreamChunk(t, responseWriter, "data: [DONE]\n\n")
-		flusher.Flush()
-	}))
-}
-
-func TestHandleStreamPayloadPassesReasoningTokens(t *testing.T) {
-	t.Parallel()
-
-	var (
-		receivedContent   string
-		receivedUsage     *tokenUsage
-		receivedReasoning int
-	)
-
-	err := handleStreamPayload([]byte(`{
-		"choices": [],
-		"usage": {
-			"prompt_tokens": 10,
-			"completion_tokens": 20,
-			"prompt_tokens_details": {"cached_tokens": 7},
-			"completion_tokens_details": {"reasoning_tokens": 5}
-		}
-	}`), func(delta streamDelta) error {
-		if delta.Content != "" {
-			receivedContent += delta.Content
-		}
-
-		if delta.Usage != nil {
-			receivedUsage = cloneTokenUsage(delta.Usage)
-		}
-
-		receivedReasoning = delta.ReasoningTokens
-
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("handle stream payload: %v", err)
-	}
-
-	if receivedContent != "" {
-		t.Fatalf("unexpected content: %q", receivedContent)
-	}
-
-	if receivedUsage == nil || receivedUsage.CachedInput != 7 {
-		t.Fatalf("unexpected cached usage: %#v", receivedUsage)
-	}
-
-	if receivedReasoning != 5 {
-		t.Fatalf("unexpected reasoning tokens: %d", receivedReasoning)
 	}
 }
 
@@ -656,7 +423,6 @@ func TestBuildChatCompletionRequestBodyRewritesSystemRoleForGPT56(t *testing.T) 
 			{Role: messageRoleSystem, Content: "You are concise."},
 			{Role: messageRoleUser, Content: "hello"},
 		},
-		ContextWindow:      0,
 		PreviousResponseID: "",
 		RequestID:          "",
 	}
@@ -699,7 +465,6 @@ func TestBuildChatCompletionRequestBodyKeepsSystemRoleForOlderModels(t *testing.
 			{Role: messageRoleSystem, Content: "You are concise."},
 			{Role: messageRoleUser, Content: "hello"},
 		},
-		ContextWindow:      0,
 		PreviousResponseID: "",
 		RequestID:          "",
 	}
@@ -738,7 +503,6 @@ func TestBuildXAIResponsesRequestBodyAddsCacheOptionsForOpenAIProvider(t *testin
 			{Role: messageRoleSystem, Content: "You are concise."},
 			{Role: messageRoleUser, Content: "hello"},
 		},
-		ContextWindow:      0,
 		PreviousResponseID: "",
 		RequestID:          "",
 	}
@@ -788,7 +552,6 @@ func TestBuildXAIResponsesRequestBodySkipsCacheOptionsForXAIModels(t *testing.T)
 		Messages: []chatMessage{
 			{Role: messageRoleUser, Content: "hello"},
 		},
-		ContextWindow:      0,
 		PreviousResponseID: "",
 		RequestID:          "",
 	}
@@ -803,7 +566,7 @@ func TestBuildXAIResponsesRequestBodySkipsCacheOptionsForXAIModels(t *testing.T)
 	}
 }
 
-func TestXAIResponsesStreamPayloadDeltaParsesCachedUsage(t *testing.T) {
+func TestXAIResponsesStreamPayloadDeltaMarksCompletedEventTerminal(t *testing.T) {
 	t.Parallel()
 
 	payload := []byte(`{
@@ -822,53 +585,13 @@ func TestXAIResponsesStreamPayloadDeltaParsesCachedUsage(t *testing.T) {
 		}
 	}`)
 
-	delta, terminal, err := xAIResponsesStreamPayloadDelta(payload, newXAIResponsesStreamState())
+	_, terminal, err := xAIResponsesStreamPayloadDelta(payload, newXAIResponsesStreamState())
 	if err != nil {
 		t.Fatalf("decode xAI responses stream payload: %v", err)
 	}
 
 	if !terminal {
 		t.Fatal("expected terminal delta")
-	}
-
-	if delta.Usage == nil {
-		t.Fatal("expected usage payload")
-	}
-
-	if delta.Usage.Input != 2006 || delta.Usage.Output != 300 {
-		t.Fatalf("unexpected usage: %#v", delta.Usage)
-	}
-
-	if delta.Usage.CachedInput != 1920 {
-		t.Fatalf("unexpected cached input tokens: %d", delta.Usage.CachedInput)
-	}
-}
-
-func TestJSONMarshalTokenUsageIncludesCacheFields(t *testing.T) {
-	t.Parallel()
-
-	encoded, err := json.Marshal(&struct {
-		Input            int `json:"input"`
-		Output           int `json:"output"`
-		CachedInput      int `json:"cached_input"`
-		CacheWriteTokens int `json:"cache_write_tokens"`
-	}{
-		Input:            12,
-		Output:           34,
-		CachedInput:      5,
-		CacheWriteTokens: 2,
-	})
-	if err != nil {
-		t.Fatalf("marshal token usage: %v", err)
-	}
-
-	encodedText := string(encoded)
-	if !strings.Contains(encodedText, `"cached_input":5`) {
-		t.Fatalf("expected cached_input in JSON: %s", encodedText)
-	}
-
-	if !strings.Contains(encodedText, `"cache_write_tokens":2`) {
-		t.Fatalf("expected cache_write_tokens in JSON: %s", encodedText)
 	}
 }
 
@@ -893,9 +616,5 @@ func TestOpenAIStreamPayloadDeltaContentFields(t *testing.T) {
 
 	if delta.Content != "Hel" {
 		t.Fatalf("unexpected content: %q", delta.Content)
-	}
-
-	if delta.Usage != nil {
-		t.Fatalf("unexpected usage: %#v", delta.Usage)
 	}
 }

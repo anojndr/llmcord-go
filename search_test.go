@@ -2255,10 +2255,6 @@ func testSearchConfig() config {
 	loadedConfig.ModelOrder = []string{"openai/main-model", "openai/decider-model"}
 	loadedConfig.SearchDeciderModel = "openai/decider-model"
 	loadedConfig.MaxMessages = defaultMaxMessages
-	loadedConfig.ModelContextWindows = map[string]int{
-		"openai/main-model":    200_000,
-		"openai/decider-model": 200_000,
-	}
 
 	return *loadedConfig
 }
@@ -2288,9 +2284,6 @@ func testGeminiSearchConfig() config {
 		"gemini/gemini-3-flash-preview": nil,
 	}
 	loadedConfig.MaxMessages = defaultMaxMessages
-	loadedConfig.ModelContextWindows = map[string]int{
-		"gemini/gemini-3-flash-preview": 200_000,
-	}
 
 	return *loadedConfig
 }

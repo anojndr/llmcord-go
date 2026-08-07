@@ -248,15 +248,14 @@ func TestBuildChatCompletionRequestUsesResponsesAPIForOpenAIProvider(t *testing.
 	}
 }
 
-func TestBuildChatCompletionRequestUsesContextWindowWithoutSendingItToProvider(t *testing.T) {
+func TestBuildChatCompletionRequestMergesModelParametersIntoExtraBody(t *testing.T) {
 	t.Parallel()
 
 	provider := new(providerConfig)
 	provider.BaseURL = testOpenAIBaseURL
 
 	modelParameters := map[string]any{
-		"context_window": 400_000,
-		"temperature":    0.2,
+		"temperature": 0.2,
 	}
 
 	var loadedConfig config
@@ -267,9 +266,6 @@ func TestBuildChatCompletionRequestUsesContextWindowWithoutSendingItToProvider(t
 	loadedConfig.Models = map[string]map[string]any{
 		"openai/gpt-5.1": modelParameters,
 	}
-	loadedConfig.ModelContextWindows = map[string]int{
-		"openai/gpt-5.1": 400_000,
-	}
 
 	request, err := buildChatCompletionRequest(loadedConfig,
 		"openai/gpt-5.1",
@@ -278,19 +274,11 @@ func TestBuildChatCompletionRequestUsesContextWindowWithoutSendingItToProvider(t
 		t.Fatalf("build chat completion request: %v", err)
 	}
 
-	if request.ContextWindow != 400_000 {
-		t.Fatalf("unexpected context window: %d", request.ContextWindow)
-	}
-
-	if _, ok := request.Provider.ExtraBody[modelConfigContextWindowKey]; ok {
-		t.Fatalf("unexpected local-only model config in provider extra body: %#v", request.Provider.ExtraBody)
-	}
-
 	if got, ok := request.Provider.ExtraBody["temperature"].(float64); !ok || got != 0.2 {
 		t.Fatalf("unexpected provider extra body: %#v", request.Provider.ExtraBody)
 	}
 
-	if modelParameters[modelConfigContextWindowKey] != 400_000 {
+	if modelParameters["temperature"] != 0.2 {
 		t.Fatalf("unexpected mutation of model parameters: %#v", modelParameters)
 	}
 }
@@ -778,11 +766,9 @@ func newCountingGeminiVideoAnalysisChatClient(
 		callCount.Add(1)
 
 		return handle(streamDelta{
-			ReasoningTokens:    0,
 			Thinking:           "",
 			Content:            expectedAnalysis,
 			FinishReason:       finishReasonStop,
-			Usage:              nil,
 			ProviderResponseID: "",
 			SearchMetadata:     nil,
 		})
@@ -967,11 +953,9 @@ func newNoSearchDecisionChatClient(
 		}
 
 		return handle(streamDelta{
-			ReasoningTokens:    0,
 			Thinking:           "",
 			Content:            `{"needs_search":false,"queries":[]}`,
 			FinishReason:       finishReasonStop,
-			Usage:              nil,
 			ProviderResponseID: "",
 			SearchMetadata:     nil,
 		})
@@ -1120,11 +1104,6 @@ func TestAugmentConversationFetchesIndependentContextBeforeWebSearchDecision(t *
 	fixture := newAugmentWebSearchDecisionFixture()
 	loadedConfig := testMediaAnalysisConfig()
 	loadedConfig.MaxMessages = defaultMaxMessages
-	loadedConfig.ModelContextWindows = map[string]int{
-		"openai/gpt-5":          200_000,
-		testSearchDeciderModel2: 200_000,
-		testMediaAnalysisModel:  200_000,
-	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()

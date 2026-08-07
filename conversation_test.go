@@ -13,16 +13,15 @@ import (
 )
 
 const (
-	testAssistantReply        = "assistant reply"
-	testThinkingReply         = "thinking reply"
-	testVideoBody             = "video-bytes"
-	testVideoMIMEType         = "video/mp4"
-	testBinaryFilename        = "payload.bin"
-	testDOCXFilename          = "report.docx"
-	testJSONFilename          = "context.json"
-	testPPTXFilename          = "slides.pptx"
-	testZIPFilename           = "bundle.zip"
-	testConversationTextLimit = 100000
+	testAssistantReply = "assistant reply"
+	testThinkingReply  = "thinking reply"
+	testVideoBody      = "video-bytes"
+	testVideoMIMEType  = "video/mp4"
+	testBinaryFilename = "payload.bin"
+	testDOCXFilename   = "report.docx"
+	testJSONFilename   = "context.json"
+	testPPTXFilename   = "slides.pptx"
+	testZIPFilename    = "bundle.zip"
 )
 
 func TestBuildMessageTextReadsTextDisplayInsideSection(t *testing.T) {
@@ -222,7 +221,6 @@ func TestBuildConversationAddsFallbackTextWhenAttachmentDownloadFails(t *testing
 	conversation, warnings := instance.buildConversation(
 		context.Background(),
 		sourceMessage,
-		testConversationTextLimit,
 		messageContentOptions{
 			maxImages:                defaultMaxImages,
 			allowAudio:               false,
@@ -310,7 +308,6 @@ func TestBuildConversationStopsAtDirectRepliedUserMessage(t *testing.T) {
 	conversation, warnings := instance.buildConversation(
 		context.Background(),
 		followUpMessage,
-		testConversationTextLimit,
 		messageContentOptions{
 			maxImages:                defaultMaxImages,
 			allowAudio:               false,
@@ -463,7 +460,7 @@ func TestBuildMessageContentInlinesTextFilesWhenDirectFilesDisabled(t *testing.T
 		contentFieldFilename: testJSONFilename,
 	}}
 
-	content, summary := buildMessageContent(node, testConversationTextLimit, messageContentOptions{
+	content, summary := buildMessageContent(node, messageContentOptions{
 		maxImages:                0,
 		allowAudio:               false,
 		allowDocuments:           false,
@@ -500,7 +497,7 @@ func TestBuildMessageContentRetainsGenericFilesWhenProviderAllowsThem(t *testing
 		contentFieldFilename: testBinaryFilename,
 	}}
 
-	content, summary := buildMessageContent(node, testConversationTextLimit, messageContentOptions{
+	content, summary := buildMessageContent(node, messageContentOptions{
 		maxImages:                0,
 		allowAudio:               false,
 		allowDocuments:           false,
@@ -660,7 +657,7 @@ func TestBuildMessageContentFiltersUnsupportedMedia(t *testing.T) {
 
 	textOnlyOptions.maxImages = 1
 
-	content, summary := buildMessageContent(node, testConversationTextLimit, textOnlyOptions)
+	content, summary := buildMessageContent(node, textOnlyOptions)
 
 	contentParts, contentPartsOK := content.([]contentPart)
 	if !contentPartsOK {
@@ -687,7 +684,7 @@ func TestBuildMessageContentFiltersUnsupportedMedia(t *testing.T) {
 	geminiOptions.allowedDocumentMIMETypes = allowedGeminiDocumentMIMETypes()
 	geminiOptions.allowVideo = true
 
-	content, summary = buildMessageContent(node, testConversationTextLimit, geminiOptions)
+	content, summary = buildMessageContent(node, geminiOptions)
 
 	contentParts, contentPartsOK = content.([]contentPart)
 	if !contentPartsOK {

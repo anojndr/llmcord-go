@@ -609,17 +609,12 @@ func TestOpenAIClientStreamChatCompletionUsesXAIResponsesAPI(t *testing.T) {
 	var (
 		joinedContent  strings.Builder
 		finishReason   string
-		usage          *tokenUsage
 		providerRespID string
 		searchMetadata *searchMetadata
 	)
 
 	err := client.streamChatCompletion(context.Background(), request, func(delta streamDelta) error {
 		joinedContent.WriteString(delta.Content)
-
-		if delta.Usage != nil {
-			usage = cloneTokenUsage(delta.Usage)
-		}
 
 		if delta.FinishReason != "" {
 			finishReason = delta.FinishReason
@@ -645,10 +640,6 @@ func TestOpenAIClientStreamChatCompletionUsesXAIResponsesAPI(t *testing.T) {
 
 	if finishReason != finishReasonStop {
 		t.Fatalf("unexpected finish reason: %q", finishReason)
-	}
-
-	if usage == nil || usage.Input != 12 || usage.Output != 34 {
-		t.Fatalf("unexpected usage: %#v", usage)
 	}
 
 	if providerRespID != testXAIProviderResponseID {
@@ -765,7 +756,6 @@ func TestAssignXAIPreviousResponseIDUsesAssistantAnchorAndTrimsHistory(t *testin
 		},
 		Model:              "",
 		ConfiguredModel:    "x-ai/grok-4",
-		ContextWindow:      0,
 		SessionID:          "",
 		PreviousResponseID: "",
 		RequestID:          "",
@@ -827,7 +817,6 @@ func TestAssignXAIPreviousResponseIDSkipsBuiltInOpenAIProvider(t *testing.T) {
 		},
 		Model:              "gpt-5.4",
 		ConfiguredModel:    "openai/gpt-5.4",
-		ContextWindow:      0,
 		SessionID:          "",
 		PreviousResponseID: "",
 		RequestID:          "",
@@ -881,8 +870,6 @@ func TestGenerateAndSendResponseStoresProviderResponseIDForXAIContinuation(t *te
 				Thinking:           "",
 				Content:            "",
 				FinishReason:       finishReasonStop,
-				Usage:              nil,
-				ReasoningTokens:    0,
 				ProviderResponseID: testXAIProviderResponseID,
 				SearchMetadata:     nil,
 			},
@@ -990,7 +977,6 @@ func TestFinalizeXAIResponseAnswerParsesBridgeSourcesForNonGrokModels(t *testing
 		},
 		Model:              "gpt-4o",
 		ConfiguredModel:    "openai/gpt-4o",
-		ContextWindow:      0,
 		SessionID:          "",
 		PreviousResponseID: "",
 		RequestID:          "",
@@ -1036,7 +1022,6 @@ func TestFinalizeXAIResponseAnswerParsesVariousSourceAppendixFormatsForNonGrokMo
 		},
 		Model:              "claude-3-5-sonnet",
 		ConfiguredModel:    "anthropic/claude-3-5-sonnet",
-		ContextWindow:      0,
 		SessionID:          "",
 		PreviousResponseID: "",
 		RequestID:          "",
@@ -1672,7 +1657,6 @@ func newXAIResponsesStreamingRequest(baseURL string) chatCompletionRequest {
 		},
 		Model:              "grok-4",
 		ConfiguredModel:    "x-ai/grok-4",
-		ContextWindow:      0,
 		SessionID:          "",
 		PreviousResponseID: "",
 		RequestID:          "",

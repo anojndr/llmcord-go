@@ -443,8 +443,6 @@ func TestGeminiClientStreamChatCompletionEmitsTextAndFinishReason(t *testing.T) 
 		},
 	}
 
-	var usage *tokenUsage
-
 	joinedText := ""
 	finishReason := ""
 
@@ -453,10 +451,6 @@ func TestGeminiClientStreamChatCompletionEmitsTextAndFinishReason(t *testing.T) 
 		newSimpleGeminiStreamRequest(),
 		func(delta streamDelta) error {
 			joinedText += delta.Content
-
-			if delta.Usage != nil {
-				usage = cloneTokenUsage(delta.Usage)
-			}
 
 			if delta.FinishReason != "" {
 				finishReason = delta.FinishReason
@@ -475,10 +469,6 @@ func TestGeminiClientStreamChatCompletionEmitsTextAndFinishReason(t *testing.T) 
 
 	if finishReason != finishReasonStop {
 		t.Fatalf("unexpected finish reason: %q", finishReason)
-	}
-
-	if usage == nil || usage.Input != 15 || usage.Output != 23 {
-		t.Fatalf("unexpected usage: %#v", usage)
 	}
 
 	assertGeminiClientConfig(t, capturedConfig)
@@ -1096,7 +1086,6 @@ func newGeminiMediaUploadRequest() chatCompletionRequest {
 		Provider:           provider,
 		Model:              "gemini-3-flash-preview",
 		ConfiguredModel:    "",
-		ContextWindow:      0,
 		SessionID:          "",
 		PreviousResponseID: "",
 		RequestID:          "",
@@ -1206,7 +1195,6 @@ func newGeminiBuildTestRequest() chatCompletionRequest {
 		},
 		Model:              "gemini-3-flash-preview",
 		ConfiguredModel:    "",
-		ContextWindow:      0,
 		SessionID:          "",
 		PreviousResponseID: "",
 		RequestID:          "",
@@ -1242,7 +1230,6 @@ func newSimpleGeminiStreamRequest() chatCompletionRequest {
 		},
 		Model:              "gemini-3-flash-preview",
 		ConfiguredModel:    "",
-		ContextWindow:      0,
 		SessionID:          "",
 		PreviousResponseID: "",
 		RequestID:          "",
@@ -1376,7 +1363,6 @@ func streamGeminiTestChunks(
 			}
 
 			finalResponse := newGeminiGenerateContentResponse("lo", genai.FinishReasonStop)
-			finalResponse.UsageMetadata = newGeminiUsageMetadata(11, 4, 19, 4)
 
 			_ = yield(finalResponse, nil)
 		}
@@ -1414,24 +1400,6 @@ func newGeminiGenerateContentResponseWithParts(
 		ResponseID:      "",
 		UsageMetadata:   nil,
 		ModelStatus:     nil,
-	}
-}
-
-func newGeminiUsageMetadata(
-	promptTokens, toolUsePromptTokens, candidateTokens, thoughtTokens int32,
-) *genai.GenerateContentResponseUsageMetadata {
-	return &genai.GenerateContentResponseUsageMetadata{
-		CacheTokensDetails:         nil,
-		CachedContentTokenCount:    0,
-		CandidatesTokenCount:       candidateTokens,
-		CandidatesTokensDetails:    nil,
-		PromptTokenCount:           promptTokens,
-		PromptTokensDetails:        nil,
-		ThoughtsTokenCount:         thoughtTokens,
-		ToolUsePromptTokenCount:    toolUsePromptTokens,
-		ToolUsePromptTokensDetails: nil,
-		TotalTokenCount:            promptTokens + toolUsePromptTokens + candidateTokens + thoughtTokens,
-		TrafficType:                "",
 	}
 }
 
@@ -1896,80 +1864,6 @@ func TestGeminiClientStreamChatCompletionPreservesMetadataOnMarkerOnlyChunk(t *t
 
 	if len(metadata.Queries) != 1 || metadata.Queries[0] != "current weather Tokyo" {
 		t.Fatalf("unexpected search queries: %#v", metadata.Queries)
-	}
-}
-
-func TestGeminiStreamUsageIncludesCachedContentTokens(t *testing.T) {
-	t.Parallel()
-
-	usage := geminiStreamUsage(&genai.GenerateContentResponseUsageMetadata{
-		CacheTokensDetails:         nil,
-		CachedContentTokenCount:    12_000,
-		CandidatesTokenCount:       500,
-		CandidatesTokensDetails:    nil,
-		PromptTokenCount:           20_000,
-		PromptTokensDetails:        nil,
-		ThoughtsTokenCount:         0,
-		ToolUsePromptTokenCount:    0,
-		ToolUsePromptTokensDetails: nil,
-		TotalTokenCount:            20_500,
-		TrafficType:                "",
-	})
-	if usage == nil {
-		t.Fatal("expected token usage from gemini usage metadata")
-	}
-
-	if usage.Input != 20_000 {
-		t.Fatalf("unexpected gemini input tokens: %d", usage.Input)
-	}
-
-	if usage.Output != 500 {
-		t.Fatalf("unexpected gemini output tokens: %d", usage.Output)
-	}
-
-	if usage.CachedInput != 12_000 {
-		t.Fatalf("unexpected gemini cached input tokens: %d", usage.CachedInput)
-	}
-}
-
-func TestGeminiStreamUsageTracksToolUseAndThoughts(t *testing.T) {
-	t.Parallel()
-
-	usage := geminiStreamUsage(&genai.GenerateContentResponseUsageMetadata{
-		CacheTokensDetails:         nil,
-		CachedContentTokenCount:    0,
-		CandidatesTokenCount:       800,
-		CandidatesTokensDetails:    nil,
-		PromptTokenCount:           3_000,
-		PromptTokensDetails:        nil,
-		ThoughtsTokenCount:         400,
-		ToolUsePromptTokenCount:    200,
-		ToolUsePromptTokensDetails: nil,
-		TotalTokenCount:            4_400,
-		TrafficType:                "",
-	})
-	if usage == nil {
-		t.Fatal("expected token usage from gemini usage metadata")
-	}
-
-	if usage.Input != 3_200 {
-		t.Fatalf("unexpected gemini input tokens including tool use: %d", usage.Input)
-	}
-
-	if usage.Output != 1_200 {
-		t.Fatalf("unexpected gemini output tokens including thoughts: %d", usage.Output)
-	}
-
-	if usage.CachedInput != 0 {
-		t.Fatalf("unexpected gemini cached input tokens: %d", usage.CachedInput)
-	}
-}
-
-func TestGeminiStreamUsageReturnsNilForNilMetadata(t *testing.T) {
-	t.Parallel()
-
-	if usage := geminiStreamUsage(nil); usage != nil {
-		t.Fatalf("expected nil token usage for nil metadata: %#v", usage)
 	}
 }
 
