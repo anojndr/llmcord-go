@@ -169,13 +169,28 @@ search_decider_model: google/gemini-3.6-flash
 media_analysis_model: google/gemini-3.6-flash
 
 web_search:
-  # `mcp` keeps Exa as primary and uses Tavily as fallback.
-  # When `web_search.exa.api_key` is set, Exa uses the Search API.
-  # Without an Exa API key, Exa falls back to the Exa MCP.
-  # `tavily` flips the order and uses Exa as fallback.
+  # Web search runs Exa by default: `mcp` uses Exa as primary with Tavily as
+  # fallback; when `web_search.exa.api_key` is set, Exa uses its Search API,
+  # and without a key it uses the Exa MCP. `tavily` flips the order and uses
+  # Exa as fallback. `freeweb` opts into the FreeWeb MCP server for web search
+  # instead (no API keys needed).
   primary_provider: mcp
-  # Maximum URLs to request from Exa or Tavily for each search query.
+  # Maximum URLs to request for each search query.
   max_urls: 5
+  # Generic website URL extraction uses the FreeWeb MCP server by default
+  # (github.com/xenitV1/freeweb, launched as `npx -y freeweb-mcp@latest` over
+  # stdio, no API keys; the command is fixed and not shell-evaluated — place a
+  # `freeweb-mcp` wrapper earlier on PATH to use a custom installation). When
+  # FreeWeb fails, extraction falls back to Exa Contents, then Tavily Extract,
+  # then the in-process HTML fetcher.
+  freeweb:
+    # Optional. FreeWeb needs Playwright browsers for SPA-heavy pages; if they
+    # are missing, run `npx playwright install` once (the bot logs a one-time
+    # notice and falls back to the other extractors per URL). Set to false to
+    # skip FreeWeb extraction entirely and go straight to the Exa/Tavily/
+    # direct-fetch chain.
+    # Default: true
+    enabled: true
   exa:
     # Optional. When set, the web search flow uses Exa's Search API instead of
     # Exa MCP, and generic website extraction uses Exa's Contents API.
@@ -186,7 +201,7 @@ web_search:
     # Default: 15000
     text_max_characters: 15000
     # Optional livecrawl timeout in milliseconds for Exa Contents. Slow pages
-    # that outlive it are retried once with a double timeout, then fetched from
+    # that outlive it are skipped to once with a double timeout, then fetched from
     # Exa's cache, so a first attempt may succeed on a later try.
     # Default: 15000 (Exa's recommended maximum)
     # livecrawl_timeout_ms: 15000
@@ -195,10 +210,10 @@ web_search:
     #   - exa-backup-key
     api_key:
   tavily:
-    # Optional when `primary_provider: mcp`; required if you want Tavily as either
-    # primary or fallback. Generic website extraction uses Tavily Extract when no
-    # Exa API key is set. `api_key` also accepts a YAML list; requests are
-    # round-robin across them.
+    # Optional when `primary_provider: mcp`; required if you want Tavily as
+    # either primary or fallback. Generic website extraction also uses Tavily
+    # Extract as a fallback when FreeWeb and Exa both fail. `api_key` accepts a
+    # YAML list; requests are round-robin across them.
     # api_key:
     #   - tvly-primary-key
     #   - tvly-backup-key
