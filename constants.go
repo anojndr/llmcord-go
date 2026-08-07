@@ -93,7 +93,7 @@ const (
 	showSourcesPreviousButtonLabel                = "Previous"
 	showSourcesNextButtonLabel                    = "Next"
 	createGistButtonCustomID                      = "create_gist"
-	createGistButtonLabel                         = "View on GitHub"
+	createGistButtonLabel                         = "View response better on GitHub Gist"
 	messageRoleAssistant                          = "assistant"
 	finishReasonStop                              = "stop"
 	finishReasonLength                            = "length"

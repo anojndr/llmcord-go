@@ -240,7 +240,7 @@ database:
   store_key:
 
 gist:
-  # Gists are used by the "View on GitHub" button to publish long replies.
+  # Gists are used by the "View response better on GitHub Gist" button to publish long replies.
   # Publishing uses the GitHub REST API (POST /gists) and requires a personal
   # access token with the "gist" scope; create one at
   # https://github.com/settings/tokens. Without a key, publishing is disabled.

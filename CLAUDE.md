@@ -61,7 +61,7 @@ The router performs no retries and no attempt timeouts except one narrow case: `
 
 ### Rendering and responses
 
-`response.go` renders the stream into Discord embeds (all responses are embeds now — the plain-text path was removed): `segmentAccumulator` splits text at `embedResponseMaxLength` (4096 minus the streaming ellipsis) and at Discord's 2000-char message limit, `renderSpec`/`responseTracker` track what was rendered (embeds, thinking/sources buttons, pagination), and the footer shows token usage vs. context window. `interactions.go` handles slash commands and button clicks (Show Thinking / Show Sources / View on GitHub). `progress.go` drives the live progress embed (stage checklist, progress bar, elapsed timer).
+`response.go` renders the stream into Discord embeds (all responses are embeds now — the plain-text path was removed): `segmentAccumulator` splits text at `embedResponseMaxLength` (4096 minus the streaming ellipsis) and at Discord's 2000-char message limit, `renderSpec`/`responseTracker` track what was rendered (embeds, thinking/sources buttons, pagination), and the footer shows token usage vs. context window. `interactions.go` handles slash commands and button clicks (Show Thinking / Show Sources / View response better on GitHub Gist). `progress.go` drives the live progress embed (stage checklist, progress bar, elapsed timer).
 
 ### Concurrency conventions
 
