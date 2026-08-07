@@ -22,7 +22,7 @@ const (
 	testExpectedSummarizedContentFormat        = "expected summarized content in compacted message: %q"
 )
 
-func TestAutoCompactRequestAddsSummaryAndPreservesRecentMessages(t *testing.T) {
+func TestAutoCompactRequestAddsSummaryLastAndKeepsNewestUserMessages(t *testing.T) {
 	t.Parallel()
 
 	client := newStubChatClient(func(
@@ -52,6 +52,7 @@ func TestAutoCompactRequestAddsSummaryAndPreservesRecentMessages(t *testing.T) {
 
 	originalRequest.ConfiguredModel = testAutoCompactMainModel
 	originalRequest.ContextWindow = 200
+	originalRequest.AutoCompactTokenLimit = 0
 	originalRequest.Messages = []chatMessage{
 		{Role: messageRoleSystem, Content: "Always be helpful."},
 		{Role: messageRoleUser, Content: repeatedAutoCompactText("older details", 80)},
@@ -74,64 +75,73 @@ func TestAutoCompactRequestAddsSummaryAndPreservesRecentMessages(t *testing.T) {
 		t.Fatal("expected at least one compaction request")
 	}
 
-	if len(compactedRequest.Messages) != 6 {
-		t.Fatalf(testUnexpectedCompactedRequestLengthFormat, len(compactedRequest.Messages))
-	}
-
+	// System prompt first, then the newest user messages, then the summary
+	// LAST (codex: replacement history ends with the summary message).
 	if compactedRequest.Messages[0] != originalRequest.Messages[0] {
 		t.Fatalf("expected leading system message to be preserved: %#v", compactedRequest.Messages[0])
 	}
 
-	assertAutoCompactSummaryContains(t, compactedRequest.Messages[1], testAutoCompactSummaryText)
+	lastIndex := len(compactedRequest.Messages) - 1
+	assertAutoCompactSummaryContains(t, compactedRequest.Messages[lastIndex], testAutoCompactSummaryText)
 
-	for index := 2; index < len(compactedRequest.Messages); index++ {
-		if compactedRequest.Messages[index] != originalRequest.Messages[index] {
-			t.Fatalf(
-				"expected tail message %d to be preserved: got %#v want %#v",
-				index,
-				compactedRequest.Messages[index],
-				originalRequest.Messages[index],
-			)
+	// "Latest question." is the newest user message and must be retained before
+	// the summary; assistant messages are dropped like codex does.
+	foundLatest := false
+	hasAssistant := false
+
+	for _, message := range compactedRequest.Messages {
+		if chatMessageText(message) == "Latest question." {
+			foundLatest = true
 		}
+
+		if message.Role == messageRoleAssistant {
+			hasAssistant = true
+		}
+	}
+
+	if !foundLatest {
+		t.Fatalf("expected latest user message to be retained: %#v", compactedRequest.Messages)
+	}
+
+	if hasAssistant {
+		t.Fatalf("expected assistant messages to be dropped: %#v", compactedRequest.Messages)
 	}
 }
 
-func TestAutoCompactRequestUsesConfiguredThresholdPercent(t *testing.T) {
+func TestAutoCompactRequestUsesConfiguredTokenLimit(t *testing.T) {
 	t.Parallel()
 
-	originalRequest := newConfiguredThresholdAutoCompactRequest()
+	originalRequest := newConfiguredTokenLimitAutoCompactRequest()
 
 	estimatedTokens := estimateChatCompletionRequestTokens(originalRequest)
 	customLimit := autoCompactTokenLimit(
 		originalRequest.ContextWindow,
-		originalRequest.AutoCompactThresholdPercent,
+		originalRequest.AutoCompactTokenLimit,
 	)
-	defaultLimit := autoCompactTokenLimit(originalRequest.ContextWindow, 0)
 
-	if estimatedTokens <= customLimit || estimatedTokens > defaultLimit {
+	if estimatedTokens <= customLimit {
 		t.Fatalf(
-			"unexpected test setup: estimated=%d custom_limit=%d default_limit=%d",
+			"unexpected test setup: estimated=%d custom_limit=%d",
 			estimatedTokens,
 			customLimit,
-			defaultLimit,
 		)
 	}
 
 	noCompactInstance := new(bot)
 	noCompactInstance.chatCompletions = newUnexpectedCompactionClient(t)
 
-	defaultThresholdRequest := originalRequest
-	defaultThresholdRequest.AutoCompactThresholdPercent = 0
+	defaultLimitRequest := originalRequest
+	defaultLimitRequest.AutoCompactTokenLimit = 0
 
 	uncompactedRequest, defaultResult := noCompactInstance.autoCompactRequest(
 		context.Background(),
-		defaultThresholdRequest,
+		defaultLimitRequest,
 	)
 	if defaultResult.Applied {
-		t.Fatal("did not expect auto compaction to apply with the default threshold")
+		t.Fatal("did not expect auto compaction to apply with the derived limit")
 	}
 
-	if !chatMessagesEqual(uncompactedRequest.Messages, defaultThresholdRequest.Messages) {
+	if !chatMessagesEqual(uncompactedRequest.Messages, defaultLimitRequest.Messages) {
 		t.Fatalf("unexpected request mutation without compaction: %#v", uncompactedRequest.Messages)
 	}
 
@@ -140,67 +150,121 @@ func TestAutoCompactRequestUsesConfiguredThresholdPercent(t *testing.T) {
 
 	compactedRequest, result := instance.autoCompactRequest(context.Background(), originalRequest)
 	if !result.Applied {
-		t.Fatal("expected auto compaction to apply with the configured threshold")
+		t.Fatal("expected auto compaction to apply with the configured limit")
 	}
 
 	if result.Strategy != autoCompactStrategySummary {
 		t.Fatalf(testUnexpectedAutoCompactStrategyFormat, result.Strategy)
 	}
 
-	if len(compactedRequest.Messages) != 3 {
-		t.Fatalf(testUnexpectedCompactedRequestLengthFormat, len(compactedRequest.Messages))
-	}
-
-	assertAutoCompactSummaryContains(t, compactedRequest.Messages[0], testAutoCompactSummaryText)
+	lastIndex := len(compactedRequest.Messages) - 1
+	assertAutoCompactSummaryContains(t, compactedRequest.Messages[lastIndex], testAutoCompactSummaryText)
 }
 
-func TestAutoCompactThresholdMatchesCodexWindowCap(t *testing.T) {
+func TestAutoCompactRequestPreservesNewestUserMessageUnderConfiguredLimit(t *testing.T) {
 	t.Parallel()
 
-	const (
-		contextWindow      = 1_000
-		aboveCodexPercent  = 95
-		codexExpectedLimit = 900 // Codex auto-compacts at (window * 9) / 10.
-	)
+	originalRequest := newConfiguredTokenLimitAutoCompactRequest()
+	customLimit := autoCompactTokenLimit(originalRequest.ContextWindow, originalRequest.AutoCompactTokenLimit)
 
-	limit := autoCompactTokenLimit(contextWindow, aboveCodexPercent)
-	if limit != codexExpectedLimit {
-		t.Fatalf(
-			"expected threshold above 90%% to clamp to Codex's (window*9)/10: got %d want %d",
-			limit,
-			codexExpectedLimit,
-		)
+	estimatedTokens := estimateChatCompletionRequestTokens(originalRequest)
+	if estimatedTokens <= customLimit {
+		t.Fatalf("unexpected test setup: estimated=%d custom_limit=%d", estimatedTokens, customLimit)
 	}
 
-	defaultLimit := autoCompactTokenLimit(contextWindow, 0)
-	if defaultLimit != codexExpectedLimit {
-		t.Fatalf(
-			"expected default threshold to equal Codex's (window*9)/10: got %d want %d",
-			defaultLimit,
-			codexExpectedLimit,
-		)
+	instance := new(bot)
+	instance.chatCompletions = newStubChatClient(func(
+		_ context.Context,
+		_ chatCompletionRequest,
+		handle func(streamDelta) error,
+	) error {
+		t.Helper()
+
+		return handle(newStreamDelta(testAutoCompactSummaryText, ""))
+	})
+
+	compactedRequest, result := instance.autoCompactRequest(context.Background(), originalRequest)
+	if !result.Applied {
+		t.Fatal("expected auto compaction to apply with the configured limit")
+	}
+
+	if result.Strategy != autoCompactStrategySummary {
+		t.Fatalf(testUnexpectedAutoCompactStrategyFormat, result.Strategy)
+	}
+
+	lastIndex := len(compactedRequest.Messages) - 1
+	assertAutoCompactSummaryContains(t, compactedRequest.Messages[lastIndex], testAutoCompactSummaryText)
+
+	latestText := chatMessageText(compactedRequest.Messages[0])
+	if !strings.Contains(latestText, "older details") && !strings.Contains(latestText, "Latest question") {
+		t.Fatalf("expected newest user messages retained: %#v", compactedRequest.Messages)
 	}
 }
 
-func TestAutoCompactSingleMessageLimitFollowsCodexCappedThreshold(t *testing.T) {
+func TestAutoCompactTokenLimitFollowsCodexDerivation(t *testing.T) {
 	t.Parallel()
 
 	const contextWindow = 1_000
 
-	// At the Codex cap the latest-message truncation budget stays 10
-	// percentage points below the capped threshold: 80% of the window.
-	cappedPercent := autoCompactCodexCappedThresholdPercent(95)
-	if cappedPercent != autoCompactCodexCapPercent {
-		t.Fatalf("unexpected capped threshold percent: %d", cappedPercent)
+	// Codex derives the auto-compact limit as (window * 9) / 10 when no
+	// explicit config limit is set.
+	derivedLimit := autoCompactDerivedTokenLimit(contextWindow)
+	if derivedLimit != 900 {
+		t.Fatalf(
+			"expected derived limit to equal Codex's (window*9)/10: got %d want 900",
+			derivedLimit,
+		)
 	}
 
-	singleMessageLimit := autoCompactSingleMessageTokenLimit(contextWindow, 95)
+	// A configured limit is clamped at the derived 90% value, mirroring
+	// ModelInfo::auto_compact_token_limit's min(config, context*9/10).
+	if limit := autoCompactTokenLimit(contextWindow, 1000); limit != 900 {
+		t.Fatalf("expected configured limit above 90%% to clamp: got %d want 900", limit)
+	}
 
-	expectedLimit := (contextWindow * (autoCompactCodexCapPercent - autoCompactSingleMessageMargin)) /
+	if limit := autoCompactTokenLimit(contextWindow, 700); limit != 700 {
+		t.Fatalf("expected configured limit below 90%% to be honored: got %d want 700", limit)
+	}
+
+	if limit := autoCompactTokenLimit(contextWindow, 0); limit != 900 {
+		t.Fatalf("expected zero configured limit to derive 900: got %d", limit)
+	}
+
+	// No window configured → no scoped trigger at all.
+	if limit := autoCompactTokenLimit(0, 0); limit != 0 {
+		t.Fatalf("expected zero window to yield zero limit: got %d", limit)
+	}
+}
+
+func TestAutoCompactFullContextWindowLimitFollowsCodexEffectivePercent(t *testing.T) {
+	t.Parallel()
+
+	const contextWindow = 1_000
+
+	// Codex treats 95% of the context window as the usable hard cap.
+	if limit := autoCompactFullWindowTokenLimit(contextWindow); limit != 950 {
+		t.Fatalf("expected full-window limit to equal Codex's 95%% cap: got %d want 950", limit)
+	}
+
+	if limit := autoCompactFullWindowTokenLimit(0); limit != 0 {
+		t.Fatalf("expected zero window to yield zero full-window limit: got %d", limit)
+	}
+}
+
+func TestAutoCompactSingleMessageLimitStaysBelowDerivedLimit(t *testing.T) {
+	t.Parallel()
+
+	const contextWindow = 1_000
+
+	// The latest-message truncation budget stays 10 percentage points below the
+	// derived 90% limit: 80% of the window.
+	singleMessageLimit := autoCompactSingleMessageTokenLimit(contextWindow)
+
+	expectedLimit := (contextWindow * (autoCompactDerivePercent - autoCompactSingleMessageMargin)) /
 		autoCompactPercentBase
 	if singleMessageLimit != expectedLimit {
 		t.Fatalf(
-			"unexpected single-message limit for capped threshold: got %d want %d",
+			"unexpected single-message limit: got %d want %d",
 			singleMessageLimit,
 			expectedLimit,
 		)
@@ -222,22 +286,21 @@ func TestAutoCompactRequestTruncatesLatestOversizedMessage(t *testing.T) {
 			ExtraQuery:      nil,
 			ExtraBody:       nil,
 		},
-		Model:                       "",
-		ConfiguredModel:             testAutoCompactMainModel,
-		ContextWindow:               1_000,
-		AutoCompactThresholdPercent: 90,
-		SessionID:                   "",
-		PreviousResponseID:          "",
-		RequestID:                   "",
+		Model:                      "",
+		ConfiguredModel:            testAutoCompactMainModel,
+		ContextWindow:              1_000,
+		AutoCompactTokenLimit:      0,
+		AutoCompactTokenLimitScope: autoCompactTokenLimitScopeTotal,
+		CompactPrompt:              "",
+		SessionID:                  "",
+		PreviousResponseID:         "",
+		RequestID:                  "",
 		Messages: []chatMessage{
 			{Role: messageRoleUser, Content: autoCompactSizedASCIIText(810)},
 		},
 	}
 
-	singleMessageLimit := autoCompactSingleMessageTokenLimit(
-		request.ContextWindow,
-		request.AutoCompactThresholdPercent,
-	)
+	singleMessageLimit := autoCompactSingleMessageTokenLimit(request.ContextWindow)
 	if estimateChatMessageTokens(request.Messages[0]) <= singleMessageLimit {
 		t.Fatalf("unexpected test setup: latest message already fits %d", singleMessageLimit)
 	}
@@ -308,22 +371,21 @@ func TestAutoCompactRequestTruncatesCSVLikeLatestMessageConservatively(t *testin
 			ExtraQuery:      nil,
 			ExtraBody:       nil,
 		},
-		Model:                       "",
-		ConfiguredModel:             testAutoCompactMainModel,
-		ContextWindow:               1_000,
-		AutoCompactThresholdPercent: 90,
-		SessionID:                   "",
-		PreviousResponseID:          "",
-		RequestID:                   "",
+		Model:                      "",
+		ConfiguredModel:            testAutoCompactMainModel,
+		ContextWindow:              1_000,
+		AutoCompactTokenLimit:      0,
+		AutoCompactTokenLimitScope: autoCompactTokenLimitScopeTotal,
+		CompactPrompt:              "",
+		SessionID:                  "",
+		PreviousResponseID:         "",
+		RequestID:                  "",
 		Messages: []chatMessage{
 			{Role: messageRoleUser, Content: csvText},
 		},
 	}
 
-	singleMessageLimit := autoCompactSingleMessageTokenLimit(
-		request.ContextWindow,
-		request.AutoCompactThresholdPercent,
-	)
+	singleMessageLimit := autoCompactSingleMessageTokenLimit(request.ContextWindow)
 	if estimateChatMessageTokens(request.Messages[0]) <= singleMessageLimit {
 		t.Fatalf("unexpected test setup: csv message already fits %d", singleMessageLimit)
 	}
@@ -383,13 +445,15 @@ func TestAutoCompactRequestTruncatesLatestOversizedMessageBeforeSummarizingHisto
 			ExtraQuery:      nil,
 			ExtraBody:       nil,
 		},
-		Model:                       "",
-		ConfiguredModel:             testAutoCompactMainModel,
-		ContextWindow:               1_000,
-		AutoCompactThresholdPercent: 90,
-		SessionID:                   "",
-		PreviousResponseID:          "",
-		RequestID:                   "",
+		Model:                      "",
+		ConfiguredModel:            testAutoCompactMainModel,
+		ContextWindow:              1_000,
+		AutoCompactTokenLimit:      0,
+		AutoCompactTokenLimitScope: autoCompactTokenLimitScopeTotal,
+		CompactPrompt:              "",
+		SessionID:                  "",
+		PreviousResponseID:         "",
+		RequestID:                  "",
 		Messages: []chatMessage{
 			{Role: messageRoleSystem, Content: "Always be helpful."},
 			{Role: messageRoleUser, Content: autoCompactSizedASCIIText(250)},
@@ -436,26 +500,26 @@ func TestAutoCompactRequestTruncatesLatestOversizedMessageBeforeSummarizingHisto
 		t.Fatalf(testUnexpectedCompactedRequestLengthFormat, len(compactedRequest.Messages))
 	}
 
-	assertAutoCompactSummaryContains(t, compactedRequest.Messages[1], testAutoCompactOlderSummaryText)
+	assertAutoCompactSummaryContains(t, compactedRequest.Messages[3], testAutoCompactOlderSummaryText)
 
-	latestMessage := compactedRequest.Messages[len(compactedRequest.Messages)-1]
-	if estimateChatMessageTokens(latestMessage) > autoCompactSingleMessageTokenLimit(
-		request.ContextWindow,
-		request.AutoCompactThresholdPercent,
-	) {
+	// The newest user message is retained before the summary and must have been
+	// truncated to the single-message budget.
+	latestMessage := compactedRequest.Messages[len(compactedRequest.Messages)-2]
+	if estimateChatMessageTokens(latestMessage) > autoCompactSingleMessageTokenLimit(request.ContextWindow) {
 		t.Fatalf("expected latest message to fit the single-message limit: %#v", latestMessage)
 	}
 }
 
-func TestEstimateTextTokensCountsCSVLikeTextMoreConservativelyThanProse(t *testing.T) {
+func TestEstimateTextTokensMatchesCodexByteRatio(t *testing.T) {
 	t.Parallel()
 
 	csvText := repeatedAutoCompactCSVRows(20)
 
-	naiveCSVTokens := ceilDivPositive(len(strings.TrimSpace(csvText)), autoCompactCharsPerToken)
-	if estimateTextTokens(csvText) <= naiveCSVTokens {
+	// Codex estimates ceil(bytes/4) for all text, including punctuation-heavy.
+	naiveCSVTokens := approxTokensFromBytes(len(strings.TrimSpace(csvText)))
+	if estimateTextTokens(csvText) != naiveCSVTokens {
 		t.Fatalf(
-			"expected csv-like token estimate above naive character ratio: got %d want > %d",
+			"expected codex byte ratio for csv-like text: got %d want %d",
 			estimateTextTokens(csvText),
 			naiveCSVTokens,
 		)
@@ -463,10 +527,10 @@ func TestEstimateTextTokensCountsCSVLikeTextMoreConservativelyThanProse(t *testi
 
 	proseText := repeatedAutoCompactText("average frame pacing stayed steady during the capture", 20)
 
-	naiveProseTokens := ceilDivPositive(len(strings.TrimSpace(proseText)), autoCompactCharsPerToken)
+	naiveProseTokens := approxTokensFromBytes(len(strings.TrimSpace(proseText)))
 	if estimateTextTokens(proseText) != naiveProseTokens {
 		t.Fatalf(
-			"expected prose estimate to keep the character ratio: got %d want %d",
+			"expected codex byte ratio for prose: got %d want %d",
 			estimateTextTokens(proseText),
 			naiveProseTokens,
 		)
@@ -495,14 +559,14 @@ func TestSplitTextToApproxTokenChunksKeepsCSVLikeChunksWithinBudget(t *testing.T
 	}
 }
 
-func newConfiguredThresholdAutoCompactRequest() chatCompletionRequest {
+func newConfiguredTokenLimitAutoCompactRequest() chatCompletionRequest {
 	var request chatCompletionRequest
 
 	request.ConfiguredModel = testAutoCompactMainModel
-	request.ContextWindow = 200
-	request.AutoCompactThresholdPercent = 50
+	request.ContextWindow = 2_000
+	request.AutoCompactTokenLimit = 100
 	request.Messages = []chatMessage{
-		{Role: messageRoleUser, Content: repeatedAutoCompactText("older details", 32)},
+		{Role: messageRoleUser, Content: repeatedAutoCompactText("older details", 30)},
 		{Role: messageRoleAssistant, Content: "Earlier answer."},
 		{Role: messageRoleUser, Content: "Latest question."},
 	}
@@ -635,7 +699,7 @@ func TestDecideAutoCompactsSearchDeciderRequest(t *testing.T) {
 
 	sourceMessage := newDeciderTestConversationChain(
 		instance,
-		repeatedAutoCompactText("very old context", 100),
+		repeatedAutoCompactText("very old context", 400),
 		"Assistant reply about the older context.",
 		"Should we search for the latest version?",
 	)
@@ -865,13 +929,13 @@ func TestPrepareMessageResponseAutoCompactsMainRequest(t *testing.T) {
 		t.Fatalf("expected system prompt to stay first: %#v", request.Messages[0])
 	}
 
-	summaryText, ok := request.Messages[1].Content.(string)
+	summaryText, ok := request.Messages[len(request.Messages)-1].Content.(string)
 	if !ok {
-		t.Fatalf("unexpected main summary content type: %T", request.Messages[1].Content)
+		t.Fatalf("unexpected main summary content type: %T", request.Messages[len(request.Messages)-1].Content)
 	}
 
 	if !strings.Contains(summaryText, autoCompactSummaryPrefix) {
-		t.Fatalf("expected main request summary prefix: %q", summaryText)
+		t.Fatalf("expected main request summary prefix in last message: %q", summaryText)
 	}
 
 	if !strings.Contains(summaryText, "Main request summary.") {
@@ -1025,13 +1089,15 @@ func TestAutoCompactRequestReliesOnContextWindowForLimit(t *testing.T) {
 			ExtraQuery:      nil,
 			ExtraBody:       nil,
 		},
-		Model:                       "",
-		ConfiguredModel:             testAutoCompactMainModel,
-		ContextWindow:               1_000,
-		AutoCompactThresholdPercent: 0,
-		SessionID:                   "",
-		PreviousResponseID:          "",
-		RequestID:                   "",
+		Model:                      "",
+		ConfiguredModel:            testAutoCompactMainModel,
+		ContextWindow:              1_000,
+		AutoCompactTokenLimit:      0,
+		AutoCompactTokenLimitScope: autoCompactTokenLimitScopeTotal,
+		CompactPrompt:              "",
+		SessionID:                  "",
+		PreviousResponseID:         "",
+		RequestID:                  "",
 		Messages: []chatMessage{
 			{Role: messageRoleSystem, Content: "Always be helpful."},
 			{Role: messageRoleUser, Content: repeatedAutoCompactText("very old details", 120)},
@@ -1073,13 +1139,15 @@ func TestAutoCompactRequestCompactsWhenContextWindowIsLarge(t *testing.T) {
 			ExtraQuery:      nil,
 			ExtraBody:       nil,
 		},
-		Model:                       "",
-		ConfiguredModel:             testAutoCompactMainModel,
-		ContextWindow:               1_000,
-		AutoCompactThresholdPercent: 0,
-		SessionID:                   "",
-		PreviousResponseID:          "",
-		RequestID:                   "",
+		Model:                      "",
+		ConfiguredModel:            testAutoCompactMainModel,
+		ContextWindow:              1_000,
+		AutoCompactTokenLimit:      0,
+		AutoCompactTokenLimitScope: autoCompactTokenLimitScopeTotal,
+		CompactPrompt:              "",
+		SessionID:                  "",
+		PreviousResponseID:         "",
+		RequestID:                  "",
 		Messages: []chatMessage{
 			{Role: messageRoleUser, Content: repeatedAutoCompactText("user details", 5_000)},
 			{Role: messageRoleAssistant, Content: "Assistant answer."},
@@ -1124,7 +1192,13 @@ func TestAutoCompactRequestCompactsWhenContextWindowIsLarge(t *testing.T) {
 		t.Fatalf(testUnexpectedCompactedRequestLengthFormat, len(compactedRequest.Messages))
 	}
 
-	assertAutoCompactSummaryContains(t, compactedRequest.Messages[0], testAutoCompactSummaryText)
+	// The summary is appended LAST; the newest user message is retained before
+	// it and the assistant message is dropped.
+	if chatMessageText(compactedRequest.Messages[1]) != "Follow-up question." {
+		t.Fatalf("expected newest user message retained: %#v", compactedRequest.Messages[1])
+	}
+
+	assertAutoCompactSummaryContains(t, compactedRequest.Messages[2], testAutoCompactSummaryText)
 }
 
 func TestAutoCompactRequestWithoutContextWindowLeavesRequestUnchanged(t *testing.T) {
@@ -1142,17 +1216,333 @@ func TestAutoCompactRequestWithoutContextWindowLeavesRequestUnchanged(t *testing
 			ExtraQuery:      nil,
 			ExtraBody:       nil,
 		},
-		Model:                       "",
-		ConfiguredModel:             testAutoCompactMainModel,
-		ContextWindow:               0,
-		AutoCompactThresholdPercent: 0,
-		SessionID:                   "",
-		PreviousResponseID:          "",
-		RequestID:                   "",
+		Model:                      "",
+		ConfiguredModel:            testAutoCompactMainModel,
+		ContextWindow:              0,
+		AutoCompactTokenLimit:      0,
+		AutoCompactTokenLimitScope: autoCompactTokenLimitScopeTotal,
+		CompactPrompt:              "",
+		SessionID:                  "",
+		PreviousResponseID:         "",
+		RequestID:                  "",
 		Messages: []chatMessage{
 			{Role: messageRoleUser, Content: repeatedAutoCompactText("older context", 120)},
 			{Role: messageRoleAssistant, Content: "Assistant answer."},
 			{Role: messageRoleUser, Content: "Latest follow-up."},
+		},
+	}
+
+	instance := new(bot)
+	instance.chatCompletions = newUnexpectedCompactionClient(t)
+
+	compactedRequest, result := instance.autoCompactRequest(context.Background(), request)
+	if result.Applied {
+		t.Fatal("did not expect auto compaction without a context window")
+	}
+
+	if !chatMessagesEqual(compactedRequest.Messages, request.Messages) {
+		t.Fatalf("request must be unchanged without a context window: %#v", compactedRequest.Messages)
+	}
+}
+
+func TestAutoCompactRequestForcesAtFullWindowCap(t *testing.T) {
+	t.Parallel()
+
+	request := chatCompletionRequest{
+		Provider: providerRequestConfig{
+			APIKind:         providerAPIKindOpenAI,
+			BaseURL:         "",
+			APIKey:          "",
+			APIKeys:         nil,
+			UseResponsesAPI: false,
+			EnableGrounding: false,
+			ExtraHeaders:    nil,
+			ExtraQuery:      nil,
+			ExtraBody:       nil,
+		},
+		Model:                      "",
+		ConfiguredModel:            testAutoCompactMainModel,
+		ContextWindow:              1_000,
+		AutoCompactTokenLimit:      0,
+		AutoCompactTokenLimitScope: autoCompactTokenLimitScopeTotal,
+		CompactPrompt:              "",
+		SessionID:                  "",
+		PreviousResponseID:         "",
+		RequestID:                  "",
+		Messages: []chatMessage{
+			{Role: messageRoleUser, Content: repeatedAutoCompactText("grows", 200)},
+			{Role: messageRoleAssistant, Content: repeatedAutoCompactText("answers", 200)},
+			{Role: messageRoleUser, Content: repeatedAutoCompactText("latest", 200)},
+		},
+	}
+
+	estimated := estimateChatCompletionRequestTokens(request)
+
+	hardCap := autoCompactFullWindowTokenLimit(request.ContextWindow)
+	if estimated <= hardCap {
+		t.Fatalf("unexpected test setup: estimated %d <= full-window cap %d", estimated, hardCap)
+	}
+
+	instance := new(bot)
+	instance.chatCompletions = newStubChatClient(func(
+		_ context.Context,
+		_ chatCompletionRequest,
+		handle func(streamDelta) error,
+	) error {
+		t.Helper()
+
+		return handle(newStreamDelta(testAutoCompactSummaryText, ""))
+	})
+
+	compactedRequest, result := instance.autoCompactRequest(context.Background(), request)
+	if !result.Applied {
+		t.Fatal("expected full-window cap to trigger compaction")
+	}
+
+	if estimateChatMessagesTokens(compactedRequest.Messages) > hardCap {
+		t.Fatalf(
+			"compacted request exceeds full-window cap: %d > %d",
+			estimateChatMessagesTokens(compactedRequest.Messages),
+			hardCap,
+		)
+	}
+
+	lastIndex := len(compactedRequest.Messages) - 1
+	assertAutoCompactSummaryContains(t, compactedRequest.Messages[lastIndex], testAutoCompactSummaryText)
+}
+
+func TestAutoCompactRequestWithBodyAfterPrefixScopeWithoutConfigLimitOnlyHardCaps(t *testing.T) {
+	t.Parallel()
+
+	request := chatCompletionRequest{
+		Provider: providerRequestConfig{
+			APIKind:         providerAPIKindOpenAI,
+			BaseURL:         "",
+			APIKey:          "",
+			APIKeys:         nil,
+			UseResponsesAPI: false,
+			EnableGrounding: false,
+			ExtraHeaders:    nil,
+			ExtraQuery:      nil,
+			ExtraBody:       nil,
+		},
+		Model:                      "",
+		ConfiguredModel:            testAutoCompactMainModel,
+		ContextWindow:              1_000,
+		AutoCompactTokenLimit:      0,
+		AutoCompactTokenLimitScope: autoCompactTokenLimitScopeBodyAfterPrefix,
+		CompactPrompt:              "",
+		SessionID:                  "",
+		PreviousResponseID:         "",
+		RequestID:                  "",
+		Messages: []chatMessage{
+			{Role: messageRoleUser, Content: repeatedAutoCompactText("older context", 129)},
+			{Role: messageRoleAssistant, Content: repeatedAutoCompactText("answer", 129)},
+			{Role: messageRoleUser, Content: repeatedAutoCompactText("latest", 129)},
+		},
+	}
+
+	estimated := estimateChatCompletionRequestTokens(request)
+
+	fullWindow := autoCompactFullWindowTokenLimit(request.ContextWindow)
+	if estimated >= fullWindow {
+		t.Fatalf("unexpected test setup: estimated %d >= full-window cap %d", estimated, fullWindow)
+	}
+
+	// With scope body_after_prefix and no explicit config limit, only the hard
+	// cap applies: the request sits below it, so nothing fires even though it
+	// exceeds the derived 90% total limit.
+	derivedLimit := autoCompactDerivedTokenLimit(request.ContextWindow)
+	if estimated <= derivedLimit {
+		t.Fatalf("unexpected test setup: estimated %d <= derived limit %d", estimated, derivedLimit)
+	}
+
+	// The truncation pre-step must not fire either: the latest message alone is
+	// below the single-message budget.
+	singleMessageLimit := autoCompactSingleMessageTokenLimit(request.ContextWindow)
+	if estimateChatMessageTokens(request.Messages[len(request.Messages)-1]) > singleMessageLimit {
+		t.Fatalf("unexpected test setup: latest message over single-message limit %d", singleMessageLimit)
+	}
+
+	instance := new(bot)
+	instance.chatCompletions = newUnexpectedCompactionClient(t)
+
+	uncompactedRequest, result := instance.autoCompactRequest(context.Background(), request)
+	if result.Applied {
+		t.Fatal("did not expect compaction to apply with only the hard cap active")
+	}
+
+	if !chatMessagesEqual(uncompactedRequest.Messages, request.Messages) {
+		t.Fatalf("unexpected request mutation without compaction: %#v", uncompactedRequest.Messages)
+	}
+}
+
+func TestTruncateTextToApproxTokenBudgetPreservesPrefixAndSuffixWithMarker(t *testing.T) {
+	t.Parallel()
+
+	text := repeatedAutoCompactText("word", 500)
+
+	const tokenLimit = 50
+
+	truncated := truncateTextToApproxTokenBudget(text, tokenLimit)
+
+	if !strings.Contains(truncated, "…") {
+		t.Fatalf("expected middle-out truncation marker, got %q", truncated)
+	}
+
+	if !strings.Contains(truncated, "tokens truncated…") {
+		t.Fatalf("expected codex-style tokens-truncated marker, got %q", truncated)
+	}
+
+	if !strings.HasPrefix(truncated, "word ") {
+		t.Fatalf("expected beginning preserved, got prefix %q", truncated[:min(len(truncated), 10)])
+	}
+
+	if !strings.HasSuffix(truncated, "word") {
+		t.Fatalf("expected ending preserved, got suffix %q", truncated[max(0, len(truncated)-10):])
+	}
+
+	// Codex's budget applies to the surviving text before the marker is
+	// appended; the marker is extra on top, so the whole string can exceed the
+	// budget by the marker's tokens.
+	if truncateTextToApproxTokenBudget(text, 0) != "" {
+		t.Fatal("expected zero budget to truncate to empty")
+	}
+}
+
+func TestAutoCompactRetainsNewestUserMessagesWithinCodexBudget(t *testing.T) {
+	t.Parallel()
+
+	request := chatCompletionRequest{
+		Provider: providerRequestConfig{
+			APIKind:         providerAPIKindOpenAI,
+			BaseURL:         "",
+			APIKey:          "",
+			APIKeys:         nil,
+			UseResponsesAPI: false,
+			EnableGrounding: false,
+			ExtraHeaders:    nil,
+			ExtraQuery:      nil,
+			ExtraBody:       nil,
+		},
+		Model:                      "",
+		ConfiguredModel:            testAutoCompactMainModel,
+		ContextWindow:              1_000,
+		AutoCompactTokenLimit:      0,
+		AutoCompactTokenLimitScope: autoCompactTokenLimitScopeTotal,
+		CompactPrompt:              "",
+		SessionID:                  "",
+		PreviousResponseID:         "",
+		RequestID:                  "",
+		Messages: []chatMessage{
+			{Role: messageRoleUser, Content: repeatedAutoCompactText("very old details", 5_000)},
+			{Role: messageRoleAssistant, Content: "old answer"},
+			{Role: messageRoleUser, Content: repeatedAutoCompactText("recent", 80)},
+			{Role: messageRoleAssistant, Content: "recent answer"},
+			{Role: messageRoleUser, Content: "latest question"},
+		},
+	}
+
+	instance := new(bot)
+	instance.chatCompletions = newStubChatClient(func(
+		_ context.Context,
+		_ chatCompletionRequest,
+		handle func(streamDelta) error,
+	) error {
+		t.Helper()
+
+		return handle(newStreamDelta(testAutoCompactSummaryText, ""))
+	})
+
+	compactedRequest, result := instance.autoCompactRequest(context.Background(), request)
+	if !result.Applied {
+		t.Fatal("expected auto compaction to apply")
+	}
+
+	if result.Strategy != autoCompactStrategySummary {
+		t.Fatalf(testUnexpectedAutoCompactStrategyFormat, result.Strategy)
+	}
+
+	// The summary is the LAST message.
+	last := compactedRequest.Messages[len(compactedRequest.Messages)-1]
+	assertAutoCompactSummaryContains(t, last, testAutoCompactSummaryText)
+
+	// The newest user messages (both small) are retained, the oldest
+	// over-budget one and its assistant reply are replaced by the summary.
+	hasOldest := false
+	retainedUserTokens := 0
+
+	for _, message := range compactedRequest.Messages {
+		text := retainedChatMessageText(message)
+		if text == "old answer" {
+			hasOldest = true
+		}
+
+		if message.Role == messageRoleUser && !strings.Contains(text, autoCompactSummaryPrefix) {
+			// The codex budget covers surviving text before the truncation
+			// marker; strip any marker before counting tokens.
+			retainedUserTokens += estimateTextTokens(strings.Split(text, "…")[0])
+		}
+	}
+
+	if retainedUserTokens > autoCompactUserMessageMaxTokens {
+		t.Fatalf(
+			"retained user messages exceed codex budget: %d > %d",
+			retainedUserTokens,
+			autoCompactUserMessageMaxTokens,
+		)
+	}
+
+	if hasOldest {
+		t.Fatal("expected oldest history to be replaced by the summary")
+	}
+}
+
+func retainedChatMessageText(message chatMessage) string {
+	switch typed := message.Content.(type) {
+	case string:
+		return typed
+	case []contentPart:
+		texts := make([]string, 0, len(typed))
+		for _, part := range typed {
+			if partText, ok := part["text"].(string); ok {
+				texts = append(texts, partText)
+			}
+		}
+
+		return strings.Join(texts, " ")
+	default:
+		return ""
+	}
+}
+
+func TestAutoCompactRequestWithoutWindowSkipsCompactionEntirely(t *testing.T) {
+	t.Parallel()
+
+	request := chatCompletionRequest{
+		Provider: providerRequestConfig{
+			APIKind:         providerAPIKindOpenAI,
+			BaseURL:         "",
+			APIKey:          "",
+			APIKeys:         nil,
+			UseResponsesAPI: false,
+			EnableGrounding: false,
+			ExtraHeaders:    nil,
+			ExtraQuery:      nil,
+			ExtraBody:       nil,
+		},
+		Model:                      "",
+		ConfiguredModel:            testAutoCompactMainModel,
+		ContextWindow:              0,
+		AutoCompactTokenLimit:      0,
+		AutoCompactTokenLimitScope: autoCompactTokenLimitScopeTotal,
+		CompactPrompt:              "",
+		SessionID:                  "",
+		PreviousResponseID:         "",
+		RequestID:                  "",
+		Messages: []chatMessage{
+			{Role: messageRoleUser, Content: repeatedAutoCompactText("older context", 200)},
+			{Role: messageRoleUser, Content: repeatedAutoCompactText("latest", 200)},
 		},
 	}
 
@@ -1184,13 +1574,15 @@ func TestAutoCompactRequestCountsExternalPartsAgainstLimit(t *testing.T) {
 			ExtraQuery:      nil,
 			ExtraBody:       nil,
 		},
-		Model:                       "",
-		ConfiguredModel:             testAutoCompactMainModel,
-		ContextWindow:               5_000,
-		AutoCompactThresholdPercent: 50,
-		SessionID:                   "",
-		PreviousResponseID:          "",
-		RequestID:                   "",
+		Model:                      "",
+		ConfiguredModel:            testAutoCompactMainModel,
+		ContextWindow:              5_000,
+		AutoCompactTokenLimit:      3_000,
+		AutoCompactTokenLimitScope: autoCompactTokenLimitScopeTotal,
+		CompactPrompt:              "",
+		SessionID:                  "",
+		PreviousResponseID:         "",
+		RequestID:                  "",
 		Messages: []chatMessage{
 			{Role: messageRoleUser, Content: repeatedAutoCompactText("older context", 600)},
 			{Role: messageRoleUser, Content: []contentPart{
@@ -1202,12 +1594,12 @@ func TestAutoCompactRequestCountsExternalPartsAgainstLimit(t *testing.T) {
 
 	if estimateChatCompletionRequestTokens(request) <= autoCompactTokenLimit(
 		request.ContextWindow,
-		request.AutoCompactThresholdPercent,
+		request.AutoCompactTokenLimit,
 	) {
 		t.Fatalf(
 			"unexpected test setup: estimated %d <= limit %d",
 			estimateChatCompletionRequestTokens(request),
-			autoCompactTokenLimit(request.ContextWindow, request.AutoCompactThresholdPercent),
+			autoCompactTokenLimit(request.ContextWindow, request.AutoCompactTokenLimit),
 		)
 	}
 
@@ -1231,14 +1623,11 @@ func TestAutoCompactRequestCountsExternalPartsAgainstLimit(t *testing.T) {
 		t.Fatal("expected auto compaction to apply")
 	}
 
-	limit := autoCompactTokenLimit(request.ContextWindow, request.AutoCompactThresholdPercent)
-	if estimateChatMessagesTokens(compactedRequest.Messages) > limit {
-		t.Fatalf(
-			"compacted request exceeds token limit: %d > %d",
-			estimateChatMessagesTokens(compactedRequest.Messages),
-			limit,
-		)
-	}
+	// The image-only user message (1844 tokens) plus its text part stays within
+	// the retention budget, so the parts are counted and the image message is
+	// retained before the summary.
+	last := compactedRequest.Messages[len(compactedRequest.Messages)-1]
+	assertAutoCompactSummaryContains(t, last, testAutoCompactSummaryText)
 }
 
 func TestAutoCompactSummaryPromptIsNeutralForUniversalUse(t *testing.T) {

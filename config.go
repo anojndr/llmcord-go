@@ -196,56 +196,68 @@ type gistConfig struct {
 type providerAPIKind string
 
 const (
-	providerAPIKindOpenAI                     providerAPIKind = "openai"
-	providerAPIKindGemini                     providerAPIKind = "gemini"
-	modelConfigContextWindowKey                               = "context_window"
-	modelConfigAutoCompactThresholdPercentKey                 = "auto_compact_threshold_percent"
+	providerAPIKindOpenAI       providerAPIKind = "openai"
+	providerAPIKindGemini       providerAPIKind = "gemini"
+	modelConfigContextWindowKey                 = "context_window"
+)
+
+// autoCompactTokenLimitScope selects which token count is charged against the
+// auto-compact limit, mirroring Codex's AutoCompactTokenLimitScope.
+type autoCompactTokenLimitScope string
+
+const (
+	autoCompactTokenLimitScopeTotal           autoCompactTokenLimitScope = "total"
+	autoCompactTokenLimitScopeBodyAfterPrefix autoCompactTokenLimitScope = "body_after_prefix"
 )
 
 type rawConfig struct {
-	BotToken                    scalarString                 `yaml:"bot_token"`
-	ClientID                    scalarString                 `yaml:"client_id"`
-	StatusMessage               string                       `yaml:"status_message"`
-	MaxImages                   *int                         `yaml:"max_images"`
-	MaxMessages                 *int                         `yaml:"max_messages"`
-	AllowDMs                    *bool                        `yaml:"allow_dms"`
-	Permissions                 permissionsConfig            `yaml:"permissions"`
-	Providers                   map[string]rawProviderConfig `yaml:"providers"`
-	WebSearch                   rawWebSearchConfig           `yaml:"web_search"`
-	VisualSearch                rawVisualSearchConfig        `yaml:"visual_search"`
-	Database                    rawDatabaseConfig            `yaml:"database"`
-	Gist                        rawGistConfig                `yaml:"gist"`
-	AutoCompactThresholdPercent *int                         `yaml:"auto_compact_threshold_percent"`
-	Models                      map[string]map[string]any    `yaml:"models"`
-	ChannelModelLocks           map[string]scalarString      `yaml:"channel_model_locks"`
-	SearchDeciderModel          scalarString                 `yaml:"search_decider_model"`
-	MediaAnalysisModel          scalarString                 `yaml:"media_analysis_model"`
-	SystemPrompt                string                       `yaml:"system_prompt"`
-	ContextWindows              map[string]any               `yaml:"context_window"`
+	BotToken                   scalarString                 `yaml:"bot_token"`
+	ClientID                   scalarString                 `yaml:"client_id"`
+	StatusMessage              string                       `yaml:"status_message"`
+	MaxImages                  *int                         `yaml:"max_images"`
+	MaxMessages                *int                         `yaml:"max_messages"`
+	AllowDMs                   *bool                        `yaml:"allow_dms"`
+	Permissions                permissionsConfig            `yaml:"permissions"`
+	Providers                  map[string]rawProviderConfig `yaml:"providers"`
+	WebSearch                  rawWebSearchConfig           `yaml:"web_search"`
+	VisualSearch               rawVisualSearchConfig        `yaml:"visual_search"`
+	Database                   rawDatabaseConfig            `yaml:"database"`
+	Gist                       rawGistConfig                `yaml:"gist"`
+	AutoCompactTokenLimit      *int                         `yaml:"model_auto_compact_token_limit"`
+	AutoCompactTokenLimitScope *string                      `yaml:"model_auto_compact_token_limit_scope"`
+	CompactPrompt              scalarString                 `yaml:"compact_prompt"`
+	Models                     map[string]map[string]any    `yaml:"models"`
+	ChannelModelLocks          map[string]scalarString      `yaml:"channel_model_locks"`
+	SearchDeciderModel         scalarString                 `yaml:"search_decider_model"`
+	MediaAnalysisModel         scalarString                 `yaml:"media_analysis_model"`
+	SystemPrompt               string                       `yaml:"system_prompt"`
+	ContextWindows             map[string]any               `yaml:"context_window"`
 }
 
 type config struct {
-	BotToken                    string
-	ClientID                    string
-	StatusMessage               string
-	MaxImages                   int
-	MaxMessages                 int
-	AllowDMs                    bool
-	Permissions                 permissionsConfig
-	Providers                   map[string]providerConfig
-	WebSearch                   webSearchConfig
-	VisualSearch                visualSearchConfig
-	Database                    databaseConfig
-	Gist                        gistConfig
-	AutoCompactThresholdPercent int
-	Models                      map[string]map[string]any
-	ModelContextWindows         map[string]int
-	ProviderContextWindows      map[string]int
-	ModelOrder                  []string
-	ChannelModelLocks           map[string]string
-	SearchDeciderModel          string
-	MediaAnalysisModel          string
-	SystemPrompt                string
+	BotToken                   string
+	ClientID                   string
+	StatusMessage              string
+	MaxImages                  int
+	MaxMessages                int
+	AllowDMs                   bool
+	Permissions                permissionsConfig
+	Providers                  map[string]providerConfig
+	WebSearch                  webSearchConfig
+	VisualSearch               visualSearchConfig
+	Database                   databaseConfig
+	Gist                       gistConfig
+	AutoCompactTokenLimit      int
+	AutoCompactTokenLimitScope autoCompactTokenLimitScope
+	CompactPrompt              string
+	Models                     map[string]map[string]any
+	ModelContextWindows        map[string]int
+	ProviderContextWindows     map[string]int
+	ModelOrder                 []string
+	ChannelModelLocks          map[string]string
+	SearchDeciderModel         string
+	MediaAnalysisModel         string
+	SystemPrompt               string
 }
 
 func loadConfig(filename string) (config, error) {
@@ -308,15 +320,6 @@ func buildLoadedConfig(
 		return config{}, fmt.Errorf("resolve context windows from %q: %w", filename, err)
 	}
 
-	err = validateNoModelLocalAutoCompactThreshold(rawLoadedConfig.Models)
-	if err != nil {
-		return config{}, fmt.Errorf(
-			"validate model settings from %q: %w",
-			filename,
-			err,
-		)
-	}
-
 	loadedConfig := config{
 		BotToken:      string(rawLoadedConfig.BotToken),
 		ClientID:      string(rawLoadedConfig.ClientID),
@@ -335,10 +338,14 @@ func buildLoadedConfig(
 		},
 		Database: normalizeDatabaseConfig(rawLoadedConfig.Database),
 		Gist:     normalizeGistConfig(rawLoadedConfig.Gist),
-		AutoCompactThresholdPercent: intValueOrDefault(
-			rawLoadedConfig.AutoCompactThresholdPercent,
-			autoCompactDefaultThresholdPercent,
+		AutoCompactTokenLimit: intValueOrDefault(
+			rawLoadedConfig.AutoCompactTokenLimit,
+			0,
 		),
+		AutoCompactTokenLimitScope: normalizeAutoCompactTokenLimitScope(
+			rawLoadedConfig.AutoCompactTokenLimitScope,
+		),
+		CompactPrompt:          strings.TrimSpace(string(rawLoadedConfig.CompactPrompt)),
 		Models:                 rawLoadedConfig.Models,
 		ModelContextWindows:    modelContextWindows,
 		ProviderContextWindows: providerContextWindows,
@@ -737,42 +744,33 @@ func modelPositiveIntSettingValue(
 	return value, true, nil
 }
 
-func validateNoModelLocalAutoCompactThreshold(models map[string]map[string]any) error {
-	for configuredModel, modelParameters := range models {
-		if len(modelParameters) == 0 {
-			continue
-		}
+func normalizeAutoCompactTokenLimitScope(rawValue *string) autoCompactTokenLimitScope {
+	if rawValue == nil {
+		return autoCompactTokenLimitScopeTotal
+	}
 
-		if _, ok := modelParameters[modelConfigAutoCompactThresholdPercentKey]; !ok {
-			continue
-		}
+	return autoCompactTokenLimitScope(strings.TrimSpace(strings.ToLower(*rawValue)))
+}
 
-		return fmt.Errorf(
-			"model %q must not define %s; use top-level %s instead: %w",
-			configuredModel,
-			modelConfigAutoCompactThresholdPercentKey,
-			modelConfigAutoCompactThresholdPercentKey,
-			os.ErrInvalid,
-		)
+func validateAutoCompactTokenLimit(value int) error {
+	if value < 0 {
+		return fmt.Errorf("must not be negative: %w", os.ErrInvalid)
 	}
 
 	return nil
 }
 
-func validateAutoCompactThresholdPercent(value int) error {
-	if value <= 0 {
-		return fmt.Errorf(errPositiveIntMustBeGreaterThanZero, os.ErrInvalid)
-	}
-
-	if value > autoCompactPercentBase {
+func validateAutoCompactTokenLimitScope(value autoCompactTokenLimitScope) error {
+	switch value {
+	case autoCompactTokenLimitScopeTotal, autoCompactTokenLimitScopeBodyAfterPrefix:
+		return nil
+	default:
 		return fmt.Errorf(
-			"must be less than or equal to %d: %w",
-			autoCompactPercentBase,
+			"unsupported scope %q: %w",
+			value,
 			os.ErrInvalid,
 		)
 	}
-
-	return nil
 }
 
 func anyPositiveIntValue(value any) (int, error) {
@@ -975,9 +973,14 @@ func validateConfig(loadedConfig config) error {
 		return err
 	}
 
-	err = validateAutoCompactThresholdPercent(loadedConfig.AutoCompactThresholdPercent)
+	err = validateAutoCompactTokenLimit(loadedConfig.AutoCompactTokenLimit)
 	if err != nil {
-		return fmt.Errorf("auto_compact_threshold_percent %w", err)
+		return fmt.Errorf("model_auto_compact_token_limit %w", err)
+	}
+
+	err = validateAutoCompactTokenLimitScope(loadedConfig.AutoCompactTokenLimitScope)
+	if err != nil {
+		return fmt.Errorf("model_auto_compact_token_limit_scope %w", err)
 	}
 
 	err = validateConfiguredModels(loadedConfig)
