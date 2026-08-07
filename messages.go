@@ -285,11 +285,6 @@ func (instance *bot) prepareMessageResponse(
 	assignOpenAIPromptCacheKey(&request, message, instance.nodes, loadedConfig.MaxMessages)
 	assignXAIPreviousResponseID(&request, message, instance.nodes, loadedConfig.MaxMessages)
 
-	limitErr := checkContextWindowLimit(request)
-	if limitErr != nil {
-		return chatCompletionRequest{}, nil, nil, limitErr
-	}
-
 	progress.advance(requestProgressStageGeneratingResponse)
 
 	tracker := progress.handoff(request.ConfiguredModel, searchMetadata)
@@ -621,7 +616,6 @@ func (instance *bot) buildMessageConversation(
 	messages, warnings := instance.buildConversation(
 		ctx,
 		message,
-		loadedConfig.messageTextLimitForModel(providerSlashModel),
 		contentOptions,
 		loadedConfig.MaxMessages,
 		useGeminiMediaAnalysis,
@@ -1039,21 +1033,6 @@ func requestBodyHasVerbosity(extraBody map[string]any) bool {
 	return hasVerbosity
 }
 
-func requestModelParameters(modelParameters map[string]any) map[string]any {
-	if len(modelParameters) == 0 {
-		return modelParameters
-	}
-
-	if _, ok := modelParameters[modelConfigContextWindowKey]; !ok {
-		return modelParameters
-	}
-
-	filteredParameters := maps.Clone(modelParameters)
-	delete(filteredParameters, modelConfigContextWindowKey)
-
-	return filteredParameters
-}
-
 func defaultOpenRouterTransforms(provider providerConfig, extraBody map[string]any) map[string]any {
 	if !provider.usesOpenRouter() {
 		return extraBody
@@ -1096,7 +1075,7 @@ func buildChatCompletionRequest(
 		)
 	}
 
-	modelParameters := requestModelParameters(loadedConfig.Models[providerSlashModel])
+	modelParameters := loadedConfig.Models[providerSlashModel]
 	providerAPIKind := provider.apiKind()
 	useResponsesAPI := providerUsesResponsesAPI(providerName, provider)
 	extraBody := mergeExtraBody(provider.ExtraBody, modelParameters)
@@ -1146,7 +1125,6 @@ func buildChatCompletionRequest(
 		},
 		Model:              modelName,
 		ConfiguredModel:    providerSlashModel,
-		ContextWindow:      loadedConfig.modelContextWindow(providerSlashModel),
 		SessionID:          "",
 		PreviousResponseID: "",
 		RequestID:          "",

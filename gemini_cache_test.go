@@ -83,7 +83,6 @@ func newSimpleGeminiCacheRequest() chatCompletionRequest {
 	request := newSimpleGeminiStreamRequest()
 	request.Model = "gemini-3.6-flash"
 	request.ConfiguredModel = "gemini/gemini-3.6-flash"
-	request.ContextWindow = 1_000_000
 	request.Messages = []chatMessage{
 		{Role: messageRoleUser, Content: strings.Repeat("a", 8_000)},
 		{Role: messageRoleUser, Content: "latest question"},
@@ -399,20 +398,6 @@ func TestGeminiCacheVersionedMinThresholds(t *testing.T) {
 
 	if tokenCount := geminiCacheMinTokensForModel("gemini-2.0-flash"); tokenCount != 0 {
 		t.Fatalf("unexpected legacy model threshold: %d", tokenCount)
-	}
-}
-
-func TestGeminiCacheStreamUsageReportsCachedHitsToFooter(t *testing.T) {
-	t.Parallel()
-
-	// The provider streams usage with cachedContentTokenCount; the converted
-	// tokenUsage drives the "cached N" suffix in the reply footer.
-	metadata := newGeminiUsageMetadata(20_000, 0, 500, 0)
-	metadata.CachedContentTokenCount = 12_000
-
-	usage := geminiStreamUsage(metadata)
-	if usage == nil || usage.CachedInput != 12_000 {
-		t.Fatalf("expected cached input tokens surfaced, got %#v", usage)
 	}
 }
 

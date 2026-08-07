@@ -48,7 +48,6 @@ const (
 func (instance *bot) buildConversation(
 	ctx context.Context,
 	sourceMessage *discordgo.Message,
-	maxText int,
 	contentOptions messageContentOptions,
 	maxMessages int,
 	useGeminiMediaAnalysis bool,
@@ -72,7 +71,7 @@ func (instance *bot) buildConversation(
 			instance.initializeNode(ctx, currentMessage, node)
 		}
 
-		content, summary := buildMessageContent(node, maxText, contentOptions)
+		content, summary := buildMessageContent(node, contentOptions)
 		if _, ok := preprocessedMessageIDs[currentMessageID]; ok &&
 			(useGeminiMediaAnalysis || usePDFExtraction) {
 			summary.unsupportedAttachmentCnt -= unsupportedPreprocessedPartCount(
@@ -102,7 +101,6 @@ func (instance *bot) buildConversation(
 			warningSet,
 			node,
 			summary,
-			maxText,
 			contentOptions,
 			len(messages),
 			maxMessages,
@@ -126,18 +124,10 @@ func appendConversationWarnings(
 	warningSet map[string]struct{},
 	node *messageNode,
 	summary messageContentSummary,
-	maxText int,
 	contentOptions messageContentOptions,
 	messageCount int,
 	maxMessages int,
 ) {
-	if maxText > 0 && runeCount(node.text) > maxText {
-		appendUniqueWarning(
-			warningSet,
-			fmt.Sprintf("Warning: max %d characters per message", maxText),
-		)
-	}
-
 	if summary.imageCount > contentOptions.maxImages {
 		warningText := "Warning: can't see images"
 		if contentOptions.maxImages > 0 {
@@ -185,7 +175,6 @@ func stopsAtDirectReplyTarget(
 
 func buildMessageContent(
 	node *messageNode,
-	maxText int,
 	options messageContentOptions,
 ) (any, messageContentSummary) {
 	selectedMedia, summary := selectMessageMedia(node.media, options)
@@ -194,29 +183,24 @@ func buildMessageContent(
 		node.text,
 		inlineTextAttachmentContent(node.media, options),
 	)
-	if maxText > 0 {
-		text = truncateRunes(text, maxText)
-	}
-
-	truncatedText := text
 
 	if len(selectedMedia) > 0 {
 		parts := make([]contentPart, 0, len(selectedMedia)+1)
 
 		textPart := make(contentPart)
 		textPart["type"] = contentTypeText
-		textPart["text"] = truncatedText
+		textPart["text"] = text
 		parts = append(parts, textPart)
 		parts = append(parts, selectedMedia...)
 
 		return parts, summary
 	}
 
-	if truncatedText == "" {
+	if text == "" {
 		return nil, summary
 	}
 
-	return truncatedText, summary
+	return text, summary
 }
 
 func selectMessageMedia(

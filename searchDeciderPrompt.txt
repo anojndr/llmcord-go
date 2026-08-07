@@ -113,8 +113,8 @@ Query generation rules:
 16. If multiple attributes are requested for one item, split into separate queries when that is cleaner.
 
     * Example:
-      user: "release date and context window of GPT-5.2"
-      output: {"needs_search": true, "queries": ["GPT-5.2 release date", "GPT-5.2 context window"]}
+      user: "release date and pricing of GPT-5.2"
+      output: {"needs_search": true, "queries": ["GPT-5.2 release date", "GPT-5.2 pricing"]}
 
 17. If multiple compared items are involved, generate one query per item when appropriate.
 

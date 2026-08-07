@@ -77,17 +77,6 @@ const (
 	xAIInlineImageByteLimit                          = 4 * 1024 * 1024
 )
 
-type xAIResponsesUsage struct {
-	InputTokens        int `json:"input_tokens"`
-	OutputTokens       int `json:"output_tokens"`
-	PromptTokens       int `json:"prompt_tokens"`
-	CompletionTokens   int `json:"completion_tokens"`
-	InputTokensDetails *struct {
-		CachedTokens     int `json:"cached_tokens"`
-		CacheWriteTokens int `json:"cache_write_tokens"`
-	} `json:"input_tokens_details"`
-}
-
 type xAIResponsesError struct {
 	Message string `json:"message"`
 	Type    string `json:"type"`
@@ -130,7 +119,6 @@ type xAIResponsesStreamResponse struct {
 	ID                string                         `json:"id"`
 	Status            string                         `json:"status"`
 	Output            []xAIResponsesOutputItem       `json:"output"`
-	Usage             *xAIResponsesUsage             `json:"usage"`
 	Error             *xAIResponsesError             `json:"error"`
 	IncompleteDetails *xAIResponsesIncompleteDetails `json:"incomplete_details"`
 	SourceAttribution *xAISourceAttribution          `json:"source_attribution"`
@@ -265,6 +253,21 @@ func xAIConversationPreviousResponseID(
 	}
 
 	return ""
+}
+
+// splitLeadingSystemMessages separates the contiguous leading system messages
+// (the system prompt) from the conversation messages that follow them.
+func splitLeadingSystemMessages(messages []chatMessage) ([]chatMessage, []chatMessage) {
+	splitIndex := 0
+	for splitIndex < len(messages) &&
+		strings.EqualFold(strings.TrimSpace(messages[splitIndex].Role), messageRoleSystem) {
+		splitIndex++
+	}
+
+	systemMessages := append([]chatMessage(nil), messages[:splitIndex]...)
+	conversationMessages := append([]chatMessage(nil), messages[splitIndex:]...)
+
+	return systemMessages, conversationMessages
 }
 
 func xAIContinuationMessages(messages []chatMessage) ([]chatMessage, bool) {
@@ -1201,7 +1204,6 @@ func handleXAIResponsesStreamPayload(
 	if delta.Content == "" &&
 		delta.Thinking == "" &&
 		delta.FinishReason == "" &&
-		delta.Usage == nil &&
 		delta.ProviderResponseID == "" {
 		return terminal, nil
 	}
@@ -1299,8 +1301,6 @@ func emptyStreamDelta() streamDelta {
 		Thinking:           "",
 		Content:            "",
 		FinishReason:       "",
-		Usage:              nil,
-		ReasoningTokens:    0,
 		ProviderResponseID: "",
 		SearchMetadata:     nil,
 	}
@@ -1313,11 +1313,9 @@ func xAIResponsesCompletedDelta(
 ) (streamDelta, error) {
 	if response == nil {
 		return streamDelta{
-			ReasoningTokens:    0,
 			Thinking:           "",
 			Content:            "",
 			FinishReason:       finishReasonStop,
-			Usage:              nil,
 			ProviderResponseID: "",
 			SearchMetadata:     xAISourceAttributionSearchMetadata(eventSourceAttribution),
 		}, nil
@@ -1325,11 +1323,9 @@ func xAIResponsesCompletedDelta(
 
 	if response.Error != nil {
 		return streamDelta{
-				ReasoningTokens:    0,
 				Thinking:           "",
 				Content:            "",
 				FinishReason:       "",
-				Usage:              nil,
 				ProviderResponseID: "",
 				SearchMetadata:     nil,
 			}, openAIStreamEventError(
@@ -1347,11 +1343,9 @@ func xAIResponsesCompletedDelta(
 		}
 
 		return streamDelta{
-			ReasoningTokens:    0,
 			Thinking:           "",
 			Content:            "",
 			FinishReason:       "",
-			Usage:              nil,
 			ProviderResponseID: "",
 			SearchMetadata:     nil,
 		}, xAIResponsesStatusError(status, reason)
@@ -1361,11 +1355,9 @@ func xAIResponsesCompletedDelta(
 	content := xAIResponsesOutputItemsText(response.Output, state, true)
 
 	return streamDelta{
-		ReasoningTokens:    0,
 		Thinking:           thinking,
 		Content:            content,
 		FinishReason:       finishReasonStop,
-		Usage:              xAIResponsesTokenUsage(response.Usage),
 		ProviderResponseID: strings.TrimSpace(response.ID),
 		SearchMetadata: xAISourceAttributionSearchMetadata(
 			mergeXAISourceAttribution(
@@ -1661,36 +1653,6 @@ func xAIResponsesStatusError(status string, reason string) error {
 	}
 
 	return fmt.Errorf("%s: %w", message, os.ErrInvalid)
-}
-
-func xAIResponsesTokenUsage(usage *xAIResponsesUsage) *tokenUsage {
-	if usage == nil {
-		return nil
-	}
-
-	inputTokens := usage.InputTokens
-	if inputTokens == 0 {
-		inputTokens = usage.PromptTokens
-	}
-
-	outputTokens := usage.OutputTokens
-	if outputTokens == 0 {
-		outputTokens = usage.CompletionTokens
-	}
-
-	convertedUsage := &tokenUsage{
-		Input:            inputTokens,
-		Output:           outputTokens,
-		CachedInput:      0,
-		CacheWriteTokens: 0,
-	}
-
-	if usage.InputTokensDetails != nil {
-		convertedUsage.CachedInput = usage.InputTokensDetails.CachedTokens
-		convertedUsage.CacheWriteTokens = usage.InputTokensDetails.CacheWriteTokens
-	}
-
-	return convertedUsage
 }
 
 func xAISourceAttributionSearchMetadata(attribution *xAISourceAttribution) *searchMetadata {

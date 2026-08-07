@@ -518,11 +518,6 @@ func (instance *bot) decideWebSearch(
 	searchContext, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	limitErr := checkContextWindowLimit(request)
-	if limitErr != nil {
-		return searchDecision{}, nil, limitErr
-	}
-
 	var warnings []string
 
 	responseText, err := collectChatCompletionText(searchContext, instance.chatCompletions, request)

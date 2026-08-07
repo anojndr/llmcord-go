@@ -4,9 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math"
 	"regexp"
-	"strconv"
 	"strings"
 	"time"
 
@@ -41,9 +39,6 @@ type responseTracker struct {
 	searchMetadata     *searchMetadata
 	modelName          string
 	originalModel      string
-	contextWindow      int
-	usage              *tokenUsage
-	contextUsage       *tokenUsage
 	providerResponseID string
 	responseMessages   []*discordgo.Message
 	pendingResponses   []pendingResponse
@@ -112,15 +107,6 @@ func visibleResponseText(thinkingText, answerText string) string {
 
 const thinkingResponsePrefix = "**Thinking**\n"
 const answerResponseSeparator = "\n\n**Answer**\n"
-
-const (
-	contextWindowPercentScale     = 100
-	compactTokenCountBase         = 1_000
-	compactTokenCountMillion      = 1_000_000
-	compactTokenCountBillion      = 1_000_000_000
-	compactTokenCountSmallCutoff  = 10
-	compactTokenCountMediumCutoff = 100
-)
 
 var (
 	errStreamedAnswerVisibilityRegressed = errors.New("streamed answer visibility regressed")
@@ -218,7 +204,6 @@ func emptyChatCompletionRequest() chatCompletionRequest {
 		},
 		Model:              "",
 		ConfiguredModel:    "",
-		ContextWindow:      0,
 		SessionID:          "",
 		PreviousResponseID: "",
 		RequestID:          "",
@@ -283,7 +268,6 @@ func (instance *bot) runGenerationAttempt(
 
 	responseErr := instance.renderFinalResponse(
 		ctx,
-		request,
 		tracker,
 		warnings,
 		&finalAccumulator,
@@ -310,7 +294,6 @@ func (instance *bot) generateAndSendResponse(
 	warnings []string,
 ) error {
 	tracker.modelName = strings.TrimSpace(request.ConfiguredModel)
-	tracker.contextWindow = request.ContextWindow
 
 	cleanedText, thinkingText, _, responseErr := instance.runGenerationAttempt(
 		ctx,
@@ -386,10 +369,6 @@ func (instance *bot) handleGeneratedStreamDelta(
 		*state.finishReason = delta.FinishReason
 	}
 
-	if delta.Usage != nil {
-		tracker.usage = cloneTokenUsage(delta.Usage)
-	}
-
 	if strings.TrimSpace(delta.ProviderResponseID) != "" {
 		tracker.providerResponseID = strings.TrimSpace(delta.ProviderResponseID)
 	}
@@ -461,18 +440,12 @@ func responseTextWithError(responseText, errorText string) string {
 
 func (instance *bot) renderFinalResponse(
 	ctx context.Context,
-	request chatCompletionRequest,
 	tracker *responseTracker,
 	warnings []string,
 	accumulator *segmentAccumulator,
 	thinkingText string,
 	finishReason string,
 ) error {
-	tracker.contextUsage = retainedContextWindowUsage(
-		request,
-		visibleResponseText(thinkingText, accumulator.joined()),
-	)
-
 	err := instance.renderEmbedResponse(
 		ctx,
 		tracker,
@@ -661,12 +634,6 @@ func (instance *bot) renderEmbedResponse(
 		tracker.searchMetadata != nil,
 		hasThinking,
 	)
-	if final && len(desiredSpecs) > 0 {
-		desiredSpecs[len(desiredSpecs)-1].footerText = contextWindowFooter(
-			tracker.footerUsage(),
-			tracker.contextWindow,
-		)
-	}
 
 	for index, spec := range desiredSpecs {
 		if index < len(tracker.renderedSpecs) && tracker.renderedSpecs[index] == spec {
@@ -701,18 +668,6 @@ func (instance *bot) renderEmbedResponse(
 	tracker.responseVisible = true
 
 	return nil
-}
-
-func (tracker *responseTracker) footerUsage() *tokenUsage {
-	if tracker == nil {
-		return nil
-	}
-
-	if tracker.contextUsage != nil {
-		return tracker.contextUsage
-	}
-
-	return tracker.usage
 }
 
 func (instance *bot) renderEmbedSpec(
@@ -1105,102 +1060,6 @@ func buildResponseEmbed(
 	}
 
 	return embed
-}
-
-func contextWindowFooter(usage *tokenUsage, contextWindow int) string {
-	if usage == nil || contextWindow <= 0 {
-		return ""
-	}
-
-	usedTokens := usage.Input + usage.Output
-	if usedTokens < 0 {
-		return ""
-	}
-
-	footerText := fmt.Sprintf(
-		"context window: %s/%s (%s used)",
-		formatCompactTokenCount(usedTokens),
-		formatCompactTokenCount(contextWindow),
-		formatContextWindowUsagePercent(usedTokens, contextWindow),
-	)
-
-	if usage.CachedInput > 0 {
-		footerText += " · cached " + formatCompactTokenCount(usage.CachedInput)
-	}
-
-	return footerText
-}
-
-func retainedContextWindowUsage(request chatCompletionRequest, responseText string) *tokenUsage {
-	usage := new(tokenUsage)
-	usage.Input = estimateChatCompletionRequestTokens(request)
-	usage.Output = estimateChatMessageTokens(chatMessage{
-		Role:    messageRoleAssistant,
-		Content: responseText,
-	})
-
-	return usage
-}
-
-func formatContextWindowUsagePercent(usedTokens, contextWindow int) string {
-	if usedTokens <= 0 || contextWindow <= 0 {
-		return "0%"
-	}
-
-	percentage := float64(usedTokens) * contextWindowPercentScale / float64(contextWindow)
-
-	precision := 0
-	if percentage < compactTokenCountSmallCutoff &&
-		math.Abs(percentage-math.Round(percentage)) >= 0.05 {
-		precision = 1
-	}
-
-	return formatRoundedFloat(percentage, precision) + "%"
-}
-
-func formatCompactTokenCount(count int) string {
-	if count < compactTokenCountBase {
-		return strconv.Itoa(count)
-	}
-
-	value := float64(count)
-	for _, unit := range []struct {
-		threshold float64
-		suffix    string
-	}{
-		{threshold: compactTokenCountBillion, suffix: "B"},
-		{threshold: compactTokenCountMillion, suffix: "M"},
-		{threshold: compactTokenCountBase, suffix: "k"},
-	} {
-		if value < unit.threshold {
-			continue
-		}
-
-		normalized := value / unit.threshold
-		precision := 0
-
-		switch {
-		case normalized < compactTokenCountSmallCutoff:
-			precision = 2
-		case normalized < compactTokenCountMediumCutoff:
-			precision = 1
-		}
-
-		return formatRoundedFloat(normalized, precision) + unit.suffix
-	}
-
-	return strconv.Itoa(count)
-}
-
-func formatRoundedFloat(value float64, precision int) string {
-	if precision <= 0 {
-		return fmt.Sprintf("%.0f", value)
-	}
-
-	return strings.TrimRight(
-		strings.TrimRight(fmt.Sprintf("%.*f", precision, value), "0"),
-		".",
-	)
 }
 
 func buildEmbedComponents(actions responseActions) []discordgo.MessageComponent {

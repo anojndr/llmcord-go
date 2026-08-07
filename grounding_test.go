@@ -24,7 +24,6 @@ func TestBuildGeminiGenerateContentRequestWithGrounding(t *testing.T) {
 		},
 		Model:              "gemini-3.6-flash",
 		ConfiguredModel:    "",
-		ContextWindow:      0,
 		SessionID:          "",
 		PreviousResponseID: "",
 		RequestID:          "",
@@ -82,7 +81,6 @@ func TestBuildGeminiGenerateContentRequestWithoutGrounding(t *testing.T) {
 		},
 		Model:              "gemini-3.6-flash",
 		ConfiguredModel:    "",
-		ContextWindow:      0,
 		SessionID:          "",
 		PreviousResponseID: "",
 		RequestID:          "",
@@ -185,13 +183,11 @@ func testGroundingConfig() config {
 		Models: map[string]map[string]any{
 			"gemini/gemini-3.6-flash": {},
 		},
-		ModelContextWindows:    nil,
-		ProviderContextWindows: nil,
-		ModelOrder:             nil,
-		ChannelModelLocks:      nil,
-		SearchDeciderModel:     "",
-		MediaAnalysisModel:     "",
-		SystemPrompt:           "",
+		ModelOrder:         nil,
+		ChannelModelLocks:  nil,
+		SearchDeciderModel: "",
+		MediaAnalysisModel: "",
+		SystemPrompt:       "",
 	}
 }
 

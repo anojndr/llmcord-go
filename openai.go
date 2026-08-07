@@ -35,7 +35,6 @@ type chatCompletionRequest struct {
 	Provider           providerRequestConfig
 	Model              string
 	ConfiguredModel    string
-	ContextWindow      int
 	SessionID          string
 	PreviousResponseID string
 	RequestID          string
@@ -58,17 +57,8 @@ type streamDelta struct {
 	Thinking           string
 	Content            string
 	FinishReason       string
-	Usage              *tokenUsage
-	ReasoningTokens    int
 	ProviderResponseID string
 	SearchMetadata     *searchMetadata
-}
-
-type tokenUsage struct {
-	Input            int
-	Output           int
-	CachedInput      int
-	CacheWriteTokens int
 }
 
 type openAIClient struct {
@@ -740,23 +730,6 @@ func handleStreamPayload(payload []byte, handle func(streamDelta) error) error {
 			Thinking:           "",
 			Content:            delta.Content,
 			FinishReason:       "",
-			Usage:              nil,
-			ReasoningTokens:    delta.ReasoningTokens,
-			ProviderResponseID: "",
-			SearchMetadata:     nil,
-		})
-		if err != nil {
-			return fmt.Errorf(handleStreamDeltaErrorFormat, err)
-		}
-	}
-
-	if delta.Usage != nil {
-		err = handle(streamDelta{
-			Thinking:           "",
-			Content:            "",
-			FinishReason:       "",
-			Usage:              cloneTokenUsage(delta.Usage),
-			ReasoningTokens:    delta.ReasoningTokens,
 			ProviderResponseID: "",
 			SearchMetadata:     nil,
 		})
@@ -775,8 +748,6 @@ func handleStreamPayload(payload []byte, handle func(streamDelta) error) error {
 			Thinking:           "",
 			Content:            "",
 			FinishReason:       delta.FinishReason,
-			Usage:              nil,
-			ReasoningTokens:    delta.ReasoningTokens,
 			ProviderResponseID: "",
 			SearchMetadata:     nil,
 		})
@@ -807,7 +778,6 @@ func openAIStreamPayloadDelta(payload []byte) (streamDelta, error) {
 	type streamEnvelope struct {
 		Choices []streamChoice `json:"choices"`
 		Error   *streamError   `json:"error"`
-		Usage   *streamUsage   `json:"usage"`
 	}
 
 	var envelope streamEnvelope
@@ -815,11 +785,9 @@ func openAIStreamPayloadDelta(payload []byte) (streamDelta, error) {
 	err := json.Unmarshal(payload, &envelope)
 	if err != nil {
 		return streamDelta{
-			ReasoningTokens:    0,
 			Thinking:           "",
 			Content:            "",
 			FinishReason:       "",
-			Usage:              nil,
 			ProviderResponseID: "",
 			SearchMetadata:     nil,
 		}, fmt.Errorf("decode stream payload: %w", err)
@@ -827,11 +795,9 @@ func openAIStreamPayloadDelta(payload []byte) (streamDelta, error) {
 
 	if envelope.Error != nil {
 		return streamDelta{
-				ReasoningTokens:    0,
 				Thinking:           "",
 				Content:            "",
 				FinishReason:       "",
-				Usage:              nil,
 				ProviderResponseID: "",
 				SearchMetadata:     nil,
 			}, openAIStreamEventError(
@@ -845,8 +811,6 @@ func openAIStreamPayloadDelta(payload []byte) (streamDelta, error) {
 		Thinking:           "",
 		Content:            "",
 		FinishReason:       "",
-		Usage:              openAIStreamUsage(envelope.Usage),
-		ReasoningTokens:    openAIStreamReasoningTokens(envelope.Usage),
 		ProviderResponseID: "",
 		SearchMetadata:     nil,
 	}
@@ -861,56 +825,6 @@ func openAIStreamPayloadDelta(payload []byte) (streamDelta, error) {
 	}
 
 	return delta, nil
-}
-
-type streamUsage struct {
-	PromptTokens        int `json:"prompt_tokens"`
-	CompletionTokens    int `json:"completion_tokens"`
-	PromptTokensDetails *struct {
-		CachedTokens     int `json:"cached_tokens"`
-		CacheWriteTokens int `json:"cache_write_tokens"`
-	} `json:"prompt_tokens_details"`
-	CompletionTokensDetails *struct {
-		ReasoningTokens int `json:"reasoning_tokens"`
-	} `json:"completion_tokens_details"`
-}
-
-func openAIStreamUsage(usage *streamUsage) *tokenUsage {
-	if usage == nil {
-		return nil
-	}
-
-	convertedUsage := &tokenUsage{
-		Input:            usage.PromptTokens,
-		Output:           usage.CompletionTokens,
-		CachedInput:      0,
-		CacheWriteTokens: 0,
-	}
-
-	if usage.PromptTokensDetails != nil {
-		convertedUsage.CachedInput = usage.PromptTokensDetails.CachedTokens
-		convertedUsage.CacheWriteTokens = usage.PromptTokensDetails.CacheWriteTokens
-	}
-
-	return convertedUsage
-}
-
-func openAIStreamReasoningTokens(usage *streamUsage) int {
-	if usage == nil || usage.CompletionTokensDetails == nil {
-		return 0
-	}
-
-	return usage.CompletionTokensDetails.ReasoningTokens
-}
-
-func cloneTokenUsage(usage *tokenUsage) *tokenUsage {
-	if usage == nil {
-		return nil
-	}
-
-	clonedUsage := *usage
-
-	return &clonedUsage
 }
 
 func openAIStreamEventError(message string, eventType string, code any) error {
