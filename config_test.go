@@ -158,7 +158,7 @@ database:
 	}
 }
 
-func TestLoadConfigUsesConfiguredPastebinSettings(t *testing.T) {
+func TestLoadConfigUsesConfiguredGistSettings(t *testing.T) {
 	t.Parallel()
 
 	tempDir := t.TempDir()
@@ -170,11 +170,12 @@ providers:
     base_url: https://api.example.com/v1
 models:
   openai/first-model:
-pastebin:
-  endpoint: https://pastebin.example.com/api/api_post.php
-  dev_key: abc123
-  expire_date: 1W
-  name: llmcord-go reply
+gist:
+  endpoint: https://gist.example.com/api/v3/gists
+  api_key: abc123
+  public: true
+  description: llmcord-go reply
+  filename: reply.md
 `
 
 	err := os.WriteFile(configPath, []byte(configText), 0o600)
@@ -187,24 +188,28 @@ pastebin:
 		t.Fatalf("load config: %v", err)
 	}
 
-	if loadedConfig.Pastebin.Endpoint != "https://pastebin.example.com/api/api_post.php" {
-		t.Fatalf("unexpected Pastebin endpoint: %q", loadedConfig.Pastebin.Endpoint)
+	if loadedConfig.Gist.Endpoint != "https://gist.example.com/api/v3/gists" {
+		t.Fatalf("unexpected gist endpoint: %q", loadedConfig.Gist.Endpoint)
 	}
 
-	if loadedConfig.Pastebin.DevKey != "abc123" {
-		t.Fatalf("unexpected Pastebin dev key: %q", loadedConfig.Pastebin.DevKey)
+	if loadedConfig.Gist.APIKey != "abc123" {
+		t.Fatalf("unexpected gist api key: %q", loadedConfig.Gist.APIKey)
 	}
 
-	if loadedConfig.Pastebin.ExpireDate != "1W" {
-		t.Fatalf("unexpected Pastebin expire date: %q", loadedConfig.Pastebin.ExpireDate)
+	if !loadedConfig.Gist.Public {
+		t.Fatal("expected public gist setting")
 	}
 
-	if loadedConfig.Pastebin.Name != "llmcord-go reply" {
-		t.Fatalf("unexpected Pastebin name: %q", loadedConfig.Pastebin.Name)
+	if loadedConfig.Gist.Description != "llmcord-go reply" {
+		t.Fatalf("unexpected gist description: %q", loadedConfig.Gist.Description)
+	}
+
+	if loadedConfig.Gist.Filename != "reply.md" {
+		t.Fatalf("unexpected gist filename: %q", loadedConfig.Gist.Filename)
 	}
 }
 
-func TestLoadConfigDefaultsPastebinEndpointWhenUnset(t *testing.T) {
+func TestLoadConfigDefaultsGistSettingsWhenUnset(t *testing.T) {
 	t.Parallel()
 
 	tempDir := t.TempDir()
@@ -228,12 +233,24 @@ models:
 		t.Fatalf("load config: %v", err)
 	}
 
-	if loadedConfig.Pastebin.Endpoint != defaultPastebinEndpoint {
-		t.Fatalf("unexpected default Pastebin endpoint: %q", loadedConfig.Pastebin.Endpoint)
+	if loadedConfig.Gist.Endpoint != defaultGithubGistEndpoint {
+		t.Fatalf("unexpected default gist endpoint: %q", loadedConfig.Gist.Endpoint)
 	}
 
-	if loadedConfig.Pastebin.DevKey != "" {
-		t.Fatalf("unexpected default Pastebin dev key: %q", loadedConfig.Pastebin.DevKey)
+	if loadedConfig.Gist.APIKey != "" {
+		t.Fatalf("unexpected default gist api key: %q", loadedConfig.Gist.APIKey)
+	}
+
+	if loadedConfig.Gist.Public {
+		t.Fatal("expected private gist by default")
+	}
+
+	if loadedConfig.Gist.Description != "" {
+		t.Fatalf("unexpected default gist description: %q", loadedConfig.Gist.Description)
+	}
+
+	if loadedConfig.Gist.Filename != defaultGistFilename {
+		t.Fatalf("unexpected default gist filename: %q", loadedConfig.Gist.Filename)
 	}
 }
 

@@ -222,16 +222,16 @@ func TestBuildRenderSpecsAddsSourcesButtonOnlyToFinalSearchedSegment(t *testing.
 		t.Fatalf("unexpected spec count: %#v", specs)
 	}
 
-	if specs[0].actions.showSources || specs[0].actions.showThinking || specs[0].actions.showPastebin {
+	if specs[0].actions.showSources || specs[0].actions.showThinking || specs[0].actions.showGist {
 		t.Fatalf("expected no action buttons on first segment: %#v", specs[0])
 	}
 
-	if !specs[1].actions.showSources || specs[1].actions.showThinking || !specs[1].actions.showPastebin {
-		t.Fatalf("expected sources and Pastebin buttons on final segment: %#v", specs[1])
+	if !specs[1].actions.showSources || specs[1].actions.showThinking || !specs[1].actions.showGist {
+		t.Fatalf("expected sources and gist buttons on final segment: %#v", specs[1])
 	}
 }
 
-func TestBuildRenderSpecsAddsPastebinButtonToFinalNonSearchedSegment(t *testing.T) {
+func TestBuildRenderSpecsAddsGistButtonToFinalNonSearchedSegment(t *testing.T) {
 	t.Parallel()
 
 	specs := buildRenderSpecs([]string{"only"}, "stop", true, false, false)
@@ -243,8 +243,8 @@ func TestBuildRenderSpecsAddsPastebinButtonToFinalNonSearchedSegment(t *testing.
 		t.Fatalf("expected no sources button on non-searched response: %#v", specs[0])
 	}
 
-	if !specs[0].actions.showPastebin {
-		t.Fatalf("expected Pastebin button on final non-searched response: %#v", specs[0])
+	if !specs[0].actions.showGist {
+		t.Fatalf("expected gist button on final non-searched response: %#v", specs[0])
 	}
 }
 

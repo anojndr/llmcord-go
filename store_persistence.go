@@ -55,7 +55,7 @@ type messageNodeSnapshot struct {
 	Text                     string                            `json:"text"`
 	ThinkingText             string                            `json:"thinking_text"`
 	URLScanText              string                            `json:"url_scan_text"`
-	PastebinURL              string                            `json:"pastebin_url"`
+	GistURL                  string                            `json:"gist_url"`
 	ProviderResponseID       string                            `json:"provider_response_id"`
 	ProviderResponseModel    string                            `json:"provider_response_model"`
 	Media                    []contentPartSnapshot             `json:"media"`
@@ -342,7 +342,7 @@ func sanitizeMessageNodeSnapshot(snapshot messageNodeSnapshot) messageNodeSnapsh
 	snapshot.Text = sanitizePostgresJSONString(snapshot.Text)
 	snapshot.ThinkingText = sanitizePostgresJSONString(snapshot.ThinkingText)
 	snapshot.URLScanText = sanitizePostgresJSONString(snapshot.URLScanText)
-	snapshot.PastebinURL = sanitizePostgresJSONString(snapshot.PastebinURL)
+	snapshot.GistURL = sanitizePostgresJSONString(snapshot.GistURL)
 	snapshot.ProviderResponseID = sanitizePostgresJSONString(snapshot.ProviderResponseID)
 	snapshot.ProviderResponseModel = sanitizePostgresJSONString(snapshot.ProviderResponseModel)
 	snapshot.Media = sanitizeContentPartSnapshots(snapshot.Media)
@@ -1010,7 +1010,7 @@ func messageNodeSnapshotFromLockedNode(node *messageNode) (messageNodeSnapshot, 
 		Text:                     node.text,
 		ThinkingText:             node.thinkingText,
 		URLScanText:              node.urlScanText,
-		PastebinURL:              node.pastebinURL,
+		GistURL:                  node.gistURL,
 		ProviderResponseID:       node.providerResponseID,
 		ProviderResponseModel:    node.providerResponseModel,
 		Media:                    mediaSnapshots,
@@ -1060,7 +1060,7 @@ func (snapshot messageNodeSnapshot) messageNode() *messageNode {
 	node.text = snapshot.Text
 	node.thinkingText = snapshot.ThinkingText
 	node.urlScanText = snapshot.URLScanText
-	node.pastebinURL = snapshot.PastebinURL
+	node.gistURL = snapshot.GistURL
 	node.providerResponseID = snapshot.ProviderResponseID
 	node.providerResponseModel = snapshot.ProviderResponseModel
 	node.media = make([]contentPart, 0, len(snapshot.Media))

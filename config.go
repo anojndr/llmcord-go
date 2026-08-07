@@ -118,11 +118,12 @@ type rawDatabaseConfig struct {
 	StoreKey         scalarString `yaml:"store_key"`
 }
 
-type rawPastebinConfig struct {
-	Endpoint   scalarString `yaml:"endpoint"`
-	DevKey     scalarString `yaml:"dev_key"`
-	ExpireDate scalarString `yaml:"expire_date"`
-	Name       scalarString `yaml:"name"`
+type rawGistConfig struct {
+	APIKey      scalarStringList `yaml:"api_key"`
+	Endpoint    scalarString     `yaml:"endpoint"`
+	Public      *bool            `yaml:"public"`
+	Description scalarString     `yaml:"description"`
+	Filename    scalarString     `yaml:"filename"`
 }
 
 type providerConfig struct {
@@ -183,11 +184,13 @@ type databaseConfig struct {
 	StoreKey         string
 }
 
-type pastebinConfig struct {
-	Endpoint   string
-	DevKey     string
-	ExpireDate string
-	Name       string
+type gistConfig struct {
+	APIKey      string
+	APIKeys     []string
+	Endpoint    string
+	Description string
+	Filename    string
+	Public      bool
 }
 
 type providerAPIKind string
@@ -211,7 +214,7 @@ type rawConfig struct {
 	WebSearch                   rawWebSearchConfig           `yaml:"web_search"`
 	VisualSearch                rawVisualSearchConfig        `yaml:"visual_search"`
 	Database                    rawDatabaseConfig            `yaml:"database"`
-	Pastebin                    rawPastebinConfig            `yaml:"pastebin"`
+	Gist                        rawGistConfig                `yaml:"gist"`
 	AutoCompactThresholdPercent *int                         `yaml:"auto_compact_threshold_percent"`
 	Models                      map[string]map[string]any    `yaml:"models"`
 	ChannelModelLocks           map[string]scalarString      `yaml:"channel_model_locks"`
@@ -233,7 +236,7 @@ type config struct {
 	WebSearch                   webSearchConfig
 	VisualSearch                visualSearchConfig
 	Database                    databaseConfig
-	Pastebin                    pastebinConfig
+	Gist                        gistConfig
 	AutoCompactThresholdPercent int
 	Models                      map[string]map[string]any
 	ModelContextWindows         map[string]int
@@ -331,7 +334,7 @@ func buildLoadedConfig(
 			},
 		},
 		Database: normalizeDatabaseConfig(rawLoadedConfig.Database),
-		Pastebin: normalizePastebinConfig(rawLoadedConfig.Pastebin),
+		Gist:     normalizeGistConfig(rawLoadedConfig.Gist),
 		AutoCompactThresholdPercent: intValueOrDefault(
 			rawLoadedConfig.AutoCompactThresholdPercent,
 			autoCompactDefaultThresholdPercent,
@@ -863,17 +866,26 @@ func normalizeDatabaseConfig(rawLoadedConfig rawDatabaseConfig) databaseConfig {
 	}
 }
 
-func normalizePastebinConfig(rawLoadedConfig rawPastebinConfig) pastebinConfig {
+func normalizeGistConfig(rawLoadedConfig rawGistConfig) gistConfig {
+	apiKeys := normalizeAPIKeys([]string(rawLoadedConfig.APIKey))
+
 	endpoint := strings.TrimSpace(string(rawLoadedConfig.Endpoint))
 	if endpoint == "" {
-		endpoint = defaultPastebinEndpoint
+		endpoint = defaultGithubGistEndpoint
 	}
 
-	return pastebinConfig{
-		Endpoint:   endpoint,
-		DevKey:     strings.TrimSpace(string(rawLoadedConfig.DevKey)),
-		ExpireDate: strings.TrimSpace(string(rawLoadedConfig.ExpireDate)),
-		Name:       strings.TrimSpace(string(rawLoadedConfig.Name)),
+	filename := strings.TrimSpace(string(rawLoadedConfig.Filename))
+	if filename == "" {
+		filename = defaultGistFilename
+	}
+
+	return gistConfig{
+		APIKey:      firstAPIKey(apiKeys),
+		APIKeys:     apiKeys,
+		Endpoint:    endpoint,
+		Description: strings.TrimSpace(string(rawLoadedConfig.Description)),
+		Filename:    filename,
+		Public:      boolValueOrDefault(rawLoadedConfig.Public, false),
 	}
 }
 

@@ -112,11 +112,13 @@ func testPermissionsConfig() config {
 			ConnectionString: "",
 			StoreKey:         "",
 		},
-		Pastebin: pastebinConfig{
-			Endpoint:   "",
-			DevKey:     "",
-			ExpireDate: "",
-			Name:       "",
+		Gist: gistConfig{
+			Endpoint:    "",
+			APIKey:      "",
+			APIKeys:     nil,
+			Description: "",
+			Filename:    defaultGistFilename,
+			Public:      false,
 		},
 		VisualSearch: visualSearchConfig{
 			SerpAPI: serpAPIVisualSearchConfig{APIKey: "", APIKeys: nil},

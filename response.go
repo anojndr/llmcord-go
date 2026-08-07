@@ -28,7 +28,7 @@ type renderSpec struct {
 type responseActions struct {
 	showSources  bool
 	showThinking bool
-	showPastebin bool
+	showGist     bool
 }
 
 type pendingResponse struct {
@@ -565,7 +565,7 @@ func (instance *bot) sendFailureResponse(
 	sentMessage, pending, err := instance.sendEmbedMessage(
 		failureTracker,
 		failureEmbed,
-		responseActions{showSources: false, showThinking: false, showPastebin: false},
+		responseActions{showSources: false, showThinking: false, showGist: false},
 	)
 	if err != nil {
 		if renderErr != nil {
@@ -621,7 +621,7 @@ func buildRenderSpecs(
 			actions: responseActions{
 				showSources:  final && hasSearchMetadata && index == len(segments)-1,
 				showThinking: final && hasThinking && index == len(segments)-1,
-				showPastebin: final && index == len(segments)-1,
+				showGist:     final && index == len(segments)-1,
 			},
 			footerText: "",
 		}
@@ -975,7 +975,7 @@ func (instance *bot) cacheAuxiliaryAssistantReply(
 	node.text = ""
 	node.thinkingText = ""
 	node.urlScanText = ""
-	node.pastebinURL = ""
+	node.gistURL = ""
 	node.providerResponseID = strings.TrimSpace(tracker.providerResponseID)
 	node.providerResponseModel = strings.TrimSpace(tracker.modelName)
 	node.media = nil
@@ -1239,10 +1239,10 @@ func buildResponseButtons(actions responseActions) []discordgo.MessageComponent 
 		buttons = append(buttons, button)
 	}
 
-	if actions.showPastebin {
+	if actions.showGist {
 		button := new(discordgo.Button)
-		button.CustomID = viewOnPastebinButtonCustomID
-		button.Label = viewOnPastebinButtonLabel
+		button.CustomID = createGistButtonCustomID
+		button.Label = createGistButtonLabel
 		button.Style = discordgo.SecondaryButton
 
 		buttons = append(buttons, button)
