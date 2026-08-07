@@ -1105,6 +1105,8 @@ func TestAugmentConversationFetchesIndependentContextBeforeWebSearchDecision(t *
 	gate := newConcurrentFetchGate(4)
 
 	instance := new(bot)
+	instance.session = newDirectMessageTestSession(t, "channel-1", "bot-user", rejectTestRequests)
+	instance.httpClient = newTextAttachmentDownloadClient(t, testVisualSearchAttachmentURL, "image-bytes")
 	instance.visualSearch = newBlockedVisualSearchClient(gate)
 	instance.website = newBlockedWebsiteClient(gate)
 	instance.youtube = newBlockedYouTubeClient(gate)
@@ -1120,21 +1122,14 @@ func TestAugmentConversationFetchesIndependentContextBeforeWebSearchDecision(t *
 	)
 	instance.nodes = newMessageNodeStore(10)
 
-	sourceMessage := newVisualSearchSourceMessage("source-message", "123")
-
-	conversation := []chatMessage{
-		{
-			Role: messageRoleUser,
-			Content: strings.Join([]string{
-				"<@123>: vsearch identify this",
-				"https://example.com/article",
-				"https://www.youtube.com/watch?v=dQw4w9WgXcQ",
-				"https://www.reddit.com/r/testing/comments/abc123/thread-title/",
-			}, " "),
-		},
-	}
-
+	fixture := newAugmentWebSearchDecisionFixture()
 	loadedConfig := testMediaAnalysisConfig()
+	loadedConfig.MaxMessages = defaultMaxMessages
+	loadedConfig.ModelContextWindows = map[string]int{
+		"openai/gpt-5":          200_000,
+		testSearchDeciderModel2: 200_000,
+		testMediaAnalysisModel:  200_000,
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -1143,10 +1138,10 @@ func TestAugmentConversationFetchesIndependentContextBeforeWebSearchDecision(t *
 		ctx,
 		loadedConfig,
 		"openai/gpt-5",
-		sourceMessage,
-		conversation,
+		fixture.sourceMessage,
+		fixture.conversation,
 		nil,
-		messageContentText(conversation[0].Content),
+		messageContentText(fixture.conversation[0].Content),
 	)
 	if err != nil {
 		t.Fatalf("augment conversation: %v", err)
@@ -1176,6 +1171,44 @@ func TestAugmentConversationFetchesIndependentContextBeforeWebSearchDecision(t *
 			t.Fatalf("expected non-empty %s content in prompt: %#v", field, prompt)
 		}
 	}
+}
+
+type augmentWebSearchDecisionFixture struct {
+	sourceMessage *discordgo.Message
+	conversation  []chatMessage
+}
+
+func newAugmentWebSearchDecisionFixture() augmentWebSearchDecisionFixture {
+	sourceMessage := newVisualSearchSourceMessage("source-message", "123")
+	sourceMessage.ChannelID = "channel-1"
+	sourceMessage.Mentions = []*discordgo.User{newDiscordUser("bot-user", false)}
+	sourceMessage.Content = strings.Join([]string{
+		"<@bot-user> vsearch identify this",
+		"https://example.com/article",
+		"https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+		"https://www.reddit.com/r/testing/comments/abc123/thread-title/",
+	}, " ")
+
+	conversation := []chatMessage{
+		{
+			Role: messageRoleUser,
+			Content: strings.Join([]string{
+				"<@123>: vsearch identify this",
+				"https://example.com/article",
+				"https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+				"https://www.reddit.com/r/testing/comments/abc123/thread-title/",
+			}, " "),
+		},
+	}
+
+	return augmentWebSearchDecisionFixture{
+		sourceMessage: sourceMessage,
+		conversation:  conversation,
+	}
+}
+
+func rejectTestRequests(_ *http.Request) (*http.Response, error) {
+	return nil, errUnexpectedTestRequest
 }
 
 func TestAugmentConversationForXAILeavesNonFacebookNonShortsURLsForProviderHandling(t *testing.T) {

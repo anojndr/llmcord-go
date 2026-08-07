@@ -51,18 +51,7 @@ const (
 		"and do not include any conversational filler, explanation, " +
 		"introductory text, or markdown code fences. " +
 		"Your response must be a single valid JSON object."
-	// searchDeciderMaxRequestTokens bounds the assembled search-decider
-	// request. The decider only needs the recent context plus the latest
-	// query to decide whether to search, so near the context window it must
-	// not drag (and then auto-compact) the full conversation — that
-	// compaction alone can cost hundreds of model calls and stall the
-	// pipeline at "Gathering context" for minutes.
-	searchDeciderMaxRequestTokens = 8_000
-	// searchDeciderPromptOverheadTokens reserves room for the fixed decider
-	// prompt text (searchDeciderPrompt.txt) and the decision instruction
-	// appended on top of the recent conversation.
-	searchDeciderPromptOverheadTokens = 2_048
-	searchAnswerTemplate              = `Answer the user's query based on the web search results.
+	searchAnswerTemplate = `Answer the user's query based on the web search results.
 
 User query:
 %s
@@ -287,6 +276,14 @@ func (instance *bot) maybeAugmentConversationWithWebSearch(
 	sourceMessage *discordgo.Message,
 	conversation []chatMessage,
 ) ([]chatMessage, *searchMetadata, []string) {
+	instance.modelMu.Lock()
+	decidingSearch := instance.decidingSearch
+	instance.modelMu.Unlock()
+
+	if decidingSearch {
+		return conversation, nil, nil
+	}
+
 	decision, decisionWarnings, err := instance.decideWebSearch(
 		ctx,
 		loadedConfig,
@@ -707,75 +704,67 @@ func searchDeciderDisabledForModel(configuredModel string) bool {
 	return strings.EqualFold(providerName, "exa") && strings.EqualFold(modelName, "exa-research-pro")
 }
 
+// buildSearchDeciderConversation builds the search decider conversation
+// through the exact same code path as the main model: the reply chain is
+// walked and augmented with the same steps (video URLs, document extraction,
+// media analysis, visual search, website/youtube/reddit content) using the
+// search decider model's own content options. The only difference from the
+// main model is that the caller prepends the search decider prompt to the
+// latest user query afterwards. Web search augmentation is skipped while the
+// decision is in flight so the decider never re-decides (infinite recursion
+// guard).
 func (instance *bot) buildSearchDeciderConversation(
 	ctx context.Context,
 	loadedConfig config,
-	providerSlashModel string,
+	_ string,
 	searchDeciderModel string,
 	sourceMessage *discordgo.Message,
-	conversation []chatMessage,
+	_ []chatMessage,
 ) ([]chatMessage, error) {
-	conversation = truncateSearchDeciderConversation(conversation)
-
-	searchDeciderConversationWithImages, err := instance.maybeAugmentConversationWithSearchDeciderImages(
+	searchDeciderMessages, warnings, err := instance.buildMessageConversation(
 		ctx,
 		loadedConfig,
-		providerSlashModel,
-		searchDeciderModel,
 		sourceMessage,
-		conversation,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("append search decider images: %w", err)
-	}
-
-	sanitizedConversation, err := searchDeciderConversation(
-		searchDeciderConversationWithImages,
-		loadedConfig,
 		searchDeciderModel,
 	)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("build search decider conversation: %w", err)
 	}
 
-	return sanitizedConversation, nil
-}
-
-// truncateSearchDeciderConversation keeps only the recent tail of the
-// conversation (source-message-first order, so the newest turn is last) up
-// to a bounded token budget that reserves room for the fixed decider
-// prompt text. The decider decides "should we search?" from the recent
-// context and the latest query; a near-window conversation must not be
-// passed through whole, or its auto-compaction would summarize the entire
-// history with a large number of model calls before the decider can answer
-// at all.
-func truncateSearchDeciderConversation(conversation []chatMessage) []chatMessage {
-	conversationBudget := searchDeciderMaxRequestTokens - searchDeciderPromptOverheadTokens
-
-	if len(conversation) == 0 {
-		return conversation
+	if len(searchDeciderMessages) == 0 {
+		fallbackMessage, fallbackWarnings := fallbackAttachmentDownloadConversation(
+			sourceMessage,
+			warnings,
+		)
+		if fallbackMessage != nil {
+			searchDeciderMessages = append(searchDeciderMessages, *fallbackMessage)
+			warnings = fallbackWarnings
+		}
 	}
 
-	for len(conversation) > 1 &&
-		estimateChatMessagesTokens(conversation) > conversationBudget {
-		conversation = conversation[1:]
-	}
+	instance.modelMu.Lock()
+	instance.decidingSearch = true
+	instance.modelMu.Unlock()
 
-	lastIndex := len(conversation) - 1
+	defer func() {
+		instance.modelMu.Lock()
+		instance.decidingSearch = false
+		instance.modelMu.Unlock()
+	}()
 
-	latestMessage := truncateSearchDeciderMessageContent(
-		conversation[lastIndex],
-		conversationBudget,
+	searchDeciderMessages, _, _, err = instance.augmentPreparedMessageResponse(
+		ctx,
+		loadedConfig,
+		sourceMessage,
+		searchDeciderModel,
+		searchDeciderMessages,
+		warnings,
 	)
-	// Content is an interface{} whose dynamic type can be []contentPart;
-	// direct != comparison panics on such uncomparable values, so compare
-	// with a non-panicking deep equality instead.
-	if !chatMessageContentsEqual(latestMessage.Content, conversation[lastIndex].Content) {
-		conversation = append([]chatMessage(nil), conversation...)
-		conversation[lastIndex] = latestMessage
+	if err != nil {
+		return nil, fmt.Errorf("augment search decider conversation: %w", err)
 	}
 
-	return conversation
+	return searchDeciderMessages, nil
 }
 
 // chatMessageContentsEqual reports whether two chatMessage Content values
@@ -785,215 +774,6 @@ func truncateSearchDeciderConversation(conversation []chatMessage) []chatMessage
 // for the concrete types used here (string, []contentPart, nil).
 func chatMessageContentsEqual(left, right any) bool {
 	return reflect.DeepEqual(left, right)
-}
-
-// truncateSearchDeciderMessageContent bounds a single oversized message for
-// the search decider, keeping its leading content up to the context budget.
-// A single latest message can dwarf the whole history (e.g. a pasted file
-// or report), and without bounding it the decider would either send an
-// enormous prompt or trigger the expensive full-conversation compaction.
-// Only string content is truncated: parts content is bounded by the model
-// image/document limits and its text is typically short, so it is left as-is
-// rather than risking a dropped text part.
-func truncateSearchDeciderMessageContent(
-	message chatMessage,
-	tokenLimit int,
-) chatMessage {
-	if estimateChatMessageTokens(message) <= tokenLimit {
-		return message
-	}
-
-	typedContent, isString := message.Content.(string)
-	if !isString {
-		return message
-	}
-
-	contentTokenLimit := tokenLimit - autoCompactMessageOverheadTokens
-	contentTokenLimit = max(contentTokenLimit, 0)
-
-	clonedMessage := message
-	clonedMessage.Content = truncateTextToApproxTokens(typedContent, contentTokenLimit)
-
-	return clonedMessage
-}
-
-func (instance *bot) maybeAugmentConversationWithSearchDeciderImages(
-	ctx context.Context,
-	loadedConfig config,
-	providerSlashModel string,
-	searchDeciderModel string,
-	sourceMessage *discordgo.Message,
-	conversation []chatMessage,
-) ([]chatMessage, error) {
-	searchContentOptions, err := messageContentOptionsForModel(
-		loadedConfig,
-		searchDeciderModel,
-	)
-	if err != nil {
-		return nil, fmt.Errorf(
-			"build search decider content options for %q: %w",
-			searchDeciderModel,
-			err,
-		)
-	}
-
-	if searchContentOptions.maxImages <= 0 {
-		return conversation, nil
-	}
-
-	mainContentOptions, err := messageContentOptionsForModel(
-		loadedConfig,
-		providerSlashModel,
-	)
-	if err != nil {
-		return nil, fmt.Errorf(
-			"build main model content options for %q: %w",
-			providerSlashModel,
-			err,
-		)
-	}
-
-	if searchContentOptions.maxImages <= mainContentOptions.maxImages {
-		return conversation, nil
-	}
-
-	remainingImageSlots, err := remainingImageSlotsForConversation(
-		conversation,
-		searchContentOptions.maxImages,
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	if remainingImageSlots == 0 {
-		return conversation, nil
-	}
-
-	candidateImageParts, err := instance.searchDeciderImagePartsForMessage(
-		ctx,
-		sourceMessage,
-		conversation,
-		remainingImageSlots,
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	return appendMediaPartsToConversation(conversation, candidateImageParts)
-}
-
-func (instance *bot) searchDeciderImagePartsForMessage(
-	ctx context.Context,
-	sourceMessage *discordgo.Message,
-	conversation []chatMessage,
-	maxImageParts int,
-) ([]contentPart, error) {
-	if sourceMessage == nil || maxImageParts <= 0 {
-		return nil, nil
-	}
-
-	imageURLSet, candidateImageParts, err := searchDeciderImagePartSet(conversation, maxImageParts)
-	if err != nil {
-		return nil, err
-	}
-
-	candidateImageParts, complete, err := instance.appendSearchDeciderMessageImageParts(
-		ctx,
-		sourceMessage,
-		candidateImageParts,
-		imageURLSet,
-		maxImageParts,
-	)
-	if err != nil || complete {
-		return candidateImageParts, err
-	}
-
-	return instance.appendSearchDeciderDocumentImageParts(
-		ctx,
-		sourceMessage,
-		candidateImageParts,
-		imageURLSet,
-		maxImageParts,
-	)
-}
-
-func searchDeciderConversation(
-	conversation []chatMessage,
-	loadedConfig config,
-	configuredModel string,
-) ([]chatMessage, error) {
-	contentOptions, err := messageContentOptionsForModel(loadedConfig, configuredModel)
-	if err != nil {
-		return nil, fmt.Errorf(
-			"build content options for %q: %w",
-			configuredModel,
-			err,
-		)
-	}
-
-	sanitizedConversation := make([]chatMessage, len(conversation))
-
-	for index, message := range conversation {
-		sanitizedContent, err := sanitizeMessageContentForModel(message.Content, contentOptions)
-		if err != nil {
-			return nil, fmt.Errorf("sanitize message %d: %w", index, err)
-		}
-
-		sanitizedConversation[index] = chatMessage{
-			Role:    message.Role,
-			Content: sanitizedContent,
-		}
-	}
-
-	return sanitizedConversation, nil
-}
-
-func sanitizeMessageContentForModel(
-	content any,
-	options messageContentOptions,
-) (any, error) {
-	switch typedContent := content.(type) {
-	case nil:
-		return "", nil
-	case string:
-		return typedContent, nil
-	case []contentPart:
-		inlineAttachmentText := inlineTextAttachmentContent(typedContent, options)
-
-		filteredContent := filterContentPartsForOptions(typedContent, options)
-		if !contentPartsContainNonText(filteredContent) {
-			return appendInlineAttachmentText(
-				contentPartsText(filteredContent),
-				inlineAttachmentText,
-			), nil
-		}
-
-		clonedContent := make([]contentPart, 0, len(filteredContent)+1)
-		textContent := appendInlineAttachmentText(
-			contentPartsText(filteredContent),
-			inlineAttachmentText,
-		)
-
-		if strings.TrimSpace(textContent) != "" {
-			clonedContent = append(clonedContent, contentPart{
-				messageTypeKey: contentTypeText,
-				messageTextKey: textContent,
-			})
-		}
-
-		for _, part := range filteredContent {
-			partType, _ := part["type"].(string)
-			if partType == contentTypeText {
-				continue
-			}
-
-			clonedContent = append(clonedContent, cloneContentPart(part))
-		}
-
-		return clonedContent, nil
-	default:
-		return nil, fmt.Errorf("unsupported message content type %T: %w", content, os.ErrInvalid)
-	}
 }
 
 func latestUserImageURLSet(conversation []chatMessage) (map[string]struct{}, error) {
@@ -1945,76 +1725,6 @@ func searchDeciderImagePartSet(
 	}
 
 	return imageURLSet, make([]contentPart, 0, maxImageParts), nil
-}
-
-func (instance *bot) appendSearchDeciderMessageImageParts(
-	ctx context.Context,
-	sourceMessage *discordgo.Message,
-	candidateImageParts []contentPart,
-	imageURLSet map[string]struct{},
-	maxImageParts int,
-) ([]contentPart, bool, error) {
-	imageParts, err := instance.imagePartsForMessage(ctx, sourceMessage)
-	if err != nil {
-		return nil, false, fmt.Errorf("load image parts for search decider: %w", err)
-	}
-
-	return appendSearchDeciderImageParts(
-		candidateImageParts,
-		imageURLSet,
-		imageParts,
-		maxImageParts,
-		"append image attachment for search decider",
-	)
-}
-
-func (instance *bot) appendSearchDeciderDocumentImageParts(
-	ctx context.Context,
-	sourceMessage *discordgo.Message,
-	candidateImageParts []contentPart,
-	imageURLSet map[string]struct{},
-	maxImageParts int,
-) ([]contentPart, error) {
-	documentParts, err := instance.documentPartsForMessage(ctx, sourceMessage)
-	if err != nil {
-		return nil, fmt.Errorf("load document parts for search decider: %w", err)
-	}
-
-	documentResults := runTasksConcurrently(
-		ctx,
-		documentExtractionConcurrency,
-		len(documentParts),
-		func(_ context.Context, index int) (extractedPDFContent, error) {
-			return extractPDFContent(documentParts[index])
-		},
-	)
-
-	for index, result := range documentResults {
-		if result.err != nil {
-			return nil, fmt.Errorf(
-				"extract document images for search decider file %d: %w",
-				index+1,
-				result.err,
-			)
-		}
-
-		candidateImageParts, complete, appendErr := appendSearchDeciderImageParts(
-			candidateImageParts,
-			imageURLSet,
-			result.value.imageParts,
-			maxImageParts,
-			"append document image for search decider",
-		)
-		if appendErr != nil {
-			return nil, appendErr
-		}
-
-		if complete {
-			return candidateImageParts, nil
-		}
-	}
-
-	return candidateImageParts, nil
 }
 
 func appendSearchDeciderImageParts(

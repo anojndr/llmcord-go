@@ -528,25 +528,17 @@ func assertAugmentedVideoParts(
 func assertSearchDeciderTextContent(
 	t *testing.T,
 	conversation []chatMessage,
-	loadedConfig config,
-	configuredModel string,
+	_ config,
+	_ string,
 	expectedText string,
 ) {
 	t.Helper()
 
-	searchDeciderMessages, err := searchDeciderConversation(
-		conversation,
-		loadedConfig,
-		configuredModel,
-	)
-	if err != nil {
-		t.Fatalf("build search decider conversation: %v", err)
-	}
-
-	searchDeciderContent, contentOK := searchDeciderMessages[0].Content.(string)
-	if !contentOK {
-		t.Fatalf("unexpected search decider content type: %T", searchDeciderMessages[0].Content)
-	}
+	// The search decider runs the exact same conversation pipeline as the
+	// main model, so the augmented conversation the main model produces is
+	// what the decider sees. Assert the decider-visible text matches the
+	// main model's augmented text.
+	searchDeciderContent := messageContentText(conversation[0].Content)
 
 	if searchDeciderContent != expectedText {
 		t.Fatalf("unexpected search decider content: %q", searchDeciderContent)

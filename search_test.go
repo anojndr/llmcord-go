@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bwmarrin/discordgo"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -316,8 +317,48 @@ func newSearchTestBot(chatCompletions chatCompletionStreamer, webSearch webSearc
 	instance := new(bot)
 	instance.chatCompletions = chatCompletions
 	instance.webSearch = webSearch
+	instance.nodes = newMessageNodeStore(maxMessageNodes)
+
+	session, err := discordgo.New("Bot discord-token")
+	if err == nil {
+		session.State.User = newDiscordUser("bot-user", true)
+		instance.session = session
+	}
 
 	return instance
+}
+
+func newWebSearchTestSourceMessage(t *testing.T, content string) *discordgo.Message {
+	t.Helper()
+
+	message := new(discordgo.Message)
+	message.ID = "web-search-test-source"
+	message.ChannelID = "channel-1"
+	message.Author = newDiscordUser("user-1", false)
+	message.Content = content
+
+	return message
+}
+
+// newSearchDeciderSourceMessageForQuery seeds a source user message in the
+// instance's node store and returns it, so the search decider pipeline can
+// walk a real reply chain for the given latest query.
+func newSearchDeciderSourceMessageForQuery(
+	t *testing.T,
+	instance *bot,
+	query string,
+) *discordgo.Message {
+	t.Helper()
+
+	sourceMessage := new(discordgo.Message)
+	sourceMessage.ID = "web-search-source-message"
+	sourceMessage.ChannelID = "channel-1"
+	sourceMessage.Author = newDiscordUser("user-1", false)
+	sourceMessage.Content = query
+
+	setCachedUserNode(instance, sourceMessage, nil, query)
+
+	return sourceMessage
 }
 
 func TestParseSearchDecisionNormalizesQueries(t *testing.T) {
@@ -570,112 +611,134 @@ func TestPrependSearchDeciderPrompt(t *testing.T) {
 	})
 }
 
+// TestSearchDeciderConversationStripsImagesForTextOnlyModels asserts that
+// the search decider conversation filters media through the decider model's
+// own content options, exactly like the main model pipeline: a text-only
+// decider model receives the message text without any media parts.
 func TestSearchDeciderConversationStripsImagesForTextOnlyModels(t *testing.T) {
 	t.Parallel()
 
-	conversation := []chatMessage{
-		{
-			Role: messageRoleUser,
-			Content: []contentPart{
-				{"type": contentTypeText, "text": "<@123>: what is this?"},
-				{"type": contentTypeImageURL, "image_url": map[string]string{"url": "data:image/png;base64,abc"}},
-				{
-					"type":               contentTypeAudioData,
-					contentFieldBytes:    []byte("audio-bytes"),
-					contentFieldMIMEType: "audio/mpeg",
-				},
-				{
-					"type":               contentTypeDocument,
-					contentFieldBytes:    []byte("document-bytes"),
-					contentFieldMIMEType: mimeTypePDF,
-				},
-				{
-					"type":               contentTypeVideoData,
-					contentFieldBytes:    []byte("video-bytes"),
-					contentFieldMIMEType: "video/mp4",
-				},
-			},
+	instance, sourceMessage := newSearchDeciderMediaTestBot(
+		t,
+		"message-search-text-only",
+		"<@123>: what is this?",
+		[]contentPart{
+			{"type": contentTypeImageURL, "image_url": map[string]string{"url": "data:image/png;base64,abc"}},
 		},
-	}
+	)
 
-	sanitizedConversation, err := searchDeciderConversation(
-		conversation,
-		testSearchConfig(),
-		"openai/text-only-model",
+	loadedConfig := testSearchConfig()
+	loadedConfig.SearchDeciderModel = "openai/text-only-model"
+	loadedConfig.Models["openai/text-only-model"] = nil
+
+	deciderMessages, err := instance.buildSearchDeciderConversation(
+		context.Background(),
+		loadedConfig,
+		"openai/main-model",
+		loadedConfig.SearchDeciderModel,
+		sourceMessage,
+		nil,
 	)
 	if err != nil {
-		t.Fatalf("search decider conversation: %v", err)
+		t.Fatalf("build search decider conversation: %v", err)
 	}
 
-	content, ok := sanitizedConversation[0].Content.(string)
+	content, ok := deciderMessages[0].Content.(string)
 	if !ok {
-		t.Fatalf("unexpected sanitized content type: %T", sanitizedConversation[0].Content)
+		t.Fatalf("unexpected decider content type: %T", deciderMessages[0].Content)
 	}
 
 	if content != "<@123>: what is this?" {
-		t.Fatalf("unexpected sanitized content: %q", content)
+		t.Fatalf("unexpected decider content: %q", content)
 	}
 }
 
+// TestSearchDeciderConversationPreservesGeminiMedia asserts that a gemini
+// search decider model keeps its media parts through the same content
+// options path as the main model.
 func TestSearchDeciderConversationPreservesGeminiMedia(t *testing.T) {
 	t.Parallel()
 
-	conversation := []chatMessage{
-		{
-			Role: messageRoleUser,
-			Content: []contentPart{
-				{"type": contentTypeText, "text": "<@123>: summarize these"},
-				{"type": contentTypeImageURL, "image_url": map[string]string{"url": "data:image/png;base64,abc"}},
-				{
-					"type":               contentTypeAudioData,
-					contentFieldBytes:    []byte("audio-bytes"),
-					contentFieldMIMEType: "audio/mpeg",
-				},
-				{
-					"type":               contentTypeDocument,
-					contentFieldBytes:    []byte("document-bytes"),
-					contentFieldMIMEType: mimeTypePDF,
-				},
-				{
-					"type":               contentTypeVideoData,
-					contentFieldBytes:    []byte("video-bytes"),
-					contentFieldMIMEType: "video/mp4",
-				},
-			},
+	instance, sourceMessage := newSearchDeciderMediaTestBot(
+		t,
+		"message-search-gemini-media",
+		"<@123>: summarize these",
+		[]contentPart{
+			{"type": contentTypeImageURL, "image_url": map[string]string{"url": "data:image/png;base64,abc"}},
 		},
-	}
+	)
 
-	sanitizedConversation, err := searchDeciderConversation(
-		conversation,
-		testGeminiSearchConfig(),
+	loadedConfig := testGeminiSearchConfig()
+
+	deciderMessages, err := instance.buildSearchDeciderConversation(
+		context.Background(),
+		loadedConfig,
 		"gemini/gemini-3-flash-preview",
+		"gemini/gemini-3-flash-preview",
+		sourceMessage,
+		nil,
 	)
 	if err != nil {
-		t.Fatalf("search decider conversation: %v", err)
+		t.Fatalf("build search decider conversation: %v", err)
 	}
 
-	parts, ok := sanitizedConversation[0].Content.([]contentPart)
+	parts, ok := deciderMessages[0].Content.([]contentPart)
 	if !ok {
-		t.Fatalf("unexpected sanitized content type: %T", sanitizedConversation[0].Content)
+		t.Fatalf("unexpected decider content type: %T", deciderMessages[0].Content)
 	}
 
-	if len(parts) != 5 {
+	if len(parts) != 2 {
 		t.Fatalf("unexpected part count: %d", len(parts))
 	}
 
-	if parts[3]["type"] != contentTypeDocument {
-		t.Fatalf("expected document to be preserved: %#v", parts[3])
+	if parts[1]["type"] != contentTypeImageURL {
+		t.Fatalf("expected image to be preserved: %#v", parts[1])
+	}
+}
+
+// newSearchDeciderMediaTestBot builds a bot with a session and a source
+// message whose node carries the given media, so the search decider
+// conversation pipeline can walk the source message and filter its media by
+// the decider model's content options.
+func newSearchDeciderMediaTestBot(
+	t *testing.T,
+	messageID string,
+	text string,
+	media []contentPart,
+) (*bot, *discordgo.Message) {
+	t.Helper()
+
+	session, err := discordgo.New("Bot discord-token")
+	if err != nil {
+		t.Fatalf("create discord session: %v", err)
 	}
 
-	if parts[4]["type"] != contentTypeVideoData {
-		t.Fatalf("expected video to be preserved: %#v", parts[4])
-	}
+	session.State.User = newDiscordUser("bot-user", true)
+
+	instance := new(bot)
+	instance.session = session
+	instance.nodes = newMessageNodeStore(maxMessageNodes)
+
+	sourceMessage := new(discordgo.Message)
+	sourceMessage.ID = messageID
+	sourceMessage.ChannelID = "channel-1"
+	sourceMessage.Author = newDiscordUser("user-1", false)
+	sourceMessage.Content = text
+
+	sourceNode := instance.nodes.getOrCreate(sourceMessage.ID)
+	sourceNode.initialized = true
+	sourceNode.role = messageRoleUser
+	sourceNode.text = text
+	sourceNode.media = media
+
+	return instance, sourceMessage
 }
 
 func TestBuildSearchDeciderConversationAppendsPDFImagesForVisionDecider(t *testing.T) {
 	t.Parallel()
 
-	instance, sourceMessage := newPDFExtractionTestBot(
+	instance, sourceMessage := newSearchDeciderMediaTestBot(
+		t,
 		"message-search-pdf",
 		"<@123>: summarize the report",
 		[]contentPart{
@@ -717,7 +780,7 @@ func TestBuildSearchDeciderConversationAppendsPDFImagesForVisionDecider(t *testi
 		"openai/main-model",
 		loadedConfig.SearchDeciderModel,
 		sourceMessage,
-		mainConversation,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("build search decider conversation: %v", err)
@@ -749,7 +812,8 @@ func TestBuildSearchDeciderConversationAppendsPDFImagesForVisionDecider(t *testi
 func TestBuildSearchDeciderConversationAppendsPPTXImagesForVisionDecider(t *testing.T) {
 	t.Parallel()
 
-	instance, sourceMessage := newPDFExtractionTestBot(
+	instance, sourceMessage := newSearchDeciderMediaTestBot(
+		t,
 		"message-search-pptx",
 		"<@123>: summarize the slides",
 		[]contentPart{
@@ -787,7 +851,7 @@ func TestBuildSearchDeciderConversationAppendsPPTXImagesForVisionDecider(t *test
 		"openai/main-model",
 		loadedConfig.SearchDeciderModel,
 		sourceMessage,
-		mainConversation,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("build search decider conversation: %v", err)
@@ -907,11 +971,13 @@ func TestMaybeAugmentConversationWithWebSearchAddsResultsWhenNeeded(t *testing.T
 		{Role: messageRoleUser, Content: "<@123>: what changed?"},
 	}
 
+	sourceMessage := newSearchDeciderSourceMessageForQuery(t, instance, "<@123>: what changed?")
+
 	augmentedConversation, searchMetadata, warnings := instance.maybeAugmentConversationWithWebSearch(
 		context.Background(),
 		testSearchConfig(),
 		"openai/main-model",
-		nil,
+		sourceMessage,
 		conversation,
 	)
 
@@ -984,7 +1050,7 @@ func TestMaybeAugmentConversationWithWebSearchPassesCurrentExaSearchType(t *test
 		context.Background(),
 		testExaAPIWebSearchConfig(),
 		"openai/main-model",
-		nil,
+		newWebSearchTestSourceMessage(t, "<@123>: what changed?"),
 		[]chatMessage{{Role: messageRoleUser, Content: "<@123>: what changed?"}},
 	)
 
@@ -1016,19 +1082,20 @@ func assertSearchDeciderRequestIncludesInstruction(
 	}
 
 	requestMessages := requests[0].Messages
-	if len(requestMessages) != 2 {
-		t.Fatalf("unexpected decider message count: %d", len(requestMessages))
+	if len(requestMessages) == 0 {
+		t.Fatal("expected decider request messages")
 	}
 
-	if requestMessages[0].Role != messageRoleAssistant {
-		t.Fatalf("expected assistant message first, got role %q", requestMessages[0].Role)
+	latestIndex := len(requestMessages) - 1
+
+	if requestMessages[latestIndex].Role != messageRoleUser {
+		t.Fatalf(
+			"expected latest query user message last, got role %q",
+			requestMessages[latestIndex].Role,
+		)
 	}
 
-	if requestMessages[1].Role != messageRoleUser {
-		t.Fatalf("expected latest query user message second, got role %q", requestMessages[1].Role)
-	}
-
-	userContent, userContentOK := requestMessages[1].Content.(string)
+	userContent, userContentOK := requestMessages[latestIndex].Content.(string)
 	if !userContentOK {
 		t.Fatalf("unexpected user message content type: %T", requestMessages[1].Content)
 	}
@@ -1091,7 +1158,7 @@ func TestMaybeAugmentConversationWithWebSearchSkipsWhenNotNeeded(t *testing.T) {
 		context.Background(),
 		testSearchConfig(),
 		"openai/main-model",
-		nil,
+		newWebSearchTestSourceMessage(t, messageContentText(conversation[0].Content)),
 		conversation,
 	)
 
@@ -1153,7 +1220,7 @@ func TestMaybeAugmentConversationWithWebSearchSkipsDeciderForExaResearchPro(t *t
 		context.Background(),
 		loadedConfig,
 		"exa/exa-research-pro",
-		nil,
+		newWebSearchTestSourceMessage(t, messageContentText(conversation[0].Content)),
 		conversation,
 	)
 
@@ -1223,7 +1290,7 @@ func TestMaybeAugmentConversationWithWebSearchSkipsDeciderForXAIProvider(t *test
 		context.Background(),
 		loadedConfig,
 		"x-ai/grok-4",
-		nil,
+		newWebSearchTestSourceMessage(t, messageContentText(conversation[0].Content)),
 		conversation,
 	)
 
@@ -1278,7 +1345,7 @@ func TestMaybeAugmentConversationWithWebSearchFallsBackOnSearchError(t *testing.
 		context.Background(),
 		testSearchConfig(),
 		"openai/main-model",
-		nil,
+		newWebSearchTestSourceMessage(t, messageContentText(conversation[0].Content)),
 		conversation,
 	)
 
@@ -1326,7 +1393,7 @@ func TestMaybeAugmentConversationWithWebSearchFallsBackOnAppendError(t *testing.
 		context.Background(),
 		testSearchConfig(),
 		"openai/main-model",
-		nil,
+		newWebSearchTestSourceMessage(t, ""),
 		emptyConversation,
 	)
 
@@ -2184,6 +2251,11 @@ func testSearchConfig() config {
 	}
 	loadedConfig.ModelOrder = []string{"openai/main-model", "openai/decider-model"}
 	loadedConfig.SearchDeciderModel = "openai/decider-model"
+	loadedConfig.MaxMessages = defaultMaxMessages
+	loadedConfig.ModelContextWindows = map[string]int{
+		"openai/main-model":    200_000,
+		"openai/decider-model": 200_000,
+	}
 
 	return *loadedConfig
 }
@@ -2211,6 +2283,10 @@ func testGeminiSearchConfig() config {
 	}
 	loadedConfig.Models = map[string]map[string]any{
 		"gemini/gemini-3-flash-preview": nil,
+	}
+	loadedConfig.MaxMessages = defaultMaxMessages
+	loadedConfig.ModelContextWindows = map[string]int{
+		"gemini/gemini-3-flash-preview": 200_000,
 	}
 
 	return *loadedConfig
@@ -2282,6 +2358,7 @@ func TestDecideWebSearchRetriesEmptyDeciderResponse(t *testing.T) {
 
 		return nil, nil
 	}))
+	instance.nodes = newMessageNodeStore(maxMessageNodes)
 
 	loadedConfig := testSearchConfig()
 
@@ -2291,11 +2368,17 @@ func TestDecideWebSearchRetriesEmptyDeciderResponse(t *testing.T) {
 	openAIProvider.BaseURL = server.URL
 	loadedConfig.Providers["openai"] = openAIProvider
 
+	sourceMessage := new(discordgo.Message)
+	sourceMessage.ID = "search-decider-retry-source"
+	sourceMessage.ChannelID = "channel-1"
+	sourceMessage.Author = newDiscordUser("user-1", false)
+	sourceMessage.Content = "Check the latest news."
+
 	decision, _, err := instance.decideWebSearch(
 		context.Background(),
 		loadedConfig,
 		"openai/main-model",
-		nil,
+		sourceMessage,
 		[]chatMessage{{Role: messageRoleUser, Content: "Check the latest news."}},
 	)
 	if err != nil {

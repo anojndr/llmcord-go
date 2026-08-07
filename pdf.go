@@ -179,13 +179,6 @@ func canExtractPDFContents(
 	return true, nil
 }
 
-func (instance *bot) documentPartsForMessage(
-	ctx context.Context,
-	message *discordgo.Message,
-) ([]contentPart, error) {
-	return instance.messagePartsForMessage(ctx, message, partNeedsPDFExtraction)
-}
-
 func (instance *bot) documentPartsForMessages(
 	ctx context.Context,
 	messages []*discordgo.Message,
