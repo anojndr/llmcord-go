@@ -179,14 +179,10 @@ func geminiCachePrefixTokenEstimate(contents []*genai.Content) int {
 			case strings.TrimSpace(part.Text) != "":
 				totalTokens += estimateTextTokens(part.Text)
 			case part.FileData != nil:
-				totalTokens += autoCompactFileTokens
+				totalTokens += estimateTextTokens("file-attachment-placeholder")
 			case part.InlineData != nil:
-				totalTokens += autoCompactFileTokens
+				totalTokens += estimateTextTokens("inline-data-placeholder")
 			}
-		}
-
-		if len(content.Parts) > 0 {
-			totalTokens += autoCompactMessageOverheadTokens
 		}
 	}
 
