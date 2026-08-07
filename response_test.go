@@ -214,6 +214,29 @@ func TestVisibleResponseSegmentsPrefixesThinking(t *testing.T) {
 	}
 }
 
+func TestBuildResponseButtonsGistButtonLabel(t *testing.T) {
+	t.Parallel()
+
+	buttons := buildResponseButtons(responseActions{showSources: false, showThinking: false, showGist: true})
+	if len(buttons) != 1 {
+		t.Fatalf("unexpected button count: %#v", buttons)
+	}
+
+	button, ok := buttons[0].(*discordgo.Button)
+	if !ok {
+		t.Fatalf("unexpected component type: %#v", buttons[0])
+	}
+
+	if button.CustomID != createGistButtonCustomID {
+		t.Fatalf("unexpected gist button custom ID: %q", button.CustomID)
+	}
+
+	want := "View response better on GitHub Gist"
+	if button.Label != want {
+		t.Fatalf("unexpected gist button label: got %q, want %q", button.Label, want)
+	}
+}
+
 func TestBuildRenderSpecsAddsSourcesButtonOnlyToFinalSearchedSegment(t *testing.T) {
 	t.Parallel()
 

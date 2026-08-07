@@ -456,7 +456,7 @@ func (instance *bot) handleCreateGistButton(
 		return respondInteractionTextWithFlags(
 			session,
 			interaction.Interaction,
-			"View on GitHub: "+cachedURL,
+			"View response better on GitHub Gist: "+cachedURL,
 			discordgo.MessageFlagsEphemeral,
 		)
 	}
@@ -514,7 +514,7 @@ func (instance *bot) handleCreateGistButton(
 	return editInteractionResponseText(
 		session,
 		interaction.Interaction,
-		"View on GitHub: "+gistURL,
+		"View response better on GitHub Gist: "+gistURL,
 	)
 }
 
