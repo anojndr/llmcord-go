@@ -630,7 +630,7 @@ func TestDecideAutoCompactsSearchDeciderRequest(t *testing.T) {
 	instance := newSearchTestBot(client, newNoOpWebSearchClient())
 	loadedConfig := testSearchConfig()
 	loadedConfig.ModelContextWindows = map[string]int{
-		testSearchDeciderModel: 2200,
+		testSearchDeciderModel: 2800,
 	}
 
 	sourceMessage := newDeciderTestConversationChain(

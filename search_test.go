@@ -505,8 +505,11 @@ func TestSearchDeciderPromptRetainsCriticalInstructions(t *testing.T) {
 		`1. Check explicit search instructions first.`,
 		`2. Use conversation context to resolve references.`,
 		`3. Use both text and images.`,
+		`4. Return {"needs_search": false} when the answer can be produced from what is already given.`,
 		`5. Return {"needs_search": true, "queries": [...]} in all other cases, especially when the request involves:`,
-		`14. Preserve the substance of the claim when the user asks to verify it.`,
+		`8. Never search for content that is private, local, or otherwise unsearchable.`,
+		`12. Weigh the date of the claimed facts against the freshness of the request.`,
+		`18. Preserve the substance of the claim when the user asks to verify it.`,
 	}
 
 	instant := time.Date(2026, time.March, 9, 13, 14, 15, 0, time.FixedZone("PHT", 8*60*60))
