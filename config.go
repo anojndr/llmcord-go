@@ -5,7 +5,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -196,9 +195,8 @@ type gistConfig struct {
 type providerAPIKind string
 
 const (
-	providerAPIKindOpenAI       providerAPIKind = "openai"
-	providerAPIKindGemini       providerAPIKind = "gemini"
-	modelConfigContextWindowKey                 = "context_window"
+	providerAPIKindOpenAI providerAPIKind = "openai"
+	providerAPIKindGemini providerAPIKind = "gemini"
 )
 
 type rawConfig struct {
@@ -219,30 +217,27 @@ type rawConfig struct {
 	SearchDeciderModel scalarString                 `yaml:"search_decider_model"`
 	MediaAnalysisModel scalarString                 `yaml:"media_analysis_model"`
 	SystemPrompt       string                       `yaml:"system_prompt"`
-	ContextWindows     map[string]any               `yaml:"context_window"`
 }
 
 type config struct {
-	BotToken               string
-	ClientID               string
-	StatusMessage          string
-	MaxImages              int
-	MaxMessages            int
-	AllowDMs               bool
-	Permissions            permissionsConfig
-	Providers              map[string]providerConfig
-	WebSearch              webSearchConfig
-	VisualSearch           visualSearchConfig
-	Database               databaseConfig
-	Gist                   gistConfig
-	Models                 map[string]map[string]any
-	ModelContextWindows    map[string]int
-	ProviderContextWindows map[string]int
-	ModelOrder             []string
-	ChannelModelLocks      map[string]string
-	SearchDeciderModel     string
-	MediaAnalysisModel     string
-	SystemPrompt           string
+	BotToken           string
+	ClientID           string
+	StatusMessage      string
+	MaxImages          int
+	MaxMessages        int
+	AllowDMs           bool
+	Permissions        permissionsConfig
+	Providers          map[string]providerConfig
+	WebSearch          webSearchConfig
+	VisualSearch       visualSearchConfig
+	Database           databaseConfig
+	Gist               gistConfig
+	Models             map[string]map[string]any
+	ModelOrder         []string
+	ChannelModelLocks  map[string]string
+	SearchDeciderModel string
+	MediaAnalysisModel string
+	SystemPrompt       string
 }
 
 func loadConfig(filename string) (config, error) {
@@ -295,16 +290,6 @@ func buildLoadedConfig(
 	mediaAnalysisModel := strings.TrimSpace(string(rawLoadedConfig.MediaAnalysisModel))
 	channelModelLocks := normalizeStringScalarMap(rawLoadedConfig.ChannelModelLocks)
 
-	modelContextWindows, err := effectiveModelContextWindows(loadedProviders, rawLoadedConfig.Models)
-	if err != nil {
-		return config{}, fmt.Errorf("resolve model context windows from %q: %w", filename, err)
-	}
-
-	providerContextWindows, err := providerContextWindows(rawLoadedConfig.ContextWindows)
-	if err != nil {
-		return config{}, fmt.Errorf("resolve context windows from %q: %w", filename, err)
-	}
-
 	loadedConfig := config{
 		BotToken:      string(rawLoadedConfig.BotToken),
 		ClientID:      string(rawLoadedConfig.ClientID),
@@ -321,16 +306,14 @@ func buildLoadedConfig(
 				APIKeys: serpAPIVisualSearchKeys,
 			},
 		},
-		Database:               normalizeDatabaseConfig(rawLoadedConfig.Database),
-		Gist:                   normalizeGistConfig(rawLoadedConfig.Gist),
-		Models:                 rawLoadedConfig.Models,
-		ModelContextWindows:    modelContextWindows,
-		ProviderContextWindows: providerContextWindows,
-		ModelOrder:             modelOrder,
-		ChannelModelLocks:      channelModelLocks,
-		SearchDeciderModel:     searchDeciderModel,
-		MediaAnalysisModel:     mediaAnalysisModel,
-		SystemPrompt:           rawLoadedConfig.SystemPrompt,
+		Database:           normalizeDatabaseConfig(rawLoadedConfig.Database),
+		Gist:               normalizeGistConfig(rawLoadedConfig.Gist),
+		Models:             rawLoadedConfig.Models,
+		ModelOrder:         modelOrder,
+		ChannelModelLocks:  channelModelLocks,
+		SearchDeciderModel: searchDeciderModel,
+		MediaAnalysisModel: mediaAnalysisModel,
+		SystemPrompt:       rawLoadedConfig.SystemPrompt,
 	}
 
 	err = validateConfig(loadedConfig)
@@ -467,344 +450,6 @@ func normalizeStringScalarMap(rawValues map[string]scalarString) map[string]stri
 	return values
 }
 
-type modelIntSetting struct {
-	GroupKey string
-	Value    int
-	Explicit bool
-}
-
-type modelIntSettingGroups struct {
-	Values  map[string]int
-	Sources map[string]string
-}
-
-const errPositiveIntMustBeGreaterThanZero = "must be greater than zero: %w"
-
-// providerContextWindows normalizes the top-level context_window map, keyed by
-// provider name, into plain integers. Values accept "200k"-style suffixes.
-func providerContextWindows(rawValues map[string]any) (map[string]int, error) {
-	if len(rawValues) == 0 {
-		return map[string]int{}, nil
-	}
-
-	values := make(map[string]int, len(rawValues))
-	for providerName, rawValue := range rawValues {
-		value, err := anyPositiveIntValue(rawValue)
-		if err != nil {
-			return nil, fmt.Errorf(
-				"read context_window for provider %q: %w",
-				providerName,
-				err,
-			)
-		}
-
-		values[strings.TrimSpace(providerName)] = value
-	}
-
-	return values, nil
-}
-
-func effectiveModelContextWindows(
-	providers map[string]providerConfig,
-	models map[string]map[string]any,
-) (map[string]int, error) {
-	return effectiveAliasedModelIntSettings(
-		providers,
-		models,
-		modelConfigContextWindowKey,
-		nil,
-	)
-}
-
-func effectiveAliasedModelIntSettings(
-	providers map[string]providerConfig,
-	models map[string]map[string]any,
-	settingKey string,
-	validate func(int) error,
-) (map[string]int, error) {
-	if len(models) == 0 {
-		return map[string]int{}, nil
-	}
-
-	settings := make(map[string]modelIntSetting, len(models))
-	groups := modelIntSettingGroups{
-		Values:  make(map[string]int),
-		Sources: make(map[string]string),
-	}
-
-	for configuredModel, modelParameters := range models {
-		setting, err := readAliasedModelIntSetting(
-			providers,
-			configuredModel,
-			modelParameters,
-			settingKey,
-			validate,
-		)
-		if err != nil {
-			return nil, err
-		}
-
-		settings[configuredModel] = setting
-
-		err = groups.register(configuredModel, setting, settingKey)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	if len(groups.Values) == 0 {
-		return map[string]int{}, nil
-	}
-
-	effectiveValues := effectiveAliasedModelIntSettingValues(settings, groups.Values)
-
-	if len(effectiveValues) == 0 {
-		return map[string]int{}, nil
-	}
-
-	return effectiveValues, nil
-}
-
-func readAliasedModelIntSetting(
-	providers map[string]providerConfig,
-	configuredModel string,
-	modelParameters map[string]any,
-	settingKey string,
-	validate func(int) error,
-) (modelIntSetting, error) {
-	groupKey, err := aliasedModelIntSettingGroupKey(providers, configuredModel)
-	if err != nil {
-		return modelIntSetting{}, err
-	}
-
-	value, explicit, err := modelPositiveIntSettingValue(modelParameters, settingKey)
-	if err != nil {
-		return modelIntSetting{}, fmt.Errorf("read %s for model %q: %w", settingKey, configuredModel, err)
-	}
-
-	err = validateAliasedModelIntSetting(value, explicit, validate, settingKey, configuredModel)
-	if err != nil {
-		return modelIntSetting{}, err
-	}
-
-	return modelIntSetting{
-		GroupKey: groupKey,
-		Value:    value,
-		Explicit: explicit,
-	}, nil
-}
-
-func aliasedModelIntSettingGroupKey(
-	providers map[string]providerConfig,
-	configuredModel string,
-) (string, error) {
-	providerName, modelName, err := splitConfiguredModel(configuredModel)
-	if err != nil {
-		return "", fmt.Errorf("parse model %q: %w", configuredModel, err)
-	}
-
-	baseModelName := modelName
-	if provider, ok := providers[providerName]; ok {
-		baseModelName, err = modelLocalSettingBaseModel(provider, modelName)
-		if err != nil {
-			return "", fmt.Errorf("normalize base model for %q: %w", configuredModel, err)
-		}
-	}
-
-	return providerName + "/" + baseModelName, nil
-}
-
-func validateAliasedModelIntSetting(
-	value int,
-	explicit bool,
-	validate func(int) error,
-	settingKey string,
-	configuredModel string,
-) error {
-	if !explicit || validate == nil {
-		return nil
-	}
-
-	err := validate(value)
-	if err != nil {
-		return fmt.Errorf("validate %s for model %q: %w", settingKey, configuredModel, err)
-	}
-
-	return nil
-}
-
-func (groups modelIntSettingGroups) register(
-	configuredModel string,
-	setting modelIntSetting,
-	settingKey string,
-) error {
-	if !setting.Explicit {
-		return nil
-	}
-
-	if previousValue, ok := groups.Values[setting.GroupKey]; ok && previousValue != setting.Value {
-		return fmt.Errorf(
-			"models %q and %q must share the same %s because they resolve to base model %q: %w",
-			groups.Sources[setting.GroupKey],
-			configuredModel,
-			settingKey,
-			setting.GroupKey,
-			os.ErrInvalid,
-		)
-	}
-
-	groups.Values[setting.GroupKey] = setting.Value
-	groups.Sources[setting.GroupKey] = configuredModel
-
-	return nil
-}
-
-func effectiveAliasedModelIntSettingValues(
-	settings map[string]modelIntSetting,
-	groupValues map[string]int,
-) map[string]int {
-	effectiveValues := make(map[string]int, len(settings))
-	for configuredModel, setting := range settings {
-		if setting.Explicit {
-			effectiveValues[configuredModel] = setting.Value
-
-			continue
-		}
-
-		value, ok := groupValues[setting.GroupKey]
-		if ok {
-			effectiveValues[configuredModel] = value
-		}
-	}
-
-	return effectiveValues
-}
-
-func modelLocalSettingBaseModel(provider providerConfig, modelName string) (string, error) {
-	switch provider.apiKind() {
-	case providerAPIKindOpenAI:
-		if baseModelName, _, hasAlias := openAIReasoningEffortAlias(modelName); hasAlias {
-			return baseModelName, nil
-		}
-
-		return modelName, nil
-	case providerAPIKindGemini:
-		baseModelName, _, err := normalizeGeminiModelAlias(modelName, nil)
-		if err != nil {
-			return "", err
-		}
-
-		return baseModelName, nil
-	default:
-		return modelName, nil
-	}
-}
-
-func modelPositiveIntSettingValue(
-	modelParameters map[string]any,
-	settingKey string,
-) (int, bool, error) {
-	if len(modelParameters) == 0 {
-		return 0, false, nil
-	}
-
-	rawValue, ok := modelParameters[settingKey]
-	if !ok {
-		return 0, false, nil
-	}
-
-	value, err := anyPositiveIntValue(rawValue)
-	if err != nil {
-		return 0, false, err
-	}
-
-	return value, true, nil
-}
-
-func anyPositiveIntValue(value any) (int, error) {
-	maxIntValue := int(^uint(0) >> 1)
-
-	switch typedValue := value.(type) {
-	case int:
-		if typedValue <= 0 {
-			return 0, fmt.Errorf(errPositiveIntMustBeGreaterThanZero, os.ErrInvalid)
-		}
-
-		return typedValue, nil
-	case int64:
-		if typedValue <= 0 || typedValue > int64(maxIntValue) {
-			return 0, fmt.Errorf(errPositiveIntMustBeGreaterThanZero, os.ErrInvalid)
-		}
-
-		return int(typedValue), nil
-	case uint64:
-		if typedValue == 0 || typedValue > uint64(maxIntValue) {
-			return 0, fmt.Errorf(errPositiveIntMustBeGreaterThanZero, os.ErrInvalid)
-		}
-
-		parsedValue, err := strconv.Atoi(strconv.FormatUint(typedValue, 10))
-		if err != nil {
-			return 0, fmt.Errorf("parse positive integer %d: %w", typedValue, err)
-		}
-
-		return parsedValue, nil
-	case float64:
-		if typedValue <= 0 || typedValue != float64(int(typedValue)) {
-			return 0, fmt.Errorf("must be a positive integer: %w", os.ErrInvalid)
-		}
-
-		return int(typedValue), nil
-	case string:
-		parsedValue, err := positiveIntStringValue(typedValue)
-		if err != nil {
-			return 0, err
-		}
-
-		return parsedValue, nil
-	default:
-		return 0, fmt.Errorf("must be a positive integer, got %T: %w", value, os.ErrInvalid)
-	}
-}
-
-// positiveIntStringValue parses positive integers written either plainly or
-// with a k/m suffix, such as "200000" or "200k". Decimals are not supported:
-// "0.2m" would be ambiguous, so it is rejected rather than rounded.
-func positiveIntStringValue(rawValue string) (int, error) {
-	maxIntValue := int(^uint(0) >> 1)
-
-	trimmedValue := strings.TrimSpace(rawValue)
-	if trimmedValue == "" {
-		return 0, fmt.Errorf(errPositiveIntMustBeGreaterThanZero, os.ErrInvalid)
-	}
-
-	multiplier := 1
-	lastCharacter := trimmedValue[len(trimmedValue)-1]
-
-	switch lastCharacter {
-	case 'k', 'K':
-		multiplier = 1000
-		trimmedValue = trimmedValue[:len(trimmedValue)-1]
-	case 'm', 'M':
-		multiplier = 1_000_000
-		trimmedValue = trimmedValue[:len(trimmedValue)-1]
-	}
-
-	if trimmedValue == "" {
-		return 0, fmt.Errorf(errPositiveIntMustBeGreaterThanZero, os.ErrInvalid)
-	}
-
-	value, err := strconv.Atoi(trimmedValue)
-	if err != nil || value <= 0 {
-		return 0, fmt.Errorf(errPositiveIntMustBeGreaterThanZero, os.ErrInvalid)
-	}
-
-	if multiplier > 1 && value > maxIntValue/multiplier {
-		return 0, fmt.Errorf(errPositiveIntMustBeGreaterThanZero, os.ErrInvalid)
-	}
-
-	return value * multiplier, nil
-}
-
 func normalizeDatabaseConfig(rawLoadedConfig rawDatabaseConfig) databaseConfig {
 	return databaseConfig{
 		ConnectionString: strings.TrimSpace(string(rawLoadedConfig.ConnectionString)),
@@ -906,11 +551,6 @@ func validateConfig(loadedConfig config) error {
 		return err
 	}
 
-	err = validateContextWindows(loadedConfig)
-	if err != nil {
-		return err
-	}
-
 	err = validateWebSearchConfig(loadedConfig.WebSearch)
 	if err != nil {
 		return err
@@ -973,26 +613,6 @@ func validateConfiguredModels(loadedConfig config) error {
 			loadedConfig.SearchDeciderModel,
 			os.ErrNotExist,
 		)
-	}
-
-	return nil
-}
-
-func validateContextWindows(loadedConfig config) error {
-	for providerName := range loadedConfig.ProviderContextWindows {
-		provider, ok := loadedConfig.Providers[strings.TrimSpace(providerName)]
-		if !ok {
-			return fmt.Errorf(
-				"context_window references unknown provider %q: %w",
-				providerName,
-				os.ErrNotExist,
-			)
-		}
-
-		err := provider.validate(strings.TrimSpace(providerName))
-		if err != nil {
-			return err
-		}
 	}
 
 	return nil
@@ -1120,35 +740,6 @@ func (loadedConfig config) hasModel(modelName string) bool {
 	_, ok := loadedConfig.Models[modelName]
 
 	return ok
-}
-
-// modelContextWindow returns the context window configured for the model,
-// falling back to the context window configured for its provider when the
-// model itself has none.
-func (loadedConfig config) modelContextWindow(modelName string) int {
-	if window, ok := loadedConfig.ModelContextWindows[modelName]; ok {
-		return window
-	}
-
-	providerName, _, err := splitConfiguredModel(modelName)
-	if err != nil {
-		return 0
-	}
-
-	return loadedConfig.ProviderContextWindows[providerName]
-}
-
-// messageTextLimit derives the per-message character limit from a context
-// window, capping one message at roughly one window of text. A window of zero
-// leaves messages unlimited.
-func messageTextLimit(contextWindow int) int {
-	return contextWindow * tokenEstimateBytesPerToken
-}
-
-// messageTextLimitForModel returns the per-message character limit derived
-// from the model's context window, falling back to the provider window.
-func (loadedConfig config) messageTextLimitForModel(modelName string) int {
-	return messageTextLimit(loadedConfig.modelContextWindow(modelName))
 }
 
 func (loadedConfig config) lockedModelForChannelIDs(channelIDs []string) (string, bool) {

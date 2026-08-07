@@ -122,31 +122,10 @@ providers:
   vllm:
     base_url: http://localhost:8000/v1
 
-# Optional per-provider context windows, used for reply embeds and context-window
-# limit checks when a model does not set its own `context_window` below.
-# Values accept plain integers or k/m suffixes: `200000`, `200k`, `1m`.
-# Keys are provider names from the `providers` section.
-context_window:
-  router: 200k
-  gemini-search: 250k
-  gemini: 200k
-  openai: 200k
-
 models:
-  # Optional local-only field for reply embeds and context-window limit checks:
-  # context_window: 400000
-  # This value is not sent to the provider.
-  # Alias models inherit the base model's context window, so
-  # `openai/gpt-5.4-low`, `openai/gpt-5.4-high`, `openai/gpt-5.4-none`,
-  # `openai/gpt-5.4-xhigh`, and `openai/gpt-5.4-max` should use the same value
-  # as `openai/gpt-5.4`.
-  # Models without their own value fall back to the provider-level
-  # `context_window` entry above.
   google/gemini-3.6-flash:
-    context_window: 1000000
 
   openai/gpt-5.4:
-    context_window: 1050000
   openai/gpt-5.4-low:
   openai/gpt-5.4-high:
 

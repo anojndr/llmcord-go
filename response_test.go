@@ -326,11 +326,9 @@ func TestHandleGeneratedStreamDeltaMergesSearchMetadataFromStream(t *testing.T) 
 		tracker,
 		&state,
 		streamDelta{
-			ReasoningTokens:    0,
 			Thinking:           "",
 			Content:            "",
 			FinishReason:       "",
-			Usage:              nil,
 			ProviderResponseID: "",
 			SearchMetadata: &searchMetadata{
 				Queries: []string{query},
@@ -419,10 +417,10 @@ func TestBuildResponseEmbedSetsConfiguredModelAsAuthor(t *testing.T) {
 	}
 }
 
-func TestBuildResponseEmbedSetsContextWindowFooter(t *testing.T) {
+func TestBuildResponseEmbedSetsFooterText(t *testing.T) {
 	t.Parallel()
 
-	const footerText = "context window: 20k/400k (5% used)"
+	const footerText = "model: openai/gpt-5.1"
 
 	embed := buildResponseEmbed("hello", "openai/gpt-5.1", embedColorComplete, nil, footerText)
 	if embed.Footer == nil {
@@ -531,7 +529,6 @@ func testRenderFinalResponseResendsImgbbURLsWithoutBreakingReplyHistory(t *testi
 
 	err := instance.renderFinalResponse(
 		context.Background(),
-		emptyChatCompletionRequest(),
 		tracker,
 		nil,
 		&accumulator,
@@ -693,7 +690,6 @@ func assertImgbbReplyConversation(
 	conversation, warnings := instance.buildConversation(
 		context.Background(),
 		followUpMessage,
-		testConversationTextLimit,
 		contentOptions,
 		defaultMaxMessages,
 		false,
@@ -786,102 +782,6 @@ func TestEditEmbedMessageLeavesGeneratedImageURLInDescription(t *testing.T) {
 	}
 }
 
-func TestContextWindowFooterFormatsCompactUsage(t *testing.T) {
-	t.Parallel()
-
-	footerText := contextWindowFooter(
-		&tokenUsage{Input: 15_000, Output: 5_000, CachedInput: 0, CacheWriteTokens: 0},
-		400_000,
-	)
-
-	if footerText != "context window: 20k/400k (5% used)" {
-		t.Fatalf("unexpected context window footer: %q", footerText)
-	}
-}
-
-func TestContextWindowFooterShowsCachedTokens(t *testing.T) {
-	t.Parallel()
-
-	footerText := contextWindowFooter(
-		&tokenUsage{Input: 15_000, Output: 5_000, CachedInput: 12_800, CacheWriteTokens: 0},
-		400_000,
-	)
-
-	if footerText != "context window: 20k/400k (5% used) · cached 12.8k" {
-		t.Fatalf("unexpected context window footer: %q", footerText)
-	}
-}
-
-func TestContextWindowFooterOmitsCachedTokensWhenZero(t *testing.T) {
-	t.Parallel()
-
-	footerText := contextWindowFooter(
-		&tokenUsage{Input: 15_000, Output: 5_000, CachedInput: 0, CacheWriteTokens: 0},
-		400_000,
-	)
-
-	if footerText != "context window: 20k/400k (5% used)" {
-		t.Fatalf("unexpected context window footer: %q", footerText)
-	}
-}
-
-func TestRetainedContextWindowUsageGrowsAcrossFollowUpWhenProviderTotalsShrink(t *testing.T) {
-	t.Parallel()
-
-	const (
-		firstAnswer  = "Use MKV, enable multiple recording audio tracks, then assign desktop and mic to separate tracks."
-		followUp     = "can VLC play MKV files"
-		secondAnswer = "Yes. VLC can play MKV files."
-	)
-
-	firstRequest := emptyChatCompletionRequest()
-	firstRequest.Messages = []chatMessage{
-		{Role: messageRoleSystem, Content: "You are concise."},
-		{Role: messageRoleUser, Content: "How do I keep OBS audio channels separated in one recording file?"},
-	}
-	firstUsage := retainedContextWindowUsage(firstRequest, firstAnswer)
-
-	secondRequest := emptyChatCompletionRequest()
-	secondRequest.Messages = appendChatMessages(firstRequest.Messages, []chatMessage{
-		{Role: messageRoleAssistant, Content: firstAnswer},
-		{Role: messageRoleUser, Content: followUp},
-	})
-	secondUsage := retainedContextWindowUsage(secondRequest, secondAnswer)
-
-	firstProviderUsage := &tokenUsage{
-		Input:            firstUsage.Input,
-		Output:           firstUsage.Output + 800,
-		CachedInput:      0,
-		CacheWriteTokens: 0,
-	}
-	secondProviderUsage := &tokenUsage{
-		Input:            secondUsage.Input,
-		Output:           secondUsage.Output,
-		CachedInput:      0,
-		CacheWriteTokens: 0,
-	}
-
-	if tokenUsageTotal(secondProviderUsage) >= tokenUsageTotal(firstProviderUsage) {
-		t.Fatalf(
-			"test setup did not reproduce shrinking provider totals: first=%#v second=%#v",
-			firstProviderUsage,
-			secondProviderUsage,
-		)
-	}
-
-	if tokenUsageTotal(secondUsage) <= tokenUsageTotal(firstUsage) {
-		t.Fatalf("retained context usage should grow across follow-up: first=%#v second=%#v", firstUsage, secondUsage)
-	}
-}
-
-func tokenUsageTotal(usage *tokenUsage) int {
-	if usage == nil {
-		return 0
-	}
-
-	return usage.Input + usage.Output
-}
-
 func TestRenderEmbedResponseIncludesConfiguredModelAsAuthor(t *testing.T) {
 	t.Parallel()
 
@@ -926,68 +826,6 @@ func TestRenderEmbedResponseIncludesConfiguredModelAsAuthor(t *testing.T) {
 	instance.nodes = newMessageNodeStore(10)
 
 	tracker := newResponseTracker(sourceMessage, modelName)
-
-	err = instance.renderEmbedResponse(
-		context.Background(),
-		tracker,
-		nil,
-		[]string{responseBody},
-		finishReasonStop,
-		true,
-		false,
-	)
-	if err != nil {
-		t.Fatalf("render embed response: %v", err)
-	}
-}
-
-func TestRenderEmbedResponseIncludesContextWindowFooter(t *testing.T) {
-	t.Parallel()
-
-	const (
-		channelID    = "channel-1"
-		sourceID     = "source-message"
-		modelName    = "openai/gpt-5.1"
-		responseID   = "assistant-message"
-		responseBody = "hello"
-		footerText   = "context window: 20k/400k (5% used)"
-	)
-
-	sourceMessage := new(discordgo.Message)
-	sourceMessage.ID = sourceID
-	sourceMessage.ChannelID = channelID
-
-	session, err := discordgo.New("Bot discord-token")
-	if err != nil {
-		t.Fatalf("create discord session: %v", err)
-	}
-
-	client := new(http.Client)
-	client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
-		t.Helper()
-
-		if request.Method != http.MethodPost ||
-			request.URL.Path != "/api/v9/channels/"+channelID+"/messages" {
-			t.Fatalf("unexpected request: %s %s", request.Method, request.URL.Path)
-		}
-
-		assertRequestEmbed(t, request, modelName, responseBody, footerText)
-
-		sentMessage := new(discordgo.Message)
-		sentMessage.ID = responseID
-		sentMessage.ChannelID = channelID
-
-		return newJSONResponse(t, request, sentMessage), nil
-	})
-	session.Client = client
-
-	instance := new(bot)
-	instance.session = session
-	instance.nodes = newMessageNodeStore(10)
-
-	tracker := newResponseTracker(sourceMessage, modelName)
-	tracker.contextWindow = 400_000
-	tracker.usage = &tokenUsage{Input: 15_000, Output: 5_000, CachedInput: 0, CacheWriteTokens: 0}
 
 	err = instance.renderEmbedResponse(
 		context.Background(),
@@ -1313,7 +1151,6 @@ func TestGenerateAndSendResponseKeepsAssistantReplyInConversationHistory(t *test
 	conversation, warnings := instance.buildConversation(
 		context.Background(),
 		followUpMessage,
-		testConversationTextLimit,
 		contentOptions,
 		defaultMaxMessages,
 		false,
@@ -1328,66 +1165,6 @@ func TestGenerateAndSendResponseKeepsAssistantReplyInConversationHistory(t *test
 		conversation,
 		assistantReplyText,
 	)
-}
-
-func TestGenerateAndSendResponsePlumbsContextWindowIntoFooter(t *testing.T) {
-	t.Parallel()
-
-	const (
-		botUserID          = "bot-user"
-		channelID          = "channel-1"
-		userID             = "user-1"
-		sourceMessageID    = "user-message-1"
-		assistantMessageID = "assistant-message-1"
-		modelName          = "openai/gpt-5.1"
-		answerText         = "Final answer."
-	)
-
-	sourceMessage := newPromptMessage(sourceMessageID, channelID, userID, botUserID)
-	assistantMessage := newAssistantReplyMessage(
-		assistantMessageID,
-		newDiscordUser(botUserID, true),
-		sourceMessage,
-	)
-	messageDescriptions := make([]string, 0, 2)
-	patchDescriptions := make([]string, 0, 2)
-	messageSendCount := 0
-	session := newPartialFailureResponseSession(
-		t,
-		channelID,
-		botUserID,
-		assistantMessage,
-		&messageDescriptions,
-		&patchDescriptions,
-		&messageSendCount,
-	)
-
-	instance := new(bot)
-	instance.session = session
-	instance.nodes = newMessageNodeStore(10)
-	instance.chatCompletions = fakeChatCompletionClient{
-		deltas: thinkingAnswerResponseDeltas("", answerText),
-	}
-
-	request := emptyChatCompletionRequest()
-	request.ConfiguredModel = modelName
-	request.ContextWindow = 400_000
-
-	tracker := newResponseTracker(sourceMessage, "")
-
-	err := instance.generateAndSendResponse(
-		context.Background(),
-		request,
-		tracker,
-		nil,
-	)
-	if err != nil {
-		t.Fatalf("generate and send response: %v", err)
-	}
-
-	if tracker.contextWindow != 400_000 {
-		t.Fatalf("unexpected tracker context window: %d", tracker.contextWindow)
-	}
 }
 
 func TestGenerateAndSendResponseShowsThinkingDuringStreamButNotFinalResponse(t *testing.T) {
@@ -1599,7 +1376,6 @@ func TestGenerateAndSendResponseShowsSourcesButtonForNonGrokModelWithBridgeSourc
 		},
 		Model:              "gpt-4o",
 		ConfiguredModel:    "openai/gpt-4o",
-		ContextWindow:      0,
 		SessionID:          "",
 		PreviousResponseID: "",
 		RequestID:          "",
@@ -1759,7 +1535,6 @@ func TestGenerateAndSendResponsePersistsThinkingInConversationHistory(t *testing
 	conversation, warnings := instance.buildConversation(
 		context.Background(),
 		followUpMessage,
-		testConversationTextLimit,
 		contentOptions,
 		defaultMaxMessages,
 		false,
@@ -2030,8 +1805,6 @@ func thinkingAnswerResponseDeltas(thinkingText, answerText string) []streamDelta
 			Thinking:           thinkingText,
 			Content:            "",
 			FinishReason:       "",
-			Usage:              nil,
-			ReasoningTokens:    0,
 			ProviderResponseID: "",
 			SearchMetadata:     nil,
 		},
@@ -2039,8 +1812,6 @@ func thinkingAnswerResponseDeltas(thinkingText, answerText string) []streamDelta
 			Thinking:           "",
 			Content:            answerText,
 			FinishReason:       "",
-			Usage:              nil,
-			ReasoningTokens:    0,
 			ProviderResponseID: "",
 			SearchMetadata:     nil,
 		},
@@ -2048,8 +1819,6 @@ func thinkingAnswerResponseDeltas(thinkingText, answerText string) []streamDelta
 			Thinking:           "",
 			Content:            "",
 			FinishReason:       finishReasonStop,
-			Usage:              nil,
-			ReasoningTokens:    0,
 			ProviderResponseID: "",
 			SearchMetadata:     nil,
 		},

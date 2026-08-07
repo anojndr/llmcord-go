@@ -216,11 +216,9 @@ func (splitter *geminiStreamHandleSplitter) handleDelta(delta streamDelta) error
 	parts := make([]streamDelta, 0, geminiSplitDeltaCapacity)
 	if delta.Thinking != "" {
 		parts = append(parts, streamDelta{
-			ReasoningTokens:    0,
 			Thinking:           delta.Thinking,
 			Content:            "",
 			FinishReason:       "",
-			Usage:              nil,
 			ProviderResponseID: "",
 			SearchMetadata:     nil,
 		})
@@ -228,11 +226,9 @@ func (splitter *geminiStreamHandleSplitter) handleDelta(delta streamDelta) error
 
 	if splitThinking != "" {
 		parts = append(parts, streamDelta{
-			ReasoningTokens:    0,
 			Thinking:           splitThinking,
 			Content:            "",
 			FinishReason:       "",
-			Usage:              nil,
 			ProviderResponseID: "",
 			SearchMetadata:     nil,
 		})
@@ -240,11 +236,9 @@ func (splitter *geminiStreamHandleSplitter) handleDelta(delta streamDelta) error
 
 	if splitAnswer != "" {
 		parts = append(parts, streamDelta{
-			ReasoningTokens:    0,
 			Thinking:           "",
 			Content:            splitAnswer,
 			FinishReason:       "",
-			Usage:              nil,
 			ProviderResponseID: "",
 			SearchMetadata:     nil,
 		})
@@ -256,11 +250,9 @@ func (splitter *geminiStreamHandleSplitter) handleDelta(delta streamDelta) error
 		}
 
 		parts = append(parts, streamDelta{
-			ReasoningTokens:    0,
 			Thinking:           "",
 			Content:            "",
 			FinishReason:       "",
-			Usage:              nil,
 			ProviderResponseID: "",
 			SearchMetadata:     delta.SearchMetadata,
 		})
@@ -284,11 +276,9 @@ func (splitter *geminiStreamHandleSplitter) finalize() error {
 	splitThinking, splitAnswer := splitter.splitter.finalize()
 	if splitThinking != "" {
 		err := splitter.emit(streamDelta{
-			ReasoningTokens:    0,
 			Thinking:           splitThinking,
 			Content:            "",
 			FinishReason:       "",
-			Usage:              nil,
 			ProviderResponseID: "",
 			SearchMetadata:     nil,
 		})
@@ -299,11 +289,9 @@ func (splitter *geminiStreamHandleSplitter) finalize() error {
 
 	if splitAnswer != "" {
 		err := splitter.emit(streamDelta{
-			ReasoningTokens:    0,
 			Thinking:           "",
 			Content:            splitAnswer,
 			FinishReason:       "",
-			Usage:              nil,
 			ProviderResponseID: "",
 			SearchMetadata:     nil,
 		})
@@ -454,28 +442,11 @@ func processGeminiStreamResponse(
 func geminiHandleStreamUpdate(handle func(streamDelta) error, delta streamDelta) error {
 	if delta.Thinking != "" || delta.Content != "" || delta.SearchMetadata != nil {
 		err := handle(streamDelta{
-			ReasoningTokens:    0,
 			Thinking:           delta.Thinking,
 			Content:            delta.Content,
 			FinishReason:       "",
-			Usage:              nil,
 			ProviderResponseID: "",
 			SearchMetadata:     delta.SearchMetadata,
-		})
-		if err != nil {
-			return fmt.Errorf(handleStreamDeltaErrorFormat, err)
-		}
-	}
-
-	if delta.Usage != nil {
-		err := handle(streamDelta{
-			ReasoningTokens:    0,
-			Thinking:           "",
-			Content:            "",
-			FinishReason:       "",
-			Usage:              cloneTokenUsage(delta.Usage),
-			ProviderResponseID: "",
-			SearchMetadata:     nil,
 		})
 		if err != nil {
 			return fmt.Errorf(handleStreamDeltaErrorFormat, err)
@@ -487,11 +458,9 @@ func geminiHandleStreamUpdate(handle func(streamDelta) error, delta streamDelta)
 
 func geminiHandleFinishReason(handle func(streamDelta) error, finishReason string) error {
 	err := handle(streamDelta{
-		ReasoningTokens:    0,
 		Thinking:           "",
 		Content:            "",
 		FinishReason:       finishReason,
-		Usage:              nil,
 		ProviderResponseID: "",
 		SearchMetadata:     nil,
 	})
@@ -1461,18 +1430,14 @@ func geminiStreamDelta(response *genai.GenerateContentResponse) (streamDelta, er
 		err = geminiFinishReasonError(candidate)
 		if err != nil {
 			return streamDelta{
-				ReasoningTokens:    0,
 				Thinking:           delta.Thinking,
 				Content:            delta.Content,
 				FinishReason:       "",
-				Usage:              nil,
 				ProviderResponseID: "",
 				SearchMetadata:     nil,
 			}, err
 		}
 	}
-
-	delta.Usage = geminiStreamUsage(response.UsageMetadata)
 
 	return delta, nil
 }
@@ -1525,19 +1490,6 @@ func geminiSearchMetadata(candidate *genai.Candidate) *searchMetadata {
 		Results:             results,
 		MaxURLs:             defaultWebSearchMaxURLs,
 		VisualSearchSources: nil,
-	}
-}
-
-func geminiStreamUsage(metadata *genai.GenerateContentResponseUsageMetadata) *tokenUsage {
-	if metadata == nil {
-		return nil
-	}
-
-	return &tokenUsage{
-		Input:            int(metadata.PromptTokenCount + metadata.ToolUsePromptTokenCount),
-		Output:           int(metadata.CandidatesTokenCount + metadata.ThoughtsTokenCount),
-		CachedInput:      int(metadata.CachedContentTokenCount),
-		CacheWriteTokens: 0,
 	}
 }
 

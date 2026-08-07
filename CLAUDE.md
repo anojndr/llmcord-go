@@ -51,7 +51,6 @@ The bot's pipeline is: Discord message → conversation build → augmentation �
 
 - **Conversation**: `buildMessageConversation` (messages.go:591) → `buildConversation` (conversation.go) walks the reply chain via `messageNode`s in a `messageNodeStore` (store.go, LRU capped at `maxMessageNodes`). Nodes cache per-message parsed content (text, media parts, URL scan results). The chain builds source-message-first, so the **last** message in `[]chatMessage` is the newest user turn; code appends to the end. Node content is also persisted to PostgreSQL (`store_persistence.go`) with a 250 ms debounce when `database.connection_string` is set.
 - **Augmentation** (`augmentPreparedMessageResponse`, messages.go:327; helpers in augmentation.go): video URL fetching (tiktok/facebook/youtube/reddit/website clients), PDF text extraction, Gemini media analysis, web search (decided by a separate search-decider model call, `search.go`), visual search (`visual_search.go`), and per-provider "augmented prompt" handling (see `searchDeciderPrompt.txt`, an embedded prompt file).
-- **Context-window limit** (`checkContextWindowLimit`, context_window_limit.go): before streaming, the request is token-estimated with Codex's byte ratio (`ceil(bytes/4)`, token_estimate.go) against the model's `context_window`. The request is never truncated or auto-compacted: when the estimated tokens reach the window, the pipeline returns a "that query would exceed the model context window" error that renders as a failure embed. Also derives the per-message text cap (`messageTextLimitForModel`, config.go:1135) and the context-window footer shown on replies.
 
 ### Streaming and providers
 
@@ -61,7 +60,7 @@ The router performs no retries and no attempt timeouts except one narrow case: `
 
 ### Rendering and responses
 
-`response.go` renders the stream into Discord embeds (all responses are embeds now — the plain-text path was removed): `segmentAccumulator` splits text at `embedResponseMaxLength` (4096 minus the streaming ellipsis) and at Discord's 2000-char message limit, `renderSpec`/`responseTracker` track what was rendered (embeds, thinking/sources buttons, pagination), and the footer shows token usage vs. context window. `interactions.go` handles slash commands and button clicks (Show Thinking / Show Sources / View response better on GitHub Gist). `progress.go` drives the live progress embed (stage checklist, progress bar, elapsed timer).
+`response.go` renders the stream into Discord embeds (all responses are embeds now — the plain-text path was removed): `segmentAccumulator` splits text at `embedResponseMaxLength` (4096 minus the streaming ellipsis) and at Discord's 2000-char message limit, and `renderSpec`/`responseTracker` track what was rendered (embeds, thinking/sources buttons, pagination). `interactions.go` handles slash commands and button clicks (Show Thinking / Show Sources / View response better on GitHub Gist). `progress.go` drives the live progress embed (stage checklist, progress bar, elapsed timer).
 
 ### Concurrency conventions
 

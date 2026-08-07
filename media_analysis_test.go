@@ -482,7 +482,6 @@ func TestBuildConversationSuppressesUnsupportedWarningForReplyTargetGeminiMedia(
 	conversation, warnings := instance.buildConversation(
 		context.Background(),
 		sourceMessage,
-		testConversationTextLimit,
 		messageContentOptions{
 			maxImages:                0,
 			allowAudio:               false,
@@ -634,11 +633,9 @@ func newGeminiMediaAnalysisChatClient(
 		}
 
 		err := handle(streamDelta{
-			ReasoningTokens:    0,
 			Thinking:           "",
 			Content:            partAnalyses[analysisIndex],
 			FinishReason:       finishReasonStop,
-			Usage:              nil,
 			ProviderResponseID: "",
 			SearchMetadata:     nil,
 		})
@@ -706,11 +703,9 @@ func newConcurrentGeminiMediaAnalysisChatClient(
 		}
 
 		return handle(streamDelta{
-			ReasoningTokens:    0,
 			Thinking:           "",
 			Content:            analysis,
 			FinishReason:       finishReasonStop,
-			Usage:              nil,
 			ProviderResponseID: "",
 			SearchMetadata:     nil,
 		})

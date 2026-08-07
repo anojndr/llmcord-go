@@ -800,7 +800,6 @@ func TestBuildConversationSuppressesUnsupportedWarningForExtractedPDFs(t *testin
 	conversation, warnings := instance.buildConversation(
 		context.Background(),
 		sourceMessage,
-		testConversationTextLimit,
 		messageContentOptions{
 			maxImages:                0,
 			allowAudio:               false,
@@ -855,7 +854,6 @@ func TestBuildConversationSuppressesUnsupportedWarningForReplyTargetPDFs(t *test
 	conversation, warnings := instance.buildConversation(
 		context.Background(),
 		sourceMessage,
-		testConversationTextLimit,
 		messageContentOptions{
 			maxImages:                0,
 			allowAudio:               false,
@@ -915,7 +913,6 @@ func TestBuildConversationSuppressesUnsupportedWarningForAssistantReplyTargetSou
 	conversation, warnings := instance.buildConversation(
 		context.Background(),
 		sourceMessage,
-		testConversationTextLimit,
 		messageContentOptions{
 			maxImages:                0,
 			allowAudio:               false,

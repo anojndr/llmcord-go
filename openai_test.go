@@ -143,7 +143,6 @@ func TestOpenAIClientStreamChatCompletion(t *testing.T) {
 		},
 		Model:              "gpt-test",
 		ConfiguredModel:    "",
-		ContextWindow:      0,
 		SessionID:          "",
 		PreviousResponseID: "",
 		RequestID:          "",
@@ -155,15 +154,10 @@ func TestOpenAIClientStreamChatCompletion(t *testing.T) {
 	var (
 		joinedContent strings.Builder
 		finishReason  string
-		usage         *tokenUsage
 	)
 
 	err := client.streamChatCompletion(context.Background(), request, func(delta streamDelta) error {
 		joinedContent.WriteString(delta.Content)
-
-		if delta.Usage != nil {
-			usage = cloneTokenUsage(delta.Usage)
-		}
 
 		if delta.FinishReason != "" {
 			finishReason = delta.FinishReason
@@ -181,10 +175,6 @@ func TestOpenAIClientStreamChatCompletion(t *testing.T) {
 
 	if finishReason != "stop" {
 		t.Fatalf("unexpected finish reason: %q", finishReason)
-	}
-
-	if usage == nil || usage.Input != 12 || usage.Output != 34 {
-		t.Fatalf("unexpected usage: %#v", usage)
 	}
 }
 
@@ -205,7 +195,6 @@ func TestBuildChatCompletionRequestBodyAddsPlaceholderForImageOnlyUserMessage(t 
 		},
 		Model:              "gpt-test",
 		ConfiguredModel:    "",
-		ContextWindow:      0,
 		SessionID:          "",
 		PreviousResponseID: "",
 		RequestID:          "",
@@ -260,7 +249,6 @@ func TestBuildChatCompletionRequestBodyAddsPlaceholderForDocumentOnlyUserMessage
 		},
 		Model:              "gpt-test",
 		ConfiguredModel:    "",
-		ContextWindow:      0,
 		SessionID:          "",
 		PreviousResponseID: "",
 		RequestID:          "",
@@ -316,7 +304,6 @@ func TestBuildChatCompletionRequestBodyAddsPlaceholderForFileOnlyUserMessage(t *
 		},
 		Model:              "gpt-test",
 		ConfiguredModel:    "",
-		ContextWindow:      0,
 		SessionID:          "",
 		PreviousResponseID: "",
 		RequestID:          "",
@@ -372,7 +359,6 @@ func TestBuildChatCompletionRequestBodyIncludesPromptCacheKeyForOpenAIProvider(t
 		},
 		Model:              "gpt-test",
 		ConfiguredModel:    "openai/gpt-test",
-		ContextWindow:      0,
 		SessionID:          testOpenAIPromptCacheKey,
 		PreviousResponseID: "",
 		RequestID:          "",
@@ -403,7 +389,6 @@ func TestBuildChatCompletionRequestBodySkipsPromptCacheKeyForNonOpenAIProvider(t
 		},
 		Model:              "gpt-test",
 		ConfiguredModel:    "compatible/gpt-test",
-		ContextWindow:      0,
 		SessionID:          testOpenAIPromptCacheKey,
 		PreviousResponseID: "",
 		RequestID:          "",
@@ -443,7 +428,6 @@ func TestOpenAIClientStreamChatCompletionReturnsStatusErrors(t *testing.T) {
 		},
 		Model:              "gpt-test",
 		ConfiguredModel:    "",
-		ContextWindow:      0,
 		SessionID:          "",
 		PreviousResponseID: "",
 		RequestID:          "",
@@ -495,7 +479,6 @@ func TestOpenAIClientStreamChatCompletionParsesJSONStatusErrors(t *testing.T) {
 		},
 		Model:              "gpt-test",
 		ConfiguredModel:    "",
-		ContextWindow:      0,
 		SessionID:          "",
 		PreviousResponseID: "",
 		RequestID:          "",
@@ -553,7 +536,6 @@ func TestOpenAIClientStreamChatCompletionReturnsStreamEventErrors(t *testing.T) 
 		},
 		Model:              "gpt-test",
 		ConfiguredModel:    "",
-		ContextWindow:      0,
 		SessionID:          "",
 		PreviousResponseID: "",
 		RequestID:          "",
@@ -605,7 +587,6 @@ func TestOpenAIClientStreamChatCompletionReturnsBlockedFinishReasonErrors(t *tes
 		},
 		Model:              "gpt-test",
 		ConfiguredModel:    "",
-		ContextWindow:      0,
 		SessionID:          "",
 		PreviousResponseID: "",
 		RequestID:          "",
@@ -655,7 +636,6 @@ func TestOpenAIClientStreamChatCompletionReturnsErrorWithoutDoneMarker(t *testin
 		},
 		Model:              "gpt-test",
 		ConfiguredModel:    "",
-		ContextWindow:      0,
 		SessionID:          "",
 		PreviousResponseID: "",
 		RequestID:          "",
@@ -710,7 +690,6 @@ func TestOpenAIClientStreamResponses(t *testing.T) {
 		},
 		Model:              "gpt-5",
 		ConfiguredModel:    "openai/gpt-5",
-		ContextWindow:      0,
 		SessionID:          "",
 		PreviousResponseID: "",
 		RequestID:          testOpenAIClientRequestID,
@@ -730,17 +709,12 @@ func TestOpenAIClientStreamResponses(t *testing.T) {
 		joinedContent      strings.Builder
 		joinedThinking     strings.Builder
 		finishReason       string
-		usage              *tokenUsage
 		providerResponseID string
 	)
 
 	err := client.streamChatCompletion(context.Background(), request, func(delta streamDelta) error {
 		joinedContent.WriteString(delta.Content)
 		joinedThinking.WriteString(delta.Thinking)
-
-		if delta.Usage != nil {
-			usage = cloneTokenUsage(delta.Usage)
-		}
 
 		if delta.FinishReason != "" {
 			finishReason = delta.FinishReason
@@ -766,10 +740,6 @@ func TestOpenAIClientStreamResponses(t *testing.T) {
 
 	if finishReason != finishReasonStop {
 		t.Fatalf("unexpected finish reason: %q", finishReason)
-	}
-
-	if usage == nil || usage.Input != 12 || usage.Output != 34 {
-		t.Fatalf("unexpected usage: %#v", usage)
 	}
 
 	if providerResponseID != testOpenAIResponsesResponseID {
@@ -839,7 +809,6 @@ func TestBuildOpenAIResponsesRequestBodyNormalizesReasoningConfig(t *testing.T) 
 		},
 		Model:              openAIReasoningModelGPT54,
 		ConfiguredModel:    "openai/gpt-5.4",
-		ContextWindow:      0,
 		SessionID:          "",
 		PreviousResponseID: "",
 		RequestID:          "",
@@ -896,7 +865,6 @@ func TestBuildOpenAIResponsesRequestBodyDefaultsReasoningSummary(t *testing.T) {
 		},
 		Model:              openAIReasoningModelGPT54,
 		ConfiguredModel:    "openai/gpt-5.4",
-		ContextWindow:      0,
 		SessionID:          "",
 		PreviousResponseID: "",
 		RequestID:          "",
@@ -937,7 +905,6 @@ func TestBuildOpenAIResponsesRequestBodyIncludesPromptCacheKeyForOpenAIProvider(
 		},
 		Model:              "gpt-5",
 		ConfiguredModel:    "openai/gpt-5",
-		ContextWindow:      0,
 		SessionID:          testOpenAIPromptCacheKey,
 		PreviousResponseID: "",
 		RequestID:          "",
@@ -974,7 +941,6 @@ func newOpenAIClientRequestIDTestRequest(
 		},
 		Model:              "",
 		ConfiguredModel:    configuredModel,
-		ContextWindow:      0,
 		SessionID:          "",
 		PreviousResponseID: "",
 		RequestID:          testOpenAIClientRequestID,
@@ -1200,7 +1166,6 @@ func TestOpenAIClientStreamChatCompletionSucceedsWithoutDoneIfChoicesSeen(t *tes
 		},
 		Model:              "gpt-test",
 		ConfiguredModel:    "9router/unli_free",
-		ContextWindow:      0,
 		SessionID:          "",
 		PreviousResponseID: "",
 		RequestID:          "",
@@ -1317,7 +1282,6 @@ func runOpenAIClientAuthorizationHeaderFor9RouterSubtest(t *testing.T, testCase 
 		},
 		Model:              "gpt-test",
 		ConfiguredModel:    testCase.configuredModel,
-		ContextWindow:      0,
 		SessionID:          "",
 		PreviousResponseID: "",
 		RequestID:          "",
@@ -1374,7 +1338,6 @@ func TestOpenAIClientStreamChatCompletionDefaultsServiceTierToPriority(t *testin
 		},
 		Model:              "gpt-4o",
 		ConfiguredModel:    "",
-		ContextWindow:      0,
 		SessionID:          "",
 		PreviousResponseID: "",
 		RequestID:          "",
@@ -1429,7 +1392,6 @@ func TestOpenAIClientStreamChatCompletionPreservesCustomServiceTier(t *testing.T
 		},
 		Model:              "gpt-4o",
 		ConfiguredModel:    "",
-		ContextWindow:      0,
 		SessionID:          "",
 		PreviousResponseID: "",
 		RequestID:          "",
@@ -1518,7 +1480,6 @@ func TestBuildChatCompletionRequestBodyNormalizesImagesForOpenAICompatible(t *te
 		},
 		Model:              "anthropic/claude-3.5-sonnet",
 		ConfiguredModel:    "",
-		ContextWindow:      0,
 		SessionID:          "",
 		PreviousResponseID: "",
 		RequestID:          "",

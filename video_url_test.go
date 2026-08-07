@@ -162,11 +162,9 @@ func newConcurrentDownloadedVideoAnalysisChatClient(
 		}
 
 		return handle(streamDelta{
-			ReasoningTokens:    0,
 			Thinking:           "",
 			Content:            "analysis for " + filename,
 			FinishReason:       finishReasonStop,
-			Usage:              nil,
 			ProviderResponseID: "",
 			SearchMetadata:     nil,
 		})

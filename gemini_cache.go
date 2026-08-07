@@ -161,7 +161,7 @@ func geminiCachePrefixContents(contents []*genai.Content) []*genai.Content {
 }
 
 // geminiCachePrefixTokenEstimate estimates tokens for the cached prefix using
-// the run-aware token estimator.
+// a bytes-per-token approximation (roughly four bytes per token).
 func geminiCachePrefixTokenEstimate(contents []*genai.Content) int {
 	totalTokens := 0
 
@@ -177,17 +177,32 @@ func geminiCachePrefixTokenEstimate(contents []*genai.Content) int {
 
 			switch {
 			case strings.TrimSpace(part.Text) != "":
-				totalTokens += estimateTextTokens(part.Text)
+				totalTokens += geminiCacheTextTokenEstimate(part.Text)
 			case part.FileData != nil:
-				totalTokens += estimateTextTokens("file-attachment-placeholder")
+				totalTokens += geminiCacheTextTokenEstimate("file-attachment-placeholder")
 			case part.InlineData != nil:
-				totalTokens += estimateTextTokens("inline-data-placeholder")
+				totalTokens += geminiCacheTextTokenEstimate("inline-data-placeholder")
 			}
 		}
 	}
 
 	return totalTokens
 }
+
+// geminiCacheTextTokenEstimate approximates a text part's token count as
+// ceil(bytes/4), floored at one token for non-empty text.
+func geminiCacheTextTokenEstimate(text string) int {
+	trimmedText := strings.TrimSpace(text)
+	if trimmedText == "" {
+		return 0
+	}
+
+	return max((len(trimmedText)+geminiCacheTextTokenBytes-1)/geminiCacheTextTokenBytes, 1)
+}
+
+// geminiCacheTextTokenBytes is the assumed bytes-per-token ratio used by
+// geminiCacheTextTokenEstimate.
+const geminiCacheTextTokenBytes = 4
 
 // geminiCacheMinTokensForModel returns the documented minimum input token
 // count for explicit context caching on the given model, or zero when the
