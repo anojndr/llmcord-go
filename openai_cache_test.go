@@ -103,10 +103,12 @@ func TestBuildChatCompletionRequestBodySkipsCacheOptionsWithoutSessionID(t *test
 		Messages: []chatMessage{
 			{Role: messageRoleUser, Content: "hello"},
 		},
-		ContextWindow:               0,
-		AutoCompactThresholdPercent: 0,
-		PreviousResponseID:          "",
-		RequestID:                   "",
+		ContextWindow:              0,
+		AutoCompactTokenLimit:      0,
+		AutoCompactTokenLimitScope: autoCompactTokenLimitScopeTotal,
+		CompactPrompt:              "",
+		PreviousResponseID:         "",
+		RequestID:                  "",
 	}
 
 	requestBody := buildChatCompletionRequestBody(request)
@@ -151,10 +153,12 @@ func TestBuildChatCompletionRequestBodySkipsCacheBreakpointWithoutSessionID(t *t
 			{Role: messageRoleSystem, Content: "You are concise."},
 			{Role: messageRoleUser, Content: "hello"},
 		},
-		ContextWindow:               0,
-		AutoCompactThresholdPercent: 0,
-		PreviousResponseID:          "",
-		RequestID:                   "",
+		ContextWindow:              0,
+		AutoCompactTokenLimit:      0,
+		AutoCompactTokenLimitScope: autoCompactTokenLimitScopeTotal,
+		CompactPrompt:              "",
+		PreviousResponseID:         "",
+		RequestID:                  "",
 	}
 
 	requestBody := buildChatCompletionRequestBody(request)
@@ -199,10 +203,12 @@ func TestBuildChatCompletionRequestBodySkipsCacheBreakpointForNonExplicitMode(t 
 			{Role: messageRoleSystem, Content: "You are concise."},
 			{Role: messageRoleUser, Content: "hello"},
 		},
-		ContextWindow:               0,
-		AutoCompactThresholdPercent: 0,
-		PreviousResponseID:          "",
-		RequestID:                   "",
+		ContextWindow:              0,
+		AutoCompactTokenLimit:      0,
+		AutoCompactTokenLimitScope: autoCompactTokenLimitScopeTotal,
+		CompactPrompt:              "",
+		PreviousResponseID:         "",
+		RequestID:                  "",
 	}
 
 	requestBody := buildChatCompletionRequestBody(request)
@@ -243,10 +249,12 @@ func TestBuildChatCompletionRequestBodyAddsCacheOptionsForOpenAIProvider(t *test
 			{Role: messageRoleSystem, Content: "You are concise."},
 			{Role: messageRoleUser, Content: "hello"},
 		},
-		ContextWindow:               0,
-		AutoCompactThresholdPercent: 0,
-		PreviousResponseID:          "",
-		RequestID:                   "",
+		ContextWindow:              0,
+		AutoCompactTokenLimit:      0,
+		AutoCompactTokenLimitScope: autoCompactTokenLimitScopeTotal,
+		CompactPrompt:              "",
+		PreviousResponseID:         "",
+		RequestID:                  "",
 	}
 
 	requestBody := buildChatCompletionRequestBody(request)
@@ -307,10 +315,12 @@ func TestBuildChatCompletionRequestBodyPlacesStablePrefixCacheBreakpoint(t *test
 			{Role: messageRoleAssistant, Content: "previous answer"},
 			{Role: messageRoleUser, Content: "hello"},
 		},
-		ContextWindow:               0,
-		AutoCompactThresholdPercent: 0,
-		PreviousResponseID:          "",
-		RequestID:                   "",
+		ContextWindow:              0,
+		AutoCompactTokenLimit:      0,
+		AutoCompactTokenLimitScope: autoCompactTokenLimitScopeTotal,
+		CompactPrompt:              "",
+		PreviousResponseID:         "",
+		RequestID:                  "",
 	}
 
 	requestBody := buildChatCompletionRequestBody(request)
@@ -364,10 +374,12 @@ func TestBuildChatCompletionRequestBodyExplicitModePlacesBreakpointOnFirstMessag
 		Messages: []chatMessage{
 			{Role: messageRoleUser, Content: "hello"},
 		},
-		ContextWindow:               0,
-		AutoCompactThresholdPercent: 0,
-		PreviousResponseID:          "",
-		RequestID:                   "",
+		ContextWindow:              0,
+		AutoCompactTokenLimit:      0,
+		AutoCompactTokenLimitScope: autoCompactTokenLimitScopeTotal,
+		CompactPrompt:              "",
+		PreviousResponseID:         "",
+		RequestID:                  "",
 	}
 
 	requestBody := buildChatCompletionRequestBody(request)
@@ -428,13 +440,15 @@ func TestBuildChatCompletionRequestBodySkipsCacheOptionsForOtherProviders(t *tes
 					ExtraQuery:      nil,
 					ExtraBody:       nil,
 				},
-				Model:                       "gpt-test",
-				ConfiguredModel:             testCase.configuredModel,
-				ContextWindow:               0,
-				AutoCompactThresholdPercent: 0,
-				SessionID:                   testOpenAIPromptCacheKey,
-				PreviousResponseID:          "",
-				RequestID:                   "",
+				Model:                      "gpt-test",
+				ConfiguredModel:            testCase.configuredModel,
+				ContextWindow:              0,
+				AutoCompactTokenLimit:      0,
+				AutoCompactTokenLimitScope: autoCompactTokenLimitScopeTotal,
+				CompactPrompt:              "",
+				SessionID:                  testOpenAIPromptCacheKey,
+				PreviousResponseID:         "",
+				RequestID:                  "",
 				Messages: []chatMessage{
 					{Role: messageRoleUser, Content: "hello"},
 				},
@@ -476,13 +490,15 @@ func TestBuildChatCompletionRequestBodySkipsCacheOptionsForResponsesAPI(t *testi
 			ExtraQuery:      nil,
 			ExtraBody:       nil,
 		},
-		Model:                       "gpt-test",
-		ConfiguredModel:             "openai/gpt-test",
-		ContextWindow:               0,
-		AutoCompactThresholdPercent: 0,
-		SessionID:                   testOpenAIPromptCacheKey,
-		PreviousResponseID:          "",
-		RequestID:                   "",
+		Model:                      "gpt-test",
+		ConfiguredModel:            "openai/gpt-test",
+		ContextWindow:              0,
+		AutoCompactTokenLimit:      0,
+		AutoCompactTokenLimitScope: autoCompactTokenLimitScopeTotal,
+		CompactPrompt:              "",
+		SessionID:                  testOpenAIPromptCacheKey,
+		PreviousResponseID:         "",
+		RequestID:                  "",
 		Messages: []chatMessage{
 			{Role: messageRoleUser, Content: "hello"},
 		},
@@ -520,13 +536,15 @@ func TestOpenAIClientStreamChatCompletionParsesCachedUsage(t *testing.T) {
 			APIKeys:         nil,
 			EnableGrounding: false,
 		},
-		Model:                       "gpt-test",
-		ConfiguredModel:             "",
-		ContextWindow:               0,
-		AutoCompactThresholdPercent: 0,
-		SessionID:                   "",
-		PreviousResponseID:          "",
-		RequestID:                   "",
+		Model:                      "gpt-test",
+		ConfiguredModel:            "",
+		ContextWindow:              0,
+		AutoCompactTokenLimit:      0,
+		AutoCompactTokenLimitScope: autoCompactTokenLimitScopeTotal,
+		CompactPrompt:              "",
+		SessionID:                  "",
+		PreviousResponseID:         "",
+		RequestID:                  "",
 		Messages: []chatMessage{
 			{Role: messageRoleUser, Content: "hello"},
 		},
@@ -665,10 +683,12 @@ func TestBuildChatCompletionRequestBodyRewritesSystemRoleForGPT56(t *testing.T) 
 			{Role: messageRoleSystem, Content: "You are concise."},
 			{Role: messageRoleUser, Content: "hello"},
 		},
-		ContextWindow:               0,
-		AutoCompactThresholdPercent: 0,
-		PreviousResponseID:          "",
-		RequestID:                   "",
+		ContextWindow:              0,
+		AutoCompactTokenLimit:      0,
+		AutoCompactTokenLimitScope: autoCompactTokenLimitScopeTotal,
+		CompactPrompt:              "",
+		PreviousResponseID:         "",
+		RequestID:                  "",
 	}
 
 	requestBody := buildChatCompletionRequestBody(request)
@@ -709,10 +729,12 @@ func TestBuildChatCompletionRequestBodyKeepsSystemRoleForOlderModels(t *testing.
 			{Role: messageRoleSystem, Content: "You are concise."},
 			{Role: messageRoleUser, Content: "hello"},
 		},
-		ContextWindow:               0,
-		AutoCompactThresholdPercent: 0,
-		PreviousResponseID:          "",
-		RequestID:                   "",
+		ContextWindow:              0,
+		AutoCompactTokenLimit:      0,
+		AutoCompactTokenLimitScope: autoCompactTokenLimitScopeTotal,
+		CompactPrompt:              "",
+		PreviousResponseID:         "",
+		RequestID:                  "",
 	}
 
 	requestBody := buildChatCompletionRequestBody(request)
@@ -749,10 +771,12 @@ func TestBuildXAIResponsesRequestBodyAddsCacheOptionsForOpenAIProvider(t *testin
 			{Role: messageRoleSystem, Content: "You are concise."},
 			{Role: messageRoleUser, Content: "hello"},
 		},
-		ContextWindow:               0,
-		AutoCompactThresholdPercent: 0,
-		PreviousResponseID:          "",
-		RequestID:                   "",
+		ContextWindow:              0,
+		AutoCompactTokenLimit:      0,
+		AutoCompactTokenLimitScope: autoCompactTokenLimitScopeTotal,
+		CompactPrompt:              "",
+		PreviousResponseID:         "",
+		RequestID:                  "",
 	}
 
 	requestBody, err := buildXAIResponsesRequestBody(request)
@@ -800,10 +824,12 @@ func TestBuildXAIResponsesRequestBodySkipsCacheOptionsForXAIModels(t *testing.T)
 		Messages: []chatMessage{
 			{Role: messageRoleUser, Content: "hello"},
 		},
-		ContextWindow:               0,
-		AutoCompactThresholdPercent: 0,
-		PreviousResponseID:          "",
-		RequestID:                   "",
+		ContextWindow:              0,
+		AutoCompactTokenLimit:      0,
+		AutoCompactTokenLimitScope: autoCompactTokenLimitScopeTotal,
+		CompactPrompt:              "",
+		PreviousResponseID:         "",
+		RequestID:                  "",
 	}
 
 	requestBody, err := buildXAIResponsesRequestBody(request)

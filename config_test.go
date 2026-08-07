@@ -91,10 +91,10 @@ models:
 		t.Fatalf("unexpected default database store key: %q", loadedConfig.Database.StoreKey)
 	}
 
-	if loadedConfig.AutoCompactThresholdPercent != autoCompactDefaultThresholdPercent {
+	if loadedConfig.AutoCompactTokenLimitScope != autoCompactTokenLimitScopeTotal {
 		t.Fatalf(
-			"unexpected default auto compact threshold percent: %d",
-			loadedConfig.AutoCompactThresholdPercent,
+			"unexpected default auto compact token limit scope: %q",
+			loadedConfig.AutoCompactTokenLimitScope,
 		)
 	}
 }
@@ -1361,7 +1361,7 @@ func TestPositiveIntStringValue(t *testing.T) {
 	}
 }
 
-func TestLoadConfigUsesConfiguredAutoCompactThresholdPercent(t *testing.T) {
+func TestLoadConfigUsesConfiguredAutoCompactTokenLimit(t *testing.T) {
 	t.Parallel()
 
 	tempDir := t.TempDir()
@@ -1371,7 +1371,7 @@ bot_token: discord-token
 providers:
   openai:
     base_url: https://api.example.com/v1
-auto_compact_threshold_percent: 75
+model_auto_compact_token_limit: 75000
 models:
   openai/gpt-5.1:
 `
@@ -1386,10 +1386,42 @@ models:
 		t.Fatalf("load config: %v", err)
 	}
 
-	if loadedConfig.AutoCompactThresholdPercent != 75 {
+	if loadedConfig.AutoCompactTokenLimit != 75000 {
 		t.Fatalf(
-			"unexpected auto compact threshold percent: %d",
-			loadedConfig.AutoCompactThresholdPercent,
+			"unexpected auto compact token limit: %d",
+			loadedConfig.AutoCompactTokenLimit,
+		)
+	}
+}
+
+func TestLoadConfigDefaultsAutoCompactTokenLimit(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	configText := `
+bot_token: discord-token
+providers:
+  openai:
+    base_url: https://api.example.com/v1
+models:
+  openai/gpt-5.1:
+`
+
+	err := os.WriteFile(configPath, []byte(configText), 0o600)
+	if err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	loadedConfig, err := loadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	if loadedConfig.AutoCompactTokenLimit != 0 {
+		t.Fatalf(
+			"unexpected default auto compact token limit: %d",
+			loadedConfig.AutoCompactTokenLimit,
 		)
 	}
 }
@@ -1448,7 +1480,7 @@ models:
 	}
 }
 
-func TestLoadConfigRejectsOutOfRangeAutoCompactThresholdPercent(t *testing.T) {
+func TestLoadConfigRejectsNegativeAutoCompactTokenLimit(t *testing.T) {
 	t.Parallel()
 
 	tempDir := t.TempDir()
@@ -1458,7 +1490,7 @@ bot_token: discord-token
 providers:
   openai:
     base_url: https://api.example.com/v1
-auto_compact_threshold_percent: 101
+model_auto_compact_token_limit: -1
 models:
   openai/gpt-5.1:
 `
@@ -1470,11 +1502,11 @@ models:
 
 	_, err = loadConfig(configPath)
 	if err == nil {
-		t.Fatal("expected out-of-range auto compact threshold percent to fail validation")
+		t.Fatal("expected negative auto compact token limit to fail validation")
 	}
 }
 
-func TestLoadConfigRejectsNonPositiveAutoCompactThresholdPercent(t *testing.T) {
+func TestLoadConfigUsesConfiguredAutoCompactTokenLimitScope(t *testing.T) {
 	t.Parallel()
 
 	tempDir := t.TempDir()
@@ -1484,7 +1516,40 @@ bot_token: discord-token
 providers:
   openai:
     base_url: https://api.example.com/v1
-auto_compact_threshold_percent: 0
+model_auto_compact_token_limit_scope: body_after_prefix
+models:
+  openai/gpt-5.1:
+`
+
+	err := os.WriteFile(configPath, []byte(configText), 0o600)
+	if err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	loadedConfig, err := loadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	if loadedConfig.AutoCompactTokenLimitScope != autoCompactTokenLimitScopeBodyAfterPrefix {
+		t.Fatalf(
+			"unexpected auto compact token limit scope: %q",
+			loadedConfig.AutoCompactTokenLimitScope,
+		)
+	}
+}
+
+func TestLoadConfigRejectsUnknownAutoCompactTokenLimitScope(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	configText := `
+bot_token: discord-token
+providers:
+  openai:
+    base_url: https://api.example.com/v1
+model_auto_compact_token_limit_scope: everything
 models:
   openai/gpt-5.1:
 `
@@ -1496,7 +1561,39 @@ models:
 
 	_, err = loadConfig(configPath)
 	if err == nil {
-		t.Fatal("expected non-positive auto compact threshold percent to fail validation")
+		t.Fatal("expected unknown auto compact token limit scope to fail validation")
+	}
+}
+
+func TestLoadConfigDefaultsAutoCompactTokenLimitScope(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	configText := `
+bot_token: discord-token
+providers:
+  openai:
+    base_url: https://api.example.com/v1
+models:
+  openai/gpt-5.1:
+`
+
+	err := os.WriteFile(configPath, []byte(configText), 0o600)
+	if err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	loadedConfig, err := loadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	if loadedConfig.AutoCompactTokenLimitScope != autoCompactTokenLimitScopeTotal {
+		t.Fatalf(
+			"unexpected default auto compact token limit scope: %q",
+			loadedConfig.AutoCompactTokenLimitScope,
+		)
 	}
 }
 
@@ -1687,6 +1784,96 @@ channel_model_locks:
 	_, err = loadConfig(configPath)
 	if err == nil {
 		t.Fatal("expected unknown channel lock model to fail validation")
+	}
+}
+
+func TestLoadConfigUsesConfiguredCompactPrompt(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	configText := `
+bot_token: discord-token
+providers:
+  openai:
+    base_url: https://api.example.com/v1
+compact_prompt: |
+  Summarize this conversation for a friend.
+models:
+  openai/gpt-5.1:
+`
+
+	err := os.WriteFile(configPath, []byte(configText), 0o600)
+	if err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	loadedConfig, err := loadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	if loadedConfig.CompactPrompt != "Summarize this conversation for a friend." {
+		t.Fatalf("unexpected compact prompt: %q", loadedConfig.CompactPrompt)
+	}
+}
+
+func TestLoadConfigDefaultsCompactPrompt(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	configText := `
+bot_token: discord-token
+providers:
+  openai:
+    base_url: https://api.example.com/v1
+models:
+  openai/gpt-5.1:
+`
+
+	err := os.WriteFile(configPath, []byte(configText), 0o600)
+	if err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	loadedConfig, err := loadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	if loadedConfig.CompactPrompt != "" {
+		t.Fatalf("unexpected default compact prompt: %q", loadedConfig.CompactPrompt)
+	}
+}
+
+func TestLoadConfigTrimsWhitespaceOnlyCompactPromptToEmpty(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	configText := `
+bot_token: discord-token
+providers:
+  openai:
+    base_url: https://api.example.com/v1
+compact_prompt: "   "
+models:
+  openai/gpt-5.1:
+`
+
+	err := os.WriteFile(configPath, []byte(configText), 0o600)
+	if err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	loadedConfig, err := loadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	if loadedConfig.CompactPrompt != "" {
+		t.Fatalf("unexpected whitespace compact prompt: %q", loadedConfig.CompactPrompt)
 	}
 }
 

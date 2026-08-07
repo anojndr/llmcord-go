@@ -2,44 +2,45 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
+	"slices"
 	"strings"
-	"unicode"
 	"unicode/utf8"
 )
 
 const (
 	// Codex derives its auto-compact trigger at 90% of the context window and
 	// clamps any configured limit to that same 90% ceiling (see
-	// ModelInfo::auto_compact_token_limit in the Codex codebase).
-	autoCompactCodexCapPercent         = 90
-	autoCompactDefaultThresholdPercent = autoCompactCodexCapPercent
-	autoCompactPercentBase             = 100
-	autoCompactSingleMessageMargin     = 10
-	autoCompactWarningCapacity         = 2
-	autoCompactWarningPrefix           = "Warning: "
-	autoCompactBinarySearchDivisor     = 2
-	autoCompactMinimumMessages         = 2
-	autoCompactMaxTailMessages         = 4
-	autoCompactMinChunkTokens          = 512
-	autoCompactMaxChunkTokens          = 16_000
-	autoCompactChunkDivisor            = 3
-	autoCompactCharsPerToken           = 4
-	autoCompactLetterRunBytesPerToken  = 6
-	autoCompactDigitRunBytesPerToken   = 3
-	autoCompactMessageOverheadTokens   = 8
-	autoCompactImageTokens             = 1024
-	autoCompactAudioTokens             = 4096
-	autoCompactDocumentTokens          = 4096
-	autoCompactFileTokens              = 4096
-	autoCompactVideoTokens             = 8192
-	autoCompactSummaryPrefix           = "Earlier conversation summary (handoff checkpoint for continued context):"
-	autoCompactSummaryUserPrefix       = "Create a compact handoff summary of the earlier conversation so another " +
+	// ModelInfo::auto_compact_token_limit in the Codex codebase). The usable
+	// context window is 95% of the configured window
+	// (default_effective_context_window_percent).
+	autoCompactDerivePercent       = 90
+	autoCompactFullWindowPercent   = 95
+	autoCompactPercentBase         = 100
+	autoCompactSingleMessageMargin = 10
+	autoCompactWarningCapacity     = 2
+	autoCompactWarningPrefix       = "Warning: "
+	autoCompactBinarySearchDivisor = 2
+	autoCompactMinChunkTokens      = 512
+	autoCompactMaxChunkTokens      = 16_000
+	autoCompactChunkDivisor        = 3
+	autoCompactCharsPerToken       = 4
+	// Codex keeps at most this many tokens of the newest real user messages
+	// after local compaction (COMPACT_USER_MESSAGE_MAX_TOKENS).
+	autoCompactUserMessageMaxTokens  = 20_000
+	autoCompactImageTokens           = 1844 // codex RESIZED_IMAGE_BYTES_ESTIMATE (7373) / 4, ceil
+	autoCompactAudioTokens           = 4096
+	autoCompactDocumentTokens        = 4096
+	autoCompactFileTokens            = 4096
+	autoCompactVideoTokens           = 8192
+	autoCompactMessageOverheadTokens = 8
+	autoCompactSummaryPrefix         = "Earlier conversation summary (handoff checkpoint for continued context):"
+	autoCompactSummaryUserPrefix     = "Create a compact handoff summary of the earlier conversation so another " +
 		"assistant can continue seamlessly:\n\n"
 	autoCompactMergeUserPrefix = "Merge these partial handoff summaries into one concise summary that " +
 		"carries the conversation forward:\n\n"
 	autoCompactMessageBlockSeparator = "\n\n"
+	autoCompactMiddleSplitDivisor    = 2
 	autoCompactImagePlaceholder      = "[image attachment]"
 	autoCompactAudioPlaceholder      = "[audio attachment]"
 	autoCompactDocumentPlaceholder   = "[document attachment]"
@@ -47,21 +48,10 @@ const (
 	autoCompactVideoPlaceholder      = "[video attachment]"
 )
 
-var errAutoCompactRequestTooLarge = errors.New("unable to auto-compact request within token limit")
-
-type autoCompactTextRunKind int
-
-const (
-	autoCompactTextRunNone autoCompactTextRunKind = iota
-	autoCompactTextRunLetter
-	autoCompactTextRunDigit
-)
-
 type autoCompactStrategy string
 
 const (
 	autoCompactStrategySummary autoCompactStrategy = "summary"
-	autoCompactStrategyTrimmed autoCompactStrategy = "trimmed"
 )
 
 type autoCompactResult struct {
@@ -70,68 +60,67 @@ type autoCompactResult struct {
 	TruncatedMessage bool
 }
 
-func effectiveAutoCompactThresholdPercent(thresholdPercent int) int {
-	if thresholdPercent <= 0 {
-		return autoCompactDefaultThresholdPercent
-	}
-
-	return thresholdPercent
-}
-
-// autoCompactCodexCappedThresholdPercent mirrors Codex's auto-compaction
-// trigger semantics: the effective threshold is capped at 90% of the context
-// window, so auto-compaction never starts beyond Codex's (window * 9) / 10
-// ceiling regardless of the configured percentage.
-func autoCompactCodexCappedThresholdPercent(thresholdPercent int) int {
-	percentage := effectiveAutoCompactThresholdPercent(thresholdPercent)
-	if percentage > autoCompactCodexCapPercent {
-		return autoCompactCodexCapPercent
-	}
-
-	return percentage
-}
-
-func autoCompactTokenLimit(contextWindow, thresholdPercent int) int {
+// autoCompactDerivedTokenLimit mirrors Codex's auto-compaction trigger: with no
+// configured limit the trigger sits at (window * 9) / 10.
+func autoCompactDerivedTokenLimit(contextWindow int) int {
 	if contextWindow <= 0 {
 		return 0
 	}
 
-	return (contextWindow * autoCompactCodexCappedThresholdPercent(thresholdPercent)) /
-		autoCompactPercentBase
+	return (contextWindow * autoCompactDerivePercent) / autoCompactPercentBase
 }
 
-func autoCompactSingleMessageThresholdPercent(thresholdPercent int) int {
-	singleMessagePercent := autoCompactCodexCappedThresholdPercent(thresholdPercent) -
-		autoCompactSingleMessageMargin
-	if singleMessagePercent <= 0 {
-		return 1
-	}
-
-	return singleMessagePercent
-}
-
-func autoCompactSingleMessageTokenLimit(contextWindow, thresholdPercent int) int {
+// autoCompactFullWindowTokenLimit mirrors Codex's usable-context hard cap:
+// (window * 95) / 100 from default_effective_context_window_percent.
+func autoCompactFullWindowTokenLimit(contextWindow int) int {
 	if contextWindow <= 0 {
 		return 0
 	}
 
-	limit := (contextWindow * autoCompactSingleMessageThresholdPercent(thresholdPercent)) /
-		autoCompactPercentBase
+	return (contextWindow * autoCompactFullWindowPercent) / autoCompactPercentBase
+}
+
+// autoCompactTokenLimit mirrors ModelInfo::auto_compact_token_limit: a
+// configured limit is honored unless it exceeds the derived 90% value, which
+// wins (min(config, context*9/10)). With a zero window there is no scoped limit.
+func autoCompactTokenLimit(contextWindow, configuredLimit int) int {
+	derivedLimit := autoCompactDerivedTokenLimit(contextWindow)
+	if derivedLimit <= 0 {
+		return 0
+	}
+
+	if configuredLimit <= 0 {
+		return derivedLimit
+	}
+
+	if configuredLimit > derivedLimit {
+		return derivedLimit
+	}
+
+	return configuredLimit
+}
+
+func autoCompactSingleMessageTokenLimit(contextWindow int) int {
+	limit := autoCompactDerivedTokenLimit(contextWindow)
 	if limit <= 0 {
+		return 0
+	}
+
+	singleMessageLimit := (contextWindow *
+		(autoCompactDerivePercent - autoCompactSingleMessageMargin)) / autoCompactPercentBase
+	if singleMessageLimit <= 0 {
 		return 1
 	}
 
-	return limit
+	return singleMessageLimit
 }
 
 func (instance *bot) autoCompactRequest(
 	ctx context.Context,
 	request chatCompletionRequest,
 ) (chatCompletionRequest, autoCompactResult) {
-	thresholdPercent := autoCompactCodexCappedThresholdPercent(
-		request.AutoCompactThresholdPercent,
-	)
-	limit := autoCompactTokenLimit(request.ContextWindow, thresholdPercent)
+	limit := autoCompactTokenLimit(request.ContextWindow, request.AutoCompactTokenLimit)
+	fullWindowLimit := autoCompactFullWindowTokenLimit(request.ContextWindow)
 
 	if limit <= 0 {
 		return request, autoCompactResult{
@@ -150,7 +139,7 @@ func (instance *bot) autoCompactRequest(
 
 	conversationMessages, result.TruncatedMessage = truncateLatestConversationMessageToFit(
 		conversationMessages,
-		autoCompactSingleMessageTokenLimit(request.ContextWindow, thresholdPercent),
+		autoCompactSingleMessageTokenLimit(request.ContextWindow),
 	)
 	if result.TruncatedMessage {
 		request.Messages = appendChatMessages(systemMessages, conversationMessages)
@@ -158,15 +147,18 @@ func (instance *bot) autoCompactRequest(
 	}
 
 	estimatedTokens := estimateChatCompletionRequestTokens(request)
-	if estimatedTokens <= limit {
+	fullWindowReached := estimatedTokens >= fullWindowLimit
+
+	if !fullWindowReached && (request.AutoCompactTokenLimitScope == autoCompactTokenLimitScopeBodyAfterPrefix &&
+		request.AutoCompactTokenLimit <= 0) {
 		return request, result
 	}
 
-	if len(conversationMessages) < autoCompactMinimumMessages {
+	if !fullWindowReached && estimatedTokens < limit {
 		return request, result
 	}
 
-	compactedMessages, warning, boundaryText, err := instance.compactMessagesForRequest(
+	compactedMessages, err := instance.compactMessagesForRequest(
 		ctx,
 		request,
 		systemMessages,
@@ -181,12 +173,12 @@ func (instance *bot) autoCompactRequest(
 			request.ConfiguredModel,
 			"context_window",
 			request.ContextWindow,
-			"threshold_percent",
-			thresholdPercent,
-			"estimated_tokens",
-			estimatedTokens,
 			"token_limit",
 			limit,
+			"full_window_limit",
+			fullWindowLimit,
+			"estimated_tokens",
+			estimatedTokens,
 		)
 
 		return request, result
@@ -199,9 +191,9 @@ func (instance *bot) autoCompactRequest(
 	request.Messages = compactedMessages
 
 	result.Applied = true
-	result.Strategy = warning
+	result.Strategy = autoCompactStrategySummary
 
-	instance.recordCompactionBoundary(request, boundaryText, result)
+	instance.recordCompactionBoundary(request, lastMessageSummaryText(compactedMessages), result)
 
 	return request, result
 }
@@ -243,113 +235,123 @@ func (instance *bot) compactMessagesForRequest(
 	systemMessages []chatMessage,
 	conversationMessages []chatMessage,
 	limit int,
-) ([]chatMessage, autoCompactStrategy, string, error) {
-	maxTailMessages := minInt(autoCompactMaxTailMessages, len(conversationMessages)-1)
+) ([]chatMessage, error) {
+	summaryText, err := instance.summarizeMessagesForAutoCompaction(
+		ctx,
+		request,
+		conversationMessages,
+		limit,
+	)
+	if err != nil {
+		return nil, err
+	}
 
-	var lastErr error
+	return buildAutoCompactedMessages(systemMessages, conversationMessages, summaryText), nil
+}
 
-	for tailMessages := maxTailMessages; tailMessages >= 1; tailMessages-- {
-		summarySource := conversationMessages[:len(conversationMessages)-tailMessages]
+// buildAutoCompactedMessages mirrors Codex's build_compacted_history_with_limit:
+// the newest user messages (up to autoCompactUserMessageMaxTokens, newest-first
+// greedy fit with partial truncation) are retained, and the summary is appended
+// LAST as its own user message.
+func buildAutoCompactedMessages(
+	systemMessages []chatMessage,
+	conversationMessages []chatMessage,
+	summaryText string,
+) []chatMessage {
+	retainedUserMessages := collectCompactionUserMessages(
+		conversationMessages,
+		autoCompactUserMessageMaxTokens,
+	)
 
-		summaryText, err := instance.summarizeMessagesForAutoCompaction(
-			ctx,
-			request,
-			summarySource,
-			limit,
-		)
-		if err != nil {
-			lastErr = err
+	summaryMessageText := autoCompactSummaryMessageText(summaryText)
+
+	return appendChatMessages(
+		systemMessages,
+		retainedUserMessages,
+		[]chatMessage{{
+			Role:    messageRoleUser,
+			Content: summaryMessageText,
+		}},
+	)
+}
+
+// collectCompactionUserMessages keeps the newest user messages within the codex
+// token budget, newest-first, truncating a partial message to fit. Assistant
+// messages and already-recorded summary messages are excluded.
+func collectCompactionUserMessages(
+	conversationMessages []chatMessage,
+	maxTokens int,
+) []chatMessage {
+	selected := make([]chatMessage, 0, len(conversationMessages))
+	remaining := maxTokens
+
+	for _, message := range slices.Backward(conversationMessages) {
+		if message.Role != messageRoleUser {
+			continue
+		}
+
+		text := chatMessageText(message)
+		if isAutoCompactSummaryMessage(text) {
+			continue
+		}
+
+		if remaining <= 0 {
+			break
+		}
+
+		tokens := estimateChatMessageTokens(message)
+		if tokens <= remaining {
+			selected = append(selected, message)
+			remaining -= tokens
 
 			continue
 		}
 
-		candidateMessages, fits := buildAutoCompactedMessages(
-			systemMessages,
-			conversationMessages[len(conversationMessages)-tailMessages:],
-			summaryText,
-			limit,
-		)
-		if fits {
-			return candidateMessages, autoCompactStrategySummary, strings.TrimSpace(summaryText), nil
+		truncatedText := truncateTextToApproxTokenBudget(chatMessageText(message), remaining)
+		if strings.TrimSpace(truncatedText) != "" {
+			truncatedMessage := message
+			truncatedMessage.Content = truncatedText
+			selected = append(selected, truncatedMessage)
 		}
+
+		remaining = 0
 	}
 
-	tailOnlyMessages, fits := trimConversationTailToFit(
-		systemMessages,
-		conversationMessages,
-		limit,
-	)
-	if fits {
-		return tailOnlyMessages, autoCompactStrategyTrimmed, "", nil
-	}
+	reverseChatMessages(selected)
 
-	if lastErr != nil {
-		return nil, "", "", lastErr
-	}
-
-	return nil, "", "", errAutoCompactRequestTooLarge
+	return selected
 }
 
-func buildAutoCompactedMessages(
-	systemMessages []chatMessage,
-	tailMessages []chatMessage,
-	summaryText string,
-	limit int,
-) ([]chatMessage, bool) {
-	trimmedSummary := strings.TrimSpace(summaryText)
-	if trimmedSummary == "" {
-		return nil, false
-	}
-
-	summaryMessageText := autoCompactSummaryMessageText(trimmedSummary)
-	summaryMessage := chatMessage{
-		Role:    messageRoleUser,
-		Content: summaryMessageText,
-	}
-
-	candidateMessages := appendChatMessages(systemMessages, []chatMessage{summaryMessage}, tailMessages)
-	if estimateChatMessagesTokens(candidateMessages) <= limit {
-		return candidateMessages, true
-	}
-
-	availableSummaryTokens := limit -
-		estimateChatMessagesTokens(systemMessages) -
-		estimateChatMessagesTokens(tailMessages) -
-		autoCompactMessageOverheadTokens
-	if availableSummaryTokens <= 0 {
-		return nil, false
-	}
-
-	truncatedSummaryMessageText := truncateTextToApproxTokens(
-		summaryMessageText,
-		availableSummaryTokens,
-	)
-	if strings.TrimSpace(truncatedSummaryMessageText) == "" {
-		return nil, false
-	}
-
-	summaryMessage.Content = truncatedSummaryMessageText
-	candidateMessages = appendChatMessages(systemMessages, []chatMessage{summaryMessage}, tailMessages)
-
-	return candidateMessages, estimateChatMessagesTokens(candidateMessages) <= limit
+func isAutoCompactSummaryMessage(text string) bool {
+	return strings.HasPrefix(strings.TrimSpace(text), autoCompactSummaryPrefix)
 }
 
-func trimConversationTailToFit(
-	systemMessages []chatMessage,
-	conversationMessages []chatMessage,
-	limit int,
-) ([]chatMessage, bool) {
-	for tailMessages := len(conversationMessages); tailMessages >= 1; tailMessages-- {
-		candidateMessages := appendChatMessages(
-			systemMessages,
-			conversationMessages[len(conversationMessages)-tailMessages:],
-		)
-		if estimateChatMessagesTokens(candidateMessages) <= limit {
-			return candidateMessages, true
+func chatMessageText(message chatMessage) string {
+	switch typed := message.Content.(type) {
+	case string:
+		return typed
+	case []contentPart:
+		texts := make([]string, 0, len(typed))
+		for _, part := range typed {
+			if partText, ok := part["text"].(string); ok {
+				texts = append(texts, partText)
+			}
 		}
+
+		return strings.Join(texts, " ")
+	default:
+		return ""
+	}
+}
+
+func lastMessageSummaryText(messages []chatMessage) string {
+	if len(messages) == 0 {
+		return ""
 	}
 
-	return nil, false
+	text := chatMessageText(messages[len(messages)-1])
+
+	return strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(text), autoCompactSummaryPrefix+"\n"))
 }
 
 func (instance *bot) summarizeMessagesForAutoCompaction(
@@ -365,13 +367,23 @@ func (instance *bot) summarizeMessagesForAutoCompaction(
 
 	chunkBudget := autoCompactChunkTokenBudget(limit)
 
+	systemPrompt := autoCompactSummarySystemPrompt()
+	userPromptPrefix := autoCompactSummaryUserPrefix
+
+	if strings.TrimSpace(request.CompactPrompt) != "" {
+		// A custom compact_prompt is used verbatim as the compaction prompt
+		// (codex's run_inline_auto_compact_task passes it as a user input).
+		systemPrompt = ""
+		userPromptPrefix = strings.TrimSpace(request.CompactPrompt) + "\n\n"
+	}
+
 	summaryText, err := instance.reduceAutoCompactionBlocks(
 		ctx,
 		request,
 		blocks,
 		chunkBudget,
-		autoCompactSummarySystemPrompt(),
-		autoCompactSummaryUserPrefix,
+		systemPrompt,
+		userPromptPrefix,
 	)
 	if err != nil {
 		return "", err
@@ -674,21 +686,12 @@ func (result autoCompactResult) warningsForPath(path string) []string {
 		)
 	}
 
-	switch result.Strategy {
-	case autoCompactStrategySummary:
+	if result.Strategy == autoCompactStrategySummary {
 		warnings = append(
 			warnings,
 			autoCompactWarningMessage(
 				path,
 				"auto-compacted older conversation context to fit the model context window.",
-			),
-		)
-	case autoCompactStrategyTrimmed:
-		warnings = append(
-			warnings,
-			autoCompactWarningMessage(
-				path,
-				"trimmed older conversation context to fit the model context window.",
 			),
 		)
 	}
@@ -698,6 +701,61 @@ func (result autoCompactResult) warningsForPath(path string) []string {
 
 func autoCompactWarningMessage(path, detail string) string {
 	return autoCompactWarningPrefix + path + " " + detail
+}
+
+// truncateTextToApproxTokenBudget mirrors Codex's
+// truncate_middle_with_token_budget: the middle of the text is removed,
+// preserving a beginning and an end, with a "…N tokens truncated…" marker in
+// between (approximate tokens via ceil(bytes/4)).
+func truncateTextToApproxTokenBudget(text string, tokenLimit int) string {
+	if tokenLimit <= 0 {
+		return ""
+	}
+
+	if text == "" {
+		return ""
+	}
+
+	maxBytes := tokenLimit * autoCompactCharsPerToken
+	if len(text) <= maxBytes {
+		return text
+	}
+
+	leftBudget := maxBytes / autoCompactMiddleSplitDivisor
+	rightBudget := maxBytes - leftBudget
+
+	prefixEnd := 0
+	suffixStart := len(text)
+	tailStartTarget := len(text) - rightBudget
+	suffixStarted := false
+
+	for index, value := range text {
+		charEnd := index + utf8.RuneLen(value)
+		if charEnd <= leftBudget {
+			prefixEnd = charEnd
+
+			continue
+		}
+
+		if index >= tailStartTarget {
+			if !suffixStarted {
+				suffixStart = index
+				suffixStarted = true
+			}
+
+			continue
+		}
+	}
+
+	if suffixStart < prefixEnd {
+		suffixStart = prefixEnd
+	}
+
+	removedBytes := len(text) - maxBytes
+	removedTokens := approxTokensFromBytes(removedBytes)
+	marker := fmt.Sprintf("…%d tokens truncated…", removedTokens)
+
+	return text[:prefixEnd] + marker + text[suffixStart:]
 }
 
 func truncateTextToApproxTokens(text string, tokenLimit int) string {
@@ -799,7 +857,7 @@ func estimateChatMessagesTokens(messages []chatMessage) int {
 }
 
 func estimateChatMessageTokens(message chatMessage) int {
-	return autoCompactMessageOverheadTokens + estimateChatMessageContentTokens(message.Content)
+	return estimateChatMessageContentTokens(message.Content)
 }
 
 func estimateChatMessageContentTokens(content any) int {
@@ -844,127 +902,24 @@ func estimateContentPartTokens(part contentPart) int {
 	}
 }
 
+// estimateTextTokens mirrors Codex's approx_token_count: ceil(bytes/4).
 func estimateTextTokens(text string) int {
 	trimmedText := strings.TrimSpace(text)
 	if trimmedText == "" {
 		return 0
 	}
 
-	tokens := max(
-		ceilDivPositive(len(trimmedText), autoCompactCharsPerToken),
-		estimateStructuredTextTokens(trimmedText),
-	)
-
-	if tokens == 0 {
-		return 1
-	}
-
-	return tokens
+	return max(approxTokensFromBytes(len(trimmedText)), 1)
 }
 
-func estimateStructuredTextTokens(text string) int {
-	tokens := 0
-	runKind := autoCompactTextRunNone
-	runRunes := 0
-	runBytes := 0
-
-	flushRun := func() {
-		tokens += estimateStructuredTextRunTokens(runKind, runRunes, runBytes)
-		runKind = autoCompactTextRunNone
-		runRunes = 0
-		runBytes = 0
-	}
-
-	for _, value := range text {
-		if unicode.IsSpace(value) {
-			flushRun()
-
-			if value == '\n' || value == '\r' {
-				tokens++
-			}
-
-			continue
-		}
-
-		nextRunKind := autoCompactStructuredTextRunKind(value)
-		if nextRunKind == autoCompactTextRunNone {
-			flushRun()
-
-			tokens++
-
-			continue
-		}
-
-		if runKind != nextRunKind {
-			flushRun()
-
-			runKind = nextRunKind
-		}
-
-		runRunes++
-		runBytes += runeByteLength(value)
-	}
-
-	flushRun()
-
-	return tokens
-}
-
-func autoCompactStructuredTextRunKind(value rune) autoCompactTextRunKind {
-	switch {
-	case unicode.IsLetter(value) || unicode.IsMark(value):
-		return autoCompactTextRunLetter
-	case unicode.IsDigit(value):
-		return autoCompactTextRunDigit
-	default:
-		return autoCompactTextRunNone
-	}
-}
-
-func estimateStructuredTextRunTokens(
-	kind autoCompactTextRunKind,
-	runRunes int,
-	runBytes int,
-) int {
-	if runRunes <= 0 || runBytes <= 0 {
+// approxTokensFromBytes mirrors Codex's approx_token_count: ceil(bytes/4),
+// floored at one token for non-empty text.
+func approxTokensFromBytes(bytes int) int {
+	if bytes <= 0 {
 		return 0
 	}
 
-	switch kind {
-	case autoCompactTextRunNone:
-		return 0
-	case autoCompactTextRunLetter:
-		if runBytes > runRunes {
-			return runRunes
-		}
-
-		return ceilDivPositive(runBytes, autoCompactLetterRunBytesPerToken)
-	case autoCompactTextRunDigit:
-		return ceilDivPositive(runBytes, autoCompactDigitRunBytesPerToken)
-	default:
-		return 0
-	}
-}
-
-func runeByteLength(value rune) int {
-	byteLength := utf8.RuneLen(value)
-	if byteLength <= 0 {
-		return 1
-	}
-
-	return byteLength
-}
-
-func ceilDivPositive(value int, divisor int) int {
-	if value <= 0 {
-		return 0
-	}
-
-	if divisor <= 0 {
-		return value
-	}
-
-	return (value + divisor - 1) / divisor
+	return (bytes + autoCompactCharsPerToken - 1) / autoCompactCharsPerToken
 }
 
 func splitLeadingSystemMessages(messages []chatMessage) ([]chatMessage, []chatMessage) {
