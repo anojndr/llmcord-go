@@ -270,7 +270,6 @@ func TestBuildChatCompletionRequestUsesContextWindowWithoutSendingItToProvider(t
 	loadedConfig.ModelContextWindows = map[string]int{
 		"openai/gpt-5.1": 400_000,
 	}
-	loadedConfig.AutoCompactTokenLimit = 75_000
 
 	request, err := buildChatCompletionRequest(loadedConfig,
 		"openai/gpt-5.1",
@@ -281,10 +280,6 @@ func TestBuildChatCompletionRequestUsesContextWindowWithoutSendingItToProvider(t
 
 	if request.ContextWindow != 400_000 {
 		t.Fatalf("unexpected context window: %d", request.ContextWindow)
-	}
-
-	if request.AutoCompactTokenLimit != 75_000 {
-		t.Fatalf("unexpected auto compact token limit: %d", request.AutoCompactTokenLimit)
 	}
 
 	if _, ok := request.Provider.ExtraBody[modelConfigContextWindowKey]; ok {

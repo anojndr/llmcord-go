@@ -302,8 +302,8 @@ func TestSearchDeciderDoesNotReDecideWebSearch(t *testing.T) {
 // TestDecideWebSearchRequestMatchesMainModelPipeline asserts that the final
 // search decider model request is built through the same request pipeline as
 // the main model: same messages (plus the search decider prompt prepended to
-// the latest user query), auto-compacted with the decider model's own window,
-// and streamed through the same chat completions client.
+// the latest user query), context-window checked against the decider model's
+// own window, and streamed through the same chat completions client.
 func TestDecideWebSearchRequestMatchesMainModelPipeline(t *testing.T) {
 	t.Parallel()
 

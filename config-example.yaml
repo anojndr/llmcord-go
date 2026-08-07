@@ -122,26 +122,8 @@ providers:
   vllm:
     base_url: http://localhost:8000/v1
 
-# Optional explicit token limit that triggers auto compaction. Leave unset to
-# derive it like Codex: (context_window * 9) / 10. A configured value above that
-# derivation is clamped to it. 0 (or unset) derives the limit.
-# model_auto_compact_token_limit: 200000
-
-# Optional scope for the auto compaction token limit: `total` (default, counts
-# the whole conversation) or `body_after_prefix`. llmcord has no persistent
-# compaction-window prefill (each request re-derives the whole chain), so
-# `body_after_prefix` behaves like `total` when a limit is configured, and with
-# no configured limit it skips the derived scoped trigger, leaving only the 95%
-# full-context-window hard cap.
-# model_auto_compact_token_limit_scope: total
-
-# Optional custom prompt for the compaction model call. When set, this text is
-# used verbatim as the compaction prompt (Codex's `compact_prompt`); otherwise a
-# built-in neutral summary prompt is used.
-# compact_prompt: |
-
-# Optional per-provider context windows, used for reply embeds and auto
-# compaction when a model does not set its own `context_window` below.
+# Optional per-provider context windows, used for reply embeds and context-window
+# limit checks when a model does not set its own `context_window` below.
 # Values accept plain integers or k/m suffixes: `200000`, `200k`, `1m`.
 # Keys are provider names from the `providers` section.
 context_window:
@@ -151,7 +133,7 @@ context_window:
   openai: 200k
 
 models:
-  # Optional local-only field for reply embeds and auto compaction:
+  # Optional local-only field for reply embeds and context-window limit checks:
   # context_window: 400000
   # This value is not sent to the provider.
   # Alias models inherit the base model's context window, so

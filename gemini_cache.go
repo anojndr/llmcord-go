@@ -161,7 +161,7 @@ func geminiCachePrefixContents(contents []*genai.Content) []*genai.Content {
 }
 
 // geminiCachePrefixTokenEstimate estimates tokens for the cached prefix using
-// the run-aware estimator shared with auto-compaction.
+// the run-aware token estimator.
 func geminiCachePrefixTokenEstimate(contents []*genai.Content) int {
 	totalTokens := 0
 

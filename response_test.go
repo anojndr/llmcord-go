@@ -1597,16 +1597,13 @@ func TestGenerateAndSendResponseShowsSourcesButtonForNonGrokModelWithBridgeSourc
 			ExtraQuery:      nil,
 			ExtraBody:       nil,
 		},
-		Model:                      "gpt-4o",
-		ConfiguredModel:            "openai/gpt-4o",
-		ContextWindow:              0,
-		AutoCompactTokenLimit:      0,
-		AutoCompactTokenLimitScope: autoCompactTokenLimitScopeTotal,
-		CompactPrompt:              "",
-		SessionID:                  "",
-		PreviousResponseID:         "",
-		RequestID:                  "",
-		Messages:                   nil,
+		Model:              "gpt-4o",
+		ConfiguredModel:    "openai/gpt-4o",
+		ContextWindow:      0,
+		SessionID:          "",
+		PreviousResponseID: "",
+		RequestID:          "",
+		Messages:           nil,
 	}
 	tracker := newResponseTracker(sourceMessage, "")
 

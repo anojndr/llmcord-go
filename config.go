@@ -201,63 +201,48 @@ const (
 	modelConfigContextWindowKey                 = "context_window"
 )
 
-// autoCompactTokenLimitScope selects which token count is charged against the
-// auto-compact limit, mirroring Codex's AutoCompactTokenLimitScope.
-type autoCompactTokenLimitScope string
-
-const (
-	autoCompactTokenLimitScopeTotal           autoCompactTokenLimitScope = "total"
-	autoCompactTokenLimitScopeBodyAfterPrefix autoCompactTokenLimitScope = "body_after_prefix"
-)
-
 type rawConfig struct {
-	BotToken                   scalarString                 `yaml:"bot_token"`
-	ClientID                   scalarString                 `yaml:"client_id"`
-	StatusMessage              string                       `yaml:"status_message"`
-	MaxImages                  *int                         `yaml:"max_images"`
-	MaxMessages                *int                         `yaml:"max_messages"`
-	AllowDMs                   *bool                        `yaml:"allow_dms"`
-	Permissions                permissionsConfig            `yaml:"permissions"`
-	Providers                  map[string]rawProviderConfig `yaml:"providers"`
-	WebSearch                  rawWebSearchConfig           `yaml:"web_search"`
-	VisualSearch               rawVisualSearchConfig        `yaml:"visual_search"`
-	Database                   rawDatabaseConfig            `yaml:"database"`
-	Gist                       rawGistConfig                `yaml:"gist"`
-	AutoCompactTokenLimit      *int                         `yaml:"model_auto_compact_token_limit"`
-	AutoCompactTokenLimitScope *string                      `yaml:"model_auto_compact_token_limit_scope"`
-	CompactPrompt              scalarString                 `yaml:"compact_prompt"`
-	Models                     map[string]map[string]any    `yaml:"models"`
-	ChannelModelLocks          map[string]scalarString      `yaml:"channel_model_locks"`
-	SearchDeciderModel         scalarString                 `yaml:"search_decider_model"`
-	MediaAnalysisModel         scalarString                 `yaml:"media_analysis_model"`
-	SystemPrompt               string                       `yaml:"system_prompt"`
-	ContextWindows             map[string]any               `yaml:"context_window"`
+	BotToken           scalarString                 `yaml:"bot_token"`
+	ClientID           scalarString                 `yaml:"client_id"`
+	StatusMessage      string                       `yaml:"status_message"`
+	MaxImages          *int                         `yaml:"max_images"`
+	MaxMessages        *int                         `yaml:"max_messages"`
+	AllowDMs           *bool                        `yaml:"allow_dms"`
+	Permissions        permissionsConfig            `yaml:"permissions"`
+	Providers          map[string]rawProviderConfig `yaml:"providers"`
+	WebSearch          rawWebSearchConfig           `yaml:"web_search"`
+	VisualSearch       rawVisualSearchConfig        `yaml:"visual_search"`
+	Database           rawDatabaseConfig            `yaml:"database"`
+	Gist               rawGistConfig                `yaml:"gist"`
+	Models             map[string]map[string]any    `yaml:"models"`
+	ChannelModelLocks  map[string]scalarString      `yaml:"channel_model_locks"`
+	SearchDeciderModel scalarString                 `yaml:"search_decider_model"`
+	MediaAnalysisModel scalarString                 `yaml:"media_analysis_model"`
+	SystemPrompt       string                       `yaml:"system_prompt"`
+	ContextWindows     map[string]any               `yaml:"context_window"`
 }
 
 type config struct {
-	BotToken                   string
-	ClientID                   string
-	StatusMessage              string
-	MaxImages                  int
-	MaxMessages                int
-	AllowDMs                   bool
-	Permissions                permissionsConfig
-	Providers                  map[string]providerConfig
-	WebSearch                  webSearchConfig
-	VisualSearch               visualSearchConfig
-	Database                   databaseConfig
-	Gist                       gistConfig
-	AutoCompactTokenLimit      int
-	AutoCompactTokenLimitScope autoCompactTokenLimitScope
-	CompactPrompt              string
-	Models                     map[string]map[string]any
-	ModelContextWindows        map[string]int
-	ProviderContextWindows     map[string]int
-	ModelOrder                 []string
-	ChannelModelLocks          map[string]string
-	SearchDeciderModel         string
-	MediaAnalysisModel         string
-	SystemPrompt               string
+	BotToken               string
+	ClientID               string
+	StatusMessage          string
+	MaxImages              int
+	MaxMessages            int
+	AllowDMs               bool
+	Permissions            permissionsConfig
+	Providers              map[string]providerConfig
+	WebSearch              webSearchConfig
+	VisualSearch           visualSearchConfig
+	Database               databaseConfig
+	Gist                   gistConfig
+	Models                 map[string]map[string]any
+	ModelContextWindows    map[string]int
+	ProviderContextWindows map[string]int
+	ModelOrder             []string
+	ChannelModelLocks      map[string]string
+	SearchDeciderModel     string
+	MediaAnalysisModel     string
+	SystemPrompt           string
 }
 
 func loadConfig(filename string) (config, error) {
@@ -336,16 +321,8 @@ func buildLoadedConfig(
 				APIKeys: serpAPIVisualSearchKeys,
 			},
 		},
-		Database: normalizeDatabaseConfig(rawLoadedConfig.Database),
-		Gist:     normalizeGistConfig(rawLoadedConfig.Gist),
-		AutoCompactTokenLimit: intValueOrDefault(
-			rawLoadedConfig.AutoCompactTokenLimit,
-			0,
-		),
-		AutoCompactTokenLimitScope: normalizeAutoCompactTokenLimitScope(
-			rawLoadedConfig.AutoCompactTokenLimitScope,
-		),
-		CompactPrompt:          strings.TrimSpace(string(rawLoadedConfig.CompactPrompt)),
+		Database:               normalizeDatabaseConfig(rawLoadedConfig.Database),
+		Gist:                   normalizeGistConfig(rawLoadedConfig.Gist),
 		Models:                 rawLoadedConfig.Models,
 		ModelContextWindows:    modelContextWindows,
 		ProviderContextWindows: providerContextWindows,
@@ -744,35 +721,6 @@ func modelPositiveIntSettingValue(
 	return value, true, nil
 }
 
-func normalizeAutoCompactTokenLimitScope(rawValue *string) autoCompactTokenLimitScope {
-	if rawValue == nil {
-		return autoCompactTokenLimitScopeTotal
-	}
-
-	return autoCompactTokenLimitScope(strings.TrimSpace(strings.ToLower(*rawValue)))
-}
-
-func validateAutoCompactTokenLimit(value int) error {
-	if value < 0 {
-		return fmt.Errorf("must not be negative: %w", os.ErrInvalid)
-	}
-
-	return nil
-}
-
-func validateAutoCompactTokenLimitScope(value autoCompactTokenLimitScope) error {
-	switch value {
-	case autoCompactTokenLimitScopeTotal, autoCompactTokenLimitScopeBodyAfterPrefix:
-		return nil
-	default:
-		return fmt.Errorf(
-			"unsupported scope %q: %w",
-			value,
-			os.ErrInvalid,
-		)
-	}
-}
-
 func anyPositiveIntValue(value any) (int, error) {
 	maxIntValue := int(^uint(0) >> 1)
 
@@ -971,16 +919,6 @@ func validateConfig(loadedConfig config) error {
 	err = validateDatabaseConfig(loadedConfig.Database)
 	if err != nil {
 		return err
-	}
-
-	err = validateAutoCompactTokenLimit(loadedConfig.AutoCompactTokenLimit)
-	if err != nil {
-		return fmt.Errorf("model_auto_compact_token_limit %w", err)
-	}
-
-	err = validateAutoCompactTokenLimitScope(loadedConfig.AutoCompactTokenLimitScope)
-	if err != nil {
-		return fmt.Errorf("model_auto_compact_token_limit_scope %w", err)
 	}
 
 	err = validateConfiguredModels(loadedConfig)
@@ -1204,7 +1142,7 @@ func (loadedConfig config) modelContextWindow(modelName string) int {
 // window, capping one message at roughly one window of text. A window of zero
 // leaves messages unlimited.
 func messageTextLimit(contextWindow int) int {
-	return contextWindow * autoCompactCharsPerToken
+	return contextWindow * tokenEstimateBytesPerToken
 }
 
 // messageTextLimitForModel returns the per-message character limit derived
