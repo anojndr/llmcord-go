@@ -112,8 +112,8 @@ func (instance *bot) handleMessageComponentInteraction(
 		return instance.handleShowSourcesButton(session, interaction)
 	case componentData.CustomID == showThinkingButtonCustomID:
 		return instance.handleShowThinkingButton(session, interaction)
-	case componentData.CustomID == viewOnPastebinButtonCustomID:
-		return instance.handleViewOnPastebinButton(session, interaction)
+	case componentData.CustomID == createGistButtonCustomID:
+		return instance.handleCreateGistButton(session, interaction)
 	case strings.HasPrefix(componentData.CustomID, showSourcesPageButtonCustomIDPrefix):
 		return instance.handleShowSourcesPageButton(session, interaction)
 	case strings.HasPrefix(componentData.CustomID, showThinkingPageButtonCustomIDPrefix):
@@ -428,12 +428,12 @@ func formatThinkingPageContent(pages []string, pageIndex int) string {
 	return fmt.Sprintf("Thinking Process (page %d/%d)\n\n%s", pageIndex+1, len(pages), pages[pageIndex])
 }
 
-func (instance *bot) handleViewOnPastebinButton(
+func (instance *bot) handleCreateGistButton(
 	session *discordgo.Session,
 	interaction *discordgo.InteractionCreate,
 ) error {
 	if interaction == nil || interaction.Message == nil {
-		return fmt.Errorf("view on Pastebin interaction without message: %w", os.ErrInvalid)
+		return fmt.Errorf("create gist interaction without message: %w", os.ErrInvalid)
 	}
 
 	messageNode, ok := instance.nodes.get(interaction.Message.ID)
@@ -447,7 +447,7 @@ func (instance *bot) handleViewOnPastebinButton(
 	}
 
 	messageNode.mu.Lock()
-	cachedURL := strings.TrimSpace(messageNode.pastebinURL)
+	cachedURL := strings.TrimSpace(messageNode.gistURL)
 	responseText := messageNode.text
 	initialized := messageNode.initialized
 	messageNode.mu.Unlock()
@@ -456,7 +456,7 @@ func (instance *bot) handleViewOnPastebinButton(
 		return respondInteractionTextWithFlags(
 			session,
 			interaction.Interaction,
-			"View on Pastebin: "+cachedURL,
+			"View on GitHub: "+cachedURL,
 			discordgo.MessageFlagsEphemeral,
 		)
 	}
@@ -470,11 +470,11 @@ func (instance *bot) handleViewOnPastebinButton(
 		)
 	}
 
-	if instance.pastebin == nil {
+	if instance.gist == nil {
 		return respondInteractionTextWithFlags(
 			session,
 			interaction.Interaction,
-			"Pastebin is unavailable right now.",
+			"GitHub Gist is unavailable right now.",
 			discordgo.MessageFlagsEphemeral,
 		)
 	}
@@ -485,25 +485,25 @@ func (instance *bot) handleViewOnPastebinButton(
 		discordgo.MessageFlagsEphemeral,
 	)
 	if err != nil {
-		return fmt.Errorf("defer Pastebin interaction response: %w", err)
+		return fmt.Errorf("defer gist interaction response: %w", err)
 	}
 
-	pastebinURL, err := instance.pastebin.createPaste(context.Background(), responseText)
+	gistURL, err := instance.gist.createGist(context.Background(), responseText)
 	if err != nil {
-		logWarn("create Pastebin paste", err, "message_id", interaction.Message.ID)
+		logWarn("create GitHub gist", err, "message_id", interaction.Message.ID)
 
 		return editInteractionResponseText(
 			session,
 			interaction.Interaction,
-			"Couldn't create a Pastebin page right now.",
+			"Couldn't create a GitHub gist right now.",
 		)
 	}
 
 	messageNode.mu.Lock()
-	if strings.TrimSpace(messageNode.pastebinURL) == "" {
-		messageNode.pastebinURL = pastebinURL
+	if strings.TrimSpace(messageNode.gistURL) == "" {
+		messageNode.gistURL = gistURL
 	} else {
-		pastebinURL = messageNode.pastebinURL
+		gistURL = messageNode.gistURL
 	}
 
 	instance.nodes.cacheLockedNode(interaction.Message.ID, messageNode)
@@ -514,7 +514,7 @@ func (instance *bot) handleViewOnPastebinButton(
 	return editInteractionResponseText(
 		session,
 		interaction.Interaction,
-		"View on Pastebin: "+pastebinURL,
+		"View on GitHub: "+gistURL,
 	)
 }
 

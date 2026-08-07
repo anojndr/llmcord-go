@@ -176,11 +176,13 @@ func testGroundingConfig() config {
 			ConnectionString: "",
 			StoreKey:         "",
 		},
-		Pastebin: pastebinConfig{
-			Endpoint:   "",
-			DevKey:     "",
-			ExpireDate: "",
-			Name:       "",
+		Gist: gistConfig{
+			Endpoint:    "",
+			APIKey:      "",
+			APIKeys:     nil,
+			Description: "",
+			Filename:    defaultGistFilename,
+			Public:      false,
 		},
 		AutoCompactThresholdPercent: 0,
 		Models: map[string]map[string]any{

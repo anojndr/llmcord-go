@@ -7,7 +7,7 @@ It turns Discord reply chains into a frontend for OpenAI-compatible chat-complet
 ## Highlights
 
 - Reply-chain conversations in guilds, DMs, and public threads; triggered by bot mentions or `at ai`
-- Real-time streaming replies with a live progress embed (stage checklist, progress bar, elapsed timer), plus `Show Thinking`, `Show Sources`, and `View on Pastebin` (publishes the full reply through the Pastebin API)
+- Real-time streaming replies with a live progress embed (stage checklist, progress bar, elapsed timer), plus `Show Thinking`, `Show Sources`, and `View on GitHub` (publishes the full reply as a GitHub Gist)
 - Multimodal input: images, audio, video, PDFs, DOCX, PPTX, and generic file attachments
 - URL enrichment for TikTok, Facebook, YouTube, Reddit, and generic websites
 - Web-search augmentation (Exa by default), reverse-image lookup (`vsearch`), and native Gemini grounding
@@ -80,10 +80,11 @@ Providers are declared with `base_url` (OpenAI-compatible). The provider name se
 | `auto_compact_threshold_percent` | Compaction threshold relative to a model's `context_window`. Default: `90`. Matching Codex's auto-compaction trigger, the effective threshold is capped at 90% of the context window, so values above 90 have no additional effect. When the estimated conversation exceeds the threshold, older turns are summarized into a compact handoff summary tagged with `Earlier conversation summary (handoff checkpoint …)` so the next assistant can pick up seamlessly — sized to stay within the configured `context_window`. |
 | `database.connection_string` | PostgreSQL connection string for persisted history (`postgres://` or `postgresql://`). |
 | `database.store_key` | Logical key selecting the persisted history row. |
-| `pastebin.dev_key` | Pastebin developer API key used by the "View on Pastebin" button. Get one at https://pastebin.com/api. Publishing is disabled without a key. |
-| `pastebin.endpoint` | Pastebin API endpoint used to create pastes. Default: `https://pastebin.com/api/api_post.php`. |
-| `pastebin.expire_date` | Paste expiration: `N` (never), `10M`, `1H`, `1D`, `1W`, `2W`, `1M`, `6M`, or `1Y`. Default: `N`. |
-| `pastebin.name` | Title of created pastes. Default: `llmcord-go reply`. |
+| `gist.api_key` | GitHub personal access token (with the `gist` scope) used by the "View on GitHub" button. Get one at https://github.com/settings/tokens. Accepts a string or a YAML list, round-robin across multiple tokens. Publishing is disabled without a key. |
+| `gist.endpoint` | GitHub REST API endpoint used to create gists. Default: `https://api.github.com/gists`. |
+| `gist.public` | Whether created gists are public (default `false`, secret). |
+| `gist.description` | Description of created gists. Default: none. |
+| `gist.filename` | Filename of the file inside created gists. Default: `llmcord-go reply.md`. |
 | `system_prompt` | Prompt prepended to every request. `{date}` and `{time}` are expanded in the host time zone. |
 
 Model notes:
@@ -126,7 +127,7 @@ Generic website URL extraction runs through the FreeWeb MCP server by default (`
   Text-like files (JSON, CSV, logs, Markdown, source) are inlined when the provider can't read raw files; others stay attachments with metadata summaries, including ZIP manifests. Gemini sends single-image prompts text-first and uploads images over 4 MiB via the Files API; xAI/Grok bridges automatically upload oversized images through `/v1/files`.
 - Start a prompt with `vsearch` for reverse-image lookup
 - `Show Sources` on replies to inspect cited URLs (including pagination)
-- `View on Pastebin` on replies to publish the full text through the Pastebin API
+- `View on GitHub` on replies to publish the full text as a GitHub Gist
 
 ## Operational Notes
 

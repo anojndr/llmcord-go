@@ -21,7 +21,7 @@ func (function roundTripFunc) RoundTrip(request *http.Request) (*http.Response, 
 	return function(request)
 }
 
-type fakePastebinClient struct {
+type fakeGistClient struct {
 	url       string
 	err       error
 	callCount int
@@ -38,9 +38,9 @@ type deferredInteractionCapture struct {
 	editedResponse   editedInteractionResponse
 }
 
-var errFakePastebinUnavailable = errors.New("pastebin unavailable")
+var errFakeGistUnavailable = errors.New("gist unavailable")
 
-func (client *fakePastebinClient) createPaste(_ context.Context, text string) (string, error) {
+func (client *fakeGistClient) createGist(_ context.Context, text string) (string, error) {
 	client.callCount++
 	client.texts = append(client.texts, text)
 
@@ -1382,11 +1382,11 @@ func TestHandleInteractionCreateUpdatesShowSourcesPaginationPage(t *testing.T) {
 	}
 }
 
-func TestHandleInteractionCreateRespondsToViewOnPastebinButton(t *testing.T) {
+func TestHandleInteractionCreateRespondsToCreateGistButton(t *testing.T) {
 	t.Parallel()
 
-	pastebin := new(fakePastebinClient)
-	pastebin.url = "https://pastebin.com/example"
+	gist := new(fakeGistClient)
+	gist.url = "https://gist.github.com/example"
 
 	var capture deferredInteractionCapture
 
@@ -1394,7 +1394,7 @@ func TestHandleInteractionCreateRespondsToViewOnPastebinButton(t *testing.T) {
 
 	instance := new(bot)
 	instance.nodes = newMessageNodeStore(10)
-	instance.pastebin = pastebin
+	instance.gist = gist
 
 	node := instance.nodes.getOrCreate("response-message")
 	node.mu.Lock()
@@ -1402,29 +1402,29 @@ func TestHandleInteractionCreateRespondsToViewOnPastebinButton(t *testing.T) {
 	node.initialized = true
 	node.mu.Unlock()
 
-	interaction := newComponentInteraction("response-message", viewOnPastebinButtonCustomID)
+	interaction := newComponentInteraction("response-message", createGistButtonCustomID)
 
 	instance.handleInteractionCreate(session, interaction)
 
 	assertDeferredEphemeralInteractionResponse(t, &capture.deferredResponse)
 
-	if !containsFold(capture.editedResponse.Content, pastebin.url) {
-		t.Fatalf("expected Pastebin url in edited response content: %q", capture.editedResponse.Content)
+	if !containsFold(capture.editedResponse.Content, gist.url) {
+		t.Fatalf("expected gist url in edited response content: %q", capture.editedResponse.Content)
 	}
 
-	if pastebin.callCount != 1 {
-		t.Fatalf("unexpected Pastebin call count: %d", pastebin.callCount)
+	if gist.callCount != 1 {
+		t.Fatalf("unexpected gist call count: %d", gist.callCount)
 	}
 
-	if len(pastebin.texts) != 1 || pastebin.texts[0] != testAssistantReply {
-		t.Fatalf("unexpected Pastebin request texts: %#v", pastebin.texts)
+	if len(gist.texts) != 1 || gist.texts[0] != testAssistantReply {
+		t.Fatalf("unexpected gist request texts: %#v", gist.texts)
 	}
 
 	node.mu.Lock()
 	defer node.mu.Unlock()
 
-	if node.pastebinURL != pastebin.url {
-		t.Fatalf("unexpected cached Pastebin url: %q", node.pastebinURL)
+	if node.gistURL != gist.url {
+		t.Fatalf("unexpected cached gist url: %q", node.gistURL)
 	}
 
 	if capture.requestCount != 2 {
@@ -1432,26 +1432,26 @@ func TestHandleInteractionCreateRespondsToViewOnPastebinButton(t *testing.T) {
 	}
 }
 
-func TestHandleInteractionCreateReusesCachedPastebinURL(t *testing.T) {
+func TestHandleInteractionCreateReusesCachedGistURL(t *testing.T) {
 	t.Parallel()
 
 	var response discordgo.InteractionResponse
 
 	session := newInteractionTestSession(t, &response)
-	pastebin := new(fakePastebinClient)
+	gist := new(fakeGistClient)
 
 	instance := new(bot)
 	instance.nodes = newMessageNodeStore(10)
-	instance.pastebin = pastebin
+	instance.gist = gist
 
 	node := instance.nodes.getOrCreate("response-message")
 	node.mu.Lock()
 	node.text = testAssistantReply
 	node.initialized = true
-	node.pastebinURL = "https://pastebin.com/cached"
+	node.gistURL = "https://gist.github.com/cached"
 	node.mu.Unlock()
 
-	interaction := newComponentInteraction("response-message", viewOnPastebinButtonCustomID)
+	interaction := newComponentInteraction("response-message", createGistButtonCustomID)
 
 	instance.handleInteractionCreate(session, interaction)
 
@@ -1459,20 +1459,20 @@ func TestHandleInteractionCreateReusesCachedPastebinURL(t *testing.T) {
 		t.Fatal("expected interaction response data")
 	}
 
-	if !containsFold(response.Data.Content, node.pastebinURL) {
-		t.Fatalf("expected cached Pastebin url in response content: %q", response.Data.Content)
+	if !containsFold(response.Data.Content, node.gistURL) {
+		t.Fatalf("expected cached gist url in response content: %q", response.Data.Content)
 	}
 
-	if pastebin.callCount != 0 {
-		t.Fatalf("expected cached Pastebin url to skip creation, got %d calls", pastebin.callCount)
+	if gist.callCount != 0 {
+		t.Fatalf("expected cached gist url to skip creation, got %d calls", gist.callCount)
 	}
 }
 
-func TestHandleInteractionCreateRespondsToViewOnPastebinButtonFailure(t *testing.T) {
+func TestHandleInteractionCreateRespondsToCreateGistButtonFailure(t *testing.T) {
 	t.Parallel()
 
-	pastebin := new(fakePastebinClient)
-	pastebin.err = errFakePastebinUnavailable
+	gist := new(fakeGistClient)
+	gist.err = errFakeGistUnavailable
 
 	var capture deferredInteractionCapture
 
@@ -1480,7 +1480,7 @@ func TestHandleInteractionCreateRespondsToViewOnPastebinButtonFailure(t *testing
 
 	instance := new(bot)
 	instance.nodes = newMessageNodeStore(10)
-	instance.pastebin = pastebin
+	instance.gist = gist
 
 	node := instance.nodes.getOrCreate("response-message")
 	node.mu.Lock()
@@ -1488,13 +1488,13 @@ func TestHandleInteractionCreateRespondsToViewOnPastebinButtonFailure(t *testing
 	node.initialized = true
 	node.mu.Unlock()
 
-	interaction := newComponentInteraction("response-message", viewOnPastebinButtonCustomID)
+	interaction := newComponentInteraction("response-message", createGistButtonCustomID)
 
 	instance.handleInteractionCreate(session, interaction)
 
 	assertDeferredEphemeralInteractionResponse(t, &capture.deferredResponse)
 
-	expectedContent := "Couldn't create a Pastebin page right now."
+	expectedContent := "Couldn't create a GitHub gist right now."
 	if capture.editedResponse.Content != expectedContent {
 		t.Fatalf(
 			"unexpected edited failure response content: got %q want %q",
@@ -1506,8 +1506,8 @@ func TestHandleInteractionCreateRespondsToViewOnPastebinButtonFailure(t *testing
 	node.mu.Lock()
 	defer node.mu.Unlock()
 
-	if node.pastebinURL != "" {
-		t.Fatalf("expected empty cached Pastebin url, got %q", node.pastebinURL)
+	if node.gistURL != "" {
+		t.Fatalf("expected empty cached gist url, got %q", node.gistURL)
 	}
 
 	if capture.requestCount != 2 {
