@@ -17,6 +17,13 @@
 # Root-level Go implementation, provider regression tests, and concurrency tests stay explicit.
 # Local scratch, timeout diagnostics, profiles, benchmark captures, payload dumps, test binaries, and quality-gate reports remain ignored by default.
 !*.go
+!cmd/
+!cmd/**/*
+!cmd/**/*.go
+!internal/
+!internal/**/*
+!internal/**/*.go
+!internal/**/*.txt
 !searchDeciderPrompt.txt
 # Keep repo-owned YAML files explicit; local runtime config stays ignored by default.
 
@@ -28,3 +35,5 @@
 !go.mod
 !go.sum
 !render.yaml
+!plans/
+!plans/**/*

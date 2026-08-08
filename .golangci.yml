@@ -5,9 +5,19 @@ linters:
     - wsl
   enable:
     - wsl_v5
+    - testpackage
   settings:
     cyclop:
       max-complexity: 20
+    testpackage:
+      allow-packages:
+        - app
+        - config
+        - providers
+        - main
+    wrapcheck:
+      extra-ignore-sigs:
+        - .StreamChatCompletion(
     goconst:
       ignore-tests: true
     depguard:
@@ -15,6 +25,11 @@ linters:
         main:
           allow:
             - $gostd
+            - llmcord-go/internal/app
+            - llmcord-go/internal/config
+            - llmcord-go/internal/providers
+            - llmcord-go/internal/searchtypes
+            - llmcord-go/internal/support
             - github.com/bwmarrin/discordgo
             - github.com/chromedp/chromedp
             - github.com/ledongthuc/pdf
