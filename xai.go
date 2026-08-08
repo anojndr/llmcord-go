@@ -188,13 +188,20 @@ func assignXAIPreviousResponseID(
 		return
 	}
 
+	systemMessages, _ := splitLeadingSystemMessages(request.Messages)
+
 	continuationMessages, ok := xAIContinuationMessages(request.Messages)
 	if !ok {
 		return
 	}
 
+	// Re-attach the leading system prompt: request.Messages is replaced with
+	// the continuation handoff below, so the system prompt must survive into
+	// the follow-up request sent to the provider.
+	request.Messages = make([]chatMessage, 0, len(systemMessages)+len(continuationMessages))
+	request.Messages = append(request.Messages, systemMessages...)
+	request.Messages = append(request.Messages, continuationMessages...)
 	request.PreviousResponseID = previousResponseID
-	request.Messages = continuationMessages
 }
 
 func requestUsesXAIPreviousResponseID(request chatCompletionRequest) bool {
