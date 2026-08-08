@@ -774,11 +774,79 @@ func TestAssignXAIPreviousResponseIDUsesAssistantAnchorAndTrimsHistory(t *testin
 		t.Fatalf("unexpected previous response id: %q", request.PreviousResponseID)
 	}
 
+	if len(request.Messages) != 3 {
+		t.Fatalf("unexpected continuation message count: %d", len(request.Messages))
+	}
+
+	if request.Messages[0].Role != messageRoleSystem || request.Messages[0].Content != "You are concise." {
+		t.Fatalf("expected system prompt to lead the continuation messages: %#v", request.Messages)
+	}
+
+	if request.Messages[1].Content != "follow-up one" || request.Messages[2].Content != "follow-up two" {
+		t.Fatalf("unexpected continuation messages: %#v", request.Messages)
+	}
+}
+
+func TestAssignXAIPreviousResponseIDKeepsSystemPromptLeadingContinuation(t *testing.T) {
+	t.Parallel()
+
+	store := newMessageNodeStore(8)
+
+	rootUser := newTestDiscordMessage("100")
+	assistant := newTestDiscordMessage("200")
+	followUp := newTestDiscordMessage("300")
+
+	setConversationNode(store, rootUser.ID, messageRoleUser, "", "", nil)
+	setConversationNode(
+		store,
+		assistant.ID,
+		messageRoleAssistant,
+		testXAIProviderResponseID,
+		"x-ai/grok-4",
+		rootUser,
+	)
+	setConversationNode(store, followUp.ID, messageRoleUser, "", "", assistant)
+
+	request := chatCompletionRequest{
+		Provider: providerRequestConfig{
+			APIKind:         providerAPIKindOpenAI,
+			BaseURL:         "",
+			APIKey:          "",
+			APIKeys:         nil,
+			UseResponsesAPI: true,
+			EnableGrounding: false,
+			ExtraHeaders:    nil,
+			ExtraQuery:      nil,
+			ExtraBody:       nil,
+		},
+		Model:              "",
+		ConfiguredModel:    "x-ai/grok-4",
+		SessionID:          "",
+		PreviousResponseID: "",
+		RequestID:          "",
+		Messages: []chatMessage{
+			{Role: messageRoleSystem, Content: "You are concise."},
+			{Role: messageRoleUser, Content: "first question"},
+			{Role: messageRoleAssistant, Content: "first answer"},
+			{Role: messageRoleUser, Content: "follow-up"},
+		},
+	}
+
+	assignXAIPreviousResponseID(&request, followUp, store, defaultMaxMessages)
+
+	if request.PreviousResponseID != testXAIProviderResponseID {
+		t.Fatalf("unexpected previous response id: %q", request.PreviousResponseID)
+	}
+
 	if len(request.Messages) != 2 {
 		t.Fatalf("unexpected continuation message count: %d", len(request.Messages))
 	}
 
-	if request.Messages[0].Content != "follow-up one" || request.Messages[1].Content != "follow-up two" {
+	if request.Messages[0].Role != messageRoleSystem || request.Messages[0].Content != "You are concise." {
+		t.Fatalf("expected system prompt to lead the continuation messages: %#v", request.Messages)
+	}
+
+	if request.Messages[1].Content != "follow-up" {
 		t.Fatalf("unexpected continuation messages: %#v", request.Messages)
 	}
 }
