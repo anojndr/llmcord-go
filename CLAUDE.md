@@ -10,7 +10,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 These are hard requirements for every change to this repository — the final state of any task must satisfy all of them:
 
-1. **Red/green TDD.** Write a failing test for the change first, run it to confirm it fails (red), then implement the change, then confirm the test passes (green). Tests live alongside the code in `package main` (see Testing conventions). A change without a preceding failing test is incomplete.
+1. **Red/green TDD.** Write a failing test for the change first, run it to confirm it fails (red), then implement the change, then confirm the test passes (green). Tests live alongside the code in the package under test (see Testing conventions). A change without a preceding failing test is incomplete.
 2. **Quality gate at the end.** After any change, run the full quality gate in Build / test / lint below and leave the tree clean: `gofmt -s`, `go mod tidy`, the full test suite with `-race`, benchmarks, `go vet`, and golangci-lint. The gate is a completion condition, not a suggestion.
 3. **`golangci-lint run --default=all`.** Run with every linter enabled. Fix every issue it reports — never suppress via `//nolint` comments, `#nosec`, `disable:` entries, or exclusion rules in `.golangci.yml`. If a linter fires, change the code; the config's deliberate deviations are already encoded there.
 4. **Race testing.** `go test ./... -race -count=1` after every change, especially anything touching concurrency (goroutines, mutexes, channels, shared state on `bot` or the node stores). If the race detector fires, the fix is a real synchronization change, not dropping `-race`.
@@ -18,7 +18,20 @@ These are hard requirements for every change to this repository — the final st
 
 ## Build / test / lint
 
-Requires Go 1.26+. All application code is one `package main` in the repo root, so everything builds with `go build .` and runs with `go run .` (config from `config.yaml`, or `LLMCORD_CONFIG_PATH`).
+Requires Go 1.26+. The codebase is split into layered packages under `internal/`, and the entry point lives in `cmd/llmcord-go`, so everything builds with `go build ./...` and runs with `go run ./cmd/llmcord-go` (config from `config.yaml`, or `LLMCORD_CONFIG_PATH`).
+
+```
+cmd/llmcord-go        entry point (thin main; app.Main)
+internal/app          the bot: bot struct, messages, interactions, response, conversation,
+                      augmentation, search, scrapers, store, config loading glue
+internal/config       YAML config schema, normalization, API-key helpers
+internal/store        messageNode/messageNodeStore + Postgres persistence
+internal/providers    streaming provider clients (OpenAI-compatible + Responses, Gemini,
+                      xAI/Grok, retries, caching, errors)
+internal/searchtypes  shared search metadata types, message-part keys, embedded prompt
+internal/support      tiny shared helpers (rune counts, MIME normalization)
+```
+The dependency direction is strictly bottom-up: support/searchtypes ← config ← store ← providers ← app ← cmd.
 
 The quality gate from README.md — run after changes:
 
@@ -26,7 +39,7 @@ The quality gate from README.md — run after changes:
 gofmt -s -w .
 go mod tidy
 go test ./... -race -count=1
-go test . -bench=. -benchmem -run=^$
+go test ./... -bench=. -benchmem -run=^$
 go vet ./...
 golangci-lint run --default=all
 ```
@@ -41,7 +54,7 @@ The bot's pipeline is: Discord message → conversation build → augmentation �
 
 ### Runtime flow
 
-`main.go` → `run()` in bot.go → `newBot()` wires the Discord session, an optimized HTTP client, and client objects into a `bot` struct; `bot` is a God object holding all clients and runtime state (current model, search type, grounding toggle, edit-rate limiter). `handleMessageCreate` (messages.go) is the entry point: it ignores messages that don't mention the bot (`at ai` also counts), loads config fresh from disk on every message, checks permissions, then:
+`cmd/llmcord-go/main.go` acquires a single-instance `flock` on the config file (`AcquireInstanceLock`, instance_lock.go) so a second process for the same config fails fast instead of double-handling every message, then `run()` in bot.go → `newBot()` wires the Discord session, an optimized HTTP client, and client objects into a `bot` struct; `bot` is a God object holding all clients and runtime state (current model, search type, grounding toggle, edit-rate limiter). `handleMessageCreate` (messages.go) is the entry point: it ignores messages that don't mention the bot (`at ai` also counts), deduplicates duplicate `MESSAGE_CREATE` deliveries of the same message ID within a 30-second window (`markMessageSeen`, instance_lock.go), loads config fresh from disk on every message, checks permissions, then:
 
 1. `respondToMessage` starts a progress embed (`startRequestProgress`, progress.go) and typing indicator, then calls `prepareMessageResponse`.
 2. `prepareMessageResponse` (messages.go:220) builds the conversation, augments it, and assembles a `chatCompletionRequest`.
@@ -77,7 +90,7 @@ The router performs no retries and no attempt timeouts except one narrow case: `
 
 ## Testing conventions
 
-- Tests are table/helper-driven, all in `package main`, heavily using `httptest` streaming servers that assert on request path/headers/body captures and write SSE chunks. Search tests for `newStreamingTestServer`, `assertStreamingRequest`, `writeStreamChunk` in the provider `_test.go` files as the starting point for new provider tests.
+- Tests are table/helper-driven, in-package, heavily using `httptest` streaming servers that assert on request path/headers/body captures and write SSE chunks. Providers tests mirror the original `newStreamingTestServer`, `writeStreamChunk` helpers in `internal/providers/openai_test.go`; app tests share stub clients and fixture helpers across `internal/app/*_test.go`.
 - Config-parsing tests (config_test.go) exercise YAML decode behaviors (scalar strings, key lists, defaults, errors).
 - Benchmarks live in `text_bench_test.go`.
 

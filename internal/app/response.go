@@ -1,0 +1,1112 @@
+package app
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	providers "llmcord-go/internal/providers"
+	searchtypes "llmcord-go/internal/searchtypes"
+	"regexp"
+	"strings"
+	"time"
+
+	"github.com/bwmarrin/discordgo"
+)
+
+type segmentAccumulator struct {
+	maxLength int
+	segments  []string
+}
+
+type renderSpec struct {
+	content    string
+	color      int
+	actions    responseActions
+	footerText string
+}
+
+type responseActions struct {
+	showSources  bool
+	showThinking bool
+	showGist     bool
+}
+
+type pendingResponse struct {
+	messageID string
+	node      *messageNode
+}
+
+type responseTracker struct {
+	sourceMessage      *discordgo.Message
+	searchMetadata     *searchMetadata
+	modelName          string
+	originalModel      string
+	providerResponseID string
+	responseMessages   []*discordgo.Message
+	pendingResponses   []pendingResponse
+	renderedSpecs      []renderSpec
+	progressActive     bool
+	responseVisible    bool
+	originalMessages   []chatMessage
+}
+
+const (
+	discordMessageContentMaxLength = 2000
+	userFacingErrorMaxRunes        = 1500
+)
+
+var imgbbResponseURLRegexp = regexp.MustCompile(`(?i)\bhttps?://i\.ibb\.co/[^\s<>\]\)]+`)
+
+func newSegmentAccumulator(maxLength int) segmentAccumulator {
+	return segmentAccumulator{
+		maxLength: maxLength,
+		segments:  []string{""},
+	}
+}
+
+func (accumulator *segmentAccumulator) appendText(text string) bool {
+	splitOccurred := false
+	remainingText := text
+
+	for remainingText != "" {
+		lastIndex := len(accumulator.segments) - 1
+
+		availableRunes := accumulator.maxLength - runeCount(accumulator.segments[lastIndex])
+		if availableRunes == 0 {
+			accumulator.segments = append(accumulator.segments, "")
+			lastIndex = len(accumulator.segments) - 1
+			availableRunes = accumulator.maxLength
+			splitOccurred = true
+		}
+
+		prefix, suffix := splitRunesPrefix(remainingText, availableRunes)
+		accumulator.segments[lastIndex] += prefix
+		remainingText = suffix
+
+		if remainingText != "" {
+			accumulator.segments = append(accumulator.segments, "")
+			splitOccurred = true
+		}
+	}
+
+	return splitOccurred
+}
+
+func (accumulator *segmentAccumulator) joined() string {
+	return strings.Join(accumulator.segments, "")
+}
+
+func visibleResponseText(thinkingText, answerText string) string {
+	switch {
+	case thinkingText == "":
+		return answerText
+	case answerText == "":
+		return thinkingResponsePrefix + thinkingText
+	default:
+		return thinkingResponsePrefix + thinkingText + answerResponseSeparator + answerText
+	}
+}
+
+const thinkingResponsePrefix = "**Thinking**\n"
+const answerResponseSeparator = "\n\n**Answer**\n"
+
+var (
+	errStreamedAnswerVisibilityRegressed = errors.New("streamed answer visibility regressed")
+	errEmptyModelResponse                = errors.New("model returned an empty response")
+	errNilSession                        = errors.New("session is nil")
+)
+
+func extractThinkingText(fullText string) string {
+	trimmedText := strings.TrimSpace(fullText)
+	if !strings.HasPrefix(trimmedText, thinkingResponsePrefix) {
+		return ""
+	}
+
+	thinkingBody := strings.TrimPrefix(trimmedText, thinkingResponsePrefix)
+
+	thinkingOnly, _, found := strings.Cut(thinkingBody, answerResponseSeparator)
+	if !found {
+		return strings.TrimSpace(thinkingBody)
+	}
+
+	return strings.TrimSpace(thinkingOnly)
+}
+
+func visibleResponseSegments(thinkingText string, answerText string, maxLength int) []string {
+	displayText := visibleResponseText(thinkingText, answerText)
+	if displayText == "" {
+		return nil
+	}
+
+	accumulator := newSegmentAccumulator(maxLength)
+	_ = accumulator.appendText(displayText)
+
+	return accumulator.renderSegments()
+}
+
+func (accumulator *segmentAccumulator) renderSegments() []string {
+	if len(accumulator.segments) == 0 {
+		return nil
+	}
+
+	segments := make([]string, 0, len(accumulator.segments))
+	segments = append(segments, accumulator.segments...)
+
+	if len(segments) == 1 && segments[0] == "" {
+		return nil
+	}
+
+	return segments
+}
+
+func newResponseTracker(
+	sourceMessage *discordgo.Message,
+	modelName string,
+) *responseTracker {
+	tracker := new(responseTracker)
+	tracker.sourceMessage = sourceMessage
+	tracker.modelName = strings.TrimSpace(modelName)
+	tracker.originalModel = tracker.modelName
+
+	return tracker
+}
+
+func (tracker *responseTracker) release(store *messageNodeStore, fullText string, thinkingText string) {
+	for _, pending := range tracker.pendingResponses {
+		pending.node.role = messageRoleAssistant
+		pending.node.text = fullText
+		pending.node.thinkingText = thinkingText
+		pending.node.urlScanText = ""
+		pending.node.searchMetadata = cloneSearchMetadata(tracker.searchMetadata)
+		pending.node.providerResponseID = strings.TrimSpace(tracker.providerResponseID)
+		pending.node.providerResponseModel = strings.TrimSpace(tracker.modelName)
+		pending.node.parentMessage = tracker.sourceMessage
+		pending.node.initialized = true
+
+		if store != nil {
+			store.cacheLockedNode(pending.messageID, pending.node)
+		}
+
+		pending.node.mu.Unlock()
+	}
+}
+
+func emptyChatCompletionRequest() chatCompletionRequest {
+	return chatCompletionRequest{
+		Provider: providerRequestConfig{
+			APIKind:         "",
+			BaseURL:         "",
+			APIKey:          "",
+			APIKeys:         nil,
+			UseResponsesAPI: false,
+			EnableGrounding: false,
+			ExtraHeaders:    nil,
+			ExtraQuery:      nil,
+			ExtraBody:       nil,
+		},
+		Model:              "",
+		ConfiguredModel:    "",
+		SessionID:          "",
+		PreviousResponseID: "",
+		RequestID:          "",
+		Messages:           nil,
+	}
+}
+
+func (instance *bot) runGenerationAttempt(
+	ctx context.Context,
+	request chatCompletionRequest,
+	tracker *responseTracker,
+	warnings []string,
+) (string, string, *searchMetadata, error) {
+	accumulator := newSegmentAccumulator(embedResponseMaxLength)
+	thinkingAccumulator := newSegmentAccumulator(embedResponseMaxLength)
+
+	var finishReason string
+
+	lastRenderTime := time.Time{}
+
+	streamState := generatedStreamState{
+		request:             request,
+		warnings:            warnings,
+		answerAccumulator:   &accumulator,
+		thinkingAccumulator: &thinkingAccumulator,
+		finishReason:        &finishReason,
+		lastRenderTime:      &lastRenderTime,
+		rawAnswerText:       "",
+		renderedAnswerText:  "",
+	}
+
+	streamErr := instance.chatCompletions.StreamChatCompletion(
+		ctx,
+		request,
+		func(delta streamDelta) error {
+			return instance.handleGeneratedStreamDelta(ctx, tracker, &streamState, delta)
+		},
+	)
+
+	if streamErr != nil && finishReason == "" {
+		finishReason = providers.OpenAIStreamErrorEventType
+	}
+
+	finalAnswerText := streamState.rawAnswerText
+	cleanedAnswerText, parsedSearchMetadata := providers.FinalizeXAIResponseAnswer(
+		request,
+		finalAnswerText,
+		tracker.searchMetadata,
+	)
+
+	if parsedSearchMetadata != nil {
+		tracker.searchMetadata = searchtypes.MergeSearchMetadata(tracker.searchMetadata, parsedSearchMetadata)
+	}
+
+	finalAccumulator := accumulator
+
+	if cleanedAnswerText != finalAnswerText {
+		finalAccumulator = newSegmentAccumulator(embedResponseMaxLength)
+
+		_ = finalAccumulator.appendText(cleanedAnswerText)
+	}
+
+	responseErr := instance.renderFinalResponse(
+		ctx,
+		tracker,
+		warnings,
+		&finalAccumulator,
+		thinkingAccumulator.joined(),
+		finishReason,
+	)
+
+	if responseErr == nil && streamErr != nil {
+		responseErr = fmt.Errorf("stream response: %w", streamErr)
+	}
+
+	if responseErr == nil &&
+		strings.TrimSpace(visibleResponseText(thinkingAccumulator.joined(), cleanedAnswerText)) == "" {
+		responseErr = errEmptyModelResponse
+	}
+
+	return cleanedAnswerText, thinkingAccumulator.joined(), parsedSearchMetadata, responseErr
+}
+
+func (instance *bot) generateAndSendResponse(
+	ctx context.Context,
+	request chatCompletionRequest,
+	tracker *responseTracker,
+	warnings []string,
+) error {
+	tracker.modelName = strings.TrimSpace(request.ConfiguredModel)
+
+	cleanedText, thinkingText, _, responseErr := instance.runGenerationAttempt(
+		ctx,
+		request,
+		tracker,
+		warnings,
+	)
+	if responseErr == nil {
+		finalText := visibleResponseText(thinkingText, cleanedText)
+
+		tracker.release(instance.nodes, finalText, thinkingText)
+
+		instance.nodes.persistBestEffort()
+
+		return nil
+	}
+
+	errorText := userFacingResponseError(responseErr)
+
+	renderErr := instance.renderFailureResponse(ctx, tracker, errorText)
+
+	var finalText string
+
+	if renderErr != nil {
+		responseErr = errors.Join(responseErr, fmt.Errorf("render failure response: %w", renderErr))
+		finalText = visibleResponseText(thinkingText, cleanedText)
+	} else {
+		finalText = responseTextWithError(
+			visibleResponseText(thinkingText, cleanedText),
+			errorText,
+		)
+	}
+
+	tracker.release(instance.nodes, finalText, thinkingText)
+
+	instance.nodes.persistBestEffort()
+
+	return responseErr
+}
+
+type generatedStreamState struct {
+	request             chatCompletionRequest
+	warnings            []string
+	answerAccumulator   *segmentAccumulator
+	thinkingAccumulator *segmentAccumulator
+	finishReason        *string
+	lastRenderTime      *time.Time
+	rawAnswerText       string
+	renderedAnswerText  string
+}
+
+func (instance *bot) handleGeneratedStreamDelta(
+	ctx context.Context,
+	tracker *responseTracker,
+	state *generatedStreamState,
+	delta streamDelta,
+) error {
+	splitOccurred := false
+	if delta.Thinking != "" {
+		splitOccurred = state.thinkingAccumulator.appendText(delta.Thinking) || splitOccurred
+	}
+
+	if delta.Content != "" {
+		answerSplitOccurred, err := state.appendAnswerText(delta.Content)
+		if err != nil {
+			return err
+		}
+
+		splitOccurred = answerSplitOccurred || splitOccurred
+	}
+
+	if delta.FinishReason != "" {
+		*state.finishReason = delta.FinishReason
+	}
+
+	if strings.TrimSpace(delta.ProviderResponseID) != "" {
+		tracker.providerResponseID = strings.TrimSpace(delta.ProviderResponseID)
+	}
+
+	if delta.SearchMetadata != nil {
+		tracker.searchMetadata = searchtypes.MergeSearchMetadata(tracker.searchMetadata, delta.SearchMetadata)
+	}
+
+	segments := visibleResponseSegments(
+		state.thinkingAccumulator.joined(),
+		state.answerAccumulator.joined(),
+		embedResponseMaxLength,
+	)
+
+	if !shouldRenderProgress(segments, splitOccurred, *state.lastRenderTime) {
+		return nil
+	}
+
+	err := instance.renderEmbedResponse(
+		ctx,
+		tracker,
+		state.warnings,
+		segments,
+		*state.finishReason,
+		false,
+		false,
+	)
+	if err != nil {
+		return fmt.Errorf("render streaming response: %w", err)
+	}
+
+	*state.lastRenderTime = time.Now()
+
+	return nil
+}
+
+func (state *generatedStreamState) appendAnswerText(answerDelta string) (bool, error) {
+	state.rawAnswerText += answerDelta
+
+	visibleAnswerText := providers.XAIStreamingVisibleAnswerText(state.request, state.rawAnswerText)
+	if !strings.HasPrefix(visibleAnswerText, state.renderedAnswerText) {
+		return false, errStreamedAnswerVisibilityRegressed
+	}
+
+	renderedDelta := strings.TrimPrefix(visibleAnswerText, state.renderedAnswerText)
+	state.renderedAnswerText = visibleAnswerText
+
+	if renderedDelta == "" {
+		return false, nil
+	}
+
+	return state.answerAccumulator.appendText(renderedDelta), nil
+}
+
+func responseTextWithError(responseText, errorText string) string {
+	trimmedResponseText := strings.TrimSpace(responseText)
+	trimmedErrorText := strings.TrimSpace(errorText)
+
+	if trimmedResponseText == "" {
+		return trimmedErrorText
+	}
+
+	if trimmedErrorText == "" {
+		return trimmedResponseText
+	}
+
+	return trimmedResponseText + "\n\n" + trimmedErrorText
+}
+
+func (instance *bot) renderFinalResponse(
+	ctx context.Context,
+	tracker *responseTracker,
+	warnings []string,
+	accumulator *segmentAccumulator,
+	thinkingText string,
+	finishReason string,
+) error {
+	err := instance.renderEmbedResponse(
+		ctx,
+		tracker,
+		warnings,
+		accumulator.renderSegments(),
+		finishReason,
+		true,
+		strings.TrimSpace(thinkingText) != "",
+	)
+	if err != nil {
+		return fmt.Errorf("render final embed response: %w", err)
+	}
+
+	instance.sendImgbbURLReplies(tracker, accumulator.joined())
+
+	return nil
+}
+
+func userFacingResponseError(err error) string {
+	const (
+		genericResponseErrorText = "Couldn't generate a response right now. Try again."
+		invalidProviderErrorText = "The provider returned an invalid or oversized error response. Try again."
+		truncatedErrorSuffix     = " [truncated]"
+	)
+
+	if err == nil {
+		return genericResponseErrorText
+	}
+
+	if errors.Is(err, errEmptyModelResponse) {
+		return "The model returned an empty response. Try again."
+	}
+
+	errorText := strings.TrimSpace(err.Error())
+	if errorText == "" {
+		return genericResponseErrorText
+	}
+
+	if providers.OpenAIHTTPErrorBodyLooksOpaque(errorText) {
+		return invalidProviderErrorText
+	}
+
+	if runeCount(errorText) > userFacingErrorMaxRunes {
+		truncateAt := max(0, userFacingErrorMaxRunes-runeCount(truncatedErrorSuffix))
+		if truncateAt == 0 {
+			return invalidProviderErrorText
+		}
+
+		return truncateRunes(errorText, truncateAt) + truncatedErrorSuffix
+	}
+
+	return errorText
+}
+
+func (instance *bot) renderFailureResponse(
+	ctx context.Context,
+	tracker *responseTracker,
+	errorText string,
+) error {
+	if instance == nil || instance.session == nil || tracker == nil {
+		return nil
+	}
+
+	errorText = strings.TrimSpace(errorText)
+	if errorText == "" {
+		errorText = userFacingResponseError(nil)
+	}
+
+	failureEmbed := buildRequestProgressFailureEmbed(tracker.modelName, errorText)
+
+	handled, renderErr := instance.renderFailureOnProgressMessage(ctx, tracker, failureEmbed)
+	if handled {
+		return nil
+	}
+
+	return instance.sendFailureResponse(tracker, failureEmbed, renderErr)
+}
+
+func (instance *bot) sendFailureResponse(
+	tracker *responseTracker,
+	failureEmbed *discordgo.MessageEmbed,
+	renderErr error,
+) error {
+	failureTracker := newResponseTracker(tracker.sourceMessage, tracker.modelName)
+	failureTracker.originalModel = tracker.originalModel
+	failureTracker.searchMetadata = cloneSearchMetadata(tracker.searchMetadata)
+	failureTracker.responseMessages = append(failureTracker.responseMessages, tracker.responseMessages...)
+
+	sentMessage, pending, err := instance.sendEmbedMessage(
+		failureTracker,
+		failureEmbed,
+		responseActions{showSources: false, showThinking: false, showGist: false},
+	)
+	if err != nil {
+		if renderErr != nil {
+			return errors.Join(renderErr, fmt.Errorf("send failure response: %w", err))
+		}
+
+		return fmt.Errorf("send failure response: %w", err)
+	}
+
+	tracker.progressActive = false
+	tracker.responseVisible = true
+	tracker.responseMessages = append(tracker.responseMessages, sentMessage)
+	tracker.pendingResponses = append(tracker.pendingResponses, pending)
+
+	return renderErr
+}
+
+func shouldRenderProgress(
+	segments []string,
+	splitOccurred bool,
+	lastRenderTime time.Time,
+) bool {
+	if len(segments) == 0 {
+		return false
+	}
+
+	if splitOccurred {
+		return true
+	}
+
+	if lastRenderTime.IsZero() {
+		return true
+	}
+
+	return time.Since(lastRenderTime) >= editDelay
+}
+
+func buildRenderSpecs(
+	segments []string,
+	finishReason string,
+	final bool,
+	hasSearchMetadata bool,
+	hasThinking bool,
+) []renderSpec {
+	specs := make([]renderSpec, 0, len(segments))
+
+	for index, segment := range segments {
+		settled := index < len(segments)-1 || final
+
+		spec := renderSpec{
+			content: segment,
+			color:   0,
+			actions: responseActions{
+				showSources:  final && hasSearchMetadata && index == len(segments)-1,
+				showThinking: final && hasThinking && index == len(segments)-1,
+				showGist:     final && index == len(segments)-1,
+			},
+			footerText: "",
+		}
+
+		switch {
+		case !settled:
+			spec.content += streamingIndicator
+			spec.color = embedColorIncomplete
+		case index < len(segments)-1 || isGoodFinishReason(finishReason):
+			spec.color = embedColorComplete
+		default:
+			spec.color = embedColorIncomplete
+		}
+
+		specs = append(specs, spec)
+	}
+
+	return specs
+}
+
+func (instance *bot) renderEmbedResponse(
+	ctx context.Context,
+	tracker *responseTracker,
+	warnings []string,
+	segments []string,
+	finishReason string,
+	final bool,
+	hasThinking bool,
+) error {
+	if len(segments) == 0 {
+		return nil
+	}
+
+	desiredSpecs := buildRenderSpecs(
+		segments,
+		finishReason,
+		final,
+		tracker.searchMetadata != nil,
+		hasThinking,
+	)
+
+	for index, spec := range desiredSpecs {
+		if index < len(tracker.renderedSpecs) && tracker.renderedSpecs[index] == spec {
+			continue
+		}
+
+		embed := buildResponseEmbed(
+			spec.content,
+			tracker.modelName,
+			spec.color,
+			warnings,
+			spec.footerText,
+		)
+
+		err := instance.renderEmbedSpec(ctx, tracker, index, embed, spec.actions)
+		if err != nil {
+			return err
+		}
+
+		if index < len(tracker.renderedSpecs) {
+			tracker.renderedSpecs[index] = spec
+		} else {
+			tracker.renderedSpecs = append(tracker.renderedSpecs, spec)
+		}
+	}
+
+	err := instance.trimExtraEmbedResponses(ctx, tracker, len(desiredSpecs))
+	if err != nil {
+		return err
+	}
+
+	tracker.responseVisible = true
+
+	return nil
+}
+
+func (instance *bot) renderEmbedSpec(
+	ctx context.Context,
+	tracker *responseTracker,
+	index int,
+	embed *discordgo.MessageEmbed,
+	actions responseActions,
+) error {
+	if index >= len(tracker.responseMessages) {
+		sentMessage, pending, err := instance.sendEmbedMessage(
+			tracker,
+			embed,
+			actions,
+		)
+		if err != nil {
+			return fmt.Errorf("send embed message: %w", err)
+		}
+
+		tracker.responseMessages = append(tracker.responseMessages, sentMessage)
+		tracker.pendingResponses = append(tracker.pendingResponses, pending)
+
+		return nil
+	}
+
+	err := instance.waitForEditSlotForMessage(
+		ctx,
+		tracker.responseMessages[index].ID,
+	)
+	if err != nil {
+		return fmt.Errorf("wait before embed update: %w", err)
+	}
+
+	err = instance.editEmbedMessage(
+		tracker.responseMessages[index],
+		embed,
+		buildEmbedComponents(actions),
+	)
+	if err != nil {
+		return fmt.Errorf("edit embed message: %w", err)
+	}
+
+	if index == 0 {
+		tracker.progressActive = false
+	}
+
+	return nil
+}
+
+func (instance *bot) trimExtraEmbedResponses(
+	ctx context.Context,
+	tracker *responseTracker,
+	keepCount int,
+) error {
+	err := instance.trimExtraResponseMessages(ctx, tracker, keepCount)
+	if err != nil {
+		return err
+	}
+
+	if len(tracker.renderedSpecs) > keepCount {
+		tracker.renderedSpecs = tracker.renderedSpecs[:keepCount]
+	}
+
+	return nil
+}
+
+func (instance *bot) trimExtraResponseMessages(
+	ctx context.Context,
+	tracker *responseTracker,
+	keepCount int,
+) error {
+	for len(tracker.responseMessages) > keepCount {
+		lastIndex := len(tracker.responseMessages) - 1
+		message := tracker.responseMessages[lastIndex]
+		pending := tracker.pendingResponses[lastIndex]
+
+		err := instance.waitForEditSlotForMessage(ctx, message.ID)
+		if err != nil {
+			return fmt.Errorf("wait before embed cleanup: %w", err)
+		}
+
+		err = instance.session.ChannelMessageDelete(message.ChannelID, message.ID)
+		if err != nil {
+			return fmt.Errorf("delete extra embed message: %w", err)
+		}
+
+		tracker.responseMessages = tracker.responseMessages[:lastIndex]
+		tracker.pendingResponses = tracker.pendingResponses[:lastIndex]
+
+		discardPendingResponse(instance.nodes, pending)
+	}
+
+	return nil
+}
+
+func discardPendingResponse(store *messageNodeStore, pending pendingResponse) {
+	if pending.node == nil {
+		return
+	}
+
+	if store != nil {
+		store.mu.Lock()
+		if currentNode, ok := store.nodes[pending.messageID]; ok && currentNode == pending.node {
+			delete(store.nodes, pending.messageID)
+		}
+		store.mu.Unlock()
+		store.deleteCachedSnapshot(pending.messageID)
+	}
+
+	pending.node.mu.Unlock()
+}
+
+func (instance *bot) renderFailureOnProgressMessage(
+	ctx context.Context,
+	tracker *responseTracker,
+	failureEmbed *discordgo.MessageEmbed,
+) (bool, error) {
+	if !tracker.progressActive || len(tracker.responseMessages) == 0 {
+		tracker.progressActive = false
+
+		return false, nil
+	}
+
+	tracker.progressActive = false
+
+	err := instance.waitForEditSlotForMessage(
+		ctx,
+		tracker.responseMessages[0].ID,
+	)
+	if err != nil {
+		return false, fmt.Errorf("wait before progress failure edit: %w", err)
+	}
+
+	err = instance.editEmbedMessage(
+		tracker.responseMessages[0],
+		failureEmbed,
+		nil,
+	)
+	if err != nil {
+		return false, fmt.Errorf("edit progress message: %w", err)
+	}
+
+	tracker.responseVisible = true
+
+	return true, nil
+}
+
+func imgbbResponseURLs(text string) []string {
+	rawURLs := imgbbResponseURLRegexp.FindAllString(text, -1)
+	urls := make([]string, 0, len(rawURLs))
+	seenURLs := make(map[string]struct{}, len(rawURLs))
+
+	for _, rawURL := range rawURLs {
+		normalizedURL, err := normalizeWebsiteURL(rawURL)
+		if err != nil {
+			continue
+		}
+
+		if _, ok := seenURLs[normalizedURL]; ok {
+			continue
+		}
+
+		seenURLs[normalizedURL] = struct{}{}
+		urls = append(urls, normalizedURL)
+	}
+
+	return urls
+}
+
+func contentBatchesForLines(lines []string, maxLength int) []string {
+	if maxLength <= 0 {
+		return nil
+	}
+
+	batches := make([]string, 0, len(lines))
+	currentBatch := ""
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		if currentBatch == "" {
+			currentBatch = line
+
+			continue
+		}
+
+		nextBatch := currentBatch + "\n" + line
+		if runeCount(nextBatch) > maxLength {
+			batches = append(batches, currentBatch)
+			currentBatch = line
+
+			continue
+		}
+
+		currentBatch = nextBatch
+	}
+
+	if currentBatch != "" {
+		batches = append(batches, currentBatch)
+	}
+
+	return batches
+}
+
+func (instance *bot) sendImgbbURLReplies(tracker *responseTracker, answerText string) {
+	if instance == nil || instance.session == nil || tracker == nil || len(tracker.responseMessages) == 0 {
+		return
+	}
+
+	responseMessage := tracker.responseMessages[len(tracker.responseMessages)-1]
+
+	replyBatches := contentBatchesForLines(
+		imgbbResponseURLs(answerText),
+		discordMessageContentMaxLength,
+	)
+	if len(replyBatches) == 0 {
+		return
+	}
+
+	for _, replyBatch := range replyBatches {
+		send := newReplyMessage(responseMessage)
+		send.Content = replyBatch
+
+		sentMessage, err := instance.session.ChannelMessageSendComplex(responseMessage.ChannelID, send)
+		if err != nil {
+			logWarn(
+				"send imgbb url reply",
+				err,
+				"channel_id",
+				responseMessage.ChannelID,
+				"message_id",
+				responseMessage.ID,
+			)
+
+			return
+		}
+
+		instance.cacheAuxiliaryAssistantReply(sentMessage, responseMessage, tracker)
+	}
+}
+
+func (instance *bot) cacheAuxiliaryAssistantReply(
+	sentMessage *discordgo.Message,
+	parentMessage *discordgo.Message,
+	tracker *responseTracker,
+) {
+	if instance == nil || instance.nodes == nil || sentMessage == nil {
+		return
+	}
+
+	node := instance.nodes.getOrCreate(sentMessage.ID)
+	node.mu.Lock()
+	defer node.mu.Unlock()
+
+	node.role = messageRoleAssistant
+	node.text = ""
+	node.thinkingText = ""
+	node.urlScanText = ""
+	node.gistURL = ""
+	node.providerResponseID = strings.TrimSpace(tracker.providerResponseID)
+	node.providerResponseModel = strings.TrimSpace(tracker.modelName)
+	node.media = nil
+	node.searchMetadata = cloneSearchMetadata(tracker.searchMetadata)
+	node.hasBadAttachments = false
+	node.attachmentDownloadFailed = false
+	node.fetchParentFailed = false
+	node.parentMessage = parentMessage
+	node.initialized = true
+
+	instance.nodes.cacheLockedNode(sentMessage.ID, node)
+}
+
+func (instance *bot) sendEmbedMessage(
+	tracker *responseTracker,
+	embed *discordgo.MessageEmbed,
+	actions responseActions,
+) (*discordgo.Message, pendingResponse, error) {
+	send := newReplyMessage(referenceTarget(tracker))
+	send.Embeds = append(send.Embeds, embed)
+	send.Components = buildEmbedComponents(actions)
+
+	return instance.sendReplyMessage(tracker, send)
+}
+
+func referenceTarget(tracker *responseTracker) *discordgo.Message {
+	if len(tracker.responseMessages) == 0 {
+		return tracker.sourceMessage
+	}
+
+	return tracker.responseMessages[len(tracker.responseMessages)-1]
+}
+
+func newReplyMessage(reference *discordgo.Message) *discordgo.MessageSend {
+	send := new(discordgo.MessageSend)
+
+	allowedMentions := new(discordgo.MessageAllowedMentions)
+	allowedMentions.Parse = []discordgo.AllowedMentionType{
+		discordgo.AllowedMentionTypeRoles,
+		discordgo.AllowedMentionTypeUsers,
+		discordgo.AllowedMentionTypeEveryone,
+	}
+	allowedMentions.RepliedUser = false
+
+	send.AllowedMentions = allowedMentions
+	send.Reference = reference.Reference()
+	send.Flags = discordgo.MessageFlagsSuppressNotifications
+
+	return send
+}
+
+func (instance *bot) sendReplyMessage(
+	tracker *responseTracker,
+	send *discordgo.MessageSend,
+) (*discordgo.Message, pendingResponse, error) {
+	if instance == nil || instance.session == nil {
+		return nil, pendingResponse{}, errNilSession
+	}
+
+	target := referenceTarget(tracker)
+
+	sentMessage, err := instance.session.ChannelMessageSendComplex(target.ChannelID, send)
+	if err != nil {
+		return nil, pendingResponse{}, fmt.Errorf("send reply message: %w", err)
+	}
+
+	pending := pendingResponse{
+		messageID: sentMessage.ID,
+		node:      instance.nodes.addPending(sentMessage.ID, tracker.sourceMessage),
+	}
+	pending.node.searchMetadata = cloneSearchMetadata(tracker.searchMetadata)
+
+	return sentMessage, pending, nil
+}
+
+func (instance *bot) editEmbedMessage(
+	message *discordgo.Message,
+	embed *discordgo.MessageEmbed,
+	components []discordgo.MessageComponent,
+) error {
+	if instance == nil || instance.session == nil {
+		return errNilSession
+	}
+
+	edit := discordgo.NewMessageEdit(message.ChannelID, message.ID)
+	edit.SetEmbeds([]*discordgo.MessageEmbed{embed})
+	edit.Components = &components
+
+	_, err := instance.session.ChannelMessageEditComplex(edit)
+	if err != nil {
+		return fmt.Errorf("edit message %s: %w", message.ID, err)
+	}
+
+	return nil
+}
+
+func buildResponseEmbed(
+	content string,
+	modelName string,
+	color int,
+	warnings []string,
+	footerText string,
+) *discordgo.MessageEmbed {
+	embed := new(discordgo.MessageEmbed)
+	embed.Description = content
+	embed.Color = color
+
+	if modelName != "" {
+		author := new(discordgo.MessageEmbedAuthor)
+		author.Name = modelName
+		embed.Author = author
+	}
+
+	for _, warning := range warnings {
+		field := new(discordgo.MessageEmbedField)
+		field.Name = warning
+		field.Value = "."
+		field.Inline = false
+		embed.Fields = append(embed.Fields, field)
+	}
+
+	if strings.TrimSpace(footerText) != "" {
+		embed.Footer = &discordgo.MessageEmbedFooter{
+			Text:         footerText,
+			IconURL:      "",
+			ProxyIconURL: "",
+		}
+	}
+
+	return embed
+}
+
+func buildEmbedComponents(actions responseActions) []discordgo.MessageComponent {
+	buttons := buildResponseButtons(actions)
+	if len(buttons) == 0 {
+		return nil
+	}
+
+	row := new(discordgo.ActionsRow)
+	row.Components = buttons
+
+	return []discordgo.MessageComponent{row}
+}
+
+func buildResponseButtons(actions responseActions) []discordgo.MessageComponent {
+	const maxResponseButtons = 3
+
+	buttons := make([]discordgo.MessageComponent, 0, maxResponseButtons)
+
+	if actions.showThinking {
+		button := new(discordgo.Button)
+		button.CustomID = showThinkingButtonCustomID
+		button.Label = showThinkingButtonLabel
+		button.Style = discordgo.SecondaryButton
+
+		buttons = append(buttons, button)
+	}
+
+	if actions.showSources {
+		button := new(discordgo.Button)
+		button.CustomID = showSourcesButtonCustomID
+		button.Label = showSourcesButtonLabel
+		button.Style = discordgo.SecondaryButton
+
+		buttons = append(buttons, button)
+	}
+
+	if actions.showGist {
+		button := new(discordgo.Button)
+		button.CustomID = createGistButtonCustomID
+		button.Label = createGistButtonLabel
+		button.Style = discordgo.SecondaryButton
+
+		buttons = append(buttons, button)
+	}
+
+	return buttons
+}
