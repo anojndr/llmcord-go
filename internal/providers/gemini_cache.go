@@ -27,6 +27,10 @@ const (
 	// geminiCacheModelMinTokensLegacy is the documented 2048-token minimum
 	// for Gemini 2.5 Flash and 2.5 Pro models.
 	geminiCacheModelMinTokensLegacy = 2048
+	// geminiCacheModelMinTokensNew is the 1024-token minimum the create API
+	// enforces for newer models not yet listed in the docs
+	// (min_total_token_count in the cache-create rejection).
+	geminiCacheModelMinTokensNew = 1024
 	// GeminiCacheDefaultDisplayName is used when the request carries no
 	// model or request id.
 	GeminiCacheDefaultDisplayName = "llmcord-go"
@@ -116,7 +120,15 @@ func geminiEnsureCachedContent(
 
 	cachedContent, err := client.CreateCachedContent(ctx, request.Model, createConfig)
 	if err != nil {
-		return "", fmt.Errorf("create gemini cached content: %w", err)
+		// Caching is an optimization, never a hard dependency: a backend that
+		// rejects the create (free-tier storage quota, too-small content,
+		// disabled cache service) must not fail the request. Fall back to the
+		// API's implicit caching exactly like a backend without a cache
+		// service, and leave the create's reason visible in the logs.
+		logWarn("skip gemini explicit context caching after create failure", err,
+			"model", request.Model, "cached_prefix_token_estimate", prefixTokens)
+
+		return "", nil
 	}
 
 	if cachedContent == nil || strings.TrimSpace(cachedContent.Name) == "" {
@@ -212,6 +224,11 @@ func geminiCacheMinTokensForModel(model string) int {
 	lowerModel := strings.ToLower(strings.TrimSpace(model))
 
 	switch {
+	case strings.Contains(lowerModel, "3.6-flash"),
+		strings.Contains(lowerModel, "3.1-flash-lite"):
+		// The create API enforces a 1024-token minimum
+		// (min_total_token_count in the create error) on these models.
+		return geminiCacheModelMinTokensNew
 	case strings.Contains(lowerModel, "3.5-flash"),
 		strings.Contains(lowerModel, "3.1-pro"),
 		strings.Contains(lowerModel, "3-pro"):

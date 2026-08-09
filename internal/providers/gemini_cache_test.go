@@ -202,18 +202,160 @@ func TestGeminiCacheRequestSurfacesCacheCreateErrors(t *testing.T) {
 		return nil, stubCreateCacheError()
 	}
 
-	_, _, err := buildGeminiGenerateContentRequestWithCaching(
+	_, config, err := buildGeminiGenerateContentRequestWithCaching(
 		context.Background(),
 		newSimpleGeminiCacheRequest(),
 		apiClient,
 		apiClient,
 	)
-	if err == nil {
-		t.Fatal("expected cache create error")
+	if err != nil {
+		t.Fatalf("expected cache create failure to fall back, got error: %v", err)
 	}
 
-	if !strings.Contains(err.Error(), "cache backend unavailable") {
-		t.Fatalf("unexpected error text: %v", err)
+	if config.CachedContent != "" {
+		t.Fatalf("expected no cached content after failed create, got %q", config.CachedContent)
+	}
+}
+
+func TestGeminiCacheCreateFailureFallsBackToImplicitCaching(t *testing.T) {
+	t.Parallel()
+
+	createErrorText := "TotalCachedContentStorageTokensPerModelFreeTier limit exceeded"
+
+	apiClient := new(stubGeminiCachesClient)
+	apiClient.create = func(
+		_ context.Context,
+		_ string,
+		_ *genai.CreateCachedContentConfig,
+	) (*genai.CachedContent, error) {
+		return nil, fmt.Errorf(
+			"create gemini cached content: Error 429, Message: %s: %w",
+			createErrorText,
+			errStubUnreachable,
+		)
+	}
+
+	// A failed cache create must not fail the request: free-tier Gemini
+	// accounts have zero cached-content storage, so the create can never
+	// succeed; the generate request still streams with implicit caching,
+	// exactly like a backend without a cache service.
+	contents, config, err := buildGeminiGenerateContentRequestWithCaching(
+		context.Background(),
+		newSimpleGeminiCacheRequest(),
+		apiClient,
+		apiClient,
+	)
+	if err != nil {
+		t.Fatalf("build gemini request with failed cache create: %v", err)
+	}
+
+	if config.CachedContent != "" {
+		t.Fatalf("expected no cached content after failed create, got %q", config.CachedContent)
+	}
+
+	if len(contents) != 2 {
+		t.Fatalf("expected full contents, got %d", len(contents))
+	}
+}
+
+func TestGeminiCacheNewModelMinTokenFloor(t *testing.T) {
+	t.Parallel()
+
+	// gemini-3.6-flash enforces a 1024-token minimum via the API
+	// (min_total_token_count in the create error); the pre-flight gate must
+	// cover it so a sub-minimum prefix never triggers a doomed create. The
+	// observed failure created a cache of only ~582 tokens.
+	createCalls := 0
+
+	apiClient := new(stubGeminiCachesClient)
+	apiClient.create = func(
+		_ context.Context,
+		_ string,
+		_ *genai.CreateCachedContentConfig,
+	) (*genai.CachedContent, error) {
+		createCalls++
+
+		return stubCachedContent(), nil
+	}
+
+	request := newSimpleGeminiCacheRequest()
+	request.Messages = []ChatMessage{
+		{Role: searchtypes.MessageRoleUser, Content: strings.Repeat("a", 3_000)},
+		{Role: searchtypes.MessageRoleUser, Content: "latest question"},
+	}
+
+	_, _, err := buildGeminiGenerateContentRequestWithCaching(
+		context.Background(),
+		request,
+		apiClient,
+		apiClient,
+	)
+	if err != nil {
+		t.Fatalf("build gemini request with caching: %v", err)
+	}
+
+	if createCalls != 0 {
+		t.Fatalf("expected no create below the model's 1024-token minimum, got %d calls", createCalls)
+	}
+}
+
+func TestGeminiCacheModelMinTokenTable(t *testing.T) {
+	t.Parallel()
+
+	createCalls := 0
+
+	apiClient := new(stubGeminiCachesClient)
+	apiClient.create = func(
+		_ context.Context,
+		_ string,
+		_ *genai.CreateCachedContentConfig,
+	) (*genai.CachedContent, error) {
+		createCalls++
+
+		return stubCachedContent(), nil
+	}
+
+	// Every model keeps its documented/code-mandated minimum; a prefix at the
+	// threshold creates a cache and one token below it never does.
+	for _, testCase := range []struct {
+		model      string
+		prefix     string
+		wantCreate bool
+	}{
+		{model: "gemini-3.6-flash", prefix: strings.Repeat("a", 1024*4), wantCreate: true},
+		{model: "gemini-3.6-flash-lite", prefix: strings.Repeat("a", 1024*4), wantCreate: true},
+		{model: "gemini-3.6-flash", prefix: strings.Repeat("a", 1024*4-4), wantCreate: false},
+		{model: "gemini-3.1-pro", prefix: strings.Repeat("a", 4096*4), wantCreate: true},
+		{model: "gemini-3.5-flash", prefix: strings.Repeat("a", 1024*4), wantCreate: false},
+		{model: "gemini-2.5-flash", prefix: strings.Repeat("a", 1024*4), wantCreate: false},
+	} {
+		callsBefore := createCalls
+
+		request := newSimpleGeminiCacheRequest()
+		request.Model = testCase.model
+		request.Messages = []ChatMessage{
+			{Role: searchtypes.MessageRoleUser, Content: testCase.prefix},
+			{Role: searchtypes.MessageRoleUser, Content: "latest question"},
+		}
+
+		_, _, err := buildGeminiGenerateContentRequestWithCaching(
+			context.Background(),
+			request,
+			apiClient,
+			apiClient,
+		)
+		if err != nil {
+			t.Fatalf("%s: build gemini request with caching: %v", testCase.model, err)
+		}
+
+		createDelta := createCalls - callsBefore
+		if testCase.wantCreate && createDelta != 1 {
+			t.Fatalf("%s: expected one cache create at threshold, got %d", testCase.model, createDelta)
+		}
+
+		if !testCase.wantCreate && createDelta != 0 {
+			t.Fatalf("%s: expected no cache create below threshold, got %d", testCase.model, createDelta)
+		}
 	}
 }
 
@@ -235,8 +377,8 @@ func TestGeminiCachePrefixStopsBeforeLatestUserTurn(t *testing.T) {
 
 	request := newSimpleGeminiCacheRequest()
 	request.Messages = []ChatMessage{
-		{Role: searchtypes.MessageRoleUser, Content: strings.Repeat("old context\n", 120)},
-		{Role: searchtypes.MessageRoleAssistant, Content: strings.Repeat("old answer\n", 120)},
+		{Role: searchtypes.MessageRoleUser, Content: strings.Repeat("old context\n", 2_000)},
+		{Role: searchtypes.MessageRoleAssistant, Content: strings.Repeat("old answer\n", 2_000)},
 		{Role: searchtypes.MessageRoleUser, Content: "latest question"},
 	}
 
