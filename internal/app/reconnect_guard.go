@@ -106,10 +106,74 @@ func (instance *bot) startWatchdog(ctx context.Context) {
 			case <-watchdogCtx.Done():
 				return
 			case <-ticker.C:
-				instance.watchdogStaleSession(time.Second)
+				instance.watchdogTick(time.Second)
 			}
 		}
 	})
+}
+
+// watchdogTick is the per-second watchdog pass. It force-reconnects either
+// when the gateway session looks stale (heartbeats stop being acknowledged)
+// or -- critically for outage recovery -- the moment the gateway probe
+// succeeds again, so a bot that sat out an outage reconnects instantly
+// instead of waiting out the library's backoff.
+func (instance *bot) watchdogTick(interval time.Duration) {
+	if instance.hasGatewayProbeURL() && instance.isGatewayProbeReachable() && !instance.sessionConnected() {
+		// The network is back and the session is not connected: force the
+		// reconnect now instead of waiting for the library.
+		if instance.reconnectGuardEnabled() {
+			logInfo("discord gateway probe recovered; forcing reconnect")
+		}
+
+		instance.forceReconnect()
+		instance.forceReconnectOnProbeRecovery()
+	}
+
+	instance.watchdogStaleSession(interval)
+}
+
+// forceReconnectOnProbeRecovery closes the session so the library's
+// reconnect loop restarts immediately, and clears the session's resume
+// state so the reconnection identifies fresh (no stale resume).
+func (instance *bot) forceReconnectOnProbeRecovery() {
+	instance.clearStaleProbeState()
+
+	session := instance.session
+
+	if instance.sessionClose != nil {
+		_ = instance.sessionClose(session)
+	} else {
+		_ = session.Close()
+	}
+}
+
+// clearStaleProbeState forgets resume state on the current session so the
+// reconnection identifies fresh. The gateway probe URL stays armed, so the
+// next outage is still detected even while the library's reconnect loop is
+// sleeping in its backoff.
+func (instance *bot) clearStaleProbeState() {
+	session := instance.session
+	if session == nil {
+		return
+	}
+
+	if instance.reconnectGuardEnabled() &&
+		sessionStateReflectorReady() &&
+		hasSessionResumeState(session) {
+		logInfo("discord gateway state reset for a fresh connect")
+		clearSessionResumeState(session)
+	}
+}
+
+// sessionConnected reports whether the session appears to have an active
+// gateway connection, based on recent heartbeat activity.
+func (instance *bot) sessionConnected() bool {
+	session := instance.session
+	if session == nil || session.LastHeartbeatAck.IsZero() {
+		return false
+	}
+
+	return time.Since(session.LastHeartbeatAck) < 2*time.Minute
 }
 
 func (instance *bot) stopWatchdog() {
@@ -304,8 +368,9 @@ func (instance *bot) setGatewayProbeURL(url string) {
 }
 
 // resetGatewayProbeState forgets the stale resume state on the current
-// session once the network is reachable again and re-arms the gateway probe
-// URL for the next connection.
+// session once the network is reachable again. The gateway probe URL stays
+// armed so the next outage is still detected; it is re-pointed when the
+// session next reaches the gateway.
 func (instance *bot) resetGatewayProbeState() {
 	if instance.resetGatewayProbeStateFn != nil {
 		instance.resetGatewayProbeStateFn()
@@ -324,8 +389,6 @@ func (instance *bot) resetGatewayProbeState() {
 		logInfo("discord gateway state reset for a fresh connect")
 		clearSessionResumeState(session)
 	}
-
-	instance.setGatewayProbeURL("")
 }
 
 // hasSessionResumeState reports whether the session still carries resume

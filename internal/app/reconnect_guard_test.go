@@ -145,6 +145,84 @@ func TestAwakeResetClearsStateWhenProbeRecovers(t *testing.T) {
 	t.Fatal("session state never cleared after probe recovered")
 }
 
+func TestForceReconnectOnProbeRecoveryClosesSession(t *testing.T) {
+	t.Parallel()
+
+	instance := new(bot)
+	instance.session, _ = discordgo.New("Bot discord-token")
+	instance.session.Identify.Intents = discordgo.IntentsGuilds
+
+	closeCalls := new(atomic.Int32)
+	instance.sessionClose = func(_ *discordgo.Session) error {
+		closeCalls.Add(1)
+
+		return nil
+	}
+
+	instance.forceReconnectOnProbeRecovery()
+
+	if calls := closeCalls.Load(); calls != 1 {
+		t.Fatalf("forceReconnectOnProbeRecovery closed session %d times, want 1", calls)
+	}
+}
+
+func TestWatchdogProbesAndForceReconnectsWhenNetworkReturns(t *testing.T) {
+	t.Parallel()
+
+	instance := new(bot)
+	instance.session, _ = discordgo.New("Bot discord-token")
+	instance.session.Identify.Intents = discordgo.IntentsGuilds
+	instance.session.LastHeartbeatAck = time.Now().UTC().Add(-2 * time.Minute)
+	instance.session.LastHeartbeatSent = time.Now().UTC().Add(-2 * time.Minute)
+
+	closeCalls := new(atomic.Int32)
+	instance.sessionClose = func(_ *discordgo.Session) error {
+		closeCalls.Add(1)
+
+		return nil
+	}
+
+	var failing atomic.Bool
+	failing.Store(true)
+
+	probeServer := httptest.NewServer(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		_ *http.Request,
+	) {
+		if failing.Load() {
+			responseWriter.WriteHeader(http.StatusServiceUnavailable)
+
+			return
+		}
+
+		responseWriter.WriteHeader(http.StatusOK)
+	}))
+	defer probeServer.Close()
+
+	instance.startWatchdog(t.Context())
+	defer instance.stopWatchdog()
+
+	// Simulate a network outage: the watchdog probes a URL that starts
+	// failing, so no forced reconnect happens while it is down.
+	instance.setGatewayProbeURL(probeServer.URL)
+	instance.setGatewayProbeReachable(false)
+
+	time.Sleep(200 * time.Millisecond)
+
+	failing.Store(false)
+	instance.setGatewayProbeReachable(true)
+
+	for range 200 {
+		if closeCalls.Load() > 0 {
+			return
+		}
+
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	t.Fatal("watchdog never forced a reconnect after the network returned")
+}
+
 func TestAwakeResetSkipsWhenProbeArmedButFailing(t *testing.T) {
 	t.Parallel()
 
