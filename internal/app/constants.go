@@ -93,6 +93,7 @@ const (
 	finishReasonStop                              = "stop"
 	finishReasonLength                            = "length"
 	externalRequestConcurrency                    = 8
+	discordReconnectEnvVarName                    = "LLMCORD_RECONNECT"
 	maxSearchQueries                              = 500
 	defaultWebSearchMaxURLs                       = 5
 	exaSearchTypeInstant                          = "instant"
@@ -138,6 +139,16 @@ const (
 	publicHTTPIdleTimeout                         = 30 * time.Second
 	discordStartupProbeReadLimit                  = 4096
 	errorBodySnippetMaxLength                     = 200
+	discordHeartbeatAckMissedIntervals            = 4
+	discordAwakeProbeTimeout                      = 10 * time.Second
+	discordAwakeTestProbeInterval                 = 50 * time.Millisecond
+	discordAwakeProbePollInterval                 = 15 * time.Second
+	discordAwakeProbeSuccessStatuses              = 2
+	discordReconnectBackoffCapSeconds             = 120
+	discordReconnectImmediateBackoffBaseSeconds   = 3
+	discordReconnectProbeBackoffBaseSeconds       = 15
+	discordReconnectSessionReopenDelay            = 2 * time.Second
+	discordReconnectSessionCloseDelay             = 2 * time.Second
 	handleStreamDeltaErrorFormat                  = "handle stream delta: %w"
 	numberedListLineFormat                        = "%d. %s\n"
 	sseScannerInitialBuffer                       = 64 * 1024
@@ -159,4 +170,19 @@ func exaSearchTypes() []string {
 		exaSearchTypeDeep,
 		exaSearchTypeDeepReasoning,
 	}
+}
+
+// discordReconnectImmediateBackoffCapsSeconds returns the attempt caps
+// applied in order while the network is unreachable (probe failing); the
+// library doubles its own delay each attempt, so scaling the cap down after
+// each observed attempt keeps the wait bounded and shrinking.
+func discordReconnectImmediateBackoffCapsSeconds() []int64 {
+	return []int64{5, 10, 20}
+}
+
+// discordReconnectProbeBackoffCapsSeconds returns the attempt caps applied
+// in order while the gateway probe still succeeds; the backoff begins at a
+// small value and grows to these bounds, then stays capped.
+func discordReconnectProbeBackoffCapsSeconds() []int64 {
+	return []int64{20, 40, 60, 120}
 }

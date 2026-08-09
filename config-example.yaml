@@ -237,3 +237,15 @@ system_prompt: |
   Today's date is {date}. The current time is {time}.
 
   User messages are prefixed with their Discord ID as <@ID>. Use this format to mention users.
+
+# Environment variables:
+#   LLMCORD_CONFIG_PATH   Path to this config file (default: config.yaml)
+#   LLMCORD_HTTP_ADDR     Bind address for the health HTTP server (else PORT)
+#   LLMCORD_LOG_LEVEL     debug / info / warn / error (default: info)
+#   LLMCORD_LOG_FORMAT    text / json (default: text)
+#   LLMCORD_RECONNECT     Set to 0 or false to disable automatic Discord
+#                         gateway reconnection recovery (default: enabled).
+#                         When enabled, the bot force-reconnects a gateway
+#                         session that stops acknowledging heartbeats,
+#                         resumes instantly once the network is back, and
+#                         caps reconnect delays between 2 and 120 seconds.
