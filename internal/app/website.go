@@ -17,7 +17,6 @@ import (
 	"regexp"
 	"slices"
 	"strings"
-	"sync/atomic"
 
 	"golang.org/x/net/html"
 	"golang.org/x/net/html/atom"
@@ -51,23 +50,15 @@ type websiteFetcher interface {
 	fetch(ctx context.Context, loadedConfig config, rawURL string) (websitePageContent, error)
 }
 
-// freewebBrowser extracts readable page content through the freeweb MCP
-// browse_page tool.
-type freewebBrowser interface {
-	browse(ctx context.Context, rawURL string) (websitePageContent, error)
-}
-
 type websiteLookupIPFunc func(context.Context, string) ([]netip.Addr, error)
 
 type websiteClient struct {
-	httpClient                  *http.Client
-	userAgent                   string
-	exaContentsEndpoint         string
-	tavilyExtractEndpoint       string
-	lookupIP                    websiteLookupIPFunc
-	keys                        *apiKeyRotator
-	freeweb                     freewebBrowser
-	freewebMissingBrowserLogged *atomic.Bool
+	httpClient            *http.Client
+	userAgent             string
+	exaContentsEndpoint   string
+	tavilyExtractEndpoint string
+	lookupIP              websiteLookupIPFunc
+	keys                  *apiKeyRotator
 }
 
 type websitePageContent struct {
@@ -79,14 +70,12 @@ type websitePageContent struct {
 
 func newWebsiteClient(httpClient *http.Client) websiteClient {
 	return websiteClient{
-		httpClient:                  httpClient,
-		userAgent:                   youtubeUserAgent,
-		exaContentsEndpoint:         defaultExaContentsEndpoint,
-		tavilyExtractEndpoint:       defaultTavilyExtractEndpoint,
-		lookupIP:                    defaultWebsiteLookupIP,
-		keys:                        newAPIKeyRotator(),
-		freeweb:                     newFreewebSearchClient(),
-		freewebMissingBrowserLogged: new(atomic.Bool),
+		httpClient:            httpClient,
+		userAgent:             youtubeUserAgent,
+		exaContentsEndpoint:   defaultExaContentsEndpoint,
+		tavilyExtractEndpoint: defaultTavilyExtractEndpoint,
+		lookupIP:              defaultWebsiteLookupIP,
+		keys:                  newAPIKeyRotator(),
 	}
 }
 
@@ -212,20 +201,6 @@ func (client websiteClient) fetch(
 		return websitePageContent{}, fmt.Errorf("validate website url %q: %w", rawURL, err)
 	}
 
-	// FreeWeb is the main general URL extractor: its browse_page tool needs
-	// no API keys and returns readable page content for most sites. When it
-	// fails (server not installed, page blocked, unsupported site), fall
-	// back to the configured extraction services, then to the direct fetch.
-	// `web_search.freeweb.enabled: false` skips freeweb extraction entirely.
-	if client.freeweb != nil && loadedConfig.WebSearch.freewebEnabled() {
-		pageContent, freewebErr := client.freeweb.browse(ctx, normalizedURL)
-		if freewebErr == nil {
-			return pageContent, nil
-		}
-
-		client.logFreewebExtractionFailure(freewebErr, "url", rawURL)
-	}
-
 	if loadedConfig.WebSearch.exaUsesAPI() {
 		exaAPIKey := firstAPIKey(client.keys.rotate(loadedConfig.WebSearch.Exa.apiKeys()))
 
@@ -263,63 +238,6 @@ func (client websiteClient) fetch(
 	}
 
 	return pageContent, nil
-}
-
-// freewebMissingBrowserNotice is the one-time actionable warning logged when
-// a freeweb extraction fails because the freeweb server's Playwright browser
-// binaries are not installed. freeweb-mcp ships no browser install hook, so
-// the operator must run `npx playwright install` once; without it every
-// SPA-heavy page falls back to the other extractors with a banner-sized
-// error. The notice is emitted once per client to avoid repeating the
-// multi-line banner on every URL.
-const freewebMissingBrowserNotice = "freeweb Playwright browsers are not installed; " +
-	"run `npx playwright install` once (in a directory with playwright resolvable) " +
-	"so freeweb can render SPA pages, or set `web_search.freeweb.enabled: false` to skip freeweb extraction"
-
-// logFreewebExtractionFailure emits the per-URL failure log and, when the
-// failure is the missing-browser class, the one-time actionable notice. The
-// per-URL log carries the truncated error so the multi-line Playwright
-// banner does not flood the logs once per URL; the full error still
-// surfaces through the one-time notice and through callers that wrap it.
-func (client websiteClient) logFreewebExtractionFailure(err error, attrs ...any) {
-	if isFreewebMissingBrowserError(err) &&
-		client.freewebMissingBrowserLogged != nil &&
-		client.freewebMissingBrowserLogged.CompareAndSwap(false, true) {
-		logWarn(freewebMissingBrowserNotice, err)
-	}
-
-	logWarn("fetch website via freeweb", compactFreewebError(err), attrs...)
-}
-
-// compactFreewebError returns a truncated single-line form of the freeweb
-// error: the first line when it is short, otherwise a fixed prefix, so the
-// per-URL log stays readable.
-func compactFreewebError(err error) error {
-	if err == nil {
-		return nil
-	}
-
-	message := err.Error()
-	if firstLine, _, found := strings.Cut(message, "\n"); found {
-		message = firstLine
-	}
-
-	if runeCount(message) > errorBodySnippetMaxLength {
-		message = truncateRunes(message, errorBodySnippetMaxLength) + "..."
-	}
-
-	return freewebCompactError{message: message}
-}
-
-// freewebCompactError is a static error type carrying a preformatted
-// message, used so the per-URL freeweb failure log never repeats the
-// multi-line Playwright banner.
-type freewebCompactError struct {
-	message string
-}
-
-func (err freewebCompactError) Error() string {
-	return err.message
 }
 
 func (client websiteClient) fetchWithCurrentImplementation(

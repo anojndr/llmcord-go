@@ -103,9 +103,8 @@ type tavilySearchClient struct {
 }
 
 type routedWebSearchClient struct {
-	freeweb webSearcher
-	exa     webSearcher
-	tavily  webSearcher
+	exa    webSearcher
+	tavily webSearcher
 }
 
 type exaSearchRequest struct {
@@ -220,9 +219,8 @@ func newTavilySearchClient(httpClient *http.Client) tavilySearchClient {
 
 func newWebSearchClient(httpClient *http.Client) routedWebSearchClient {
 	return routedWebSearchClient{
-		freeweb: newFreewebSearchClient(),
-		exa:     newExaSearchClient(httpClient),
-		tavily:  newTavilySearchClient(httpClient),
+		exa:    newExaSearchClient(httpClient),
+		tavily: newTavilySearchClient(httpClient),
 	}
 }
 
@@ -424,12 +422,6 @@ func (client routedWebSearchClient) searchWithProvider(
 	queries []string,
 ) ([]webSearchResult, error) {
 	switch provider {
-	case webSearchProviderKindFreeweb:
-		if client.freeweb == nil {
-			return nil, fmt.Errorf("freeweb search provider is not configured: %w", os.ErrNotExist)
-		}
-
-		return client.freeweb.search(ctx, loadedConfig, queries)
 	case webSearchProviderKindMCP:
 		return client.exa.search(ctx, loadedConfig, queries)
 	case webSearchProviderKindTavily:
@@ -1924,21 +1916,17 @@ func mapStringSliceValue(values map[string]any, key string) []string {
 
 func (settings webSearchConfig) providersInOrder() (webSearchProviderKind, webSearchProviderKind) {
 	switch settings.PrimaryProvider {
-	case webSearchProviderKindFreeweb:
-		return webSearchProviderKindFreeweb, webSearchProviderKindMCP
 	case webSearchProviderKindTavily:
 		return webSearchProviderKindTavily, webSearchProviderKindMCP
 	case webSearchProviderKindMCP:
 		return webSearchProviderKindMCP, webSearchProviderKindTavily
 	default:
-		return webSearchProviderKindFreeweb, webSearchProviderKindMCP
+		return webSearchProviderKindMCP, webSearchProviderKindTavily
 	}
 }
 
 func (provider webSearchProviderKind) displayName(loadedConfig config) string {
 	switch provider {
-	case webSearchProviderKindFreeweb:
-		return "FreeWeb"
 	case webSearchProviderKindTavily:
 		return "Tavily"
 	case webSearchProviderKindMCP:

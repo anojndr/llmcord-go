@@ -54,7 +54,7 @@ When `PORT` or `LLMCORD_HTTP_ADDR` is set, the bot exposes JSON health responses
 
 ## Configuration
 
-Providers are declared with `base_url` (OpenAI-compatible). The provider name selects the API kind: names containing `gemini` use the Gemini API (no `base_url` needed), and `exa` is an OpenAI-compatible research provider with a default base URL. `api_key` accepts a string or a YAML list; when multiple keys are configured, the bot round-robins them across requests that spread over every key. The same round-robin applies to `web_search.exa.api_key`, `web_search.tavily.api_key`, and `visual_search.serpapi.api_key`. Web search runs Exa by default (MCP, or its Search API with `web_search.exa.api_key`); generic website extraction uses the FreeWeb MCP server (`github.com/xenitV1/freeweb`, launched via `npx -y freeweb-mcp@latest`, no API keys) by default, falling back to Exa Contents / Tavily Extract / direct fetch. See the "Search and Visual Search" section.
+Providers are declared with `base_url` (OpenAI-compatible). The provider name selects the API kind: names containing `gemini` use the Gemini API (no `base_url` needed), and `exa` is an OpenAI-compatible research provider with a default base URL. `api_key` accepts a string or a YAML list; when multiple keys are configured, the bot round-robins them across requests that spread over every key. The same round-robin applies to `web_search.exa.api_key`, `web_search.tavily.api_key`, and `visual_search.serpapi.api_key`. Web search runs Exa by default (MCP, or its Search API with `web_search.exa.api_key`); generic website extraction runs Exa Contents (with an Exa API key), then Tavily Extract, then the in-process HTML fetcher. See the "Search and Visual Search" section.
 
 ### Discord and Runtime
 
@@ -98,16 +98,15 @@ Model notes:
 
 | Setting | Purpose |
 | --- | --- |
-| `web_search.primary_provider` | Search backend order: `mcp` (Exa, default), `tavily`, or `freeweb`. |
+| `web_search.primary_provider` | Search backend order: `mcp` (Exa, default) or `tavily`. |
 | `web_search.max_urls` | Max URLs per query and in `Show Sources`. Default: `5`. |
-| `web_search.freeweb.enabled` | Whether FreeWeb URL extraction runs (default `true`). Set `false` to skip FreeWeb entirely and go straight to the Exa/Tavily/direct-fetch chain. |
 | `web_search.exa.api_key` | Enables Exa Search API; without it, Exa uses its MCP endpoint. |
 | `web_search.exa.text_max_characters` | Max full-page text from Exa per result. Default: `15000`. |
 | `web_search.exa.livecrawl_timeout_ms` | Exa Contents crawl timeout. Default: `15000`. If a page's livecrawl exceeds it, the fetch is retried once with a doubled timeout, then falls back to Exa's cache, so slow pages still usually resolve. |
 | `web_search.tavily.api_key` | Enables Tavily search and Tavily Extract fallback. |
 | `visual_search.serpapi.api_key` | Enables concurrent Google Lens results for `vsearch`. |
 
-Generic website URL extraction runs through the FreeWeb MCP server by default (`github.com/xenitV1/freeweb`, launched via `npx -y freeweb-mcp@latest`, no API keys; the launch command is fixed, not shell-evaluated — put a `freeweb-mcp` wrapper on PATH to use a custom installation). When FreeWeb fails, extraction falls back to Exa Contents, then Tavily Extract, then the in-process HTML fetcher. FreeWeb needs Playwright browsers for SPA-heavy pages (e.g. airbnb); if they are missing, run `npx playwright install` once — the bot logs a one-time notice with that command and otherwise falls back to the other extractors per URL. To skip FreeWeb extraction entirely, set `web_search.freeweb.enabled: false`.
+Generic website URL extraction runs Exa Contents when `web_search.exa.api_key` is set, then Tavily Extract (when a Tavily key is set), then the in-process HTML fetcher as a last resort. The in-process fetcher renders readable text from HTML with SSRF protection (it rejects localhost, private, link-local, and unsafe redirects).
 
 ## Usage
 
@@ -134,7 +133,7 @@ Generic website URL extraction runs through the FreeWeb MCP server by default (`
 - Generic website fetching rejects localhost, private, link-local, and unsafe redirects.
 - AliExpress product pages are replaced with the embedded product ID, OG title, and image list.
 - OpenRouter providers send `transforms: ["middle-out"]` unless overridden; unauthenticated 9Router setups omit the `Authorization` header.
-- Provider requests are sent once with no artificial context deadlines, except two narrow cases. First, when a stream ends before any content with a 503 "request queue is full" error, the request is retried once after a 3-second delay (up to two attempts total) — this is the router's upstream-queue full signal and a retry usually succeeds. Second, when a stream ends before delivering any content due to a transient failure — the proxy connection drops mid-stream (a stream ends before `[DONE]` or before `response.completed`, reported as `unexpected EOF`), the Gemini upstream reports a `Stream interrupted: NetworkError` error, or the model returns a clean-but-empty response — the request is retried once after a 1-second delay (up to two attempts total). A stream that already delivered visible content is never re-sent (a partial reply is never duplicated); an empty model response that still comes back empty after the retry is surfaced as `The model returned an empty response. Try again.`. These retries reuse the same API-key rotation, so each attempt may run on a different key. When a provider or search service (Exa, Tavily, SerpApi) has multiple `api_key` values, requests are round-robin across them; otherwise the single key is used. External request fan-out is bounded at 8 concurrent operations. Web search and generic website extraction call the FreeWeb MCP server once per query or URL, launching it via `npx` for that single call and closing the process when the call finishes.
+- Provider requests are sent once with no artificial context deadlines, except two narrow cases. First, when a stream ends before any content with a 503 "request queue is full" error, the request is retried once after a 3-second delay (up to two attempts total) — this is the router's upstream-queue full signal and a retry usually succeeds. Second, when a stream ends before delivering any content due to a transient failure — the proxy connection drops mid-stream (a stream ends before `[DONE]` or before `response.completed`, reported as `unexpected EOF`), the Gemini upstream reports a `Stream interrupted: NetworkError` error, or the model returns a clean-but-empty response — the request is retried once after a 1-second delay (up to two attempts total). A stream that already delivered visible content is never re-sent (a partial reply is never duplicated); an empty model response that still comes back empty after the retry is surfaced as `The model returned an empty response. Try again.`. These retries reuse the same API-key rotation, so each attempt may run on a different key. When a provider or search service (Exa, Tavily, SerpApi) has multiple `api_key` values, requests are round-robin across them; otherwise the single key is used. External request fan-out is bounded at 8 concurrent operations.
 
 ## Development
 

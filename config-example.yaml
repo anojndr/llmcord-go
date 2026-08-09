@@ -147,25 +147,12 @@ web_search:
   # Web search runs Exa by default: `mcp` uses Exa as primary with Tavily as
   # fallback; when `web_search.exa.api_key` is set, Exa uses its Search API,
   # and without a key it uses the Exa MCP. `tavily` flips the order and uses
-  # Exa as fallback. `freeweb` opts into the FreeWeb MCP server for web search
-  # instead (no API keys needed).
+  # Exa as fallback.
   primary_provider: mcp
   # Maximum URLs to request for each search query.
   max_urls: 5
-  # Generic website URL extraction uses the FreeWeb MCP server by default
-  # (github.com/xenitV1/freeweb, launched as `npx -y freeweb-mcp@latest` over
-  # stdio, no API keys; the command is fixed and not shell-evaluated — place a
-  # `freeweb-mcp` wrapper earlier on PATH to use a custom installation). When
-  # FreeWeb fails, extraction falls back to Exa Contents, then Tavily Extract,
-  # then the in-process HTML fetcher.
-  freeweb:
-    # Optional. FreeWeb needs Playwright browsers for SPA-heavy pages; if they
-    # are missing, run `npx playwright install` once (the bot logs a one-time
-    # notice and falls back to the other extractors per URL). Set to false to
-    # skip FreeWeb extraction entirely and go straight to the Exa/Tavily/
-    # direct-fetch chain.
-    # Default: true
-    enabled: true
+  # Generic website URL extraction runs Exa Contents first when an Exa API
+  # key is set, then Tavily Extract, then the in-process HTML fetcher.
   exa:
     # Optional. When set, the web search flow uses Exa's Search API instead of
     # Exa MCP, and generic website extraction uses Exa's Contents API.
@@ -187,7 +174,7 @@ web_search:
   tavily:
     # Optional when `primary_provider: mcp`; required if you want Tavily as
     # either primary or fallback. Generic website extraction also uses Tavily
-    # Extract as a fallback when FreeWeb and Exa both fail. `api_key` accepts a
+    # Extract as a fallback when Exa is unavailable. `api_key` accepts a
     # YAML list; requests are round-robin across them.
     # api_key:
     #   - tvly-primary-key
