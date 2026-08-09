@@ -167,6 +167,18 @@ func (settings exaSearchConfig) primaryAPIKey() string {
 	return firstAPIKey(settings.apiKeys())
 }
 
+func (settings firecrawlSearchConfig) apiKeys() []string {
+	return providerAPIKeys(settings.APIKey, settings.APIKeys)
+}
+
+func (settings firecrawlSearchConfig) maxMarkdownCharacters() int {
+	if settings.MaxMarkdownCharacters <= 0 {
+		return defaultFirecrawlMaxMarkdownCharacters
+	}
+
+	return settings.MaxMarkdownCharacters
+}
+
 func (settings serpAPIVisualSearchConfig) apiKeys() []string {
 	return providerAPIKeys(settings.APIKey, settings.APIKeys)
 }

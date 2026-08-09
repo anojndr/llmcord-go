@@ -23,9 +23,10 @@ import (
 var errSearchBackendUnavailable = errors.New("search backend unavailable")
 
 const (
-	testExaPrimaryValue     = "exa-primary-value"
-	testTavilyPrimaryAPIKey = "primary-key"
-	testWebSearchMaxURLs    = 7
+	testExaPrimaryValue        = "exa-primary-value"
+	testTavilyPrimaryAPIKey    = "primary-key"
+	testFirecrawlPrimaryAPIKey = "firecrawl-primary-key"
+	testWebSearchMaxURLs       = 7
 )
 
 func testExaAPIWebSearchConfig() config {

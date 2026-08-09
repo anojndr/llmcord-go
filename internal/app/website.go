@@ -53,12 +53,13 @@ type websiteFetcher interface {
 type websiteLookupIPFunc func(context.Context, string) ([]netip.Addr, error)
 
 type websiteClient struct {
-	httpClient            *http.Client
-	userAgent             string
-	exaContentsEndpoint   string
-	tavilyExtractEndpoint string
-	lookupIP              websiteLookupIPFunc
-	keys                  *apiKeyRotator
+	httpClient              *http.Client
+	userAgent               string
+	exaContentsEndpoint     string
+	tavilyExtractEndpoint   string
+	firecrawlScrapeEndpoint string
+	lookupIP                websiteLookupIPFunc
+	keys                    *apiKeyRotator
 }
 
 type websitePageContent struct {
@@ -70,12 +71,13 @@ type websitePageContent struct {
 
 func newWebsiteClient(httpClient *http.Client) websiteClient {
 	return websiteClient{
-		httpClient:            httpClient,
-		userAgent:             youtubeUserAgent,
-		exaContentsEndpoint:   defaultExaContentsEndpoint,
-		tavilyExtractEndpoint: defaultTavilyExtractEndpoint,
-		lookupIP:              defaultWebsiteLookupIP,
-		keys:                  newAPIKeyRotator(),
+		httpClient:              httpClient,
+		userAgent:               youtubeUserAgent,
+		exaContentsEndpoint:     defaultExaContentsEndpoint,
+		tavilyExtractEndpoint:   defaultTavilyExtractEndpoint,
+		firecrawlScrapeEndpoint: defaultFirecrawlScrapeEndpoint,
+		lookupIP:                defaultWebsiteLookupIP,
+		keys:                    newAPIKeyRotator(),
 	}
 }
 
@@ -201,6 +203,22 @@ func (client websiteClient) fetch(
 		return websitePageContent{}, fmt.Errorf("validate website url %q: %w", rawURL, err)
 	}
 
+	if firecrawlAPIKeys := loadedConfig.WebSearch.Firecrawl.apiKeys(); len(firecrawlAPIKeys) > 0 {
+		firecrawlAPIKey := firstAPIKey(client.keys.rotate(firecrawlAPIKeys))
+
+		pageContent, firecrawlErr := client.fetchWithFirecrawlScrape(
+			ctx,
+			normalizedURL,
+			firecrawlAPIKey,
+			loadedConfig.WebSearch.Firecrawl.maxMarkdownCharacters(),
+		)
+		if firecrawlErr == nil {
+			return pageContent, nil
+		}
+
+		return websitePageContent{}, fmt.Errorf(websiteFetchErrorFormat, rawURL, firecrawlErr)
+	}
+
 	if loadedConfig.WebSearch.exaUsesAPI() {
 		exaAPIKey := firstAPIKey(client.keys.rotate(loadedConfig.WebSearch.Exa.apiKeys()))
 
@@ -238,6 +256,200 @@ func (client websiteClient) fetch(
 	}
 
 	return pageContent, nil
+}
+
+type firecrawlScrapeResponse struct {
+	Success bool
+	Data    *firecrawlScrapeData
+	Error   string
+}
+
+type firecrawlScrapeData struct {
+	Markdown string
+	Metadata firecrawlScrapeMetadata
+}
+
+type firecrawlScrapeMetadata struct {
+	Title       string
+	SourceURL   string
+	Description string
+}
+
+func (client websiteClient) fetchWithFirecrawlScrape(
+	ctx context.Context,
+	requestURL string,
+	apiKey string,
+	maxMarkdownCharacters int,
+) (websitePageContent, error) {
+	requestBytes, err := json.Marshal(firecrawlScrapeRequestBody(requestURL))
+	if err != nil {
+		return websitePageContent{}, fmt.Errorf("marshal Firecrawl scrape request for %q: %w", requestURL, err)
+	}
+
+	httpRequest, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodPost,
+		client.firecrawlScrapeEndpoint,
+		bytes.NewReader(requestBytes),
+	)
+	if err != nil {
+		return websitePageContent{}, fmt.Errorf("create Firecrawl scrape request for %q: %w", requestURL, err)
+	}
+
+	httpRequest.Header.Set("Accept", applicationJSONContentType)
+	httpRequest.Header.Set("Authorization", "Bearer "+strings.TrimSpace(apiKey))
+	httpRequest.Header.Set(contentTypeHeader, applicationJSONContentType)
+
+	httpResponse, err := client.httpClient.Do(httpRequest)
+	if err != nil {
+		return websitePageContent{}, fmt.Errorf("send Firecrawl scrape request for %q: %w", requestURL, err)
+	}
+
+	defer func() {
+		_ = httpResponse.Body.Close()
+	}()
+
+	if httpResponse.StatusCode < http.StatusOK || httpResponse.StatusCode >= http.StatusMultipleChoices {
+		responseBody, readErr := io.ReadAll(httpResponse.Body)
+		if readErr != nil {
+			return websitePageContent{}, fmt.Errorf(
+				"read Firecrawl scrape error response for %q after status %d: %w",
+				requestURL,
+				httpResponse.StatusCode,
+				readErr,
+			)
+		}
+
+		return websitePageContent{}, firecrawlStatusError{
+			StatusCode: httpResponse.StatusCode,
+			Message: fmt.Sprintf(
+				"firecrawl scrape request failed for %q with status %d: %s",
+				requestURL,
+				httpResponse.StatusCode,
+				strings.TrimSpace(extractStructuredAPIErrorMessage(responseBody)),
+			),
+			Err: os.ErrInvalid,
+		}
+	}
+
+	var rawResponse map[string]any
+
+	err = json.NewDecoder(httpResponse.Body).Decode(&rawResponse)
+	if err != nil {
+		return websitePageContent{}, fmt.Errorf("decode firecrawl scrape response for %q: %w", requestURL, err)
+	}
+
+	response, err := parseFirecrawlScrapeResponse(rawResponse)
+	if err != nil {
+		return websitePageContent{}, fmt.Errorf("parse firecrawl scrape response for %q: %w", requestURL, err)
+	}
+
+	err = firecrawlScrapeResponseError(response, requestURL)
+	if err != nil {
+		return websitePageContent{}, err
+	}
+
+	return newFirecrawlPageContent(response, maxMarkdownCharacters)
+}
+
+func firecrawlScrapeRequestBody(requestURL string) map[string]any {
+	return map[string]any{
+		"url":     requestURL,
+		"formats": []string{"markdown"},
+	}
+}
+
+func parseFirecrawlScrapeResponse(rawResponse map[string]any) (firecrawlScrapeResponse, error) {
+	response := firecrawlScrapeResponse{
+		Success: false,
+		Data:    nil,
+		Error:   mapStringValue(rawResponse, "error"),
+	}
+
+	if success, ok := rawResponse["success"].(bool); ok {
+		response.Success = success
+	}
+
+	rawData, hasData := rawResponse["data"]
+	if !hasData || rawData == nil {
+		return response, nil
+	}
+
+	dataMap, ok := rawData.(map[string]any)
+	if !ok {
+		return firecrawlScrapeResponse{}, fmt.Errorf("decode Firecrawl scrape data: %w", os.ErrInvalid)
+	}
+
+	data := firecrawlScrapeData{
+		Markdown: mapStringValue(dataMap, "markdown"),
+		Metadata: firecrawlScrapeMetadata{
+			Title:       "",
+			SourceURL:   "",
+			Description: "",
+		},
+	}
+
+	rawMetadata, hasMetadata := dataMap["metadata"]
+	if hasMetadata && rawMetadata != nil {
+		metadataMap, ok := rawMetadata.(map[string]any)
+		if !ok {
+			return firecrawlScrapeResponse{}, fmt.Errorf("decode Firecrawl scrape metadata: %w", os.ErrInvalid)
+		}
+
+		data.Metadata = firecrawlScrapeMetadata{
+			Title:       mapStringValue(metadataMap, "title"),
+			SourceURL:   mapStringValue(metadataMap, "sourceURL"),
+			Description: mapStringValue(metadataMap, "description"),
+		}
+	}
+
+	response.Data = &data
+
+	return response, nil
+}
+
+func firecrawlScrapeResponseError(response firecrawlScrapeResponse, requestURL string) error {
+	if response.Success {
+		return nil
+	}
+
+	return fmt.Errorf(
+		"firecrawl scrape reported an error for %q: %s: %w",
+		requestURL,
+		strings.TrimSpace(response.Error),
+		os.ErrInvalid,
+	)
+}
+
+func newFirecrawlPageContent(
+	response firecrawlScrapeResponse,
+	maxMarkdownCharacters int,
+) (websitePageContent, error) {
+	if response.Data == nil {
+		return websitePageContent{}, fmt.Errorf("firecrawl scrape returned no data: %w", os.ErrInvalid)
+	}
+
+	content := truncateRunes(
+		strings.TrimSpace(response.Data.Markdown),
+		maxMarkdownCharacters,
+	)
+
+	return newWebsitePageContent(
+		firstNonEmptyString(response.Data.Metadata.SourceURL, response.Data.Metadata.Title),
+		response.Data.Metadata.Title,
+		response.Data.Metadata.Description,
+		content,
+	)
+}
+
+type firecrawlStatusError struct {
+	StatusCode int
+	Message    string
+	Err        error
+}
+
+func (err firecrawlStatusError) Error() string {
+	return err.Message
 }
 
 func (client websiteClient) fetchWithCurrentImplementation(

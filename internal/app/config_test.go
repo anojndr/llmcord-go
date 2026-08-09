@@ -81,6 +81,20 @@ models:
 		)
 	}
 
+	if len(loadedConfig.WebSearch.Firecrawl.APIKeys) != 0 {
+		t.Fatalf(
+			"unexpected default Firecrawl API keys: %#v",
+			loadedConfig.WebSearch.Firecrawl.APIKeys,
+		)
+	}
+
+	if loadedConfig.WebSearch.Firecrawl.MaxMarkdownCharacters != defaultFirecrawlMaxMarkdownCharacters {
+		t.Fatalf(
+			"unexpected default Firecrawl max markdown characters: %d",
+			loadedConfig.WebSearch.Firecrawl.MaxMarkdownCharacters,
+		)
+	}
+
 	if loadedConfig.Database.ConnectionString != "" {
 		t.Fatalf(
 			"unexpected default database connection string: %q",
@@ -713,6 +727,111 @@ web_search:
 		[]string{"exa-primary", "exa-backup"},
 	) {
 		t.Fatalf("unexpected Exa API keys: %#v", loadedConfig.WebSearch.Exa.APIKeys)
+	}
+}
+
+func TestLoadConfigAllowsFirecrawlWebSearchAPIKeyLists(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	configText := `
+bot_token: discord-token
+providers:
+  openai:
+    base_url: https://api.example.com/v1
+models:
+  openai/first-model:
+web_search:
+  firecrawl:
+    api_key:
+      - firecrawl-primary
+      - firecrawl-backup
+      - firecrawl-primary
+`
+
+	err := os.WriteFile(configPath, []byte(configText), 0o600)
+	if err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	loadedConfig, err := loadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	if loadedConfig.WebSearch.Firecrawl.APIKey != "firecrawl-primary" {
+		t.Fatalf("unexpected primary Firecrawl API key: %q", loadedConfig.WebSearch.Firecrawl.APIKey)
+	}
+
+	if !slices.Equal(
+		loadedConfig.WebSearch.Firecrawl.APIKeys,
+		[]string{"firecrawl-primary", "firecrawl-backup"},
+	) {
+		t.Fatalf("unexpected Firecrawl API keys: %#v", loadedConfig.WebSearch.Firecrawl.APIKeys)
+	}
+}
+
+func TestLoadConfigUsesConfiguredFirecrawlMaxMarkdownCharacters(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	configText := `
+bot_token: discord-token
+providers:
+  openai:
+    base_url: https://api.example.com/v1
+models:
+  openai/first-model:
+web_search:
+  firecrawl:
+    max_markdown_characters: 20000
+`
+
+	err := os.WriteFile(configPath, []byte(configText), 0o600)
+	if err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	loadedConfig, err := loadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	if loadedConfig.WebSearch.Firecrawl.MaxMarkdownCharacters != 20000 {
+		t.Fatalf(
+			"unexpected Firecrawl max markdown characters: %d",
+			loadedConfig.WebSearch.Firecrawl.MaxMarkdownCharacters,
+		)
+	}
+}
+
+func TestLoadConfigRejectsNonPositiveFirecrawlMaxMarkdownCharacters(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	configText := `
+bot_token: discord-token
+providers:
+  openai:
+    base_url: https://api.example.com/v1
+models:
+  openai/first-model:
+web_search:
+  firecrawl:
+    max_markdown_characters: 0
+`
+
+	err := os.WriteFile(configPath, []byte(configText), 0o600)
+	if err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	_, err = loadConfig(configPath)
+	if err == nil {
+		t.Fatal("expected config load to fail")
 	}
 }
 

@@ -158,6 +158,11 @@ func testGroundingConfig() config {
 				TextMaxCharacters:  0,
 				LivecrawlTimeoutMS: 0,
 			},
+			Firecrawl: firecrawlSearchConfig{
+				APIKey:                "",
+				APIKeys:               nil,
+				MaxMarkdownCharacters: 0,
+			},
 			Tavily: tavilySearchConfig{
 				APIKey:  "",
 				APIKeys: nil,

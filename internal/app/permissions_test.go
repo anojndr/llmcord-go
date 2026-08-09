@@ -77,6 +77,11 @@ func testPermissionsConfig() config {
 			TextMaxCharacters:  defaultExaSearchTextMaxCharacters,
 			LivecrawlTimeoutMS: defaultExaContentsLivecrawlTimeoutMS,
 		},
+		Firecrawl: firecrawlSearchConfig{
+			APIKey:                "",
+			APIKeys:               nil,
+			MaxMarkdownCharacters: 0,
+		},
 		Tavily: tavilySearchConfig{
 			APIKey:  "",
 			APIKeys: nil,

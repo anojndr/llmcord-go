@@ -55,13 +55,26 @@ func newWebsiteTestBot(website websiteFetcher) *bot {
 
 func newWebsiteTestClient(httpClient *http.Client, exaURL string, tavilyURL string) websiteClient {
 	return websiteClient{
-		httpClient:            httpClient,
-		userAgent:             youtubeUserAgent,
-		exaContentsEndpoint:   exaURL,
-		tavilyExtractEndpoint: tavilyURL,
-		lookupIP:              testWebsiteLookupIP,
-		keys:                  newAPIKeyRotator(),
+		httpClient:              httpClient,
+		userAgent:               youtubeUserAgent,
+		exaContentsEndpoint:     exaURL,
+		tavilyExtractEndpoint:   tavilyURL,
+		firecrawlScrapeEndpoint: "",
+		lookupIP:                testWebsiteLookupIP,
+		keys:                    newAPIKeyRotator(),
 	}
+}
+
+func newWebsiteTestClientWithFirecrawl(
+	httpClient *http.Client,
+	firecrawlURL string,
+	exaURL string,
+	tavilyURL string,
+) websiteClient {
+	client := newWebsiteTestClient(httpClient, exaURL, tavilyURL)
+	client.firecrawlScrapeEndpoint = firecrawlURL
+
+	return client
 }
 
 func testWebsiteLookupIP(_ context.Context, host string) ([]netip.Addr, error) {
@@ -154,6 +167,17 @@ func testWebsiteTavilyOnlyConfig() config {
 	loadedConfig.WebSearch.Tavily = tavilySearchConfig{
 		APIKey:  testTavilyPrimaryAPIKey,
 		APIKeys: []string{testTavilyPrimaryAPIKey},
+	}
+
+	return loadedConfig
+}
+
+func testWebsiteFirecrawlConfig() config {
+	loadedConfig := testSearchConfig()
+	loadedConfig.WebSearch.Firecrawl = firecrawlSearchConfig{
+		APIKey:                testFirecrawlPrimaryAPIKey,
+		APIKeys:               []string{testFirecrawlPrimaryAPIKey},
+		MaxMarkdownCharacters: defaultFirecrawlMaxMarkdownCharacters,
 	}
 
 	return loadedConfig
@@ -1224,6 +1248,263 @@ func TestWebsiteClientFetchUsesTavilyWhenNoExaAPIKeyConfigured(t *testing.T) {
 
 	if !containsFold(result.Content, "Tavily extracted body.") {
 		t.Fatalf("unexpected content: %q", result.Content)
+	}
+}
+
+func newFirecrawlScrapeSuccessServer(
+	t *testing.T,
+	requestBody map[string]any,
+	title string,
+	markdown string,
+	description string,
+) *httptest.Server {
+	t.Helper()
+
+	return httptest.NewServer(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		request *http.Request,
+	) {
+		if request.URL.Path != "/v2/scrape" {
+			t.Fatalf("unexpected Firecrawl path: %q", request.URL.Path)
+		}
+
+		if request.Header.Get("Authorization") != "Bearer "+testFirecrawlPrimaryAPIKey {
+			t.Fatalf("unexpected Firecrawl auth header: %q", request.Header.Get("Authorization"))
+		}
+
+		requestURL, ok := requestBody["url"].(string)
+		if !ok || requestURL == "" {
+			t.Fatalf("unexpected Firecrawl request url: %#v", requestBody["url"])
+		}
+
+		var body map[string]any
+
+		err := json.NewDecoder(request.Body).Decode(&body)
+		if err != nil {
+			t.Fatalf("decode Firecrawl scrape request: %v", err)
+		}
+
+		assertFirecrawlScrapeRequest(t, body, requestURL)
+
+		responseWriter.Header().Set("Content-Type", "application/json")
+
+		responseBody := map[string]any{
+			"success": true,
+			"data": map[string]any{
+				"markdown": markdown,
+				"metadata": map[string]any{
+					"title":       title,
+					"sourceURL":   requestURL,
+					"description": description,
+				},
+			},
+		}
+
+		err = json.NewEncoder(responseWriter).Encode(responseBody)
+		if err != nil {
+			t.Fatalf("encode Firecrawl scrape response: %v", err)
+		}
+	}))
+}
+
+func TestWebsiteClientFetchUsesFirecrawlScrapeWhenConfigured(t *testing.T) {
+	t.Parallel()
+
+	var (
+		exaCallCount    int
+		tavilyCallCount int
+	)
+
+	firecrawlServer := newFirecrawlScrapeSuccessServer(
+		t,
+		map[string]any{"url": "https://example.com/article"},
+		"Example Article",
+		"# Firecrawl Heading\n\nFirecrawl extracted body.",
+		"Example description.",
+	)
+	defer firecrawlServer.Close()
+
+	exaServer := newRejectedWebsiteCallServer(&exaCallCount)
+	defer exaServer.Close()
+
+	tavilyServer := newRejectedWebsiteCallServer(&tavilyCallCount)
+	defer tavilyServer.Close()
+
+	loadedConfig := testWebsiteFirecrawlConfig()
+	client := newWebsiteTestClientWithFirecrawl(
+		firecrawlServer.Client(),
+		firecrawlServer.URL+"/v2/scrape",
+		exaServer.URL,
+		tavilyServer.URL,
+	)
+
+	result := mustFetchWebsiteArticle(t, client, loadedConfig)
+
+	if exaCallCount != 0 {
+		t.Fatalf("unexpected Exa call count: %d", exaCallCount)
+	}
+
+	if tavilyCallCount != 0 {
+		t.Fatalf("unexpected Tavily call count: %d", tavilyCallCount)
+	}
+
+	if result.Title != "Example Article" {
+		t.Fatalf("unexpected title: %q", result.Title)
+	}
+
+	if result.Description != "Example description." {
+		t.Fatalf("unexpected description: %q", result.Description)
+	}
+
+	if !containsFold(result.Content, "Firecrawl extracted body.") {
+		t.Fatalf("unexpected content: %q", result.Content)
+	}
+}
+
+func newRejectedWebsiteCallServer(callCount *int) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		_ *http.Request,
+	) {
+		*callCount++
+
+		http.Error(responseWriter, "unexpected call", http.StatusInternalServerError)
+	}))
+}
+
+func TestWebsiteClientFetchTruncatesFirecrawlMarkdownToConfiguredLimit(t *testing.T) {
+	t.Parallel()
+
+	longMarkdown := strings.Repeat("word ", 1000)
+
+	firecrawlServer := httptest.NewServer(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		_ *http.Request,
+	) {
+		responseWriter.Header().Set("Content-Type", "application/json")
+
+		responseBody := map[string]any{
+			"success": true,
+			"data": map[string]any{
+				"markdown": longMarkdown,
+				"metadata": map[string]any{
+					"title":     "Long Article",
+					"sourceURL": "https://example.com/article",
+				},
+			},
+		}
+
+		err := json.NewEncoder(responseWriter).Encode(responseBody)
+		if err != nil {
+			t.Fatalf("encode Firecrawl scrape response: %v", err)
+		}
+	}))
+	defer firecrawlServer.Close()
+
+	loadedConfig := testWebsiteFirecrawlConfig()
+	loadedConfig.WebSearch.Firecrawl.MaxMarkdownCharacters = 50
+	client := newWebsiteTestClientWithFirecrawl(
+		firecrawlServer.Client(),
+		firecrawlServer.URL+"/v2/scrape",
+		"",
+		"",
+	)
+
+	result := mustFetchWebsiteArticle(t, client, loadedConfig)
+
+	if runeCount(result.Content) > 50 {
+		t.Fatalf("unexpected content length: %d", runeCount(result.Content))
+	}
+}
+
+func TestWebsiteClientFetchSurfacesFirecrawlScrapeFailure(t *testing.T) {
+	t.Parallel()
+
+	firecrawlServer := httptest.NewServer(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		_ *http.Request,
+	) {
+		responseWriter.Header().Set("Content-Type", "application/json")
+
+		responseBody := map[string]any{
+			"success": false,
+			"error":   "Failed to load URL",
+		}
+
+		err := json.NewEncoder(responseWriter).Encode(responseBody)
+		if err != nil {
+			t.Fatalf("encode Firecrawl scrape response: %v", err)
+		}
+	}))
+	defer firecrawlServer.Close()
+
+	loadedConfig := testWebsiteFirecrawlConfig()
+	client := newWebsiteTestClientWithFirecrawl(
+		firecrawlServer.Client(),
+		firecrawlServer.URL+"/v2/scrape",
+		"",
+		"",
+	)
+
+	_, err := client.fetch(context.Background(), loadedConfig, "https://example.com/article")
+	if err == nil {
+		t.Fatal("expected Firecrawl scrape failure to surface")
+	}
+
+	if !strings.Contains(err.Error(), "Failed to load URL") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestWebsiteClientFetchSurfacesFirecrawlHTTPStatusError(t *testing.T) {
+	t.Parallel()
+
+	firecrawlServer := httptest.NewServer(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		_ *http.Request,
+	) {
+		responseWriter.Header().Set("Content-Type", "application/json")
+
+		http.Error(responseWriter, `{"error": "Payment required to access this resource."}`, http.StatusPaymentRequired)
+	}))
+	defer firecrawlServer.Close()
+
+	loadedConfig := testWebsiteFirecrawlConfig()
+	client := newWebsiteTestClientWithFirecrawl(
+		firecrawlServer.Client(),
+		firecrawlServer.URL+"/v2/scrape",
+		"",
+		"",
+	)
+
+	_, err := client.fetch(context.Background(), loadedConfig, "https://example.com/article")
+	if err == nil {
+		t.Fatal("expected Firecrawl HTTP status error to surface")
+	}
+
+	if !strings.Contains(err.Error(), "402") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func assertFirecrawlScrapeRequest(t *testing.T, request map[string]any, requestURL string) {
+	t.Helper()
+
+	if mapStringValue(request, "url") != requestURL {
+		t.Fatalf("unexpected Firecrawl scrape url: %q", mapStringValue(request, "url"))
+	}
+
+	rawFormats, formatsOK := request["formats"].([]any)
+	if !formatsOK || len(rawFormats) != 1 || rawFormats[0] != "markdown" {
+		t.Fatalf("unexpected Firecrawl formats: %#v", request["formats"])
+	}
+
+	if rawMaxAge, ok := request["maxAge"]; ok && rawMaxAge != nil {
+		t.Fatalf("unexpected Firecrawl maxAge: %#v", rawMaxAge)
+	}
+
+	if rawTimeout, ok := request["timeout"]; ok && rawTimeout != nil {
+		t.Fatalf("unexpected Firecrawl timeout: %#v", rawTimeout)
 	}
 }
 
