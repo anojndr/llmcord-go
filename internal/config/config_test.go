@@ -775,67 +775,6 @@ web_search:
 	}
 }
 
-func TestLoadConfigDefaultsFreewebEnabled(t *testing.T) {
-	t.Parallel()
-
-	tempDir := t.TempDir()
-	configPath := filepath.Join(tempDir, "Config.yaml")
-	configText := `
-bot_token: discord-token
-providers:
-  openai:
-    base_url: https://api.example.com/v1
-models:
-  openai/first-model:
-`
-
-	err := os.WriteFile(configPath, []byte(configText), 0o600)
-	if err != nil {
-		t.Fatalf("write Config file: %v", err)
-	}
-
-	loadedConfig, err := loadConfig(configPath)
-	if err != nil {
-		t.Fatalf("load Config: %v", err)
-	}
-
-	if !loadedConfig.WebSearch.Freeweb.Enabled {
-		t.Fatal("expected freeweb extraction to default to enabled")
-	}
-}
-
-func TestLoadConfigDisablesFreewebWhenConfigured(t *testing.T) {
-	t.Parallel()
-
-	tempDir := t.TempDir()
-	configPath := filepath.Join(tempDir, "Config.yaml")
-	configText := `
-bot_token: discord-token
-providers:
-  openai:
-    base_url: https://api.example.com/v1
-models:
-  openai/first-model:
-web_search:
-  freeweb:
-    enabled: false
-`
-
-	err := os.WriteFile(configPath, []byte(configText), 0o600)
-	if err != nil {
-		t.Fatalf("write Config file: %v", err)
-	}
-
-	loadedConfig, err := loadConfig(configPath)
-	if err != nil {
-		t.Fatalf("load Config: %v", err)
-	}
-
-	if loadedConfig.WebSearch.Freeweb.Enabled {
-		t.Fatal("expected freeweb extraction to be disabled when configured")
-	}
-}
-
 func TestLoadConfigUsesExaAsDefaultPrimaryProvider(t *testing.T) {
 	t.Parallel()
 
@@ -861,38 +800,6 @@ models:
 	}
 
 	if loadedConfig.WebSearch.PrimaryProvider != WebSearchProviderKindMCP {
-		t.Fatalf("unexpected web search primary provider: %q", loadedConfig.WebSearch.PrimaryProvider)
-	}
-}
-
-func TestLoadConfigAllowsFreewebAsPrimaryProvider(t *testing.T) {
-	t.Parallel()
-
-	// A Config that explicitly opts into FreeWeb web search must validate.
-	tempDir := t.TempDir()
-	configPath := filepath.Join(tempDir, "Config.yaml")
-	configText := `
-bot_token: discord-token
-providers:
-  openai:
-    base_url: https://api.example.com/v1
-models:
-  openai/first-model:
-web_search:
-  primary_provider: freeweb
-`
-
-	err := os.WriteFile(configPath, []byte(configText), 0o600)
-	if err != nil {
-		t.Fatalf("write Config file: %v", err)
-	}
-
-	loadedConfig, err := loadConfig(configPath)
-	if err != nil {
-		t.Fatalf("load Config: %v", err)
-	}
-
-	if loadedConfig.WebSearch.PrimaryProvider != WebSearchProviderKindFreeweb {
 		t.Fatalf("unexpected web search primary provider: %q", loadedConfig.WebSearch.PrimaryProvider)
 	}
 }
