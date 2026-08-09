@@ -128,7 +128,8 @@ Generic website URL extraction runs through the FreeWeb MCP server by default (`
 ## Operational Notes
 
 - Configuration reloads from disk on incoming messages and slash commands, so `config.yaml` changes apply without a restart.
-- Environment variables: `LLMCORD_CONFIG_PATH` (preferred; legacy `CONFIG_PATH` still works), `LLMCORD_HTTP_ADDR` (bind address, else `PORT`), `LLMCORD_LOG_LEVEL` (`debug`/`info`/`warn`/`error`), `LLMCORD_LOG_FORMAT` (`text`/`json`).
+- Environment variables: `LLMCORD_CONFIG_PATH` (preferred; legacy `CONFIG_PATH` still works), `LLMCORD_HTTP_ADDR` (bind address, else `PORT`), `LLMCORD_LOG_LEVEL` (`debug`/`info`/`warn`/`error`), `LLMCORD_LOG_FORMAT` (`text`/`json`), `LLMCORD_RECONNECT` (set to `0`/`false` to disable the gateway reconnect guard; enabled by default).
+- Automatic Discord gateway recovery: while the bot is connected, a watchdog goroutine monitors gateway heartbeats and force-closes a session that stops acknowledging them, so the reconnect loop restarts immediately instead of waiting out missed heartbeat intervals. When the connection is broken, an HTTP probe to the gateway URL polls for connectivity; the moment it succeeds, the bot clears its stale session/sequence state so the next connect takes Discord's resume path (near-instant, no fresh identify), and reconnect delays are bounded by tiered caps (2–120 seconds) instead of the library's default backoff that can grow to 10 minutes. After any reconnect, slash commands and the status message are re-synced automatically.
 - Every log record includes source file and line; errors carry stack traces, and panics in handlers are recovered and logged.
 - Generic website fetching rejects localhost, private, link-local, and unsafe redirects.
 - AliExpress product pages are replaced with the embedded product ID, OG title, and image list.
