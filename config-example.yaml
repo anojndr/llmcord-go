@@ -151,8 +151,22 @@ web_search:
   primary_provider: mcp
   # Maximum URLs to request for each search query.
   max_urls: 5
-  # Generic website URL extraction runs Exa Contents first when an Exa API
-  # key is set, then Tavily Extract, then the in-process HTML fetcher.
+  # Generic website URL extraction runs Firecrawl Scrape first when a
+  # Firecrawl API key is set, then Exa Contents when an Exa API key is set,
+  # then Tavily Extract, then the in-process HTML fetcher. TikTok, YouTube,
+  # Facebook, and Reddit URLs never use Firecrawl (dedicated fetchers handle
+  # them).
+  firecrawl:
+    # Optional. When set, generic website extraction uses Firecrawl's Scrape
+    # API (clean markdown, JS-rendered pages included). `api_key` also accepts
+    # a YAML list; requests are round-robin across them.
+    # api_key:
+    #   - fc-primary-key
+    #   - fc-backup-key
+    api_key:
+    # Optional max markdown characters to keep per scraped page.
+    # Default: 12000
+    # max_markdown_characters: 12000
   exa:
     # Optional. When set, the web search flow uses Exa's Search API instead of
     # Exa MCP, and generic website extraction uses Exa's Contents API.

@@ -9,7 +9,7 @@ It turns Discord reply chains into a frontend for OpenAI-compatible chat-complet
 - Reply-chain conversations in guilds, DMs, and public threads; triggered by bot mentions or `at ai`
 - Real-time streaming replies with a live progress embed (stage checklist, progress bar, elapsed timer), plus `Show Thinking`, `Show Sources`, and `View response better on GitHub Gist` (publishes the full reply as a GitHub Gist)
 - Multimodal input: images, audio, video, PDFs, DOCX, PPTX, and generic file attachments
-- URL enrichment for TikTok, Facebook, YouTube, Reddit, and generic websites
+- URL enrichment for TikTok, Facebook, YouTube, Reddit, and generic websites (Firecrawl Scrape when a Firecrawl key is set)
 - Web-search augmentation (Exa by default), reverse-image lookup (`vsearch`), and native Gemini grounding
 - Hot-reloaded `config.yaml`, permissions, channel model locks, and PostgreSQL-backed history
 
@@ -54,7 +54,7 @@ When `PORT` or `LLMCORD_HTTP_ADDR` is set, the bot exposes JSON health responses
 
 ## Configuration
 
-Providers are declared with `base_url` (OpenAI-compatible). The provider name selects the API kind: names containing `gemini` use the Gemini API (no `base_url` needed), and `exa` is an OpenAI-compatible research provider with a default base URL. `api_key` accepts a string or a YAML list; when multiple keys are configured, the bot round-robins them across requests that spread over every key. The same round-robin applies to `web_search.exa.api_key`, `web_search.tavily.api_key`, and `visual_search.serpapi.api_key`. Web search runs Exa by default (MCP, or its Search API with `web_search.exa.api_key`); generic website extraction runs Exa Contents (with an Exa API key), then Tavily Extract, then the in-process HTML fetcher. See the "Search and Visual Search" section.
+Providers are declared with `base_url` (OpenAI-compatible). The provider name selects the API kind: names containing `gemini` use the Gemini API (no `base_url` needed), and `exa` is an OpenAI-compatible research provider with a default base URL. `api_key` accepts a string or a YAML list; when multiple keys are configured, the bot round-robins them across requests that spread over every key. The same round-robin applies to `web_search.exa.api_key`, `web_search.tavily.api_key`, `web_search.firecrawl.api_key`, and `visual_search.serpapi.api_key`. Web search runs Exa by default (MCP, or its Search API with `web_search.exa.api_key`); generic website extraction runs Firecrawl Scrape (with `web_search.firecrawl.api_key`), then Exa Contents (with an Exa API key), then Tavily Extract, then the in-process HTML fetcher. See the "Search and Visual Search" section.
 
 ### Discord and Runtime
 
@@ -104,9 +104,11 @@ Model notes:
 | `web_search.exa.text_max_characters` | Max full-page text from Exa per result. Default: `15000`. |
 | `web_search.exa.livecrawl_timeout_ms` | Exa Contents crawl timeout. Default: `15000`. If a page's livecrawl exceeds it, the fetch is retried once with a doubled timeout, then falls back to Exa's cache, so slow pages still usually resolve. |
 | `web_search.tavily.api_key` | Enables Tavily search and Tavily Extract fallback. |
+| `web_search.firecrawl.api_key` | Makes Firecrawl Scrape the main extractor for generic website URLs (TikTok, YouTube, Facebook, and Reddit URLs are excluded). |
+| `web_search.firecrawl.max_markdown_characters` | Max markdown characters kept per Firecrawl scrape. Default: `12000`. |
 | `visual_search.serpapi.api_key` | Enables concurrent Google Lens results for `vsearch`. |
 
-Generic website URL extraction runs Exa Contents when `web_search.exa.api_key` is set, then Tavily Extract (when a Tavily key is set), then the in-process HTML fetcher as a last resort. The in-process fetcher renders readable text from HTML with SSRF protection (it rejects localhost, private, link-local, and unsafe redirects).
+Generic website URL extraction runs Firecrawl Scrape first when `web_search.firecrawl.api_key` is set, then Exa Contents (when `web_search.exa.api_key` is set), then Tavily Extract (when a Tavily key is set), then the in-process HTML fetcher as a last resort. TikTok, YouTube, Facebook, and Reddit URLs never use Firecrawl — dedicated fetchers handle them. The in-process fetcher renders readable text from HTML with SSRF protection (it rejects localhost, private, link-local, and unsafe redirects).
 
 ## Usage
 
@@ -130,7 +132,7 @@ Generic website URL extraction runs Exa Contents when `web_search.exa.api_key` i
 - Environment variables: `LLMCORD_CONFIG_PATH` (preferred; legacy `CONFIG_PATH` still works), `LLMCORD_HTTP_ADDR` (bind address, else `PORT`), `LLMCORD_LOG_LEVEL` (`debug`/`info`/`warn`/`error`), `LLMCORD_LOG_FORMAT` (`text`/`json`), `LLMCORD_RECONNECT` (set to `0`/`false` to disable the gateway reconnect guard; enabled by default).
 - Automatic Discord gateway recovery: while the bot is connected, a watchdog goroutine monitors gateway heartbeats and force-closes a session that stops acknowledging them, so the reconnect loop restarts immediately instead of waiting out missed heartbeat intervals. When the connection is broken, an HTTP probe to the gateway URL polls for connectivity; the moment it succeeds, the bot clears its stale session/sequence state so the next connect takes Discord's resume path (near-instant, no fresh identify), and reconnect delays are bounded by tiered caps (2–120 seconds) instead of the library's default backoff that can grow to 10 minutes. After any reconnect, slash commands and the status message are re-synced automatically.
 - Every log record includes source file and line; errors carry stack traces, and panics in handlers are recovered and logged.
-- Generic website fetching rejects localhost, private, link-local, and unsafe redirects.
+- Generic website fetching rejects localhost, private, link-local, and unsafe redirects; with a Firecrawl key, Scrape handles the extraction instead.
 - AliExpress product pages are replaced with the embedded product ID, OG title, and image list.
 - OpenRouter providers send `transforms: ["middle-out"]` unless overridden; unauthenticated 9Router setups omit the `Authorization` header.
 - Provider requests are sent once with no artificial context deadlines, except two narrow cases. First, when a stream ends before any content with a 503 "request queue is full" error, the request is retried once after a 3-second delay (up to two attempts total) — this is the router's upstream-queue full signal and a retry usually succeeds. Second, when a stream ends before delivering any content due to a transient failure — the proxy connection drops mid-stream (a stream ends before `[DONE]` or before `response.completed`, reported as `unexpected EOF`), the Gemini upstream reports a `Stream interrupted: NetworkError` error, or the model returns a clean-but-empty response — the request is retried once after a 1-second delay (up to two attempts total). A stream that already delivered visible content is never re-sent (a partial reply is never duplicated); an empty model response that still comes back empty after the retry is surfaced as `The model returned an empty response. Try again.`. These retries reuse the same API-key rotation, so each attempt may run on a different key. When a provider or search service (Exa, Tavily, SerpApi) has multiple `api_key` values, requests are round-robin across them; otherwise the single key is used. External request fan-out is bounded at 8 concurrent operations.

@@ -176,6 +176,25 @@ func (settings ExaSearchConfig) PrimaryAPIKey() string {
 	return firstAPIKey(settings.AllKeys())
 }
 
+// AllKeys returns the normalized Firecrawl key set.
+func (settings FirecrawlSearchConfig) AllKeys() []string {
+	return ProviderAPIKeys(settings.APIKey, settings.APIKeys)
+}
+
+// PrimaryAPIKey returns the first Firecrawl key.
+func (settings FirecrawlSearchConfig) PrimaryAPIKey() string {
+	return firstAPIKey(settings.AllKeys())
+}
+
+// MaxMarkdownCharactersOrDefault returns the markdown cap with its default.
+func (settings FirecrawlSearchConfig) MaxMarkdownCharactersOrDefault() int {
+	if settings.MaxMarkdownCharacters <= 0 {
+		return defaultFirecrawlMaxMarkdownCharacters
+	}
+
+	return settings.MaxMarkdownCharacters
+}
+
 // AllKeys returns the normalized SerpAPI key set.
 func (settings SerpAPIVisualSearchConfig) AllKeys() []string {
 	return ProviderAPIKeys(settings.APIKey, settings.APIKeys)

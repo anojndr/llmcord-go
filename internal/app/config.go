@@ -86,6 +86,11 @@ type rawTavilySearchConfig struct {
 	APIKey scalarStringList `yaml:"api_key"`
 }
 
+type rawFirecrawlSearchConfig struct {
+	APIKey                scalarStringList `yaml:"api_key"`
+	MaxMarkdownCharacters *int             `yaml:"max_markdown_characters"`
+}
+
 type rawExaSearchConfig struct {
 	APIKey             scalarStringList `yaml:"api_key"`
 	TextMaxCharacters  *int             `yaml:"text_max_characters"`
@@ -101,10 +106,11 @@ type rawVisualSearchConfig struct {
 }
 
 type rawWebSearchConfig struct {
-	PrimaryProvider scalarString          `yaml:"primary_provider"`
-	MaxURLs         *int                  `yaml:"max_urls"`
-	Exa             rawExaSearchConfig    `yaml:"exa"`
-	Tavily          rawTavilySearchConfig `yaml:"tavily"`
+	PrimaryProvider scalarString             `yaml:"primary_provider"`
+	MaxURLs         *int                     `yaml:"max_urls"`
+	Exa             rawExaSearchConfig       `yaml:"exa"`
+	Tavily          rawTavilySearchConfig    `yaml:"tavily"`
+	Firecrawl       rawFirecrawlSearchConfig `yaml:"firecrawl"`
 }
 
 type rawDatabaseConfig struct {
@@ -144,6 +150,12 @@ type exaSearchConfig struct {
 	LivecrawlTimeoutMS int
 }
 
+type firecrawlSearchConfig struct {
+	APIKey                string
+	APIKeys               []string
+	MaxMarkdownCharacters int
+}
+
 type serpAPIVisualSearchConfig struct {
 	APIKey  string
 	APIKeys []string
@@ -165,6 +177,7 @@ type webSearchConfig struct {
 	MaxURLs         int
 	Exa             exaSearchConfig
 	Tavily          tavilySearchConfig
+	Firecrawl       firecrawlSearchConfig
 }
 
 type databaseConfig struct {
@@ -472,6 +485,7 @@ func normalizeGistConfig(rawLoadedConfig rawGistConfig) gistConfig {
 func normalizeWebSearchConfig(rawLoadedConfig rawWebSearchConfig) webSearchConfig {
 	exaAPIKeys := normalizeAPIKeys([]string(rawLoadedConfig.Exa.APIKey))
 	tavilyAPIKeys := normalizeAPIKeys([]string(rawLoadedConfig.Tavily.APIKey))
+	firecrawlAPIKeys := normalizeAPIKeys([]string(rawLoadedConfig.Firecrawl.APIKey))
 
 	return webSearchConfig{
 		PrimaryProvider: normalizeWebSearchProvider(rawLoadedConfig.PrimaryProvider),
@@ -486,6 +500,14 @@ func normalizeWebSearchConfig(rawLoadedConfig rawWebSearchConfig) webSearchConfi
 		Tavily: tavilySearchConfig{
 			APIKey:  firstAPIKey(tavilyAPIKeys),
 			APIKeys: tavilyAPIKeys,
+		},
+		Firecrawl: firecrawlSearchConfig{
+			APIKey:  firstAPIKey(firecrawlAPIKeys),
+			APIKeys: firecrawlAPIKeys,
+			MaxMarkdownCharacters: intValueOrDefault(
+				rawLoadedConfig.Firecrawl.MaxMarkdownCharacters,
+				defaultFirecrawlMaxMarkdownCharacters,
+			),
 		},
 	}
 }
@@ -615,6 +637,13 @@ func validateWebSearchConfig(loadedConfig webSearchConfig) error {
 	if loadedConfig.Exa.LivecrawlTimeoutMS <= 0 {
 		return fmt.Errorf(
 			"web_search.exa.livecrawl_timeout_ms must be greater than zero: %w",
+			os.ErrInvalid,
+		)
+	}
+
+	if loadedConfig.Firecrawl.MaxMarkdownCharacters <= 0 {
+		return fmt.Errorf(
+			"web_search.firecrawl.max_markdown_characters must be greater than zero: %w",
 			os.ErrInvalid,
 		)
 	}

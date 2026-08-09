@@ -13,6 +13,7 @@ const (
 	defaultSerpAPIGoogleLensEndpoint     = "https://serpapi.com/search.json"
 	defaultTavilySearchEndpoint          = "https://api.tavily.com/search"
 	defaultTavilyExtractEndpoint         = "https://api.tavily.com/extract"
+	defaultFirecrawlScrapeEndpoint       = "https://api.firecrawl.dev/v2/scrape"
 	defaultGithubGistEndpoint            = "https://api.github.com/gists"
 	defaultGistFilename                  = "llmcord-go reply.md"
 	defaultStatusMessage                 = "github.com/jakobdylanc/llmcord"
@@ -96,6 +97,7 @@ const (
 	discordReconnectEnvVarName                    = "LLMCORD_RECONNECT"
 	maxSearchQueries                              = 500
 	defaultWebSearchMaxURLs                       = 5
+	defaultFirecrawlMaxMarkdownCharacters         = 12000
 	exaSearchTypeInstant                          = "instant"
 	exaSearchTypeFast                             = "fast"
 	exaSearchTypeAuto                             = "auto"

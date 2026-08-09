@@ -20,6 +20,8 @@ const (
 	defaultMaxMessages = 25
 	// defaultWebSearchMaxURLs is the default max URLs per web search.
 	defaultWebSearchMaxURLs = 5
+	// defaultFirecrawlMaxMarkdownCharacters caps Firecrawl markdown per scrape.
+	defaultFirecrawlMaxMarkdownCharacters = 12000
 	// mappingNodePairSize is the YAML mapping key/value pair size.
 	mappingNodePairSize = 2
 	// openRouterHost is the OpenRouter host used for transforms detection.
