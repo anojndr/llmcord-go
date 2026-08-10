@@ -429,10 +429,6 @@ func normalizeProviderConfig(providerName string, rawProvider rawProviderConfig)
 	apiKeys := normalizeAPIKeys([]string(rawProvider.APIKey))
 	baseURL := strings.TrimSpace(string(rawProvider.BaseURL))
 
-	if strings.Contains(strings.ToLower(providerName), providerNameSuffixExa) && baseURL == "" {
-		baseURL = defaultExaResearchBaseURL
-	}
-
 	return providerConfig{
 		Name:                 strings.TrimSpace(providerName),
 		BaseURL:              baseURL,
@@ -811,21 +807,18 @@ func (loadedConfig config) lockedSearchDeciderModelForChannelIDs(channelIDs []st
 
 const (
 	providerNameSuffixGemini = "gemini"
-	providerNameSuffixExa    = "exa"
 )
 
 // apiKind infers the API kind from the provider name: names containing
-// "gemini" use the native Gemini API, and "exa" is an OpenAI-compatible
-// research provider. Everything else is treated as OpenAI-compatible, unless
-// the base URL points at Gemini's OpenAI compatibility endpoint.
+// "gemini" use the native Gemini API. Everything else is treated as
+// OpenAI-compatible, unless the base URL points at Gemini's OpenAI
+// compatibility endpoint.
 func (provider providerConfig) apiKind() providerAPIKind {
 	providerName := strings.ToLower(strings.TrimSpace(provider.Name))
 
 	switch {
 	case strings.Contains(providerName, providerNameSuffixGemini):
 		return providerAPIKindGemini
-	case strings.Contains(providerName, providerNameSuffixExa):
-		return providerAPIKindOpenAI
 	default:
 		if looksLikeGeminiCompatibilityBaseURL(provider.BaseURL) {
 			return providerAPIKindGemini

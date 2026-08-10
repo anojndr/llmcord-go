@@ -98,15 +98,6 @@ providers:
     # `reasoning.effort`; on other OpenAI-compatible providers they map to
     # `reasoning_effort`.
 
-  # Provider names containing `exa` default to https://api.exa.ai.
-  exa:
-    api_key:
-    # Optional:
-    # base_url: https://api.exa.ai
-    # `exa/exa-research-pro` formerly skipped the web-search decider by name;
-    # keep that behavior explicitly:
-    disable_search_decider: true
-
   openrouter:
     base_url: https://openrouter.ai/api/v1
     api_key: 
@@ -142,8 +133,6 @@ models:
   openai/gpt-5.4:
   openai/gpt-5.4-low:
   openai/gpt-5.4-high:
-
-  exa/exa-research-pro:
 
   openrouter/x-ai/grok-4-fast:online:
 

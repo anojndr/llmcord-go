@@ -6,7 +6,6 @@ const (
 	openAICacheBreakpointModeExplicit    = "explicit"
 	readyMessage                         = "bot is online"
 	healthCheckPath                      = "/healthz"
-	defaultExaResearchBaseURL            = "https://api.exa.ai"
 	defaultExaSearchEndpoint             = "https://api.exa.ai/search"
 	defaultExaContentsEndpoint           = "https://api.exa.ai/contents"
 	defaultExaMCPEndpoint                = "https://mcp.exa.ai/mcp?tools=web_search_exa"
@@ -95,7 +94,7 @@ const (
 	finishReasonLength                            = "length"
 	externalRequestConcurrency                    = 8
 	discordReconnectEnvVarName                    = "LLMCORD_RECONNECT"
-	DefaultConfigPath                            = "config.yaml"
+	DefaultConfigPath                             = "config.yaml"
 	ConfigPathEnvironmentVariable                 = "LLMCORD_CONFIG_PATH"
 	LegacyConfigPathEnvironmentVariable           = "CONFIG_PATH"
 	HTTPAddressEnvironmentVariable                = "LLMCORD_HTTP_ADDR"
