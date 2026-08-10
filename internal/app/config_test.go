@@ -527,68 +527,6 @@ models:
 	}
 }
 
-func TestLoadConfigAllowsExaProviderWithoutBaseURL(t *testing.T) {
-	t.Parallel()
-
-	tempDir := t.TempDir()
-	configPath := filepath.Join(tempDir, "config.yaml")
-	configText := `
-bot_token: discord-token
-providers:
-  exa:
-    api_key: exa-key
-models:
-  exa/exa-research-pro:
-`
-
-	err := os.WriteFile(configPath, []byte(configText), 0o600)
-	if err != nil {
-		t.Fatalf("write config file: %v", err)
-	}
-
-	loadedConfig, err := loadConfig(configPath)
-	if err != nil {
-		t.Fatalf("load config: %v", err)
-	}
-
-	provider := loadedConfig.Providers["exa"]
-	if providers.ProviderAPIKind(provider.apiKind()) != providers.ProviderAPIKindOpenAI {
-		t.Fatalf("unexpected provider API kind: %q", provider.apiKind())
-	}
-
-	if provider.BaseURL != defaultExaResearchBaseURL {
-		t.Fatalf("unexpected Exa base URL: %q", provider.BaseURL)
-	}
-
-	request, err := buildChatCompletionRequest(
-		loadedConfig,
-		"exa/exa-research-pro",
-		[]chatMessage{{Role: messageRoleUser, Content: "hello"}},
-		false,
-	)
-	if err != nil {
-		t.Fatalf("build chat completion request: %v", err)
-	}
-
-	if request.Model != "exa-research-pro" {
-		t.Fatalf("unexpected request model: %q", request.Model)
-	}
-
-	if request.Provider.APIKind != providers.ProviderAPIKindOpenAI {
-		t.Fatalf("unexpected request provider API kind: %q", request.Provider.APIKind)
-	}
-
-	if request.Provider.BaseURL != defaultExaResearchBaseURL {
-		t.Fatalf("unexpected request provider base URL: %q", request.Provider.BaseURL)
-	}
-
-	requestURL := strings.TrimRight(request.Provider.BaseURL, "/") + "/chat/completions"
-
-	if requestURL != defaultExaResearchBaseURL+"/chat/completions" {
-		t.Fatalf("unexpected Exa chat completion URL: %q", requestURL)
-	}
-}
-
 func TestLoadConfigDisablesSearchDeciderPerProvider(t *testing.T) {
 	t.Parallel()
 

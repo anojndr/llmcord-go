@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-`llmcord-go` is a Go Discord bot that turns reply chains into a frontend for LLM chat-completion APIs: OpenAI-compatible providers (Ollama, LM Studio, vLLM, xAI, OpenRouter…), native Gemini, and Exa research. See README.md for the full feature list and config reference.
+`llmcord-go` is a Go Discord bot that turns reply chains into a frontend for LLM chat-completion APIs: OpenAI-compatible providers (Ollama, LM Studio, vLLM, xAI, OpenRouter…) and native Gemini. See README.md for the full feature list and config reference.
 
 ## Standing workflow rules
 
@@ -83,7 +83,7 @@ The router performs no retries and no attempt timeouts except one narrow case: `
 ## Config and environment
 
 - `config.yaml` is hot-reloaded from disk on every incoming message/slash command — no restart needed. `loadConfig` (config.go) decodes it; unknown keys are rejected (strict YAML decode).
-- Provider API kind is inferred from provider **name** (contains `gemini` → native Gemini, `exa` → Exa research), not from a `type` field.
+- Provider API kind is inferred from provider **name** (contains `gemini` → native Gemini), not from a `type` field.
 - Env vars: `LLMCORD_CONFIG_PATH` (legacy `CONFIG_PATH`), `LLMCORD_HTTP_ADDR`/`PORT` (health server), `LLMCORD_LOG_LEVEL`, `LLMCORD_LOG_FORMAT`.
 - Logging (`logging.go`) is `log/slog`; every record carries source file/line and error stack traces; handlers are wrapped in `recoverHandler` so panics log rather than crash the bot. Errors are wrapped with `%w` context chains throughout.
 
