@@ -1180,6 +1180,67 @@ func TestMaybeAugmentConversationWithWebSearchSkipsWhenNotNeeded(t *testing.T) {
 	}
 }
 
+func TestMaybeAugmentConversationWithWebSearchSkipsDeciderWhenProviderDisabled(t *testing.T) {
+	t.Parallel()
+
+	openAI := newStubChatClient(func(
+		_ context.Context,
+		_ chatCompletionRequest,
+		_ func(streamDelta) error,
+	) error {
+		t.Fatal("expected search decider to be skipped when disable_search_decider is set")
+
+		return nil
+	})
+
+	webSearch := newStubWebSearchClient(func(
+		_ context.Context,
+		_ config,
+		_ []string,
+	) ([]webSearchResult, error) {
+		t.Fatal("expected web search to be skipped when disable_search_decider is set")
+
+		return nil, nil
+	})
+
+	instance := newSearchTestBot(openAI, webSearch)
+
+	loadedConfig := testSearchConfig()
+	openAIProvider := loadedConfig.Providers["openai"]
+	openAIProvider.DisableSearchDecider = true
+	loadedConfig.Providers["openai"] = openAIProvider
+
+	conversation := []chatMessage{{Role: messageRoleUser, Content: "<@123>: latest ai news"}}
+
+	augmentedConversation, searchMetadata, warnings := instance.maybeAugmentConversationWithWebSearch(
+		context.Background(),
+		loadedConfig,
+		"openai/main-model",
+		newWebSearchTestSourceMessage(t, messageContentText(conversation[0].Content)),
+		conversation,
+	)
+
+	if len(warnings) != 0 {
+		t.Fatalf("unexpected warnings: %#v", warnings)
+	}
+
+	if searchMetadata != nil {
+		t.Fatalf("expected search metadata to be nil: %#v", searchMetadata)
+	}
+
+	if augmentedConversation[0].Content != conversation[0].Content {
+		t.Fatal("expected conversation to remain unchanged")
+	}
+
+	if len(openAI.requests) != 0 {
+		t.Fatalf("expected no search decider requests, got %d", len(openAI.requests))
+	}
+
+	if len(webSearch.calls) != 0 {
+		t.Fatalf("expected no web search calls, got %d", len(webSearch.calls))
+	}
+}
+
 func TestMaybeAugmentConversationWithWebSearchSkipsDeciderForExaResearchPro(t *testing.T) {
 	t.Parallel()
 
@@ -1207,14 +1268,15 @@ func TestMaybeAugmentConversationWithWebSearchSkipsDeciderForExaResearchPro(t *t
 
 	loadedConfig := testSearchConfig()
 	loadedConfig.Providers["exa"] = providerConfig{
-		Name:            "exa",
-		BaseURL:         "",
-		APIKey:          "",
-		APIKeys:         nil,
-		EnableGrounding: false,
-		ExtraHeaders:    nil,
-		ExtraQuery:      nil,
-		ExtraBody:       nil,
+		Name:                 "exa",
+		BaseURL:              "",
+		APIKey:               "",
+		APIKeys:              nil,
+		EnableGrounding:      false,
+		DisableSearchDecider: false,
+		ExtraHeaders:         nil,
+		ExtraQuery:           nil,
+		ExtraBody:            nil,
 	}
 	loadedConfig.Models["exa/exa-research-pro"] = nil
 	loadedConfig.ModelOrder = append([]string{"exa/exa-research-pro"}, loadedConfig.ModelOrder...)
@@ -1277,14 +1339,15 @@ func TestMaybeAugmentConversationWithWebSearchSkipsDeciderForXAIProvider(t *test
 
 	loadedConfig := testSearchConfig()
 	loadedConfig.Providers["x-ai"] = providerConfig{
-		Name:            providers.XAIProviderName,
-		BaseURL:         "https://api.x.ai/v1",
-		APIKey:          "",
-		APIKeys:         nil,
-		EnableGrounding: false,
-		ExtraHeaders:    nil,
-		ExtraQuery:      nil,
-		ExtraBody:       nil,
+		Name:                 providers.XAIProviderName,
+		BaseURL:              "https://api.x.ai/v1",
+		APIKey:               "",
+		APIKeys:              nil,
+		EnableGrounding:      false,
+		DisableSearchDecider: false,
+		ExtraHeaders:         nil,
+		ExtraQuery:           nil,
+		ExtraBody:            nil,
 	}
 	loadedConfig.Models["x-ai/grok-4"] = nil
 	loadedConfig.ModelOrder = append([]string{"x-ai/grok-4"}, loadedConfig.ModelOrder...)

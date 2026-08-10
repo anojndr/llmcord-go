@@ -46,6 +46,8 @@ providers:
     #   - key-2
     api_key:
     # enable_grounding: true
+    # Disable the web-search decider model call for this provider's models:
+    # disable_search_decider: true
     # Thought summaries are disabled by default. To turn them on:
     # extra_body:
     #   thinkingConfig:

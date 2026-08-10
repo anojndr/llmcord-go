@@ -509,14 +509,15 @@ func TestMessageContentOptionsForModelAllowsXAIManagedDocuments(t *testing.T) {
 
 	loadedConfig.Providers = map[string]providerConfig{
 		providers.XAIProviderName: {
-			Name:            providers.XAIProviderName,
-			BaseURL:         "https://api.x.ai/v1",
-			APIKey:          "",
-			APIKeys:         nil,
-			EnableGrounding: false,
-			ExtraHeaders:    nil,
-			ExtraQuery:      nil,
-			ExtraBody:       nil,
+			Name:                 providers.XAIProviderName,
+			BaseURL:              "https://api.x.ai/v1",
+			APIKey:               "",
+			APIKeys:              nil,
+			EnableGrounding:      false,
+			DisableSearchDecider: false,
+			ExtraHeaders:         nil,
+			ExtraQuery:           nil,
+			ExtraBody:            nil,
 		},
 	}
 	loadedConfig.Models = map[string]map[string]any{
@@ -710,14 +711,15 @@ func newBlockedWebsiteClient(gate *concurrentFetchGate) *stubWebsiteContentClien
 
 func testXAIProviderConfig() providerConfig {
 	return providerConfig{
-		Name:            providers.XAIProviderName,
-		BaseURL:         "https://api.x.ai/v1",
-		APIKey:          "",
-		APIKeys:         nil,
-		EnableGrounding: false,
-		ExtraHeaders:    nil,
-		ExtraQuery:      nil,
-		ExtraBody:       nil,
+		Name:                 providers.XAIProviderName,
+		BaseURL:              "https://api.x.ai/v1",
+		APIKey:               "",
+		APIKeys:              nil,
+		EnableGrounding:      false,
+		DisableSearchDecider: false,
+		ExtraHeaders:         nil,
+		ExtraQuery:           nil,
+		ExtraBody:            nil,
 	}
 }
 

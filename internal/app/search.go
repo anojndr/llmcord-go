@@ -438,7 +438,7 @@ func (instance *bot) decideWebSearch(
 	sourceMessage *discordgo.Message,
 	conversation []chatMessage,
 ) (searchDecision, []string, error) {
-	if searchDeciderDisabledForModel(providerSlashModel) {
+	if searchDeciderDisabledForModel(providerSlashModel, loadedConfig) {
 		return searchDecision{
 			NeedsSearch: false,
 			Queries:     nil,
@@ -644,10 +644,14 @@ func appendSearchDeciderInstruction(messages []chatMessage) []chatMessage {
 	return messages
 }
 
-func searchDeciderDisabledForModel(configuredModel string) bool {
+func searchDeciderDisabledForModel(configuredModel string, loadedConfig config) bool {
 	providerName, modelName, err := splitConfiguredModel(strings.TrimSpace(configuredModel))
 	if err != nil {
 		return false
+	}
+
+	if provider, ok := loadedConfig.Providers[providerName]; ok && provider.DisableSearchDecider {
+		return true
 	}
 
 	trimmedProviderName := strings.ToLower(strings.TrimSpace(providerName))

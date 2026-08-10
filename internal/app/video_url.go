@@ -131,6 +131,23 @@ func resolveDownloadedVideoAnalysesForNonGeminiModel[T downloadedURLVideoContent
 	ctx context.Context,
 	request downloadedVideoAugmentationRequest[T],
 ) ([]contentPart, []string, []string, error) {
+	searchDeciderNeedsAnalysis, err := request.instance.searchDeciderNeedsURLVideoAnalysis(
+		request.loadedConfig,
+	)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf(
+			"check %s search decider support: %w",
+			request.label,
+			err,
+		)
+	}
+
+	if !searchDeciderNeedsAnalysis {
+		mediaParts := downloadedVideoMediaParts(request.videoContents)
+
+		return mediaParts, nil, request.warnings, nil
+	}
+
 	canUseMediaAnalysis, err := canUseGeminiMediaAnalysis(
 		request.loadedConfig,
 		request.providerSlashModel,
@@ -228,6 +245,10 @@ func (instance *bot) searchDeciderNeedsURLVideoAnalysis(
 	loadedConfig config,
 ) (bool, error) {
 	searchDeciderModel := instance.currentSearchDeciderModelForConfig(loadedConfig)
+
+	if searchDeciderDisabledForModel(searchDeciderModel, loadedConfig) {
+		return false, nil
+	}
 
 	apiKind, err := configuredModelAPIKind(loadedConfig, searchDeciderModel)
 	if err != nil {

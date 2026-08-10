@@ -138,14 +138,15 @@ func testGroundingConfig() config {
 		},
 		Providers: map[string]providerConfig{
 			"gemini": {
-				Name:            "gemini",
-				BaseURL:         "",
-				APIKey:          "",
-				APIKeys:         nil,
-				EnableGrounding: true,
-				ExtraHeaders:    nil,
-				ExtraQuery:      nil,
-				ExtraBody:       nil,
+				Name:                 "gemini",
+				BaseURL:              "",
+				APIKey:               "",
+				APIKeys:              nil,
+				EnableGrounding:      true,
+				DisableSearchDecider: false,
+				ExtraHeaders:         nil,
+				ExtraQuery:           nil,
+				ExtraBody:            nil,
 			},
 		},
 		WebSearch: webSearchConfig{

@@ -662,6 +662,61 @@ func TestTikTokClientFetchRendersSlideshowsWhenNeeded(t *testing.T) {
 	}
 }
 
+func TestMaybeAugmentConversationWithTikTokSkipsAnalysesWhenSearchDeciderDisabled(t *testing.T) {
+	t.Parallel()
+
+	chatClient := newStubChatClient(func(
+		_ context.Context,
+		_ chatCompletionRequest,
+		_ func(streamDelta) error,
+	) error {
+		t.Fatal("unexpected gemini analysis request when disable_search_decider is set")
+
+		return nil
+	})
+
+	loadedConfig := testMediaAnalysisConfig()
+	openAIProvider := loadedConfig.Providers["openai"]
+	openAIProvider.DisableSearchDecider = true
+	loadedConfig.Providers["openai"] = openAIProvider
+	loadedConfig.SearchDeciderModel = testSearchDeciderModel2
+
+	instance := newTikTokTestBot(
+		newStubTikTokContentClient(func(
+			_ context.Context,
+			_ string,
+		) (tiktokVideoContent, error) {
+			return testTikTokVideoContent(), nil
+		}),
+		chatClient,
+	)
+
+	augmentedConversation, warnings, err := instance.maybeAugmentConversationWithTikTok(
+		context.Background(),
+		loadedConfig,
+		"openai/gpt-5",
+		testTikTokConversationWithImage(),
+		"<@123>: summarize https://vt.tnktok.com/ZSuhvMpsr/",
+	)
+	if err != nil {
+		t.Fatalf("augment conversation with tiktok: %v", err)
+	}
+
+	if len(warnings) != 0 {
+		t.Fatalf("unexpected warnings: %#v", warnings)
+	}
+
+	if len(chatClient.requests) != 0 {
+		t.Fatalf("expected no gemini analysis requests, got %d", len(chatClient.requests))
+	}
+
+	assertAugmentedVideoParts(
+		t,
+		augmentedConversation,
+		"<@123>: summarize https://vt.tnktok.com/ZSuhvMpsr/",
+	)
+}
+
 func TestMaybeAugmentConversationWithTikTokAppendsVideoPartsAndAnalysesForNonGeminiSearchDecider(t *testing.T) {
 	t.Parallel()
 
