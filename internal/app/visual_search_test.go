@@ -213,17 +213,35 @@ func runVisualSearchAugmentAsync(
 	resultChannel := make(chan visualSearchAugmentResult, 1)
 
 	go func() {
-		augmentedConversation, metadata, warnings, err := instance.maybeAugmentConversationWithVisualSearch(
+		prepared, err := instance.prepareVisualSearchAugmentation(
 			context.Background(),
 			loadedConfig,
 			sourceMessage,
 			conversation,
 		)
+		if err == nil {
+			augmentedConversation, applyErr := applyPreparedConversationAugmentation(
+				conversation,
+				prepared,
+			)
+			if applyErr != nil {
+				err = applyErr
+			} else {
+				resultChannel <- visualSearchAugmentResult{
+					conversation: augmentedConversation,
+					metadata:     prepared.metadata,
+					warnings:     prepared.warnings,
+					err:          nil,
+				}
+
+				return
+			}
+		}
 
 		resultChannel <- visualSearchAugmentResult{
-			conversation: augmentedConversation,
-			metadata:     metadata,
-			warnings:     warnings,
+			conversation: nil,
+			metadata:     nil,
+			warnings:     nil,
 			err:          err,
 		}
 	}()
@@ -373,7 +391,7 @@ func TestMaybeAugmentConversationWithVisualSearchAddsResultsAndStripsPrefix(t *t
 		},
 	}
 
-	augmentedConversation, metadata, warnings, err := instance.maybeAugmentConversationWithVisualSearch(
+	prepared, err := instance.prepareVisualSearchAugmentation(
 		context.Background(),
 		testSearchConfig(),
 		sourceMessage,
@@ -382,6 +400,17 @@ func TestMaybeAugmentConversationWithVisualSearchAddsResultsAndStripsPrefix(t *t
 	if err != nil {
 		t.Fatalf("maybe augment conversation with visual search: %v", err)
 	}
+
+	augmentedConversation, err := applyPreparedConversationAugmentation(
+		conversation,
+		prepared,
+	)
+	if err != nil {
+		t.Fatalf("maybe augment conversation with visual search: %v", err)
+	}
+
+	metadata := prepared.metadata
+	warnings := prepared.warnings
 
 	if len(warnings) != 0 {
 		t.Fatalf("unexpected warnings: %#v", warnings)
@@ -434,7 +463,7 @@ func TestMaybeAugmentConversationWithVisualSearchWarnsWhenImageMissing(t *testin
 		{Role: messageRoleUser, Content: testVisualSearchPrompt},
 	}
 
-	augmentedConversation, metadata, warnings, err := instance.maybeAugmentConversationWithVisualSearch(
+	prepared, err := instance.prepareVisualSearchAugmentation(
 		context.Background(),
 		testSearchConfig(),
 		new(discordgo.Message),
@@ -443,6 +472,17 @@ func TestMaybeAugmentConversationWithVisualSearchWarnsWhenImageMissing(t *testin
 	if err != nil {
 		t.Fatalf("maybe augment conversation with visual search: %v", err)
 	}
+
+	augmentedConversation, err := applyPreparedConversationAugmentation(
+		conversation,
+		prepared,
+	)
+	if err != nil {
+		t.Fatalf("maybe augment conversation with visual search: %v", err)
+	}
+
+	metadata := prepared.metadata
+	warnings := prepared.warnings
 
 	if len(warnings) != 1 || warnings[0] != visualSearchImageWarningText {
 		t.Fatalf("unexpected warnings: %#v", warnings)
@@ -478,7 +518,7 @@ func TestMaybeAugmentConversationWithVisualSearchReturnsWarningOnSearchFailure(t
 		{Role: messageRoleUser, Content: testVisualSearchPrompt},
 	}
 
-	augmentedConversation, metadata, warnings, err := instance.maybeAugmentConversationWithVisualSearch(
+	prepared, err := instance.prepareVisualSearchAugmentation(
 		context.Background(),
 		testSearchConfig(),
 		sourceMessage,
@@ -487,6 +527,17 @@ func TestMaybeAugmentConversationWithVisualSearchReturnsWarningOnSearchFailure(t
 	if err != nil {
 		t.Fatalf("maybe augment conversation with visual search: %v", err)
 	}
+
+	augmentedConversation, err := applyPreparedConversationAugmentation(
+		conversation,
+		prepared,
+	)
+	if err != nil {
+		t.Fatalf("maybe augment conversation with visual search: %v", err)
+	}
+
+	metadata := prepared.metadata
+	warnings := prepared.warnings
 
 	if len(warnings) != 1 || warnings[0] != visualSearchWarningText {
 		t.Fatalf("unexpected warnings: %#v", warnings)
@@ -592,7 +643,7 @@ func TestMaybeAugmentConversationWithVisualSearchReturnsWarningWhenOneProviderFa
 
 	conversation := []chatMessage{{Role: messageRoleUser, Content: testVisualSearchPrompt}}
 
-	augmentedConversation, metadata, warnings, err := instance.maybeAugmentConversationWithVisualSearch(
+	prepared, err := instance.prepareVisualSearchAugmentation(
 		context.Background(),
 		loadedConfig,
 		sourceMessage,
@@ -601,6 +652,17 @@ func TestMaybeAugmentConversationWithVisualSearchReturnsWarningWhenOneProviderFa
 	if err != nil {
 		t.Fatalf("maybe augment conversation with visual search: %v", err)
 	}
+
+	augmentedConversation, err := applyPreparedConversationAugmentation(
+		conversation,
+		prepared,
+	)
+	if err != nil {
+		t.Fatalf("maybe augment conversation with visual search: %v", err)
+	}
+
+	metadata := prepared.metadata
+	warnings := prepared.warnings
 
 	if len(warnings) != 1 || warnings[0] != visualSearchPartialWarningText {
 		t.Fatalf("unexpected warnings: %#v", warnings)

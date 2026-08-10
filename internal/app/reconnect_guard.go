@@ -399,12 +399,3 @@ func hasSessionResumeState(session *discordgo.Session) bool {
 
 	return state.sessionID != "" || state.seq != 0
 }
-
-// SetGatewayProbeTimeout is a test hook; production timeouts come from
-// constants.
-func (instance *bot) SetGatewayProbeTimeout(timeout time.Duration) {
-	instance.guardMu.Lock()
-	defer instance.guardMu.Unlock()
-
-	instance.gatewayProbeTimeout = timeout
-}

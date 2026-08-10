@@ -176,30 +176,6 @@ func forceHTTP1Transport(transport *http.Transport) *http.Transport {
 	return transport
 }
 
-func (instance *bot) maybeAugmentConversationWithReddit(
-	ctx context.Context,
-	conversation []chatMessage,
-	urlExtractionText string,
-) ([]chatMessage, []string, error) {
-	preparedAugmentation, err := instance.prepareRedditAugmentation(
-		ctx,
-		urlExtractionText,
-	)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	augmentedConversation, err := applyPreparedConversationAugmentation(
-		conversation,
-		preparedAugmentation,
-	)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	return augmentedConversation, preparedAugmentation.warnings, nil
-}
-
 func (instance *bot) prepareRedditAugmentation(
 	ctx context.Context,
 	urlExtractionText string,

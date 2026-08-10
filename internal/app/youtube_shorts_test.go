@@ -453,13 +453,25 @@ func TestMaybeAugmentConversationWithYouTubeShortsIgnoresURLsOnlyPresentInDocume
 			conversation []chatMessage,
 			urlExtractionText string,
 		) ([]chatMessage, []string, error) {
-			return instance.maybeAugmentConversationWithYouTubeShorts(
+			prepared, err := instance.prepareYouTubeShortsAugmentation(
 				ctx,
 				testSearchConfig(),
 				"openai/main-model",
-				conversation,
 				urlExtractionText,
 			)
+			if err != nil {
+				return nil, nil, err
+			}
+
+			augmentedConversation, err := applyPreparedConversationAugmentation(
+				conversation,
+				prepared,
+			)
+			if err != nil {
+				return nil, nil, err
+			}
+
+			return augmentedConversation, prepared.warnings, nil
 		},
 	)
 
@@ -527,16 +539,25 @@ func assertYouTubeShortsAugmentationForProvider(
 		chatClient,
 	)
 
-	augmentedConversation, warnings, err := instance.maybeAugmentConversationWithYouTubeShorts(
+	prepared, err := instance.prepareYouTubeShortsAugmentation(
 		context.Background(),
 		testMediaAnalysisConfig(),
 		providerSlashModel,
-		conversation,
 		query,
 	)
 	if err != nil {
 		t.Fatalf("augment conversation with youtube shorts: %v", err)
 	}
+
+	augmentedConversation, err := applyPreparedConversationAugmentation(
+		conversation,
+		prepared,
+	)
+	if err != nil {
+		t.Fatalf("augment conversation with youtube shorts: %v", err)
+	}
+
+	warnings := prepared.warnings
 
 	if len(warnings) != 0 {
 		t.Fatalf("unexpected warnings: %#v", warnings)

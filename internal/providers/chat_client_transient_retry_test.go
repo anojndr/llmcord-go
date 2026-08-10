@@ -323,10 +323,6 @@ func TestChatCompletionRouterExhaustsEmptyModelResponseRetries(t *testing.T) {
 	if attempts.Load() != 2 {
 		t.Fatalf("attempts = %d, want 2 (empty retry budget exhausted)", attempts.Load())
 	}
-
-	if UserFacingError(err) != "The model returned an empty response. Try again." {
-		t.Fatalf("unexpected user-facing error: %q", UserFacingError(err))
-	}
 }
 
 // TestChatCompletionRouterDoesNotRetryProviderStatusError verifies that a

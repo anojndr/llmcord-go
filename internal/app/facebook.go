@@ -87,34 +87,6 @@ func newFacebookClient(httpClient *http.Client) facebookClient {
 	}
 }
 
-func (instance *bot) maybeAugmentConversationWithFacebook(
-	ctx context.Context,
-	loadedConfig config,
-	providerSlashModel string,
-	conversation []chatMessage,
-	urlExtractionText string,
-) ([]chatMessage, []string, error) {
-	preparedAugmentation, err := instance.prepareFacebookAugmentation(
-		ctx,
-		loadedConfig,
-		providerSlashModel,
-		urlExtractionText,
-	)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	augmentedConversation, err := applyPreparedConversationAugmentation(
-		conversation,
-		preparedAugmentation,
-	)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	return augmentedConversation, preparedAugmentation.warnings, nil
-}
-
 func (instance *bot) prepareFacebookAugmentation(
 	ctx context.Context,
 	loadedConfig config,

@@ -138,30 +138,6 @@ func newYouTubeClient(httpClient *http.Client) youtubeClient {
 	}
 }
 
-func (instance *bot) maybeAugmentConversationWithYouTube(
-	ctx context.Context,
-	conversation []chatMessage,
-	urlExtractionText string,
-) ([]chatMessage, []string, error) {
-	preparedAugmentation, err := instance.prepareYouTubeAugmentation(
-		ctx,
-		urlExtractionText,
-	)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	augmentedConversation, err := applyPreparedConversationAugmentation(
-		conversation,
-		preparedAugmentation,
-	)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	return augmentedConversation, preparedAugmentation.warnings, nil
-}
-
 func (instance *bot) prepareYouTubeAugmentation(
 	ctx context.Context,
 	urlExtractionText string,

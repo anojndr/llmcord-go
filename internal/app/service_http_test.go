@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	cfg "llmcord-go/internal/config"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -24,29 +23,29 @@ func TestRuntimeConfigPath(t *testing.T) {
 		{
 			name:     "default",
 			env:      nil,
-			expected: cfg.DefaultConfigPath,
+			expected: DefaultConfigPath,
 		},
 		{
 			name: "prefers explicit llmcord config path",
 			env: map[string]string{
-				cfg.ConfigPathEnvironmentVariable:       "/etc/secrets/config.yaml",
-				cfg.LegacyConfigPathEnvironmentVariable: "/tmp/config.yaml",
+				ConfigPathEnvironmentVariable:       "/etc/secrets/config.yaml",
+				LegacyConfigPathEnvironmentVariable: "/tmp/config.yaml",
 			},
 			expected: "/etc/secrets/config.yaml",
 		},
 		{
 			name: "falls back to legacy config path",
 			env: map[string]string{
-				cfg.LegacyConfigPathEnvironmentVariable: "/tmp/config.yaml",
+				LegacyConfigPathEnvironmentVariable: "/tmp/config.yaml",
 			},
 			expected: "/tmp/config.yaml",
 		},
 		{
 			name: "ignores blank values",
 			env: map[string]string{
-				cfg.ConfigPathEnvironmentVariable: "   ",
+				ConfigPathEnvironmentVariable: "   ",
 			},
-			expected: cfg.DefaultConfigPath,
+			expected: DefaultConfigPath,
 		},
 	}
 
@@ -67,8 +66,8 @@ func TestRuntimeConfigPath(t *testing.T) {
 func TestRuntimeConfigPathNilGetenv(t *testing.T) {
 	t.Parallel()
 
-	if got := RuntimeConfigPath(nil); got != cfg.DefaultConfigPath {
-		t.Fatalf("RuntimeConfigPath(nil) = %q, want %q", got, cfg.DefaultConfigPath)
+	if got := RuntimeConfigPath(nil); got != DefaultConfigPath {
+		t.Fatalf("RuntimeConfigPath(nil) = %q, want %q", got, DefaultConfigPath)
 	}
 }
 
@@ -88,15 +87,15 @@ func TestPublicHTTPAddress(t *testing.T) {
 		{
 			name: "uses render port",
 			env: map[string]string{
-				cfg.PortEnvironmentVariable: "10000",
+				PortEnvironmentVariable: "10000",
 			},
 			expected: ":10000",
 		},
 		{
 			name: "prefers explicit address",
 			env: map[string]string{
-				cfg.HTTPAddressEnvironmentVariable: "127.0.0.1:8080",
-				cfg.PortEnvironmentVariable:        "10000",
+				HTTPAddressEnvironmentVariable: "127.0.0.1:8080",
+				PortEnvironmentVariable:        "10000",
 			},
 			expected: "127.0.0.1:8080",
 		},

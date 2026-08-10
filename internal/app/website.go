@@ -81,33 +81,6 @@ func newWebsiteClient(httpClient *http.Client) websiteClient {
 	}
 }
 
-func (instance *bot) maybeAugmentConversationWithWebsite(
-	ctx context.Context,
-	loadedConfig config,
-	conversation []chatMessage,
-	urlExtractionText string,
-) ([]chatMessage, []string, error) {
-	preparedAugmentation, err := instance.prepareWebsiteAugmentation(
-		ctx,
-		loadedConfig,
-		"",
-		urlExtractionText,
-	)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	augmentedConversation, err := applyPreparedConversationAugmentation(
-		conversation,
-		preparedAugmentation,
-	)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	return augmentedConversation, preparedAugmentation.warnings, nil
-}
-
 func (instance *bot) prepareWebsiteAugmentation(
 	ctx context.Context,
 	loadedConfig config,

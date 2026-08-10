@@ -12,7 +12,6 @@ linters:
     testpackage:
       allow-packages:
         - app
-        - config
         - providers
         - main
     wrapcheck:
@@ -26,7 +25,6 @@ linters:
           allow:
             - $gostd
             - llmcord-go/internal/app
-            - llmcord-go/internal/config
             - llmcord-go/internal/providers
             - llmcord-go/internal/searchtypes
             - llmcord-go/internal/support

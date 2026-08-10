@@ -97,7 +97,7 @@ func TestAwakeResetClearsStateWhenProbeRecovers(t *testing.T) {
 	instance.session, _ = discordgo.New("Bot discord-token")
 	instance.session.Identify.Intents = discordgo.IntentsGuilds
 
-	instance.SetGatewayProbeTimeout(time.Second)
+	instance.gatewayProbeTimeout = time.Second
 
 	var failing atomic.Bool
 	failing.Store(true)

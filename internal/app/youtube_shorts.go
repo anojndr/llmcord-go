@@ -97,34 +97,6 @@ func newYouTubeShortsClient(httpClient *http.Client) youtubeShortsClient {
 	}
 }
 
-func (instance *bot) maybeAugmentConversationWithYouTubeShorts(
-	ctx context.Context,
-	loadedConfig config,
-	providerSlashModel string,
-	conversation []chatMessage,
-	urlExtractionText string,
-) ([]chatMessage, []string, error) {
-	preparedAugmentation, err := instance.prepareYouTubeShortsAugmentation(
-		ctx,
-		loadedConfig,
-		providerSlashModel,
-		urlExtractionText,
-	)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	augmentedConversation, err := applyPreparedConversationAugmentation(
-		conversation,
-		preparedAugmentation,
-	)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	return augmentedConversation, preparedAugmentation.warnings, nil
-}
-
 func (instance *bot) prepareYouTubeShortsAugmentation(
 	ctx context.Context,
 	loadedConfig config,

@@ -24,14 +24,13 @@ Requires Go 1.26+. The codebase is split into layered packages under `internal/`
 cmd/llmcord-go        entry point (thin main; app.Main)
 internal/app          the bot: bot struct, messages, interactions, response, conversation,
                       augmentation, search, scrapers, store, config loading glue
-internal/config       YAML config schema, normalization, API-key helpers
 internal/store        messageNode/messageNodeStore + Postgres persistence
 internal/providers    streaming provider clients (OpenAI-compatible + Responses, Gemini,
                       xAI/Grok, retries, caching, errors)
 internal/searchtypes  shared search metadata types, message-part keys, embedded prompt
 internal/support      tiny shared helpers (rune counts, MIME normalization)
 ```
-The dependency direction is strictly bottom-up: support/searchtypes ← config ← store ← providers ← app ← cmd.
+The dependency direction is strictly bottom-up: searchtypes ← support ← providers ← app ← cmd.
 
 The quality gate from README.md — run after changes:
 

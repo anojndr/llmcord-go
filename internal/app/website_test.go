@@ -434,15 +434,25 @@ func TestMaybeAugmentConversationWithWebsiteFetchesMultipleURLsConcurrentlyAndKe
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	augmentedConversation, warnings, err := instance.maybeAugmentConversationWithWebsite(
+	prepared, err := instance.prepareWebsiteAugmentation(
 		ctx,
 		testSearchConfig(),
-		conversation,
+		"",
 		messageContentText(conversation[0].Content),
 	)
 	if err != nil {
 		t.Fatalf("augment conversation with website: %v", err)
 	}
+
+	augmentedConversation, err := applyPreparedConversationAugmentation(
+		conversation,
+		prepared,
+	)
+	if err != nil {
+		t.Fatalf("augment conversation with website: %v", err)
+	}
+
+	warnings := prepared.warnings
 
 	if len(warnings) != 0 {
 		t.Fatalf("unexpected warnings: %#v", warnings)
@@ -493,12 +503,25 @@ func TestMaybeAugmentConversationWithWebsiteIgnoresURLsOnlyPresentInDocumentCont
 			conversation []chatMessage,
 			urlExtractionText string,
 		) ([]chatMessage, []string, error) {
-			return instance.maybeAugmentConversationWithWebsite(
+			prepared, err := instance.prepareWebsiteAugmentation(
 				ctx,
 				testSearchConfig(),
-				conversation,
+				"",
 				urlExtractionText,
 			)
+			if err != nil {
+				return nil, nil, err
+			}
+
+			augmentedConversation, err := applyPreparedConversationAugmentation(
+				conversation,
+				prepared,
+			)
+			if err != nil {
+				return nil, nil, err
+			}
+
+			return augmentedConversation, prepared.warnings, nil
 		},
 	)
 

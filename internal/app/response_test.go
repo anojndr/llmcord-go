@@ -312,7 +312,7 @@ func TestHandleGeneratedStreamDeltaMergesSearchMetadataFromStream(t *testing.T) 
 	finishReason := ""
 	lastRenderTime := time.Time{}
 	state := generatedStreamState{
-		request:             emptyChatCompletionRequest(),
+		request:             chatCompletionRequest{},
 		warnings:            nil,
 		answerAccumulator:   &segmentAccumulator{maxLength: embedResponseMaxLength, segments: []string{""}},
 		thinkingAccumulator: &segmentAccumulator{maxLength: embedResponseMaxLength, segments: []string{""}},
@@ -1021,7 +1021,7 @@ func testGenerateAndSendResponseAppendsErrorWhenStreamFailsAfterPartialOutput(t 
 
 	err := instance.generateAndSendResponse(
 		context.Background(),
-		emptyChatCompletionRequest(),
+		chatCompletionRequest{},
 		newResponseTracker(sourceMessage, ""),
 		nil,
 	)
@@ -1211,7 +1211,7 @@ func TestGenerateAndSendResponseShowsThinkingDuringStreamButNotFinalResponse(t *
 
 	err := instance.generateAndSendResponse(
 		context.Background(),
-		emptyChatCompletionRequest(),
+		chatCompletionRequest{},
 		tracker,
 		nil,
 	)
@@ -1521,7 +1521,7 @@ func TestGenerateAndSendResponsePersistsThinkingInConversationHistory(t *testing
 
 	err := instance.generateAndSendResponse(
 		context.Background(),
-		emptyChatCompletionRequest(),
+		chatCompletionRequest{},
 		tracker,
 		nil,
 	)
@@ -1902,7 +1902,7 @@ func TestGenerateAndSendResponseRendersFailureOnEmptyModelResponse(t *testing.T)
 
 	err := instance.generateAndSendResponse(
 		context.Background(),
-		emptyChatCompletionRequest(),
+		chatCompletionRequest{},
 		tracker,
 		nil,
 	)

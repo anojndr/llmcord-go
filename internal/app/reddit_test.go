@@ -236,14 +236,23 @@ func TestMaybeAugmentConversationWithRedditFetchesMultipleURLsConcurrentlyAndKee
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	augmentedConversation, warnings, err := instance.maybeAugmentConversationWithReddit(
+	prepared, err := instance.prepareRedditAugmentation(
 		ctx,
-		conversation,
 		messageContentText(conversation[0].Content),
 	)
 	if err != nil {
 		t.Fatalf("augment conversation with reddit: %v", err)
 	}
+
+	augmentedConversation, err := applyPreparedConversationAugmentation(
+		conversation,
+		prepared,
+	)
+	if err != nil {
+		t.Fatalf("augment conversation with reddit: %v", err)
+	}
+
+	warnings := prepared.warnings
 
 	if len(warnings) != 0 {
 		t.Fatalf("unexpected warnings: %#v", warnings)
@@ -301,11 +310,20 @@ func TestMaybeAugmentConversationWithRedditIgnoresURLsOnlyPresentInDocumentConte
 			conversation []chatMessage,
 			urlExtractionText string,
 		) ([]chatMessage, []string, error) {
-			return instance.maybeAugmentConversationWithReddit(
-				ctx,
+			prepared, err := instance.prepareRedditAugmentation(ctx, urlExtractionText)
+			if err != nil {
+				return nil, nil, err
+			}
+
+			augmentedConversation, err := applyPreparedConversationAugmentation(
 				conversation,
-				urlExtractionText,
+				prepared,
 			)
+			if err != nil {
+				return nil, nil, err
+			}
+
+			return augmentedConversation, prepared.warnings, nil
 		},
 	)
 
