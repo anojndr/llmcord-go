@@ -1241,17 +1241,18 @@ func TestMaybeAugmentConversationWithWebSearchSkipsDeciderWhenProviderDisabled(t
 	}
 }
 
-func TestMaybeAugmentConversationWithWebSearchSkipsDeciderForExaResearchPro(t *testing.T) {
+func TestMaybeAugmentConversationWithWebSearchRunsDeciderForExaResearchPro(t *testing.T) {
 	t.Parallel()
 
 	openAI := newStubChatClient(func(
 		_ context.Context,
 		_ chatCompletionRequest,
-		_ func(streamDelta) error,
+		handle func(streamDelta) error,
 	) error {
-		t.Fatal("expected search decider to be skipped for exa/exa-research-pro")
+		delta := new(streamDelta)
+		delta.Content = `{"needs_search":false}`
 
-		return nil
+		return handle(*delta)
 	})
 
 	webSearch := newStubWebSearchClient(func(
@@ -1259,7 +1260,7 @@ func TestMaybeAugmentConversationWithWebSearchSkipsDeciderForExaResearchPro(t *t
 		_ config,
 		_ []string,
 	) ([]webSearchResult, error) {
-		t.Fatal("expected web search to be skipped for exa/exa-research-pro")
+		t.Fatal("expected web search to be skipped")
 
 		return nil, nil
 	})
@@ -1303,8 +1304,8 @@ func TestMaybeAugmentConversationWithWebSearchSkipsDeciderForExaResearchPro(t *t
 		t.Fatal("expected conversation to remain unchanged")
 	}
 
-	if len(openAI.requests) != 0 {
-		t.Fatalf("expected no search decider requests, got %d", len(openAI.requests))
+	if len(openAI.requests) != 1 {
+		t.Fatalf("expected 1 search decider request, got %d", len(openAI.requests))
 	}
 
 	if len(webSearch.calls) != 0 {
@@ -1312,17 +1313,18 @@ func TestMaybeAugmentConversationWithWebSearchSkipsDeciderForExaResearchPro(t *t
 	}
 }
 
-func TestMaybeAugmentConversationWithWebSearchSkipsDeciderForXAIProvider(t *testing.T) {
+func TestMaybeAugmentConversationWithWebSearchRunsDeciderForXAIProvider(t *testing.T) {
 	t.Parallel()
 
 	openAI := newStubChatClient(func(
 		_ context.Context,
 		_ chatCompletionRequest,
-		_ func(streamDelta) error,
+		handle func(streamDelta) error,
 	) error {
-		t.Fatal("expected search decider to be skipped for x-ai provider")
+		delta := new(streamDelta)
+		delta.Content = `{"needs_search":false}`
 
-		return nil
+		return handle(*delta)
 	})
 
 	webSearch := newStubWebSearchClient(func(
@@ -1330,7 +1332,7 @@ func TestMaybeAugmentConversationWithWebSearchSkipsDeciderForXAIProvider(t *test
 		_ config,
 		_ []string,
 	) ([]webSearchResult, error) {
-		t.Fatal("expected web search to be skipped for x-ai provider")
+		t.Fatal("expected web search to be skipped")
 
 		return nil, nil
 	})
@@ -1374,8 +1376,8 @@ func TestMaybeAugmentConversationWithWebSearchSkipsDeciderForXAIProvider(t *test
 		t.Fatal("expected conversation to remain unchanged")
 	}
 
-	if len(openAI.requests) != 0 {
-		t.Fatalf("expected no search decider requests, got %d", len(openAI.requests))
+	if len(openAI.requests) != 1 {
+		t.Fatalf("expected 1 search decider request, got %d", len(openAI.requests))
 	}
 
 	if len(webSearch.calls) != 0 {

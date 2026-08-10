@@ -644,31 +644,14 @@ func appendSearchDeciderInstruction(messages []chatMessage) []chatMessage {
 }
 
 func searchDeciderDisabledForModel(configuredModel string, loadedConfig config) bool {
-	providerName, modelName, err := splitConfiguredModel(strings.TrimSpace(configuredModel))
+	providerName, _, err := splitConfiguredModel(strings.TrimSpace(configuredModel))
 	if err != nil {
 		return false
 	}
 
-	if provider, ok := loadedConfig.Providers[providerName]; ok && provider.DisableSearchDecider {
-		return true
-	}
+	provider, ok := loadedConfig.Providers[providerName]
 
-	trimmedProviderName := strings.ToLower(strings.TrimSpace(providerName))
-	trimmedModelName := strings.ToLower(strings.TrimSpace(modelName))
-
-	if trimmedProviderName == "x-ai" ||
-		strings.Contains(trimmedProviderName, "grok") ||
-		strings.Contains(trimmedProviderName, "perplexity") {
-		return true
-	}
-
-	if strings.HasSuffix(trimmedModelName, ":online") ||
-		strings.Contains(trimmedModelName, "online") ||
-		strings.Contains(trimmedModelName, "perplexity") {
-		return true
-	}
-
-	return strings.EqualFold(providerName, "exa") && strings.EqualFold(modelName, "exa-research-pro")
+	return ok && provider.DisableSearchDecider
 }
 
 // buildSearchDeciderConversation builds the search decider conversation
