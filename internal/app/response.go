@@ -191,28 +191,6 @@ func (tracker *responseTracker) release(store *messageNodeStore, fullText string
 	}
 }
 
-func emptyChatCompletionRequest() chatCompletionRequest {
-	return chatCompletionRequest{
-		Provider: providerRequestConfig{
-			APIKind:         "",
-			BaseURL:         "",
-			APIKey:          "",
-			APIKeys:         nil,
-			UseResponsesAPI: false,
-			EnableGrounding: false,
-			ExtraHeaders:    nil,
-			ExtraQuery:      nil,
-			ExtraBody:       nil,
-		},
-		Model:              "",
-		ConfiguredModel:    "",
-		SessionID:          "",
-		PreviousResponseID: "",
-		RequestID:          "",
-		Messages:           nil,
-	}
-}
-
 func (instance *bot) runGenerationAttempt(
 	ctx context.Context,
 	request chatCompletionRequest,

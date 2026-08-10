@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	cfg "llmcord-go/internal/config"
 	"net"
 	"net/http"
 	"strings"
@@ -22,12 +21,12 @@ type serviceHealth struct {
 // RuntimeConfigPath resolves the config path from the environment.
 func RuntimeConfigPath(getenv func(string) string) string {
 	if getenv == nil {
-		return cfg.DefaultConfigPath
+		return DefaultConfigPath
 	}
 
 	for _, key := range []string{
-		cfg.ConfigPathEnvironmentVariable,
-		cfg.LegacyConfigPathEnvironmentVariable,
+		ConfigPathEnvironmentVariable,
+		LegacyConfigPathEnvironmentVariable,
 	} {
 		configPath := strings.TrimSpace(getenv(key))
 		if configPath != "" {
@@ -35,7 +34,7 @@ func RuntimeConfigPath(getenv func(string) string) string {
 		}
 	}
 
-	return cfg.DefaultConfigPath
+	return DefaultConfigPath
 }
 
 func publicHTTPAddress(getenv func(string) string) string {
@@ -43,12 +42,12 @@ func publicHTTPAddress(getenv func(string) string) string {
 		return ""
 	}
 
-	httpAddress := strings.TrimSpace(getenv(cfg.HTTPAddressEnvironmentVariable))
+	httpAddress := strings.TrimSpace(getenv(HTTPAddressEnvironmentVariable))
 	if httpAddress != "" {
 		return httpAddress
 	}
 
-	port := strings.TrimSpace(getenv(cfg.PortEnvironmentVariable))
+	port := strings.TrimSpace(getenv(PortEnvironmentVariable))
 	if port == "" {
 		return ""
 	}

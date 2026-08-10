@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -80,7 +81,7 @@ func TestSearchDeciderBuildsMainModelConversation(t *testing.T) {
 	for index, mainMessage := range mainMessages {
 		deciderMessage := deciderMessages[index]
 
-		if !chatMessageContentsEqual(deciderMessage.Content, mainMessage.Content) {
+		if !reflect.DeepEqual(deciderMessage.Content, mainMessage.Content) {
 			t.Fatalf(
 				"decider message %d content %#v != main message content %#v",
 				index,
@@ -159,7 +160,7 @@ func TestSearchDeciderConversationMatchesMainModelWithPDFAttachment(t *testing.T
 	for index, mainMessage := range mainMessages {
 		deciderMessage := deciderMessages[index]
 
-		if !chatMessageContentsEqual(deciderMessage.Content, mainMessage.Content) {
+		if !reflect.DeepEqual(deciderMessage.Content, mainMessage.Content) {
 			t.Fatalf(
 				"decider message %d content %#v != main message content %#v",
 				index,

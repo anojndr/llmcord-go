@@ -4,8 +4,6 @@ import (
 	"reflect"
 	"slices"
 	"testing"
-
-	providers "llmcord-go/internal/providers"
 )
 
 func TestNormalizeAPIKeysDeduplicatesAndTrims(t *testing.T) {
@@ -167,57 +165,6 @@ func TestPrimaryAPIKey(t *testing.T) {
 
 		if key := provider.primaryAPIKey(); key != t.Name()+"-p1" {
 			t.Fatalf("expected primary key, got %q", key)
-		}
-	})
-
-	t.Run("providerRequestConfig", func(t *testing.T) {
-		t.Parallel()
-
-		provider := providerRequestConfig{
-			APIKind:         providers.ProviderAPIKindOpenAI,
-			BaseURL:         "https://api.openai.com/v1",
-			APIKey:          t.Name() + "-r1",
-			APIKeys:         []string{t.Name() + "-r2", t.Name() + "-r3"},
-			UseResponsesAPI: false,
-			EnableGrounding: false,
-			ExtraHeaders:    nil,
-			ExtraQuery:      nil,
-			ExtraBody:       nil,
-		}
-
-		if key := providerRequestPrimaryAPIKey(provider); key != t.Name()+"-r2" {
-			t.Fatalf("expected primary key, got %q", key)
-		}
-	})
-
-	t.Run("searchConfigs", func(t *testing.T) {
-		t.Parallel()
-
-		exaCfg := exaSearchConfig{
-			APIKey:             t.Name() + "-e1",
-			APIKeys:            []string{t.Name() + "-e2"},
-			SearchType:         "auto",
-			TextMaxCharacters:  15000,
-			LivecrawlTimeoutMS: 15000,
-		}
-		if key := exaCfg.primaryAPIKey(); key != t.Name()+"-e1" {
-			t.Fatalf("expected primary exa key, got %q", key)
-		}
-
-		tavilyCfg := tavilySearchConfig{
-			APIKey:  t.Name() + "-t1",
-			APIKeys: []string{t.Name() + "-t2"},
-		}
-		if key := tavilyCfg.primaryAPIKey(); key != t.Name()+"-t1" {
-			t.Fatalf("expected primary tavily key, got %q", key)
-		}
-
-		serpAPICfg := serpAPIVisualSearchConfig{
-			APIKey:  t.Name() + "-s1",
-			APIKeys: []string{t.Name() + "-s2"},
-		}
-		if key := serpAPICfg.primaryAPIKey(); key != t.Name()+"-s1" {
-			t.Fatalf("expected primary serp api key, got %q", key)
 		}
 	})
 }

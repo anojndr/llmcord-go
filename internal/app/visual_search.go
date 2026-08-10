@@ -615,33 +615,6 @@ func (client yandexVisualSearchClient) requestURL(imageURL string) (string, erro
 	return parsedURL.String(), nil
 }
 
-func (instance *bot) maybeAugmentConversationWithVisualSearch(
-	ctx context.Context,
-	loadedConfig config,
-	sourceMessage *discordgo.Message,
-	conversation []chatMessage,
-) ([]chatMessage, *searchMetadata, []string, error) {
-	preparedAugmentation, err := instance.prepareVisualSearchAugmentation(
-		ctx,
-		loadedConfig,
-		sourceMessage,
-		conversation,
-	)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-
-	augmentedConversation, err := applyPreparedConversationAugmentation(
-		conversation,
-		preparedAugmentation,
-	)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-
-	return augmentedConversation, preparedAugmentation.metadata, preparedAugmentation.warnings, nil
-}
-
 func (instance *bot) prepareVisualSearchAugmentation(
 	ctx context.Context,
 	loadedConfig config,

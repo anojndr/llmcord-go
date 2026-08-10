@@ -11,7 +11,6 @@ import (
 	searchtypes "llmcord-go/internal/searchtypes"
 	"net/http"
 	"os"
-	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -735,15 +734,9 @@ func (instance *bot) buildSearchDeciderConversation(
 	return searchDeciderMessages, nil
 }
 
-// chatMessageContentsEqual reports whether two chatMessage Content values
-// carry the same payload. Content is an interface{} that may hold
-// uncomparable dynamic types such as []contentPart, on which a direct !=
-// comparison panics; reflect.DeepEqual handles those safely and is exact
-// for the concrete types used here (string, []contentPart, nil).
-func chatMessageContentsEqual(left, right any) bool {
-	return reflect.DeepEqual(left, right)
-}
-
+// latestUserImageURLSet returns the set of image URLs in the latest user
+// message. It is used by Gemini media analysis to avoid re-analyzing images
+// already present in the conversation.
 func latestUserImageURLSet(conversation []chatMessage) (map[string]struct{}, error) {
 	index, err := latestUserMessageIndex(conversation)
 	if err != nil {

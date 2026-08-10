@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	cfg "llmcord-go/internal/config"
 	"maps"
 	"os"
 	"slices"
@@ -210,7 +209,7 @@ func cacheInitializedStoreNode(
 func TestDefaultMessageNodeStoreKeyUsesExpectedPrefix(t *testing.T) {
 	t.Parallel()
 
-	storeKey := defaultMessageNodeStoreKey(cfg.DefaultConfigPath)
+	storeKey := defaultMessageNodeStoreKey(DefaultConfigPath)
 
 	if !strings.HasPrefix(storeKey, "message-history-") {
 		t.Fatalf("unexpected message store key prefix: %q", storeKey)

@@ -219,34 +219,6 @@ func newTikTokClient(httpClient *http.Client) tiktokClient {
 	}
 }
 
-func (instance *bot) maybeAugmentConversationWithTikTok(
-	ctx context.Context,
-	loadedConfig config,
-	providerSlashModel string,
-	conversation []chatMessage,
-	urlExtractionText string,
-) ([]chatMessage, []string, error) {
-	preparedAugmentation, err := instance.prepareTikTokAugmentation(
-		ctx,
-		loadedConfig,
-		providerSlashModel,
-		urlExtractionText,
-	)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	augmentedConversation, err := applyPreparedConversationAugmentation(
-		conversation,
-		preparedAugmentation,
-	)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	return augmentedConversation, preparedAugmentation.warnings, nil
-}
-
 func (instance *bot) prepareTikTokAugmentation(
 	ctx context.Context,
 	loadedConfig config,

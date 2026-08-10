@@ -691,16 +691,25 @@ func TestMaybeAugmentConversationWithTikTokSkipsAnalysesWhenSearchDeciderDisable
 		chatClient,
 	)
 
-	augmentedConversation, warnings, err := instance.maybeAugmentConversationWithTikTok(
+	prepared, err := instance.prepareTikTokAugmentation(
 		context.Background(),
 		loadedConfig,
 		"openai/gpt-5",
-		testTikTokConversationWithImage(),
 		"<@123>: summarize https://vt.tnktok.com/ZSuhvMpsr/",
 	)
 	if err != nil {
 		t.Fatalf("augment conversation with tiktok: %v", err)
 	}
+
+	augmentedConversation, err := applyPreparedConversationAugmentation(
+		testTikTokConversationWithImage(),
+		prepared,
+	)
+	if err != nil {
+		t.Fatalf("augment conversation with tiktok: %v", err)
+	}
+
+	warnings := prepared.warnings
 
 	if len(warnings) != 0 {
 		t.Fatalf("unexpected warnings: %#v", warnings)
@@ -739,16 +748,25 @@ func TestMaybeAugmentConversationWithTikTokAppendsVideoPartsAndAnalysesForNonGem
 		chatClient,
 	)
 
-	augmentedConversation, warnings, err := instance.maybeAugmentConversationWithTikTok(
+	prepared, err := instance.prepareTikTokAugmentation(
 		context.Background(),
 		testMediaAnalysisConfig(),
 		testMediaAnalysisModel,
-		testTikTokConversationWithImage(),
 		"<@123>: summarize https://vt.tnktok.com/ZSuhvMpsr/",
 	)
 	if err != nil {
 		t.Fatalf("augment conversation with tiktok: %v", err)
 	}
+
+	augmentedConversation, err := applyPreparedConversationAugmentation(
+		testTikTokConversationWithImage(),
+		prepared,
+	)
+	if err != nil {
+		t.Fatalf("augment conversation with tiktok: %v", err)
+	}
+
+	warnings := prepared.warnings
 
 	if len(warnings) != 0 {
 		t.Fatalf("unexpected warnings: %#v", warnings)
@@ -800,16 +818,25 @@ func TestMaybeAugmentConversationWithTikTokSkipsAnalysesForGeminiSearchDecider(t
 	)
 	instance.currentSearchDeciderModel = testMediaAnalysisModel
 
-	augmentedConversation, warnings, err := instance.maybeAugmentConversationWithTikTok(
+	prepared, err := instance.prepareTikTokAugmentation(
 		context.Background(),
 		loadedConfig,
 		testMediaAnalysisModel,
-		testTikTokConversationWithImage(),
 		"<@123>: summarize https://vt.tnktok.com/ZSuhvMpsr/",
 	)
 	if err != nil {
 		t.Fatalf("augment conversation with tiktok: %v", err)
 	}
+
+	augmentedConversation, err := applyPreparedConversationAugmentation(
+		testTikTokConversationWithImage(),
+		prepared,
+	)
+	if err != nil {
+		t.Fatalf("augment conversation with tiktok: %v", err)
+	}
+
+	warnings := prepared.warnings
 
 	if len(warnings) != 0 {
 		t.Fatalf("unexpected warnings: %#v", warnings)
@@ -879,16 +906,25 @@ func TestMaybeAugmentConversationWithTikTokPreprocessesForNonGeminiModels(t *tes
 		},
 	}
 
-	augmentedConversation, warnings, err := instance.maybeAugmentConversationWithTikTok(
+	prepared, err := instance.prepareTikTokAugmentation(
 		context.Background(),
 		testMediaAnalysisConfig(),
 		"openai/gpt-5",
-		conversation,
 		messageContentText(conversation[0].Content),
 	)
 	if err != nil {
 		t.Fatalf("augment conversation with tiktok: %v", err)
 	}
+
+	augmentedConversation, err := applyPreparedConversationAugmentation(
+		conversation,
+		prepared,
+	)
+	if err != nil {
+		t.Fatalf("augment conversation with tiktok: %v", err)
+	}
+
+	warnings := prepared.warnings
 
 	if len(warnings) != 0 {
 		t.Fatalf("unexpected warnings: %#v", warnings)
@@ -941,16 +977,25 @@ func TestMaybeAugmentConversationWithTikTokWarnsWithoutGeminiPreprocessor(t *tes
 		},
 	}
 
-	augmentedConversation, warnings, err := instance.maybeAugmentConversationWithTikTok(
+	prepared, err := instance.prepareTikTokAugmentation(
 		context.Background(),
 		testSearchConfig(),
 		"openai/main-model",
-		conversation,
 		messageContentText(conversation[0].Content),
 	)
 	if err != nil {
 		t.Fatalf("augment conversation with tiktok: %v", err)
 	}
+
+	augmentedConversation, err := applyPreparedConversationAugmentation(
+		conversation,
+		prepared,
+	)
+	if err != nil {
+		t.Fatalf("augment conversation with tiktok: %v", err)
+	}
+
+	warnings := prepared.warnings
 
 	if len(warnings) != 1 || warnings[0] != tikTokWarningText {
 		t.Fatalf("unexpected warnings: %#v", warnings)
@@ -993,13 +1038,25 @@ func TestMaybeAugmentConversationWithTikTokIgnoresURLsOnlyPresentInDocumentConte
 			conversation []chatMessage,
 			urlExtractionText string,
 		) ([]chatMessage, []string, error) {
-			return instance.maybeAugmentConversationWithTikTok(
+			prepared, err := instance.prepareTikTokAugmentation(
 				ctx,
 				testSearchConfig(),
 				"openai/main-model",
-				conversation,
 				urlExtractionText,
 			)
+			if err != nil {
+				return nil, nil, err
+			}
+
+			augmentedConversation, err := applyPreparedConversationAugmentation(
+				conversation,
+				prepared,
+			)
+			if err != nil {
+				return nil, nil, err
+			}
+
+			return augmentedConversation, prepared.warnings, nil
 		},
 	)
 }
@@ -1088,16 +1145,25 @@ func TestMaybeAugmentConversationWithTikTokKeepsFirstSuccessfulVideoPerResolvedU
 		},
 	}
 
-	augmentedConversation, warnings, err := instance.maybeAugmentConversationWithTikTok(
+	prepared, err := instance.prepareTikTokAugmentation(
 		context.Background(),
 		loadedConfig,
 		testMediaAnalysisModel,
-		conversation,
 		messageContentText(conversation[0].Content),
 	)
 	if err != nil {
 		t.Fatalf("augment conversation with tiktok: %v", err)
 	}
+
+	augmentedConversation, err := applyPreparedConversationAugmentation(
+		conversation,
+		prepared,
+	)
+	if err != nil {
+		t.Fatalf("augment conversation with tiktok: %v", err)
+	}
+
+	warnings := prepared.warnings
 
 	if len(warnings) != 0 {
 		t.Fatalf("unexpected warnings: %#v", warnings)

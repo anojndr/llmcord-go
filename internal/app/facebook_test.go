@@ -606,16 +606,25 @@ func TestMaybeAugmentConversationWithFacebookAppendsVideoPartsAndAnalysesForNonG
 		chatClient,
 	)
 
-	augmentedConversation, warnings, err := instance.maybeAugmentConversationWithFacebook(
+	prepared, err := instance.prepareFacebookAugmentation(
 		context.Background(),
 		testMediaAnalysisConfig(),
 		testMediaAnalysisModel,
-		testFacebookConversationWithImage(),
 		"<@123>: summarize "+testFacebookURL,
 	)
 	if err != nil {
 		t.Fatalf("augment conversation with facebook: %v", err)
 	}
+
+	augmentedConversation, err := applyPreparedConversationAugmentation(
+		testFacebookConversationWithImage(),
+		prepared,
+	)
+	if err != nil {
+		t.Fatalf("augment conversation with facebook: %v", err)
+	}
+
+	warnings := prepared.warnings
 
 	if len(warnings) != 0 {
 		t.Fatalf("unexpected warnings: %#v", warnings)
@@ -667,16 +676,25 @@ func TestMaybeAugmentConversationWithFacebookSkipsAnalysesForGeminiSearchDecider
 	)
 	instance.currentSearchDeciderModel = testMediaAnalysisModel
 
-	augmentedConversation, warnings, err := instance.maybeAugmentConversationWithFacebook(
+	prepared, err := instance.prepareFacebookAugmentation(
 		context.Background(),
 		loadedConfig,
 		testMediaAnalysisModel,
-		testFacebookConversationWithImage(),
 		"<@123>: summarize "+testFacebookURL,
 	)
 	if err != nil {
 		t.Fatalf("augment conversation with facebook: %v", err)
 	}
+
+	augmentedConversation, err := applyPreparedConversationAugmentation(
+		testFacebookConversationWithImage(),
+		prepared,
+	)
+	if err != nil {
+		t.Fatalf("augment conversation with facebook: %v", err)
+	}
+
+	warnings := prepared.warnings
 
 	if len(warnings) != 0 {
 		t.Fatalf("unexpected warnings: %#v", warnings)
@@ -737,16 +755,25 @@ func TestMaybeAugmentConversationWithFacebookPreprocessesForNonGeminiModels(t *t
 		},
 	}
 
-	augmentedConversation, warnings, err := instance.maybeAugmentConversationWithFacebook(
+	prepared, err := instance.prepareFacebookAugmentation(
 		context.Background(),
 		testMediaAnalysisConfig(),
 		"openai/gpt-5",
-		conversation,
 		messageContentText(conversation[0].Content),
 	)
 	if err != nil {
 		t.Fatalf("augment conversation with facebook: %v", err)
 	}
+
+	augmentedConversation, err := applyPreparedConversationAugmentation(
+		conversation,
+		prepared,
+	)
+	if err != nil {
+		t.Fatalf("augment conversation with facebook: %v", err)
+	}
+
+	warnings := prepared.warnings
 
 	if len(warnings) != 0 {
 		t.Fatalf("unexpected warnings: %#v", warnings)
@@ -790,16 +817,25 @@ func TestMaybeAugmentConversationWithFacebookWarnsWithoutGeminiPreprocessor(t *t
 		},
 	}
 
-	augmentedConversation, warnings, err := instance.maybeAugmentConversationWithFacebook(
+	prepared, err := instance.prepareFacebookAugmentation(
 		context.Background(),
 		testSearchConfig(),
 		"openai/main-model",
-		conversation,
 		messageContentText(conversation[0].Content),
 	)
 	if err != nil {
 		t.Fatalf("augment conversation with facebook: %v", err)
 	}
+
+	augmentedConversation, err := applyPreparedConversationAugmentation(
+		conversation,
+		prepared,
+	)
+	if err != nil {
+		t.Fatalf("augment conversation with facebook: %v", err)
+	}
+
+	warnings := prepared.warnings
 
 	if len(warnings) != 1 || warnings[0] != facebookWarningText {
 		t.Fatalf("unexpected warnings: %#v", warnings)
@@ -842,13 +878,25 @@ func TestMaybeAugmentConversationWithFacebookIgnoresURLsOnlyPresentInDocumentCon
 			conversation []chatMessage,
 			urlExtractionText string,
 		) ([]chatMessage, []string, error) {
-			return instance.maybeAugmentConversationWithFacebook(
+			prepared, err := instance.prepareFacebookAugmentation(
 				ctx,
 				testSearchConfig(),
 				"openai/main-model",
-				conversation,
 				urlExtractionText,
 			)
+			if err != nil {
+				return nil, nil, err
+			}
+
+			augmentedConversation, err := applyPreparedConversationAugmentation(
+				conversation,
+				prepared,
+			)
+			if err != nil {
+				return nil, nil, err
+			}
+
+			return augmentedConversation, prepared.warnings, nil
 		},
 	)
 }

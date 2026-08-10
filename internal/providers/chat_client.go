@@ -231,25 +231,3 @@ func (client ChatCompletionRouter) streamChatCompletionOnce(
 		)
 	}
 }
-
-// UserFacingError renders an error for a response embed footer.
-func UserFacingError(err error) string {
-	const (
-		genericResponseErrorText = "Couldn't generate a response right now. Try again."
-	)
-
-	if err == nil {
-		return genericResponseErrorText
-	}
-
-	if errors.Is(err, ErrEmptyModelResponse) {
-		return "The model returned an empty response. Try again."
-	}
-
-	errorText := strings.TrimSpace(err.Error())
-	if errorText == "" {
-		return genericResponseErrorText
-	}
-
-	return errorText
-}

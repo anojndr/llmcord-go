@@ -155,16 +155,8 @@ func (settings tavilySearchConfig) apiKeys() []string {
 	return providerAPIKeys(settings.APIKey, settings.APIKeys)
 }
 
-func (settings tavilySearchConfig) primaryAPIKey() string {
-	return firstAPIKey(settings.apiKeys())
-}
-
 func (settings exaSearchConfig) apiKeys() []string {
 	return providerAPIKeys(settings.APIKey, settings.APIKeys)
-}
-
-func (settings exaSearchConfig) primaryAPIKey() string {
-	return firstAPIKey(settings.apiKeys())
 }
 
 func (settings firecrawlSearchConfig) apiKeys() []string {
@@ -181,8 +173,4 @@ func (settings firecrawlSearchConfig) maxMarkdownCharacters() int {
 
 func (settings serpAPIVisualSearchConfig) apiKeys() []string {
 	return providerAPIKeys(settings.APIKey, settings.APIKeys)
-}
-
-func (settings serpAPIVisualSearchConfig) primaryAPIKey() string {
-	return firstAPIKey(settings.apiKeys())
 }
