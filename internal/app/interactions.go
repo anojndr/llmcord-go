@@ -564,6 +564,23 @@ func (instance *bot) handleSearchDeciderModelCommand(
 		return fmt.Errorf("load config for search decider model command: %w", err)
 	}
 
+	channelIDs, err := instance.interactionChannelIDs(interaction)
+	if err != nil {
+		logWarn("resolve interaction channel ids", err, "channel_id", interaction.ChannelID)
+		channelIDs = []string{interaction.ChannelID}
+	}
+
+	if lockedModel, ok := loadedConfig.lockedSearchDeciderModelForChannelIDs(channelIDs); ok {
+		return respondInteractionText(
+			session,
+			interaction.Interaction,
+			fmt.Sprintf(
+				"This channel is locked to `%s`. `/searchdecidermodel` is disabled here.",
+				lockedModel,
+			),
+		)
+	}
+
 	return handleConfiguredModelCommand(
 		session,
 		interaction,
@@ -702,6 +719,23 @@ func (instance *bot) handleSearchDeciderModelAutocomplete(
 	loadedConfig, err := loadConfig(instance.configPath)
 	if err != nil {
 		return fmt.Errorf("load config for search decider autocomplete: %w", err)
+	}
+
+	channelIDs, err := instance.interactionChannelIDs(interaction)
+	if err != nil {
+		logWarn("resolve interaction channel ids", err, "channel_id", interaction.ChannelID)
+		channelIDs = []string{interaction.ChannelID}
+	}
+
+	if lockedModel, ok := loadedConfig.lockedSearchDeciderModelForChannelIDs(channelIDs); ok {
+		return respondInteractionChoices(
+			session,
+			interaction.Interaction,
+			lockedModelAutocompleteChoices(
+				lockedModel,
+				interactionOptionString(interaction.ApplicationCommandData().Options),
+			),
+		)
 	}
 
 	return handleConfiguredModelAutocomplete(
