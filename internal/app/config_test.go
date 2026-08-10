@@ -433,6 +433,42 @@ channel_model_locks:
 	}
 }
 
+func TestLoadConfigUsesConfiguredChannelSearchDeciderModelLocks(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	configText := `
+bot_token: discord-token
+providers:
+  openai:
+    base_url: https://api.example.com/v1
+models:
+  openai/first-model:
+  openai/second-model:
+channel_search_decider_model_locks:
+  channel-1: openai/second-model
+`
+
+	err := os.WriteFile(configPath, []byte(configText), 0o600)
+	if err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	loadedConfig, err := loadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	lockedModel, ok := loadedConfig.lockedSearchDeciderModelForChannelIDs([]string{"channel-1"})
+	if !ok || lockedModel != secondTestModel {
+		t.Fatalf(
+			"unexpected channel search decider model locks: %#v",
+			loadedConfig.ChannelSearchDeciderModelLocks,
+		)
+	}
+}
+
 func TestLoadConfigUsesConfiguredMediaAnalysisModel(t *testing.T) {
 	t.Parallel()
 

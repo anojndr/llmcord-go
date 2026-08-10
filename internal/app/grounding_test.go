@@ -190,11 +190,12 @@ func testGroundingConfig() config {
 		Models: map[string]map[string]any{
 			"gemini/gemini-3.6-flash": {},
 		},
-		ModelOrder:         nil,
-		ChannelModelLocks:  nil,
-		SearchDeciderModel: "",
-		MediaAnalysisModel: "",
-		SystemPrompt:       "",
+		ModelOrder:                     nil,
+		ChannelModelLocks:              nil,
+		ChannelSearchDeciderModelLocks: nil,
+		SearchDeciderModel:             "",
+		MediaAnalysisModel:             "",
+		SystemPrompt:                   "",
 	}
 }
 

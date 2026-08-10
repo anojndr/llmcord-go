@@ -797,14 +797,14 @@ channel_model_locks:
 	}
 }
 
-func TestHandleSearchDeciderModelCommandAllowsSwitchInLockedChannel(t *testing.T) {
+func TestHandleSearchDeciderModelCommandRejectsLockedChannelSwitch(t *testing.T) {
 	t.Parallel()
 
 	configPath := writeModelConfigWithExtra(
 		t,
 		fmt.Sprintf(
 			`
-channel_model_locks:
+channel_search_decider_model_locks:
   locked-channel: %s
 `,
 			secondTestModel,
@@ -827,7 +827,7 @@ channel_model_locks:
 		t.Fatalf("handle search decider model command: %v", err)
 	}
 
-	if instance.currentSearchDeciderModel != secondTestModel {
+	if instance.currentSearchDeciderModel != firstTestModel {
 		t.Fatalf("unexpected current search decider model: %q", instance.currentSearchDeciderModel)
 	}
 
@@ -835,9 +835,54 @@ channel_model_locks:
 		t.Fatal("expected interaction response data")
 	}
 
-	expectedContent := fmt.Sprintf("Search decider model switched to: `%s`", secondTestModel)
+	expectedContent := fmt.Sprintf(
+		"This channel is locked to `%s`. `/searchdecidermodel` is disabled here.",
+		secondTestModel,
+	)
 	if response.Data.Content != expectedContent {
 		t.Fatalf("unexpected response content: got %q want %q", response.Data.Content, expectedContent)
+	}
+}
+
+func TestHandleSearchDeciderModelAutocompleteUsesLockedModel(t *testing.T) {
+	t.Parallel()
+
+	configPath := writeModelConfigWithExtra(
+		t,
+		fmt.Sprintf(
+			`
+channel_search_decider_model_locks:
+  locked-channel: %s
+`,
+			secondTestModel,
+		),
+	)
+
+	var response discordgo.InteractionResponse
+
+	session := newInteractionTestSession(t, &response)
+	instance := newModelTestBot(configPath)
+	interaction := newConfiguredStringCommandInteraction(
+		"member-user",
+		"second",
+		searchDeciderModelCommandName,
+		searchDeciderModelOptionName,
+		"locked-channel",
+		discordgo.InteractionApplicationCommandAutocomplete,
+	)
+
+	err := instance.handleSearchDeciderModelAutocomplete(session, interaction)
+	if err != nil {
+		t.Fatalf("handle search decider model autocomplete: %v", err)
+	}
+
+	if response.Data == nil || len(response.Data.Choices) != 1 {
+		t.Fatalf("unexpected autocomplete response: %#v", response.Data)
+	}
+
+	choice := response.Data.Choices[0]
+	if choice.Name != fmt.Sprintf("x %s (locked)", secondTestModel) || choice.Value != secondTestModel {
+		t.Fatalf("unexpected autocomplete choice: %#v", choice)
 	}
 }
 

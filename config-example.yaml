@@ -142,6 +142,9 @@ models:
 channel_model_locks:
   # "123456789012345678": google/gemini-3.6-flash
 
+channel_search_decider_model_locks:
+  # "123456789012345678": google/gemini-3.6-flash
+
 search_decider_model: google/gemini-3.6-flash
 media_analysis_model: google/gemini-3.6-flash
 

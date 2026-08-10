@@ -204,44 +204,46 @@ const (
 )
 
 type rawConfig struct {
-	BotToken           scalarString                 `yaml:"bot_token"`
-	ClientID           scalarString                 `yaml:"client_id"`
-	StatusMessage      string                       `yaml:"status_message"`
-	MaxImages          *int                         `yaml:"max_images"`
-	MaxMessages        *int                         `yaml:"max_messages"`
-	AllowDMs           *bool                        `yaml:"allow_dms"`
-	Permissions        permissionsConfig            `yaml:"permissions"`
-	Providers          map[string]rawProviderConfig `yaml:"providers"`
-	WebSearch          rawWebSearchConfig           `yaml:"web_search"`
-	VisualSearch       rawVisualSearchConfig        `yaml:"visual_search"`
-	Database           rawDatabaseConfig            `yaml:"database"`
-	Gist               rawGistConfig                `yaml:"gist"`
-	Models             map[string]map[string]any    `yaml:"models"`
-	ChannelModelLocks  map[string]scalarString      `yaml:"channel_model_locks"`
-	SearchDeciderModel scalarString                 `yaml:"search_decider_model"`
-	MediaAnalysisModel scalarString                 `yaml:"media_analysis_model"`
-	SystemPrompt       string                       `yaml:"system_prompt"`
+	BotToken                       scalarString                 `yaml:"bot_token"`
+	ClientID                       scalarString                 `yaml:"client_id"`
+	StatusMessage                  string                       `yaml:"status_message"`
+	MaxImages                      *int                         `yaml:"max_images"`
+	MaxMessages                    *int                         `yaml:"max_messages"`
+	AllowDMs                       *bool                        `yaml:"allow_dms"`
+	Permissions                    permissionsConfig            `yaml:"permissions"`
+	Providers                      map[string]rawProviderConfig `yaml:"providers"`
+	WebSearch                      rawWebSearchConfig           `yaml:"web_search"`
+	VisualSearch                   rawVisualSearchConfig        `yaml:"visual_search"`
+	Database                       rawDatabaseConfig            `yaml:"database"`
+	Gist                           rawGistConfig                `yaml:"gist"`
+	Models                         map[string]map[string]any    `yaml:"models"`
+	ChannelModelLocks              map[string]scalarString      `yaml:"channel_model_locks"`
+	ChannelSearchDeciderModelLocks map[string]scalarString      `yaml:"channel_search_decider_model_locks"`
+	SearchDeciderModel             scalarString                 `yaml:"search_decider_model"`
+	MediaAnalysisModel             scalarString                 `yaml:"media_analysis_model"`
+	SystemPrompt                   string                       `yaml:"system_prompt"`
 }
 
 type config struct {
-	BotToken           string
-	ClientID           string
-	StatusMessage      string
-	MaxImages          int
-	MaxMessages        int
-	AllowDMs           bool
-	Permissions        permissionsConfig
-	Providers          map[string]providerConfig
-	WebSearch          webSearchConfig
-	VisualSearch       visualSearchConfig
-	Database           databaseConfig
-	Gist               gistConfig
-	Models             map[string]map[string]any
-	ModelOrder         []string
-	ChannelModelLocks  map[string]string
-	SearchDeciderModel string
-	MediaAnalysisModel string
-	SystemPrompt       string
+	BotToken                       string
+	ClientID                       string
+	StatusMessage                  string
+	MaxImages                      int
+	MaxMessages                    int
+	AllowDMs                       bool
+	Permissions                    permissionsConfig
+	Providers                      map[string]providerConfig
+	WebSearch                      webSearchConfig
+	VisualSearch                   visualSearchConfig
+	Database                       databaseConfig
+	Gist                           gistConfig
+	Models                         map[string]map[string]any
+	ModelOrder                     []string
+	ChannelModelLocks              map[string]string
+	ChannelSearchDeciderModelLocks map[string]string
+	SearchDeciderModel             string
+	MediaAnalysisModel             string
+	SystemPrompt                   string
 }
 
 func loadConfig(filename string) (config, error) {
@@ -293,6 +295,7 @@ func buildLoadedConfig(
 
 	mediaAnalysisModel := strings.TrimSpace(string(rawLoadedConfig.MediaAnalysisModel))
 	channelModelLocks := normalizeStringScalarMap(rawLoadedConfig.ChannelModelLocks)
+	channelSearchDeciderModelLocks := normalizeStringScalarMap(rawLoadedConfig.ChannelSearchDeciderModelLocks)
 
 	loadedConfig := config{
 		BotToken:      string(rawLoadedConfig.BotToken),
@@ -310,14 +313,15 @@ func buildLoadedConfig(
 				APIKeys: serpAPIVisualSearchKeys,
 			},
 		},
-		Database:           normalizeDatabaseConfig(rawLoadedConfig.Database),
-		Gist:               normalizeGistConfig(rawLoadedConfig.Gist),
-		Models:             rawLoadedConfig.Models,
-		ModelOrder:         modelOrder,
-		ChannelModelLocks:  channelModelLocks,
-		SearchDeciderModel: searchDeciderModel,
-		MediaAnalysisModel: mediaAnalysisModel,
-		SystemPrompt:       rawLoadedConfig.SystemPrompt,
+		Database:                       normalizeDatabaseConfig(rawLoadedConfig.Database),
+		Gist:                           normalizeGistConfig(rawLoadedConfig.Gist),
+		Models:                         rawLoadedConfig.Models,
+		ModelOrder:                     modelOrder,
+		ChannelModelLocks:              channelModelLocks,
+		ChannelSearchDeciderModelLocks: channelSearchDeciderModelLocks,
+		SearchDeciderModel:             searchDeciderModel,
+		MediaAnalysisModel:             mediaAnalysisModel,
+		SystemPrompt:                   rawLoadedConfig.SystemPrompt,
 	}
 
 	err = validateConfig(loadedConfig)
@@ -578,6 +582,11 @@ func validateConfig(loadedConfig config) error {
 		return err
 	}
 
+	err = validateChannelSearchDeciderModelLocks(loadedConfig)
+	if err != nil {
+		return err
+	}
+
 	return validateMediaAnalysisModel(loadedConfig)
 }
 
@@ -682,6 +691,28 @@ func validateChannelModelLocks(loadedConfig config) error {
 	return nil
 }
 
+func validateChannelSearchDeciderModelLocks(loadedConfig config) error {
+	for channelID, modelName := range loadedConfig.ChannelSearchDeciderModelLocks {
+		if channelID == "" {
+			return fmt.Errorf(
+				"channel_search_decider_model_locks contains an empty channel id: %w",
+				os.ErrInvalid,
+			)
+		}
+
+		if !loadedConfig.hasModel(modelName) {
+			return fmt.Errorf(
+				"channel_search_decider_model_locks %q references undefined model %q: %w",
+				channelID,
+				modelName,
+				os.ErrNotExist,
+			)
+		}
+	}
+
+	return nil
+}
+
 func validateDatabaseConfig(loadedConfig databaseConfig) error {
 	trimmedConnectionString := strings.TrimSpace(loadedConfig.ConnectionString)
 	trimmedStoreKey := strings.TrimSpace(loadedConfig.StoreKey)
@@ -759,6 +790,17 @@ func (loadedConfig config) hasModel(modelName string) bool {
 func (loadedConfig config) lockedModelForChannelIDs(channelIDs []string) (string, bool) {
 	for _, channelID := range channelIDs {
 		modelName, ok := loadedConfig.ChannelModelLocks[channelID]
+		if ok {
+			return modelName, true
+		}
+	}
+
+	return "", false
+}
+
+func (loadedConfig config) lockedSearchDeciderModelForChannelIDs(channelIDs []string) (string, bool) {
+	for _, channelID := range channelIDs {
+		modelName, ok := loadedConfig.ChannelSearchDeciderModelLocks[channelID]
 		if ok {
 			return modelName, true
 		}

@@ -75,6 +75,7 @@ Providers are declared with `base_url` (OpenAI-compatible). The provider name se
 | `providers` | Keyed by name. OpenAI-compatible providers use `base_url`; names containing `gemini` use the native Gemini API (with `enable_grounding: true` for the Google Search tool), and `exa` defaults to `https://api.exa.ai`. Per-provider `disable_search_decider: true` skips the search-decider model call for a provider's models (web search never runs for them); defaults to `false`. |
 | `models` | Ordered `<provider>/<model>` map. The first entry is the startup default. `:vision` is a local hint for image-capability heuristics. |
 | `channel_model_locks` | Map of channel IDs to configured models. `/model` is disabled in locked channels. |
+| `channel_search_decider_model_locks` | Map of channel IDs to configured search decider models. `/searchdecidermodel` is disabled in locked channels. |
 | `search_decider_model` | Model used to decide whether web search is needed. Defaults to the first configured model. |
 | `media_analysis_model` | Gemini model used to preprocess audio and video for non-Gemini replies; auto-selected when unset. |
 | `database.connection_string` | PostgreSQL connection string for persisted history (`postgres://` or `postgresql://`). |
