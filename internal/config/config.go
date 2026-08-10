@@ -79,12 +79,13 @@ type PermissionsConfig struct {
 
 // RawProviderConfig is the raw YAML provider entry.
 type RawProviderConfig struct {
-	BaseURL         scalarString     `yaml:"base_url"`
-	APIKey          scalarStringList `yaml:"api_key"`
-	EnableGrounding *bool            `yaml:"enable_grounding"`
-	ExtraHeaders    map[string]any   `yaml:"extra_headers"`
-	ExtraQuery      map[string]any   `yaml:"extra_query"`
-	ExtraBody       map[string]any   `yaml:"extra_body"`
+	BaseURL              scalarString     `yaml:"base_url"`
+	APIKey               scalarStringList `yaml:"api_key"`
+	EnableGrounding      *bool            `yaml:"enable_grounding"`
+	DisableSearchDecider *bool            `yaml:"disable_search_decider"`
+	ExtraHeaders         map[string]any   `yaml:"extra_headers"`
+	ExtraQuery           map[string]any   `yaml:"extra_query"`
+	ExtraBody            map[string]any   `yaml:"extra_body"`
 }
 
 type rawTavilySearchConfig struct {
@@ -133,14 +134,15 @@ type rawGistConfig struct {
 
 // ProviderConfig is one normalized provider entry.
 type ProviderConfig struct {
-	Name            string
-	BaseURL         string
-	APIKey          string
-	APIKeys         []string
-	EnableGrounding bool
-	ExtraHeaders    map[string]any
-	ExtraQuery      map[string]any
-	ExtraBody       map[string]any
+	Name                 string
+	BaseURL              string
+	APIKey               string
+	APIKeys              []string
+	EnableGrounding      bool
+	DisableSearchDecider bool
+	ExtraHeaders         map[string]any
+	ExtraQuery           map[string]any
+	ExtraBody            map[string]any
 }
 
 // TavilySearchConfig holds Tavily search credentials.
@@ -450,14 +452,15 @@ func normalizeProviderConfig(providerName string, rawProvider RawProviderConfig)
 	}
 
 	return ProviderConfig{
-		Name:            strings.TrimSpace(providerName),
-		BaseURL:         baseURL,
-		APIKey:          firstAPIKey(apiKeys),
-		APIKeys:         apiKeys,
-		EnableGrounding: boolValueOrDefault(rawProvider.EnableGrounding, false),
-		ExtraHeaders:    rawProvider.ExtraHeaders,
-		ExtraQuery:      rawProvider.ExtraQuery,
-		ExtraBody:       rawProvider.ExtraBody,
+		Name:                 strings.TrimSpace(providerName),
+		BaseURL:              baseURL,
+		APIKey:               firstAPIKey(apiKeys),
+		APIKeys:              apiKeys,
+		EnableGrounding:      boolValueOrDefault(rawProvider.EnableGrounding, false),
+		DisableSearchDecider: boolValueOrDefault(rawProvider.DisableSearchDecider, false),
+		ExtraHeaders:         rawProvider.ExtraHeaders,
+		ExtraQuery:           rawProvider.ExtraQuery,
+		ExtraBody:            rawProvider.ExtraBody,
 	}
 }
 

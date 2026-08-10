@@ -899,7 +899,9 @@ func (instance *bot) augmentConversation(
 		return nil, nil, nil, err
 	}
 
-	if providerHandlesGeneralURLsDirectly(providerSlashModel) || instance.currentGroundingEnabled(provider) {
+	if providerHandlesGeneralURLsDirectly(providerSlashModel) ||
+		provider.DisableSearchDecider ||
+		instance.currentGroundingEnabled(provider) {
 		return augmentedMessages, searchMetadata, warnings, nil
 	}
 
