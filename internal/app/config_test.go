@@ -564,6 +564,43 @@ models:
 	}
 }
 
+func TestLoadConfigDontSendSystemPromptPerProvider(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	configText := `
+bot_token: discord-token
+providers:
+  openai:
+    base_url: https://api.example.com/v1
+    dont_send_system_prompt: true
+  gemini:
+    api_key: gemini-key
+models:
+  openai/first-model:
+  gemini/gemini-3-flash-preview:
+`
+
+	err := os.WriteFile(configPath, []byte(configText), 0o600)
+	if err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	loadedConfig, err := loadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	if !loadedConfig.Providers["openai"].DontSendSystemPrompt {
+		t.Fatal("expected dont_send_system_prompt to be true for openai")
+	}
+
+	if loadedConfig.Providers["gemini"].DontSendSystemPrompt {
+		t.Fatal("expected dont_send_system_prompt to default to false for gemini")
+	}
+}
+
 func TestLoadConfigAllowsProviderAPIKeyLists(t *testing.T) {
 	t.Parallel()
 

@@ -282,13 +282,16 @@ func (instance *bot) prepareMessageResponse(
 			fmt.Errorf("augment prepared message response: %w", err)
 	}
 
-	messages = prependSystemPrompt(messages, loadedConfig.SystemPrompt, time.Now())
-	unmutatedMessages := append([]chatMessage(nil), messages...)
-
 	provider, err := configuredModelProvider(loadedConfig, providerSlashModel)
 	if err != nil {
 		return chatCompletionRequest{}, nil, nil, err
 	}
+
+	if !provider.DontSendSystemPrompt {
+		messages = prependSystemPrompt(messages, loadedConfig.SystemPrompt, time.Now())
+	}
+
+	unmutatedMessages := append([]chatMessage(nil), messages...)
 
 	request, err := buildChatCompletionRequest(
 		loadedConfig,

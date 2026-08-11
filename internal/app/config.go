@@ -78,6 +78,7 @@ type rawProviderConfig struct {
 	APIKey               scalarStringList `yaml:"api_key"`
 	EnableGrounding      *bool            `yaml:"enable_grounding"`
 	DisableSearchDecider *bool            `yaml:"disable_search_decider"`
+	DontSendSystemPrompt *bool            `yaml:"dont_send_system_prompt"`
 	ExtraHeaders         map[string]any   `yaml:"extra_headers"`
 	ExtraQuery           map[string]any   `yaml:"extra_query"`
 	ExtraBody            map[string]any   `yaml:"extra_body"`
@@ -134,6 +135,7 @@ type providerConfig struct {
 	APIKeys              []string
 	EnableGrounding      bool
 	DisableSearchDecider bool
+	DontSendSystemPrompt bool
 	ExtraHeaders         map[string]any
 	ExtraQuery           map[string]any
 	ExtraBody            map[string]any
@@ -436,6 +438,7 @@ func normalizeProviderConfig(providerName string, rawProvider rawProviderConfig)
 		APIKeys:              apiKeys,
 		EnableGrounding:      boolValueOrDefault(rawProvider.EnableGrounding, false),
 		DisableSearchDecider: boolValueOrDefault(rawProvider.DisableSearchDecider, false),
+		DontSendSystemPrompt: boolValueOrDefault(rawProvider.DontSendSystemPrompt, false),
 		ExtraHeaders:         rawProvider.ExtraHeaders,
 		ExtraQuery:           rawProvider.ExtraQuery,
 		ExtraBody:            rawProvider.ExtraBody,

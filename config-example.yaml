@@ -48,6 +48,9 @@ providers:
     # enable_grounding: true
     # Disable the web-search decider model call for this provider's models:
     # disable_search_decider: true
+    # Skip prepending the global `system_prompt` to requests for this
+    # provider's models:
+    # dont_send_system_prompt: true
     # Thought summaries are disabled by default. To turn them on:
     # extra_body:
     #   thinkingConfig:
