@@ -19,14 +19,6 @@ func runMain() int {
 
 	configPath := app.RuntimeConfigPath(os.Getenv)
 
-	instanceLock, err := app.AcquireInstanceLock(configPath)
-	if err != nil {
-		app.LogError("acquire single-instance lock", err)
-
-		return 1
-	}
-	defer instanceLock.Release()
-
 	ctx, stop := signal.NotifyContext(
 		context.Background(),
 		os.Interrupt,
@@ -34,7 +26,7 @@ func runMain() int {
 	)
 	defer stop()
 
-	err = app.Run(ctx, configPath)
+	err := app.Run(ctx, configPath)
 	if err != nil {
 		app.LogError("llmcord exited", err)
 
