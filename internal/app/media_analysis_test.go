@@ -3,7 +3,9 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	providers "llmcord-go/internal/providers"
+	"net/http"
 	"os"
 	"strings"
 	"sync"
@@ -11,6 +13,7 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	"google.golang.org/genai"
 )
 
 const (
@@ -810,4 +813,293 @@ func newMediaAnalysisTestBot(
 	sourceNode.media = media
 
 	return instance, sourceMessage
+}
+
+func testGeminiInternalError() error {
+	apiErr := new(genai.APIError)
+	apiErr.Code = http.StatusInternalServerError
+	apiErr.Message = "Internal error encountered."
+
+	return fmt.Errorf("stream gemini content: %w", apiErr)
+}
+
+func testAudioMediaPart() contentPart {
+	return contentPart{
+		"type":               contentTypeAudioData,
+		contentFieldBytes:    []byte("audio-bytes"),
+		contentFieldMIMEType: "audio/mpeg",
+		contentFieldFilename: "clip.mp3",
+	}
+}
+
+func TestAnalyzeMediaWithGeminiFallsBackToAudioCapableModel(t *testing.T) {
+	t.Parallel()
+
+	expectedAnalysis := "Audio transcription per timestamp:\n\n0s to 10s: hello there"
+
+	chatClient := newStubChatClient(func(
+		_ context.Context,
+		request chatCompletionRequest,
+		handle func(streamDelta) error,
+	) error {
+		t.Helper()
+
+		if request.Model == "gemini-3.5-flash-lite" {
+			return testGeminiInternalError()
+		}
+
+		return handle(streamDelta{
+			Thinking:           "",
+			Content:            expectedAnalysis,
+			FinishReason:       finishReasonStop,
+			ProviderResponseID: "",
+			SearchMetadata:     nil,
+		})
+	})
+
+	instance := new(bot)
+	instance.chatCompletions = chatClient
+
+	analysis, err := instance.analyzeMediaWithGemini(
+		context.Background(),
+		testMediaAnalysisConfig(),
+		testMediaAnalysisModel,
+		testAudioMediaPart(),
+	)
+	if err != nil {
+		t.Fatalf("analyze media with gemini: %v", err)
+	}
+
+	if analysis != expectedAnalysis {
+		t.Fatalf("unexpected analysis: %q", analysis)
+	}
+
+	if len(chatClient.requests) != 2 {
+		t.Fatalf("unexpected gemini call count: %d", len(chatClient.requests))
+	}
+
+	if chatClient.requests[0].Model != "gemini-3.5-flash-lite" {
+		t.Fatalf("unexpected first model: %q", chatClient.requests[0].Model)
+	}
+
+	if chatClient.requests[1].Model != "gemini-3.5-flash" {
+		t.Fatalf("unexpected fallback model: %q", chatClient.requests[1].Model)
+	}
+}
+
+func TestAnalyzeMediaWithGeminiKeepsPrimaryErrorWhenAllFallbacksFail(t *testing.T) {
+	t.Parallel()
+
+	chatClient := newStubChatClient(func(
+		_ context.Context,
+		_ chatCompletionRequest,
+		_ func(streamDelta) error,
+	) error {
+		t.Helper()
+
+		return testGeminiInternalError()
+	})
+
+	instance := new(bot)
+	instance.chatCompletions = chatClient
+
+	_, err := instance.analyzeMediaWithGemini(
+		context.Background(),
+		testMediaAnalysisConfig(),
+		testMediaAnalysisModel,
+		testAudioMediaPart(),
+	)
+	if err == nil {
+		t.Fatal("expected media analysis failure")
+	}
+
+	if len(chatClient.requests) != 3 {
+		t.Fatalf("unexpected gemini call count: %d", len(chatClient.requests))
+	}
+
+	var apiErr *genai.APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("expected gemini API error, got: %v", err)
+	}
+
+	if apiErr.Code != http.StatusInternalServerError {
+		t.Fatalf("unexpected API error code: %d", apiErr.Code)
+	}
+
+	if !strings.Contains(err.Error(), "collect gemini media analysis:") {
+		t.Fatalf("unexpected error text: %v", err)
+	}
+}
+
+func TestAnalyzeMediaWithGeminiDoesNotFallbackOnUnavailableModel(t *testing.T) {
+	t.Parallel()
+
+	chatClient := newStubChatClient(func(
+		_ context.Context,
+		_ chatCompletionRequest,
+		_ func(streamDelta) error,
+	) error {
+		t.Helper()
+
+		apiErr := new(genai.APIError)
+		apiErr.Code = http.StatusServiceUnavailable
+		apiErr.Message = "This model is currently experiencing high demand."
+
+		return fmt.Errorf("stream gemini content: %w", apiErr)
+	})
+
+	instance := new(bot)
+	instance.chatCompletions = chatClient
+
+	_, err := instance.analyzeMediaWithGemini(
+		context.Background(),
+		testMediaAnalysisConfig(),
+		testMediaAnalysisModel,
+		testAudioMediaPart(),
+	)
+	if err == nil {
+		t.Fatal("expected media analysis failure")
+	}
+
+	if len(chatClient.requests) != 1 {
+		t.Fatalf("unexpected gemini call count: %d", len(chatClient.requests))
+	}
+}
+
+func TestGeminiMediaAnalysisCandidateModels(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range []struct {
+		name            string
+		configuredModel string
+		expectedModels  []string
+	}{
+		{
+			name:            "flash lite with aliases",
+			configuredModel: "gemini-search/gemini-3.5-flash-lite-minimal:vision",
+			expectedModels: []string{
+				"gemini-search/gemini-3.5-flash-minimal:vision",
+				"gemini-search/gemini-3.5-flash",
+				"gemini-search/gemini-2.5-flash",
+			},
+		},
+		{
+			name:            "plain flash lite",
+			configuredModel: "gemini/gemini-3.5-flash-lite",
+			expectedModels: []string{
+				"gemini/gemini-3.5-flash",
+				"gemini/gemini-2.5-flash",
+			},
+		},
+		{
+			name:            "audio capable model",
+			configuredModel: "gemini/gemini-3.5-flash",
+			expectedModels: []string{
+				"gemini/gemini-2.5-flash",
+			},
+		},
+		{
+			name:            "no provider slash",
+			configuredModel: "gemini-3.5-flash",
+			expectedModels:  nil,
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			candidates := geminiMediaAnalysisCandidateModels(testCase.configuredModel)
+
+			if len(candidates) != len(testCase.expectedModels) {
+				t.Fatalf(
+					"unexpected candidates for %q: %v",
+					testCase.configuredModel,
+					candidates,
+				)
+			}
+
+			for index := range testCase.expectedModels {
+				if candidates[index] != testCase.expectedModels[index] {
+					t.Fatalf(
+						"unexpected candidate %d for %q: got %q want %q",
+						index,
+						testCase.configuredModel,
+						candidates[index],
+						testCase.expectedModels[index],
+					)
+				}
+			}
+		})
+	}
+}
+
+func TestGeminiMediaAnalysisMayFallback(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range []struct {
+		name     string
+		err      error
+		expected bool
+	}{
+		{
+			name:     "internal error",
+			err:      testGeminiInternalError(),
+			expected: true,
+		},
+		{
+			name: "model not found",
+			err: func() error {
+				apiErr := new(genai.APIError)
+				apiErr.Code = http.StatusNotFound
+				apiErr.Message = "model not found"
+
+				return fmt.Errorf("stream gemini content: %w", apiErr)
+			}(),
+			expected: true,
+		},
+		{
+			name: "unavailable",
+			err: func() error {
+				apiErr := new(genai.APIError)
+				apiErr.Code = http.StatusServiceUnavailable
+				apiErr.Message = "high demand"
+
+				return fmt.Errorf("stream gemini content: %w", apiErr)
+			}(),
+			expected: false,
+		},
+		{
+			name: "invalid argument",
+			err: func() error {
+				apiErr := new(genai.APIError)
+				apiErr.Code = http.StatusBadRequest
+				apiErr.Message = "bad request"
+
+				return fmt.Errorf("stream gemini content: %w", apiErr)
+			}(),
+			expected: false,
+		},
+		{
+			name:     "plain error",
+			err:      errors.New("boom"),
+			expected: false,
+		},
+		{
+			name:     "nil",
+			err:      nil,
+			expected: false,
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := geminiMediaAnalysisMayFallback(testCase.err); got != testCase.expected {
+				t.Fatalf(
+					"geminiMediaAnalysisMayFallback(%v) = %v, want %v",
+					testCase.err,
+					got,
+					testCase.expected,
+				)
+			}
+		})
+	}
 }

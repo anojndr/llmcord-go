@@ -3,10 +3,13 @@ package app
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"strings"
 
 	"github.com/bwmarrin/discordgo"
+
+	providers "llmcord-go/internal/providers"
 )
 
 const geminiVideoAnalysisPrompt = `Describe the video and transcribe it using timestamps.
@@ -409,6 +412,17 @@ func cloneContentPart(part contentPart) contentPart {
 	return clonedPart
 }
 
+// geminiMediaAnalysisStaticFallbackModels are Gemini models verified to
+// accept audio input, tried after the configured media-analysis model rejects
+// the media. The Gemini API reports models without audio support (e.g.
+// gemini-3.5-flash-lite) as a generic 500 INTERNAL error, so the analysis
+// retries on the same family's flash model and on broadly available
+// audio-capable models before giving up.
+var geminiMediaAnalysisStaticFallbackModels = []string{
+	"gemini-3.5-flash",
+	"gemini-2.5-flash",
+}
+
 func (instance *bot) analyzeMediaWithGemini(
 	ctx context.Context,
 	loadedConfig config,
@@ -420,18 +434,73 @@ func (instance *bot) analyzeMediaWithGemini(
 		return "", err
 	}
 
+	messages := []chatMessage{
+		{
+			Role: messageRoleUser,
+			Content: []contentPart{
+				{messageTypeKey: contentTypeText, messageTextKey: prompt},
+				mediaPart,
+			},
+		},
+	}
+
+	responseText, primaryErr := instance.analyzeMediaWithGeminiModel(
+		ctx,
+		loadedConfig,
+		geminiModel,
+		messages,
+	)
+	if primaryErr == nil {
+		return responseText, nil
+	}
+
+	if !geminiMediaAnalysisMayFallback(primaryErr) {
+		return "", primaryErr
+	}
+
+	for _, candidateModel := range geminiMediaAnalysisCandidateModels(geminiModel) {
+		logWarn(
+			"retry gemini media analysis with fallback model",
+			primaryErr,
+			"configured_model",
+			geminiModel,
+			"fallback_model",
+			candidateModel,
+		)
+
+		responseText, fallbackErr := instance.analyzeMediaWithGeminiModel(
+			ctx,
+			loadedConfig,
+			candidateModel,
+			messages,
+		)
+		if fallbackErr == nil {
+			return responseText, nil
+		}
+
+		logWarn(
+			"gemini media analysis fallback model failed",
+			fallbackErr,
+			"configured_model",
+			geminiModel,
+			"fallback_model",
+			candidateModel,
+		)
+	}
+
+	return "", primaryErr
+}
+
+func (instance *bot) analyzeMediaWithGeminiModel(
+	ctx context.Context,
+	loadedConfig config,
+	geminiModel string,
+	messages []chatMessage,
+) (string, error) {
 	request, err := buildChatCompletionRequest(
 		loadedConfig,
 		geminiModel,
-		[]chatMessage{
-			{
-				Role: messageRoleUser,
-				Content: []contentPart{
-					{messageTypeKey: contentTypeText, messageTextKey: prompt},
-					mediaPart,
-				},
-			},
-		},
+		messages,
 		false,
 	)
 	if err != nil {
@@ -449,6 +518,56 @@ func (instance *bot) analyzeMediaWithGemini(
 	}
 
 	return trimmedResponse, nil
+}
+
+// geminiMediaAnalysisMayFallback reports whether a media analysis failure is
+// worth retrying on another Gemini model: the API rejected the request with an
+// internal server error (its generic response to media the model cannot
+// process, e.g. audio on gemini-3.5-flash-lite) or the model no longer exists.
+func geminiMediaAnalysisMayFallback(err error) bool {
+	statusCode, found := providers.GeminiAPIStatusCode(err)
+	if !found {
+		return false
+	}
+
+	return statusCode == http.StatusInternalServerError ||
+		statusCode == http.StatusNotFound
+}
+
+// geminiMediaAnalysisCandidateModels returns the models tried after the
+// configured media-analysis model fails: first the same model with the
+// "-lite" family dropped (gemini-3.5-flash-lite -> gemini-3.5-flash, keeping
+// provider and alias suffixes), then the static audio-capable fallbacks on
+// the same provider.
+func geminiMediaAnalysisCandidateModels(configuredModel string) []string {
+	provider, modelPart, found := strings.Cut(configuredModel, "/")
+	if !found {
+		return nil
+	}
+
+	seenModels := make(map[string]struct{}, 1+len(geminiMediaAnalysisStaticFallbackModels))
+	candidates := make([]string, 0, 1+len(geminiMediaAnalysisStaticFallbackModels))
+
+	appendCandidate := func(candidate string) {
+		if candidate == "" || candidate == configuredModel {
+			return
+		}
+
+		if _, seen := seenModels[candidate]; seen {
+			return
+		}
+
+		seenModels[candidate] = struct{}{}
+		candidates = append(candidates, candidate)
+	}
+
+	appendCandidate(provider + "/" + strings.Replace(modelPart, "flash-lite", "flash", 1))
+
+	for _, fallbackModel := range geminiMediaAnalysisStaticFallbackModels {
+		appendCandidate(provider + "/" + fallbackModel)
+	}
+
+	return candidates
 }
 
 func geminiMediaAnalysisPrompt(mediaPart contentPart) (string, error) {
