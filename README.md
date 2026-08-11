@@ -72,7 +72,7 @@ Providers are declared with `base_url` (OpenAI-compatible). The provider name se
 
 | Setting | Purpose |
 | --- | --- |
-| `providers` | Keyed by name. OpenAI-compatible providers use `base_url`; names containing `gemini` use the native Gemini API (with `enable_grounding: true` for the Google Search tool). Per-provider `disable_search_decider: true` skips the search-decider model call for a provider's models (web search never runs for them); defaults to `false`. |
+| `providers` | Keyed by name. OpenAI-compatible providers use `base_url`; names containing `gemini` use the native Gemini API (with `enable_grounding: true` for the Google Search tool). Per-provider `disable_search_decider: true` skips the search-decider model call for a provider's models (web search never runs for them); defaults to `false`. Per-provider `dont_send_system_prompt: true` skips prepending the global `system_prompt` to that provider's requests; defaults to `false`. |
 | `models` | Ordered `<provider>/<model>` map. The first entry is the startup default. `:vision` is a local hint for image-capability heuristics. |
 | `channel_model_locks` | Map of channel IDs to configured models. `/model` is disabled in locked channels. |
 | `channel_search_decider_model_locks` | Map of channel IDs to configured search decider models. `/searchdecidermodel` is disabled in locked channels. |

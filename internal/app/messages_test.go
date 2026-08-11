@@ -1610,6 +1610,84 @@ func TestPrepareMessageResponseUsesPlaceholderForEmptyStandaloneMention(t *testi
 	}
 }
 
+func TestPrepareMessageResponseOmitsSystemPromptWhenProviderOptsOut(t *testing.T) {
+	t.Parallel()
+
+	const (
+		channelID       = "channel-1"
+		userID          = "user-1"
+		sourceMessageID = "user-message-1"
+		systemPrompt    = "You are concise."
+	)
+
+	sourceMessage := newRateLimitedRespondToMessageSourceMessage(channelID, sourceMessageID, userID)
+
+	loadedConfig := newRateLimitedRespondToMessageConfig()
+	loadedConfig.SystemPrompt = systemPrompt
+	provider := loadedConfig.Providers["openai"]
+	provider.DontSendSystemPrompt = true
+	loadedConfig.Providers["openai"] = provider
+
+	instance := newHistoryRetentionTestBot(t)
+	instance.chatCompletions = newRateLimitedRespondToMessageChatClient()
+
+	request, _, _, err := instance.prepareMessageResponse(
+		context.Background(),
+		loadedConfig,
+		sourceMessage,
+		"openai/main-model",
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("prepare message response: %v", err)
+	}
+
+	for _, message := range request.Messages {
+		if message.Role == messageRoleSystem {
+			t.Fatalf("expected no system message with dont_send_system_prompt: %#v", request.Messages)
+		}
+	}
+}
+
+func TestPrepareMessageResponsePrependsSystemPromptByDefault(t *testing.T) {
+	t.Parallel()
+
+	const (
+		channelID       = "channel-1"
+		userID          = "user-1"
+		sourceMessageID = "user-message-1"
+		systemPrompt    = "You are concise."
+	)
+
+	sourceMessage := newRateLimitedRespondToMessageSourceMessage(channelID, sourceMessageID, userID)
+
+	loadedConfig := newRateLimitedRespondToMessageConfig()
+	loadedConfig.SystemPrompt = systemPrompt
+
+	instance := newHistoryRetentionTestBot(t)
+	instance.chatCompletions = newRateLimitedRespondToMessageChatClient()
+
+	request, _, _, err := instance.prepareMessageResponse(
+		context.Background(),
+		loadedConfig,
+		sourceMessage,
+		"openai/main-model",
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("prepare message response: %v", err)
+	}
+
+	if len(request.Messages) == 0 {
+		t.Fatal("expected request messages")
+	}
+
+	firstMessage := request.Messages[0]
+	if firstMessage.Role != messageRoleSystem || firstMessage.Content != systemPrompt {
+		t.Fatalf("expected leading system prompt message: %#v", request.Messages)
+	}
+}
+
 func TestRespondToMessageEditsProgressMessageWhenGeminiMediaAnalysisFailsDuringPreparation(t *testing.T) {
 	t.Parallel()
 
