@@ -13,6 +13,7 @@
 !docs/**/*
 !LICENSE.md
 !README.md
+!restart.sh
 
 # Root-level Go implementation, provider regression tests, and concurrency tests stay explicit.
 # Local scratch, timeout diagnostics, profiles, benchmark captures, payload dumps, test binaries, and quality-gate reports remain ignored by default.
