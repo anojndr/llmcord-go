@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"iter"
@@ -119,6 +120,20 @@ type geminiClientFactory func(
 type geminiClient struct {
 	httpClient *http.Client
 	newClient  geminiClientFactory
+}
+
+// GeminiAPIStatusCode extracts the HTTP status code from a Gemini API error
+// when the error chain contains one. The genai SDK surfaces server failures
+// as *genai.APIError values, so callers can distinguish model-level rejections
+// (e.g. audio sent to a model without audio support, which the API reports as
+// 500 INTERNAL) from client-side failures.
+func GeminiAPIStatusCode(err error) (int, bool) {
+	var apiErr *genai.APIError
+	if !errors.As(err, &apiErr) {
+		return 0, false
+	}
+
+	return apiErr.Code, true
 }
 
 func newGeminiClient(httpClient *http.Client) geminiClient {
