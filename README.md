@@ -36,7 +36,7 @@ go run ./cmd/llmcord-go
 
 Use a different config path with `LLMCORD_CONFIG_PATH=/path/to/config.yaml go run ./cmd/llmcord-go`. Startup prints `bot is online`.
 
-Only one instance may run per config path: the process takes an exclusive advisory lock (`flock`) on the config file itself at startup, so a second instance fails fast with `another llmcord instance is already running for config "<path>"` instead of connecting to Discord twice and answering every message twice. Incoming `MESSAGE_CREATE` events are also deduplicated by message ID within a 30-second window, so a duplicate delivery of the same event never produces a second response.
+Incoming `MESSAGE_CREATE` events are deduplicated by message ID within a 30-second window, so a duplicate delivery of the same event never produces a second response.
 
 ## Deployment
 
