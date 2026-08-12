@@ -62,13 +62,13 @@ const (
 	editChannelNameOptionDescription          = "New name for the channel"
 
 	moveChannelCommandName                = "movechannel"
-	moveChannelCommandDescription         = "Move a Discord channel up or down"
+	moveChannelCommandDescription         = "Move a Discord channel up or down within its section"
 	moveChannelChannelIDOptionName        = "channelid"
 	moveChannelChannelIDOptionDescription = "ID of the channel to move"
 	moveChannelMovementOptionName         = "movement"
 	moveChannelMovementOptionDescription  = "Direction to move the channel (`up` or `down`)"
 	moveChannelHowManyOptionName          = "howmany"
-	moveChannelHowManyOptionDescription   = "How many positions to move the channel"
+	moveChannelHowManyOptionDescription   = "How many channels to cross in the visible category order"
 	moveChannelMovementUp                 = "up"
 	moveChannelMovementDown               = "down"
 

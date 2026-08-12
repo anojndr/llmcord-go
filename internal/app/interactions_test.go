@@ -236,41 +236,49 @@ func TestNewEditChannelNameCommand(t *testing.T) {
 	}
 }
 
-func TestHandleMoveChannelCommandMovesChannelUp(t *testing.T) {
+func TestHandleMoveChannelCommandMovesChannelUpAcrossTwoSiblings(t *testing.T) {
 	t.Parallel()
 
 	var response discordgo.InteractionResponse
-
 	var capture moveChannelTestCapture
-
 	session := newMoveChannelTestSession(
 		t,
 		&response,
 		http.StatusOK,
-		`{"id":"channel-id","name":"general","position":5}`,
+		`{"id":"channel-id","name":"general","guild_id":"guild-id","parent_id":"section-id","position":20}`,
 		http.StatusOK,
-		`{"id":"channel-id","name":"general","position":3}`,
+		`[{"id":"first","name":"first","parent_id":"section-id","position":10},{"id":"second","name":"second","parent_id":"section-id","position":20},{"id":"channel-id","name":"general","guild_id":"guild-id","parent_id":"section-id","position":30},{"id":"last","name":"last","parent_id":"section-id","position":40}]`,
+		http.StatusNoContent,
+		"",
 		&capture,
 	)
-	instance := new(bot)
-	interaction := newMoveChannelCommandInteraction("channel-id", "up", 2)
 
-	err := instance.handleMoveChannelCommand(session, interaction)
+	err := new(bot).handleMoveChannelCommand(session, newMoveChannelCommandInteraction("channel-id", "up", 2))
 	if err != nil {
 		t.Fatalf("handle move channel command: %v", err)
 	}
-
-	if response.Data == nil {
-		t.Fatal("expected interaction response data")
+	if response.Data == nil || response.Data.Content != "Moved channel `general` up 2 visible channel(s)." {
+		t.Fatalf("unexpected response: %+v", response.Data)
 	}
 
-	expectedContent := "Moved channel `general` up 2 position(s) to position `3`."
-	if response.Data.Content != expectedContent {
-		t.Fatalf("unexpected response content: got %q want %q", response.Data.Content, expectedContent)
+	var updates []struct {
+		ID       string `json:"id"`
+		Position int    `json:"position"`
 	}
-
-	if !strings.Contains(capture.editBody, `"position":3`) {
-		t.Fatalf("expected position 3 in channel edit body: %q", capture.editBody)
+	if err := json.Unmarshal([]byte(capture.editBody), &updates); err != nil {
+		t.Fatalf("decode reorder body: %v", err)
+	}
+	want := []struct {
+		id       string
+		position int
+	}{{"channel-id", 10}, {"first", 20}, {"second", 30}}
+	if len(updates) != len(want) {
+		t.Fatalf("unexpected reorder update count: got %d want %d", len(updates), len(want))
+	}
+	for index, expected := range want {
+		if updates[index].ID != expected.id || updates[index].Position != expected.position {
+			t.Fatalf("unexpected reorder update %d: got %+v want id=%q position=%d", index, updates[index], expected.id, expected.position)
+		}
 	}
 }
 
@@ -278,75 +286,132 @@ func TestHandleMoveChannelCommandMovesChannelDown(t *testing.T) {
 	t.Parallel()
 
 	var response discordgo.InteractionResponse
-
 	var capture moveChannelTestCapture
-
 	session := newMoveChannelTestSession(
 		t,
 		&response,
 		http.StatusOK,
-		`{"id":"channel-id","name":"general","position":1}`,
+		`{"id":"channel-id","name":"general","guild_id":"guild-id","parent_id":"section-id","position":10}`,
 		http.StatusOK,
-		`{"id":"channel-id","name":"general","position":4}`,
+		`[{"id":"channel-id","name":"general","parent_id":"section-id","position":10},{"id":"middle","name":"middle","parent_id":"section-id","position":20},{"id":"last","name":"last","parent_id":"section-id","position":30}]`,
+		http.StatusNoContent,
+		"",
 		&capture,
 	)
-	instance := new(bot)
-	interaction := newMoveChannelCommandInteraction("channel-id", "down", 3)
 
-	err := instance.handleMoveChannelCommand(session, interaction)
+	err := new(bot).handleMoveChannelCommand(session, newMoveChannelCommandInteraction("channel-id", "down", 2))
 	if err != nil {
 		t.Fatalf("handle move channel command: %v", err)
 	}
-
-	if response.Data == nil {
-		t.Fatal("expected interaction response data")
+	if response.Data == nil || response.Data.Content != "Moved channel `general` down 2 visible channel(s)." {
+		t.Fatalf("unexpected response: %+v", response.Data)
 	}
 
-	expectedContent := "Moved channel `general` down 3 position(s) to position `4`."
-	if response.Data.Content != expectedContent {
-		t.Fatalf("unexpected response content: got %q want %q", response.Data.Content, expectedContent)
+	var updates []struct {
+		ID       string `json:"id"`
+		Position int    `json:"position"`
 	}
-
-	if !strings.Contains(capture.editBody, `"position":4`) {
-		t.Fatalf("expected position 4 in channel edit body: %q", capture.editBody)
+	if err := json.Unmarshal([]byte(capture.editBody), &updates); err != nil {
+		t.Fatalf("decode reorder body: %v", err)
+	}
+	want := []struct {
+		id       string
+		position int
+	}{{"middle", 10}, {"last", 20}, {"channel-id", 30}}
+	if len(updates) != len(want) {
+		t.Fatalf("unexpected reorder update count: got %d want %d", len(updates), len(want))
+	}
+	for index, expected := range want {
+		if updates[index].ID != expected.id || updates[index].Position != expected.position {
+			t.Fatalf("unexpected reorder update %d: got %+v want id=%q position=%d", index, updates[index], expected.id, expected.position)
+		}
 	}
 }
 
-func TestHandleMoveChannelCommandClampsToTop(t *testing.T) {
+func TestHandleMoveChannelCommandClampsAtSectionBoundary(t *testing.T) {
 	t.Parallel()
 
 	var response discordgo.InteractionResponse
-
 	var capture moveChannelTestCapture
-
 	session := newMoveChannelTestSession(
 		t,
 		&response,
 		http.StatusOK,
-		`{"id":"channel-id","name":"general","position":1}`,
+		`{"id":"channel-id","name":"general","guild_id":"guild-id","parent_id":"section-id","position":20}`,
 		http.StatusOK,
-		`{"id":"channel-id","name":"general","position":0}`,
+		`[{"id":"first","name":"first","parent_id":"section-id","position":10},{"id":"channel-id","name":"general","parent_id":"section-id","position":20},{"id":"other","name":"other","parent_id":"other-section","position":30}]`,
+		http.StatusNoContent,
+		"",
 		&capture,
 	)
-	instance := new(bot)
-	interaction := newMoveChannelCommandInteraction("channel-id", "up", 5)
 
-	err := instance.handleMoveChannelCommand(session, interaction)
+	err := new(bot).handleMoveChannelCommand(session, newMoveChannelCommandInteraction("channel-id", "up", 5))
 	if err != nil {
 		t.Fatalf("handle move channel command: %v", err)
 	}
-
-	if response.Data == nil {
-		t.Fatal("expected interaction response data")
+	if response.Data == nil || response.Data.Content != "Moved channel `general` up 1 visible channel(s)." {
+		t.Fatalf("unexpected response: %+v", response.Data)
 	}
 
-	expectedContent := "Moved channel `general` up 5 position(s) to position `0`."
-	if response.Data.Content != expectedContent {
-		t.Fatalf("unexpected response content: got %q want %q", response.Data.Content, expectedContent)
+	var updates []struct {
+		ID       string `json:"id"`
+		Position int    `json:"position"`
 	}
+	if err := json.Unmarshal([]byte(capture.editBody), &updates); err != nil {
+		t.Fatalf("decode reorder body: %v", err)
+	}
+	if len(updates) != 2 || updates[0].ID != "channel-id" || updates[0].Position != 10 || updates[1].ID != "first" || updates[1].Position != 20 {
+		t.Fatalf("unexpected boundary reorder updates: %+v", updates)
+	}
+}
 
-	if !strings.Contains(capture.editBody, `"position":0`) {
-		t.Fatalf("expected position 0 in channel edit body: %q", capture.editBody)
+func TestHandleMoveChannelCommandDoesNotCrossDifferentParent(t *testing.T) {
+	t.Parallel()
+
+	var response discordgo.InteractionResponse
+	var capture moveChannelTestCapture
+	session := newMoveChannelTestSession(
+		t,
+		&response,
+		http.StatusOK,
+		`{"id":"channel-id","name":"general","guild_id":"guild-id","parent_id":"section-id","position":20}`,
+		http.StatusOK,
+		`[{"id":"channel-id","name":"general","parent_id":"section-id","position":20},{"id":"other","name":"other","parent_id":"other-section","position":10},{"id":"category","name":"category","type":4,"position":30}]`,
+		http.StatusNoContent,
+		"",
+		&capture,
+	)
+
+	err := new(bot).handleMoveChannelCommand(session, newMoveChannelCommandInteraction("channel-id", "down", 1))
+	if err != nil {
+		t.Fatalf("handle move channel command: %v", err)
+	}
+	if response.Data == nil || response.Data.Content != "Channel `general` is already as far down as possible." {
+		t.Fatalf("unexpected response: %+v", response.Data)
+	}
+	if capture.editBody != "" {
+		t.Fatalf("expected no reorder across parent/category, got %q", capture.editBody)
+	}
+}
+
+func TestChannelPositionUpdatesBreaksDuplicatePositions(t *testing.T) {
+	t.Parallel()
+
+	before := []*discordgo.Channel{
+		{ID: "100000000000000000", Position: 10},
+		{ID: "99999999999999999", Position: 10},
+	}
+	after := []*discordgo.Channel{before[1], before[0]}
+
+	updates := channelPositionUpdates(before, after)
+	if len(updates) != 2 {
+		t.Fatalf("unexpected update count: got %d want 2", len(updates))
+	}
+	if updates[0].ID != "99999999999999999" || updates[0].Position != 0 {
+		t.Fatalf("unexpected first update: %+v", updates[0])
+	}
+	if updates[1].ID != "100000000000000000" || updates[1].Position != 1 {
+		t.Fatalf("unexpected second update: %+v", updates[1])
 	}
 }
 
@@ -428,6 +493,8 @@ func TestHandleMoveChannelCommandReportsChannelLoadFailure(t *testing.T) {
 		`{"message":"Unknown Channel","code":10003}`,
 		0,
 		"",
+		0,
+		"",
 		nil,
 	)
 	instance := new(bot)
@@ -457,7 +524,9 @@ func TestHandleMoveChannelCommandReportsMoveFailure(t *testing.T) {
 		t,
 		&response,
 		http.StatusOK,
-		`{"id":"channel-id","name":"general","position":5}`,
+		`{"id":"channel-id","name":"general","guild_id":"guild-id","position":5}`,
+		http.StatusOK,
+		`[{"id":"first","name":"first","position":4},{"id":"channel-id","name":"general","position":5}]`,
 		http.StatusForbidden,
 		`{"message":"Missing Permissions","code":50013}`,
 		nil,
@@ -489,9 +558,11 @@ func TestHandleApplicationCommandInteractionDispatchesMoveChannel(t *testing.T) 
 		t,
 		&response,
 		http.StatusOK,
-		`{"id":"channel-id","name":"general","position":5}`,
+		`{"id":"channel-id","name":"general","guild_id":"guild-id","position":5}`,
 		http.StatusOK,
-		`{"id":"channel-id","name":"general","position":3}`,
+		`[{"id":"first","name":"first","position":4},{"id":"channel-id","name":"general","position":5}]`,
+		http.StatusNoContent,
+		"",
 		nil,
 	)
 	instance := new(bot)
@@ -506,7 +577,7 @@ func TestHandleApplicationCommandInteractionDispatchesMoveChannel(t *testing.T) 
 		t.Fatal("expected interaction response data")
 	}
 
-	expectedContent := "Moved channel `general` up 2 position(s) to position `3`."
+	expectedContent := "Moved channel `general` up 1 visible channel(s)."
 	if response.Data.Content != expectedContent {
 		t.Fatalf("unexpected response content: got %q want %q", response.Data.Content, expectedContent)
 	}
@@ -1741,8 +1812,10 @@ func newMoveChannelTestSession(
 	response *discordgo.InteractionResponse,
 	channelStatusCode int,
 	channelBody string,
-	editStatusCode int,
-	editBody string,
+	channelsStatusCode int,
+	channelsBody string,
+	reorderStatusCode int,
+	reorderBody string,
 	capture *moveChannelTestCapture,
 ) *discordgo.Session {
 	t.Helper()
@@ -1755,17 +1828,23 @@ func newMoveChannelTestSession(
 			switch {
 			case request.Method == http.MethodGet && request.URL.Path == "/api/v9/channels/channel-id":
 				return newInteractionJSONResponse(request, channelStatusCode, channelBody), nil
-			case request.Method == http.MethodPatch && request.URL.Path == "/api/v9/channels/channel-id":
+			case request.Method == http.MethodGet && request.URL.Path == "/api/v9/guilds/guild-id/channels":
+				return newInteractionJSONResponse(request, channelsStatusCode, channelsBody), nil
+			case request.Method == http.MethodPatch && request.URL.Path == "/api/v9/guilds/guild-id/channels":
 				if capture != nil {
 					body, err := io.ReadAll(request.Body)
 					if err != nil {
-						t.Fatalf("read channel edit request body: %v", err)
+						t.Fatalf("read channel reorder request body: %v", err)
 					}
 
 					capture.editBody = string(body)
 				}
 
-				return newInteractionJSONResponse(request, editStatusCode, editBody), nil
+				if reorderStatusCode == http.StatusNoContent {
+					return newNoContentResponse(request), nil
+				}
+
+				return newInteractionJSONResponse(request, reorderStatusCode, reorderBody), nil
 			default:
 				return captureInteractionCallbackRequest(t, request, response)
 			}
@@ -2071,6 +2150,7 @@ func newMoveChannelCommandInteraction(
 	interaction.AppID = "application-id"
 	interaction.Token = "interaction-token"
 	interaction.Type = discordgo.InteractionApplicationCommand
+	interaction.GuildID = "guild-id"
 	interaction.Member = member
 	interaction.Data = commandData
 
