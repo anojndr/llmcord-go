@@ -452,35 +452,35 @@ func TestBuildResponseEmbedLeavesGeneratedImageURLInDescription(t *testing.T) {
 	}
 }
 
-func TestImgbbResponseURLsDeduplicatesMarkdownLinks(t *testing.T) {
+func TestPixelVaultResponseURLsDeduplicatesMarkdownLinks(t *testing.T) {
 	t.Parallel()
 
-	urls := imgbbResponseURLs(
-		"See [https://i.ibb.co/FkQ1WJ3k/image.jpg](https://i.ibb.co/FkQ1WJ3k/image.jpg), " +
-			"https://i.ibb.co/demo123/preview.png, and https://example.com/ignore.jpg.",
+	urls := pixelVaultResponseURLs(
+		"See [https://img.pixelvault.dev/proj_xyz789/img_abc123.jpg](https://img.pixelvault.dev/proj_xyz789/img_abc123.jpg), " +
+			"https://img.pixelvault.dev/proj_xyz789/img_abc124.png, and https://example.com/ignore.jpg.",
 	)
 
 	expectedURLs := []string{
-		"https://i.ibb.co/FkQ1WJ3k/image.jpg",
-		"https://i.ibb.co/demo123/preview.png",
+		"https://img.pixelvault.dev/proj_xyz789/img_abc123.jpg",
+		"https://img.pixelvault.dev/proj_xyz789/img_abc124.png",
 	}
 	if len(urls) != len(expectedURLs) {
-		t.Fatalf("unexpected imgbb url count: %#v", urls)
+		t.Fatalf("unexpected pixelVault url count: %#v", urls)
 	}
 
 	for index, expectedURL := range expectedURLs {
 		if urls[index] != expectedURL {
-			t.Fatalf("unexpected imgbb url at %d: got %q want %q", index, urls[index], expectedURL)
+			t.Fatalf("unexpected pixelVault url at %d: got %q want %q", index, urls[index], expectedURL)
 		}
 	}
 }
 
-func TestRenderFinalResponseResendsImgbbURLsWithoutBreakingReplyHistory(t *testing.T) {
+func TestRenderFinalResponseResendsPixelVaultURLsWithoutBreakingReplyHistory(t *testing.T) {
 	t.Parallel()
-	testRenderFinalResponseResendsImgbbURLsWithoutBreakingReplyHistory(t)
+	testRenderFinalResponseResendsPixelVaultURLsWithoutBreakingReplyHistory(t)
 }
 
-func testRenderFinalResponseResendsImgbbURLsWithoutBreakingReplyHistory(t *testing.T) {
+func testRenderFinalResponseResendsPixelVaultURLsWithoutBreakingReplyHistory(t *testing.T) {
 	t.Helper()
 
 	const (
@@ -489,14 +489,14 @@ func testRenderFinalResponseResendsImgbbURLsWithoutBreakingReplyHistory(t *testi
 		userID          = "user-1"
 		sourceMessageID = "user-message-1"
 		responseID      = "assistant-message-1"
-		imgbbReplyID    = "assistant-message-2"
+		pixelVaultReplyID    = "assistant-message-2"
 		modelName       = "x-ai/grok-4"
 		followUpText    = "repeat the image link"
-		imgbbURL        = "https://i.ibb.co/FkQ1WJ3k/image.jpg"
+		pixelVaultURL        = "https://img.pixelvault.dev/proj_xyz789/img_abc123.jpg"
 	)
 
 	answerText := "Result.\n\nGenerated image:\n" +
-		"[https://i.ibb.co/FkQ1WJ3k/image.jpg](https://i.ibb.co/FkQ1WJ3k/image.jpg)"
+		"[https://img.pixelvault.dev/proj_xyz789/img_abc123.jpg](https://img.pixelvault.dev/proj_xyz789/img_abc123.jpg)"
 
 	sourceMessage := newPromptMessage(sourceMessageID, channelID, userID, botUserID)
 	responseMessage := newAssistantReplyMessage(
@@ -504,19 +504,19 @@ func testRenderFinalResponseResendsImgbbURLsWithoutBreakingReplyHistory(t *testi
 		newDiscordUser(botUserID, true),
 		sourceMessage,
 	)
-	imgbbReplyMessage := newAssistantReplyMessage(
-		imgbbReplyID,
+	pixelVaultReplyMessage := newAssistantReplyMessage(
+		pixelVaultReplyID,
 		newDiscordUser(botUserID, true),
 		responseMessage,
 	)
 
-	session := newImgbbReplyHistoryTestSession(
+	session := newPixelVaultReplyHistoryTestSession(
 		t,
 		channelID,
 		botUserID,
-		imgbbURL,
+		pixelVaultURL,
 		responseMessage,
-		imgbbReplyMessage,
+		pixelVaultReplyMessage,
 	)
 	instance := new(bot)
 	instance.session = session
@@ -546,32 +546,32 @@ func testRenderFinalResponseResendsImgbbURLsWithoutBreakingReplyHistory(t *testi
 		t.Fatalf("unexpected tracked response message count: %d", len(tracker.responseMessages))
 	}
 
-	assertCachedImgbbReplyNode(
+	assertCachedPixelVaultReplyNode(
 		t,
 		instance.nodes,
-		imgbbReplyID,
+		pixelVaultReplyID,
 		responseID,
 		testXAIProviderResponseID,
 		modelName,
 	)
-	assertImgbbReplyConversation(
+	assertPixelVaultReplyConversation(
 		t,
 		instance,
 		channelID,
 		userID,
 		answerText,
 		followUpText,
-		imgbbReplyMessage,
+		pixelVaultReplyMessage,
 	)
 }
 
-func newImgbbReplyHistoryTestSession(
+func newPixelVaultReplyHistoryTestSession(
 	t *testing.T,
 	channelID string,
 	botUserID string,
-	imgbbURL string,
+	pixelVaultURL string,
 	responseMessage *discordgo.Message,
-	imgbbReplyMessage *discordgo.Message,
+	pixelVaultReplyMessage *discordgo.Message,
 ) *discordgo.Session {
 	t.Helper()
 
@@ -615,10 +615,10 @@ func newImgbbReplyHistoryTestSession(
 			t.Fatalf("decode request payload: %v", err)
 		}
 
-		if content, contentOK := payload["content"].(string); contentOK && content == imgbbURL {
-			assertPlainReplyPayload(t, payload, imgbbURL, responseMessage.ID)
+		if content, contentOK := payload["content"].(string); contentOK && content == pixelVaultURL {
+			assertPlainReplyPayload(t, payload, pixelVaultURL, responseMessage.ID)
 
-			return newJSONResponse(t, request, imgbbReplyMessage), nil
+			return newJSONResponse(t, request, pixelVaultReplyMessage), nil
 		}
 
 		return newJSONResponse(t, request, responseMessage), nil
@@ -628,7 +628,7 @@ func newImgbbReplyHistoryTestSession(
 	return session
 }
 
-func assertCachedImgbbReplyNode(
+func assertCachedPixelVaultReplyNode(
 	t *testing.T,
 	store *messageNodeStore,
 	messageID string,
@@ -638,43 +638,43 @@ func assertCachedImgbbReplyNode(
 ) {
 	t.Helper()
 
-	imgbbReplyNode, nodeFound := store.get(messageID)
+	pixelVaultReplyNode, nodeFound := store.get(messageID)
 	if !nodeFound {
-		t.Fatalf("expected cached imgbb reply node for %q", messageID)
+		t.Fatalf("expected cached pixelVault reply node for %q", messageID)
 	}
 
-	imgbbReplyNode.mu.Lock()
-	defer imgbbReplyNode.mu.Unlock()
+	pixelVaultReplyNode.mu.Lock()
+	defer pixelVaultReplyNode.mu.Unlock()
 
-	if imgbbReplyNode.role != messageRoleAssistant {
-		t.Fatalf("unexpected imgbb reply role: %q", imgbbReplyNode.role)
+	if pixelVaultReplyNode.role != messageRoleAssistant {
+		t.Fatalf("unexpected pixelVault reply role: %q", pixelVaultReplyNode.role)
 	}
 
-	if imgbbReplyNode.text != "" {
-		t.Fatalf("expected imgbb reply text to stay out of history, got %q", imgbbReplyNode.text)
+	if pixelVaultReplyNode.text != "" {
+		t.Fatalf("expected pixelVault reply text to stay out of history, got %q", pixelVaultReplyNode.text)
 	}
 
-	if imgbbReplyNode.providerResponseID != providerResponseID {
-		t.Fatalf("unexpected imgbb provider response id: %q", imgbbReplyNode.providerResponseID)
+	if pixelVaultReplyNode.providerResponseID != providerResponseID {
+		t.Fatalf("unexpected pixelVault provider response id: %q", pixelVaultReplyNode.providerResponseID)
 	}
 
-	if imgbbReplyNode.providerResponseModel != providerResponseModel {
-		t.Fatalf("unexpected imgbb provider response model: %q", imgbbReplyNode.providerResponseModel)
+	if pixelVaultReplyNode.providerResponseModel != providerResponseModel {
+		t.Fatalf("unexpected pixelVault provider response model: %q", pixelVaultReplyNode.providerResponseModel)
 	}
 
-	if imgbbReplyNode.parentMessage == nil || imgbbReplyNode.parentMessage.ID != parentMessageID {
-		t.Fatalf("unexpected imgbb reply parent: %#v", imgbbReplyNode.parentMessage)
+	if pixelVaultReplyNode.parentMessage == nil || pixelVaultReplyNode.parentMessage.ID != parentMessageID {
+		t.Fatalf("unexpected pixelVault reply parent: %#v", pixelVaultReplyNode.parentMessage)
 	}
 }
 
-func assertImgbbReplyConversation(
+func assertPixelVaultReplyConversation(
 	t *testing.T,
 	instance *bot,
 	channelID string,
 	userID string,
 	answerText string,
 	followUpText string,
-	imgbbReplyMessage *discordgo.Message,
+	pixelVaultReplyMessage *discordgo.Message,
 ) {
 	t.Helper()
 
@@ -683,8 +683,8 @@ func assertImgbbReplyConversation(
 	followUpMessage.ChannelID = channelID
 	followUpMessage.Author = newDiscordUser(userID, false)
 	followUpMessage.Content = followUpText
-	followUpMessage.MessageReference = imgbbReplyMessage.Reference()
-	followUpMessage.ReferencedMessage = imgbbReplyMessage
+	followUpMessage.MessageReference = pixelVaultReplyMessage.Reference()
+	followUpMessage.ReferencedMessage = pixelVaultReplyMessage
 
 	var contentOptions messageContentOptions
 
