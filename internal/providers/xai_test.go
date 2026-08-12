@@ -1721,11 +1721,11 @@ func TestGrokVisionModels(t *testing.T) {
 	t.Parallel()
 
 	grokModels := []string{
-		"x-ai/grok-4.5-auto",
-		"x-ai/grok-4.5-fast",
-		"x-ai/grok-4.5-expert",
-		"x-ai/grok-4.5-heavy",
-		"x-ai/grok-4.5-beta",
+		"x-ai/grok-4.6-auto",
+		"x-ai/grok-4.6-fast",
+		"x-ai/grok-4.6-expert",
+		"x-ai/grok-4.6-heavy",
+		"x-ai/grok-4.6-beta",
 		"x-ai/grok-latest",
 		"x-ai/grok 4.5 (beta)",
 		"x-ai/grok-420-computer-use-sa",
@@ -1757,8 +1757,8 @@ func TestGrokBridgeCustomProvider(t *testing.T) {
 		t.Error("expected provider 'grok-bridge' to use Responses API")
 	}
 
-	if !XAIConfiguredModel("grok-bridge/grok-4.5-auto") {
-		t.Error("expected xAIConfiguredModel('grok-bridge/grok-4.5-auto') to be true")
+	if !XAIConfiguredModel("grok-bridge/grok-4.6-auto") {
+		t.Error("expected xAIConfiguredModel('grok-bridge/grok-4.6-auto') to be true")
 	}
 }
 
@@ -1766,8 +1766,8 @@ func TestGrokReasoningEffortNormalization(t *testing.T) {
 	t.Parallel()
 
 	baseRequest := newXAIResponsesStreamingRequest("http://127.0.0.1:8787/v1")
-	baseRequest.ConfiguredModel = "x-ai/grok-4.5-auto"
-	baseRequest.Model = "grok-4.5-auto"
+	baseRequest.ConfiguredModel = "x-ai/grok-4.6-auto"
+	baseRequest.Model = "grok-4.6-auto"
 	baseRequest.Provider.ExtraBody = map[string]any{"reasoning_effort": "high"}
 	baseRequest.Provider.UseResponsesAPI = true
 
