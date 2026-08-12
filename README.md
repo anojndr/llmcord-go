@@ -120,7 +120,7 @@ Generic website URL extraction runs Firecrawl Scrape first when `web_search.fire
 - `/searchtype`: switch Exa Search mode (`instant`, `fast`, `auto`, `deep-lite`, `deep`, `deep-reasoning`; lowest to highest latency)
 - `/grounding`: toggle native Gemini grounding
 - `/editchannelname <channelid> <newchannelname>`: rename a channel (requires `Manage Channels`)
-- `/movechannel <channelid> <movement> <howmany>`: move a channel up/down (requires `Manage Channels`)
+- `/movechannel <channelid> <movement> <howmany>`: move a channel up/down by visible sibling channels within its category (requires `Manage Channels`)
 - Attach files or images for multimodal context
   Text-like files (JSON, CSV, logs, Markdown, source) are inlined when the provider can't read raw files; others stay attachments with metadata summaries, including ZIP manifests. Gemini sends single-image prompts text-first and uploads images over 4 MiB via the Files API; xAI/Grok bridges automatically upload oversized images through `/v1/files`.
 - Start a prompt with `vsearch` for reverse-image lookup
