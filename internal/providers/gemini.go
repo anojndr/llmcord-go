@@ -515,6 +515,10 @@ func BuildGeminiGenerateContentRequest(
 		return nil, nil, err
 	}
 
+	// context_caching controls the local explicit-cache setup and is not a
+	// GenerateContent API field.
+	delete(extraBody, geminiCacheOptionKey)
+
 	extraBody, err = defaultGeminiThoughtSummaries(extraBody)
 	if err != nil {
 		return nil, nil, err

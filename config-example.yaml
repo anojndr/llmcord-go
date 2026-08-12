@@ -55,14 +55,16 @@ providers:
     # extra_body:
     #   thinkingConfig:
     #     includeThoughts: true
-    # Explicit context caching is on by default for the stable reply-chain
-    # prefix when it clears the model's minimum cacheable tokens; it is
-    # re-created per request so the cached prefix always matches the prompt.
-    # A create the API rejects (e.g. free-tier zero storage quota) falls back
-    # to implicit caching with a logged warning instead of failing the reply.
-    # To disable it, or to tune the cache TTL (default 1h, the API default):
+    # Gemini uses implicit context caching by default. Explicit context
+    # caching is opt-in because free-tier projects may have zero cached-
+    # content storage quota. When enabled, the stable reply-chain prefix is
+    # cached only after it clears the model's minimum token count, and the
+    # cache is re-created per request so it always matches the prompt.
+    # If the API rejects a create, the request falls back to implicit caching
+    # with a logged warning instead of failing the reply.
+    # To enable explicit caching or tune its TTL (default 1h):
     # extra_body:
-    #   context_caching: off            # or "auto"
+    #   context_caching: auto       # or "off" to disable explicitly
     #   # context_caching: { ttl: 30m }
 
   groq:

@@ -88,12 +88,53 @@ func newSimpleGeminiCacheRequest() ChatCompletionRequest {
 		{Role: searchtypes.MessageRoleUser, Content: strings.Repeat("a", 8_000)},
 		{Role: searchtypes.MessageRoleUser, Content: "latest question"},
 	}
+	request.Provider.ExtraBody = map[string]any{geminiCacheOptionKey: geminiCacheOptionAuto}
 
 	return request
 }
 
+func TestGeminiCacheRequestSkipsExplicitCachingByDefault(t *testing.T) {
+	t.Parallel()
+
+	createCalls := 0
+	apiClient := new(stubGeminiCachesClient)
+	apiClient.create = func(
+		_ context.Context,
+		_ string,
+		_ *genai.CreateCachedContentConfig,
+	) (*genai.CachedContent, error) {
+		createCalls++
+
+		return stubCachedContent(), nil
+	}
+
+	request := newSimpleGeminiCacheRequest()
+	request.Provider.ExtraBody = nil
+
+	_, config, err := buildGeminiGenerateContentRequestWithCaching(
+		context.Background(),
+		request,
+		apiClient,
+		apiClient,
+	)
+	if err != nil {
+		t.Fatalf("build gemini request with caching: %v", err)
+	}
+
+	if createCalls != 0 {
+		t.Fatalf("expected explicit cache creation to be opt-in, got %d calls", createCalls)
+	}
+
+	if config.CachedContent != "" {
+		t.Fatalf("expected no cached content by default, got %q", config.CachedContent)
+	}
+}
+
 func TestGeminiCacheRequestCreatesCachedContentAndSetsConfig(t *testing.T) {
 	t.Parallel()
+
+	testRequest := newSimpleGeminiCacheRequest()
+	testRequest.Provider.ExtraBody = map[string]any{geminiCacheOptionKey: "auto"}
 
 	var (
 		createdModel  string
@@ -113,7 +154,7 @@ func TestGeminiCacheRequestCreatesCachedContentAndSetsConfig(t *testing.T) {
 		return stubCachedContent(), nil
 	}
 
-	request := newSimpleGeminiCacheRequest()
+	request := testRequest
 
 	contents, config, err := buildGeminiGenerateContentRequestWithCaching(
 		context.Background(),
@@ -174,6 +215,7 @@ func TestGeminiCacheRequestSkipsCacheBelowThreshold(t *testing.T) {
 
 	request := newSimpleGeminiStreamRequest()
 	request.ConfiguredModel = "gemini/gemini-3.6-flash"
+	request.Provider.ExtraBody = map[string]any{geminiCacheOptionKey: geminiCacheOptionAuto}
 
 	_, config, err := buildGeminiGenerateContentRequestWithCaching(
 		context.Background(),
@@ -190,7 +232,7 @@ func TestGeminiCacheRequestSkipsCacheBelowThreshold(t *testing.T) {
 	}
 }
 
-func TestGeminiCacheRequestSurfacesCacheCreateErrors(t *testing.T) {
+func TestGeminiCacheRequestFallsBackAfterCacheCreateError(t *testing.T) {
 	t.Parallel()
 
 	apiClient := new(stubGeminiCachesClient)
@@ -419,6 +461,7 @@ func TestGeminiCachePrefixHonorsMinTokenLimit(t *testing.T) {
 
 	request := newSimpleGeminiStreamRequest()
 	request.ConfiguredModel = "gemini/gemini-2.5-flash"
+	request.Provider.ExtraBody = map[string]any{geminiCacheOptionKey: geminiCacheOptionAuto}
 	request.Messages = []ChatMessage{
 		{Role: searchtypes.MessageRoleUser, Content: strings.Repeat("b", 400)},
 		{Role: searchtypes.MessageRoleUser, Content: "q"},
@@ -562,6 +605,57 @@ func TestGeminiCacheVersionedMinThresholds(t *testing.T) {
 	}
 }
 
+func TestGeminiCacheRequestSupportsObjectExtraBody(t *testing.T) {
+	t.Parallel()
+
+	var createdConfig *genai.CreateCachedContentConfig
+
+	apiClient := new(stubGeminiCachesClient)
+	apiClient.create = func(
+		_ context.Context,
+		_ string,
+		config *genai.CreateCachedContentConfig,
+	) (*genai.CachedContent, error) {
+		createdConfig = config
+
+		return stubCachedContent(), nil
+	}
+
+	request := newSimpleGeminiCacheRequest()
+	request.Provider.ExtraBody = map[string]any{
+		geminiCacheOptionKey: map[string]any{
+			geminiCacheOptionModeKey: geminiCacheOptionAuto,
+			"ttl":                    "30m",
+		},
+	}
+
+	_, config, err := buildGeminiGenerateContentRequestWithCaching(
+		context.Background(),
+		request,
+		apiClient,
+		apiClient,
+	)
+	if err != nil {
+		t.Fatalf("build gemini request with object cache options: %v", err)
+	}
+
+	if config.CachedContent != "cachedContents/test" {
+		t.Fatalf("expected cached content from object options, got %q", config.CachedContent)
+	}
+
+	if createdConfig == nil || createdConfig.TTL != 30*time.Minute {
+		t.Fatalf("expected 30m cache TTL, got %#v", createdConfig)
+	}
+
+	if config.HTTPOptions == nil {
+		t.Fatal("expected HTTP options")
+	}
+
+	if _, exists := config.HTTPOptions.ExtraBody[geminiCacheOptionKey]; exists {
+		t.Fatalf("internal cache option must not be sent to Gemini: %#v", config.HTTPOptions.ExtraBody)
+	}
+}
+
 func TestGeminiCacheRequestSupportsDisableExtraBody(t *testing.T) {
 	t.Parallel()
 
@@ -577,7 +671,7 @@ func TestGeminiCacheRequestSupportsDisableExtraBody(t *testing.T) {
 	}
 
 	request := newSimpleGeminiCacheRequest()
-	request.Provider.ExtraBody = map[string]any{"context_caching": "off"}
+	request.Provider.ExtraBody = map[string]any{geminiCacheOptionKey: geminiCacheOptionOff}
 
 	_, config, err := buildGeminiGenerateContentRequestWithCaching(
 		context.Background(),
