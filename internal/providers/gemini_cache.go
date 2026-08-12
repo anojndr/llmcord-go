@@ -12,15 +12,19 @@ import (
 
 const (
 	// geminiCacheOptionKey is the extra_body knob that controls explicit
-	// context caching for Gemini providers ("auto" default, "off" disables).
+	// context caching for Gemini providers (disabled by default; "auto" enables).
 	geminiCacheOptionKey = "context_caching"
 	// geminiCacheMinTokenFloor is the minimum cached-prefix size that makes
 	// explicit caching worthwhile regardless of model.
 	geminiCacheMinTokenFloor = 512
 	// geminiCacheDefaultTTL matches the API default when no TTL is set.
 	geminiCacheDefaultTTL = time.Hour
-	// geminiCacheOptionOff disables explicit caching via extra_body.
+	// geminiCacheOptionAuto enables explicit caching via extra_body.
+	geminiCacheOptionAuto = "auto"
+	// geminiCacheOptionOff explicitly disables explicit caching.
 	geminiCacheOptionOff = "off"
+	// geminiCacheOptionModeKey selects auto or off for object options.
+	geminiCacheOptionModeKey = "mode"
 	// geminiCacheModelMinTokensCurrent is the documented 4096-token minimum
 	// for Gemini 3.5 Flash, 3.1 Pro, and 3 Pro models.
 	geminiCacheModelMinTokensCurrent = 4096
@@ -141,12 +145,21 @@ func geminiEnsureCachedContent(
 func geminiCacheEnabled(extraBody map[string]any) bool {
 	rawOption, ok := extraBody[geminiCacheOptionKey]
 	if !ok || rawOption == nil {
-		return true
+		return false
+	}
+
+	if options, isOptionsMap := rawOption.(map[string]any); isOptionsMap {
+		rawMode, hasMode := options[geminiCacheOptionModeKey]
+		if !hasMode || rawMode == nil {
+			return true
+		}
+
+		rawOption = rawMode
 	}
 
 	option := strings.ToLower(strings.TrimSpace(stringifyValue(rawOption)))
 
-	return option != geminiCacheOptionOff
+	return option == geminiCacheOptionAuto
 }
 
 // geminiCachePrefixContents returns the leading contents that are stable
