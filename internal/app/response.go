@@ -55,7 +55,7 @@ const (
 	userFacingErrorMaxRunes        = 1500
 )
 
-var imgbbResponseURLRegexp = regexp.MustCompile(`(?i)\bhttps?://i\.ibb\.co/[^\s<>\]\)]+`)
+var pixelVaultResponseURLRegexp = regexp.MustCompile(`(?i)\bhttps?://img\.pixelvault\.dev/[^\s<>\]\)]+`)
 
 func newSegmentAccumulator(maxLength int) segmentAccumulator {
 	return segmentAccumulator{
@@ -439,7 +439,7 @@ func (instance *bot) renderFinalResponse(
 		return fmt.Errorf("render final embed response: %w", err)
 	}
 
-	instance.sendImgbbURLReplies(tracker, accumulator.joined())
+	instance.sendPixelVaultURLReplies(tracker, accumulator.joined())
 
 	return nil
 }
@@ -795,8 +795,8 @@ func (instance *bot) renderFailureOnProgressMessage(
 	return true, nil
 }
 
-func imgbbResponseURLs(text string) []string {
-	rawURLs := imgbbResponseURLRegexp.FindAllString(text, -1)
+func pixelVaultResponseURLs(text string) []string {
+	rawURLs := pixelVaultResponseURLRegexp.FindAllString(text, -1)
 	urls := make([]string, 0, len(rawURLs))
 	seenURLs := make(map[string]struct{}, len(rawURLs))
 
@@ -855,7 +855,7 @@ func contentBatchesForLines(lines []string, maxLength int) []string {
 	return batches
 }
 
-func (instance *bot) sendImgbbURLReplies(tracker *responseTracker, answerText string) {
+func (instance *bot) sendPixelVaultURLReplies(tracker *responseTracker, answerText string) {
 	if instance == nil || instance.session == nil || tracker == nil || len(tracker.responseMessages) == 0 {
 		return
 	}
@@ -863,7 +863,7 @@ func (instance *bot) sendImgbbURLReplies(tracker *responseTracker, answerText st
 	responseMessage := tracker.responseMessages[len(tracker.responseMessages)-1]
 
 	replyBatches := contentBatchesForLines(
-		imgbbResponseURLs(answerText),
+		pixelVaultResponseURLs(answerText),
 		discordMessageContentMaxLength,
 	)
 	if len(replyBatches) == 0 {
@@ -877,7 +877,7 @@ func (instance *bot) sendImgbbURLReplies(tracker *responseTracker, answerText st
 		sentMessage, err := instance.session.ChannelMessageSendComplex(responseMessage.ChannelID, send)
 		if err != nil {
 			logWarn(
-				"send imgbb url reply",
+				"send PixelVault url reply",
 				err,
 				"channel_id",
 				responseMessage.ChannelID,
