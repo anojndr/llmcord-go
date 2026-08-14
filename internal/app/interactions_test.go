@@ -239,8 +239,11 @@ func TestNewEditChannelNameCommand(t *testing.T) {
 func TestHandleMoveChannelCommandMovesChannelUpAcrossTwoSiblings(t *testing.T) {
 	t.Parallel()
 
-	var response discordgo.InteractionResponse
-	var capture moveChannelTestCapture
+	var (
+		response discordgo.InteractionResponse
+		capture  moveChannelTestCapture
+	)
+
 	session := newMoveChannelTestSession(
 		t,
 		&response,
@@ -257,6 +260,7 @@ func TestHandleMoveChannelCommandMovesChannelUpAcrossTwoSiblings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("handle move channel command: %v", err)
 	}
+
 	if response.Data == nil || response.Data.Content != "Moved channel `general` up 2 visible channel(s)." {
 		t.Fatalf("unexpected response: %+v", response.Data)
 	}
@@ -268,6 +272,7 @@ func TestHandleMoveChannelCommandMovesChannelUpAcrossTwoSiblings(t *testing.T) {
 	if err := json.Unmarshal([]byte(capture.editBody), &updates); err != nil {
 		t.Fatalf("decode reorder body: %v", err)
 	}
+
 	want := []struct {
 		id       string
 		position int
@@ -275,6 +280,7 @@ func TestHandleMoveChannelCommandMovesChannelUpAcrossTwoSiblings(t *testing.T) {
 	if len(updates) != len(want) {
 		t.Fatalf("unexpected reorder update count: got %d want %d", len(updates), len(want))
 	}
+
 	for index, expected := range want {
 		if updates[index].ID != expected.id || updates[index].Position != expected.position {
 			t.Fatalf("unexpected reorder update %d: got %+v want id=%q position=%d", index, updates[index], expected.id, expected.position)
@@ -285,8 +291,11 @@ func TestHandleMoveChannelCommandMovesChannelUpAcrossTwoSiblings(t *testing.T) {
 func TestHandleMoveChannelCommandMovesChannelDown(t *testing.T) {
 	t.Parallel()
 
-	var response discordgo.InteractionResponse
-	var capture moveChannelTestCapture
+	var (
+		response discordgo.InteractionResponse
+		capture  moveChannelTestCapture
+	)
+
 	session := newMoveChannelTestSession(
 		t,
 		&response,
@@ -303,6 +312,7 @@ func TestHandleMoveChannelCommandMovesChannelDown(t *testing.T) {
 	if err != nil {
 		t.Fatalf("handle move channel command: %v", err)
 	}
+
 	if response.Data == nil || response.Data.Content != "Moved channel `general` down 2 visible channel(s)." {
 		t.Fatalf("unexpected response: %+v", response.Data)
 	}
@@ -314,6 +324,7 @@ func TestHandleMoveChannelCommandMovesChannelDown(t *testing.T) {
 	if err := json.Unmarshal([]byte(capture.editBody), &updates); err != nil {
 		t.Fatalf("decode reorder body: %v", err)
 	}
+
 	want := []struct {
 		id       string
 		position int
@@ -321,6 +332,7 @@ func TestHandleMoveChannelCommandMovesChannelDown(t *testing.T) {
 	if len(updates) != len(want) {
 		t.Fatalf("unexpected reorder update count: got %d want %d", len(updates), len(want))
 	}
+
 	for index, expected := range want {
 		if updates[index].ID != expected.id || updates[index].Position != expected.position {
 			t.Fatalf("unexpected reorder update %d: got %+v want id=%q position=%d", index, updates[index], expected.id, expected.position)
@@ -331,8 +343,11 @@ func TestHandleMoveChannelCommandMovesChannelDown(t *testing.T) {
 func TestHandleMoveChannelCommandClampsAtSectionBoundary(t *testing.T) {
 	t.Parallel()
 
-	var response discordgo.InteractionResponse
-	var capture moveChannelTestCapture
+	var (
+		response discordgo.InteractionResponse
+		capture  moveChannelTestCapture
+	)
+
 	session := newMoveChannelTestSession(
 		t,
 		&response,
@@ -349,6 +364,7 @@ func TestHandleMoveChannelCommandClampsAtSectionBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("handle move channel command: %v", err)
 	}
+
 	if response.Data == nil || response.Data.Content != "Moved channel `general` up 1 visible channel(s)." {
 		t.Fatalf("unexpected response: %+v", response.Data)
 	}
@@ -360,6 +376,7 @@ func TestHandleMoveChannelCommandClampsAtSectionBoundary(t *testing.T) {
 	if err := json.Unmarshal([]byte(capture.editBody), &updates); err != nil {
 		t.Fatalf("decode reorder body: %v", err)
 	}
+
 	if len(updates) != 2 || updates[0].ID != "channel-id" || updates[0].Position != 10 || updates[1].ID != "first" || updates[1].Position != 20 {
 		t.Fatalf("unexpected boundary reorder updates: %+v", updates)
 	}
@@ -368,8 +385,11 @@ func TestHandleMoveChannelCommandClampsAtSectionBoundary(t *testing.T) {
 func TestHandleMoveChannelCommandDoesNotCrossDifferentParent(t *testing.T) {
 	t.Parallel()
 
-	var response discordgo.InteractionResponse
-	var capture moveChannelTestCapture
+	var (
+		response discordgo.InteractionResponse
+		capture  moveChannelTestCapture
+	)
+
 	session := newMoveChannelTestSession(
 		t,
 		&response,
@@ -386,9 +406,11 @@ func TestHandleMoveChannelCommandDoesNotCrossDifferentParent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("handle move channel command: %v", err)
 	}
+
 	if response.Data == nil || response.Data.Content != "Channel `general` is already as far down as possible." {
 		t.Fatalf("unexpected response: %+v", response.Data)
 	}
+
 	if capture.editBody != "" {
 		t.Fatalf("expected no reorder across parent/category, got %q", capture.editBody)
 	}
@@ -407,9 +429,11 @@ func TestChannelPositionUpdatesBreaksDuplicatePositions(t *testing.T) {
 	if len(updates) != 2 {
 		t.Fatalf("unexpected update count: got %d want 2", len(updates))
 	}
+
 	if updates[0].ID != "99999999999999999" || updates[0].Position != 0 {
 		t.Fatalf("unexpected first update: %+v", updates[0])
 	}
+
 	if updates[1].ID != "100000000000000000" || updates[1].Position != 1 {
 		t.Fatalf("unexpected second update: %+v", updates[1])
 	}

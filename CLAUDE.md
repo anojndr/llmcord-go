@@ -57,7 +57,7 @@ The bot's pipeline is: Discord message → conversation build → augmentation �
 
 1. `respondToMessage` starts a progress embed (`startRequestProgress`, progress.go) and typing indicator, then calls `prepareMessageResponse`.
 2. `prepareMessageResponse` (messages.go:220) builds the conversation, augments it, and assembles a `chatCompletionRequest`.
-3. `generateAndSendResponse` (response.go:340) streams the model response, then `runGenerationAttempt` renders deltas into the embed; failures render a failure response rather than erroring out of the pipeline.
+3. `generateAndSendResponse` (response.go:340) streams the model response, then `runGenerationAttempt` renders deltas into the embed; failures fall back to `fallback_model` (e.g. `9router/stable_model:vision`) before rendering a failure response rather than erroring out of the pipeline.
 
 ### Request pipeline
 

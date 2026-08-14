@@ -269,6 +269,7 @@ func (instance *bot) runGenerationAttempt(
 
 func (instance *bot) generateAndSendResponse(
 	ctx context.Context,
+	loadedConfig config,
 	request chatCompletionRequest,
 	tracker *responseTracker,
 	warnings []string,
@@ -289,6 +290,63 @@ func (instance *bot) generateAndSendResponse(
 		instance.nodes.persistBestEffort()
 
 		return nil
+	}
+
+	fallbackModel := strings.TrimSpace(loadedConfig.FallbackModel)
+	if fallbackModel != "" &&
+		fallbackModel != strings.TrimSpace(request.ConfiguredModel) &&
+		loadedConfig.hasModel(fallbackModel) {
+		fallbackRequest, buildErr := instance.buildFallbackRequest(
+			loadedConfig,
+			fallbackModel,
+			request,
+			tracker,
+		)
+		if buildErr == nil {
+			logWarn(
+				"chat completion failed; retrying with fallback model",
+				responseErr,
+				"configured_model",
+				request.ConfiguredModel,
+				"fallback_model",
+				fallbackModel,
+			)
+
+			tracker.modelName = fallbackModel
+			tracker.providerResponseID = ""
+			tracker.renderedSpecs = nil
+
+			fallbackWarnings := appendFallbackWarning(warnings, fallbackModel)
+
+			fallbackCleanedText, fallbackThinkingText, _, fallbackErr := instance.runGenerationAttempt(
+				ctx,
+				fallbackRequest,
+				tracker,
+				fallbackWarnings,
+			)
+			if fallbackErr == nil {
+				finalText := visibleResponseText(fallbackThinkingText, fallbackCleanedText)
+
+				tracker.release(instance.nodes, finalText, fallbackThinkingText)
+
+				instance.nodes.persistBestEffort()
+
+				return nil
+			}
+
+			responseErr = fallbackErr
+			cleanedText = fallbackCleanedText
+			thinkingText = fallbackThinkingText
+		} else {
+			logWarn(
+				"failed to build fallback request",
+				buildErr,
+				"configured_model",
+				request.ConfiguredModel,
+				"fallback_model",
+				fallbackModel,
+			)
+		}
 	}
 
 	errorText := userFacingResponseError(responseErr)
@@ -1087,4 +1145,29 @@ func buildResponseButtons(actions responseActions) []discordgo.MessageComponent 
 	}
 
 	return buttons
+}
+
+func fallbackModelWarning(fallbackModel string) string {
+	trimmed := strings.TrimSpace(fallbackModel)
+	if trimmed == "" {
+		return ""
+	}
+
+	return fmt.Sprintf("Warning: fallback to %s", trimmed)
+}
+
+func appendFallbackWarning(warnings []string, fallbackModel string) []string {
+	warningText := fallbackModelWarning(fallbackModel)
+	if warningText == "" {
+		return warnings
+	}
+
+	warningSet := make(map[string]struct{}, len(warnings)+1)
+	for _, warning := range warnings {
+		appendUniqueWarning(warningSet, warning)
+	}
+
+	appendUniqueWarning(warningSet, warningText)
+
+	return sortedWarnings(warningSet)
 }

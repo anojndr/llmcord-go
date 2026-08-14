@@ -484,15 +484,15 @@ func testRenderFinalResponseResendsPixelVaultURLsWithoutBreakingReplyHistory(t *
 	t.Helper()
 
 	const (
-		botUserID       = "bot-user"
-		channelID       = "channel-1"
-		userID          = "user-1"
-		sourceMessageID = "user-message-1"
-		responseID      = "assistant-message-1"
-		pixelVaultReplyID    = "assistant-message-2"
-		modelName       = "x-ai/grok-4"
-		followUpText    = "repeat the image link"
-		pixelVaultURL        = "https://img.pixelvault.dev/proj_xyz789/img_abc123.jpg"
+		botUserID         = "bot-user"
+		channelID         = "channel-1"
+		userID            = "user-1"
+		sourceMessageID   = "user-message-1"
+		responseID        = "assistant-message-1"
+		pixelVaultReplyID = "assistant-message-2"
+		modelName         = "x-ai/grok-4"
+		followUpText      = "repeat the image link"
+		pixelVaultURL     = "https://img.pixelvault.dev/proj_xyz789/img_abc123.jpg"
 	)
 
 	answerText := "Result.\n\nGenerated image:\n" +
@@ -1021,6 +1021,7 @@ func testGenerateAndSendResponseAppendsErrorWhenStreamFailsAfterPartialOutput(t 
 
 	err := instance.generateAndSendResponse(
 		context.Background(),
+		config{},
 		chatCompletionRequest{},
 		newResponseTracker(sourceMessage, ""),
 		nil,
@@ -1137,6 +1138,7 @@ func TestGenerateAndSendResponseKeepsAssistantReplyInConversationHistory(t *test
 
 	err := instance.generateAndSendResponse(
 		context.Background(),
+		config{},
 		request,
 		tracker,
 		nil,
@@ -1211,6 +1213,7 @@ func TestGenerateAndSendResponseShowsThinkingDuringStreamButNotFinalResponse(t *
 
 	err := instance.generateAndSendResponse(
 		context.Background(),
+		config{},
 		chatCompletionRequest{},
 		tracker,
 		nil,
@@ -1293,6 +1296,7 @@ func TestGenerateAndSendResponseDoesNotStreamXAISourceAppendix(t *testing.T) {
 
 	err := instance.generateAndSendResponse(
 		context.Background(),
+		config{},
 		request,
 		tracker,
 		nil,
@@ -1313,12 +1317,20 @@ func TestGenerateAndSendResponseDoesNotStreamXAISourceAppendix(t *testing.T) {
 		t.Fatalf("unexpected streamed response body: %q", messageDescriptions[0])
 	}
 
+	if containsFold(messageDescriptions[0], sourceURL) {
+		t.Fatalf("expected streamed response to omit source appendix: %q", messageDescriptions[0])
+	}
+
 	if len(patchDescriptions) != 1 {
 		t.Fatalf("unexpected final patch descriptions: %#v", patchDescriptions)
 	}
 
 	if patchDescriptions[0] != answerText {
 		t.Fatalf("unexpected final response body: %q", patchDescriptions[0])
+	}
+
+	if containsFold(patchDescriptions[0], sourceURL) {
+		t.Fatalf("expected final response to omit source appendix: %q", patchDescriptions[0])
 	}
 
 	assertRenderedDescriptionsHideSources(
@@ -1338,15 +1350,16 @@ func TestGenerateAndSendResponseShowsSourcesButtonForNonGrokModelWithBridgeSourc
 		userID             = "user-1"
 		sourceMessageID    = "user-message-1"
 		assistantMessageID = "assistant-message-1"
-		answerText         = "Answer paragraph for non-grok model."
+		answerText         = "Answer text."
 		sourceURL          = "https://example.com/source"
 	)
 
 	sourceMessage := newPromptMessage(sourceMessageID, channelID, userID, botUserID)
-	assistantMessage := new(discordgo.Message)
-	assistantMessage.ID = assistantMessageID
-	assistantMessage.ChannelID = channelID
-	assistantMessage.Author = newDiscordUser(botUserID, true)
+	assistantMessage := newAssistantReplyMessage(
+		assistantMessageID,
+		newDiscordUser(botUserID, true),
+		sourceMessage,
+	)
 
 	messageDescriptions := make([]string, 0, 2)
 	patchDescriptions := make([]string, 0, 2)
@@ -1375,8 +1388,8 @@ func TestGenerateAndSendResponseShowsSourcesButtonForNonGrokModelWithBridgeSourc
 			ExtraQuery:      nil,
 			ExtraBody:       nil,
 		},
-		Model:              "gpt-4o",
-		ConfiguredModel:    "openai/gpt-4o",
+		Model:              "deepseek-chat",
+		ConfiguredModel:    "openai/deepseek-chat",
 		SessionID:          "",
 		PreviousResponseID: "",
 		RequestID:          "",
@@ -1386,6 +1399,7 @@ func TestGenerateAndSendResponseShowsSourcesButtonForNonGrokModelWithBridgeSourc
 
 	err := instance.generateAndSendResponse(
 		context.Background(),
+		config{},
 		request,
 		tracker,
 		nil,
@@ -1521,6 +1535,7 @@ func TestGenerateAndSendResponsePersistsThinkingInConversationHistory(t *testing
 
 	err := instance.generateAndSendResponse(
 		context.Background(),
+		config{},
 		chatCompletionRequest{},
 		tracker,
 		nil,
@@ -1902,6 +1917,7 @@ func TestGenerateAndSendResponseRendersFailureOnEmptyModelResponse(t *testing.T)
 
 	err := instance.generateAndSendResponse(
 		context.Background(),
+		config{},
 		chatCompletionRequest{},
 		tracker,
 		nil,
@@ -1982,5 +1998,415 @@ func newResponseXAIStreamingRequest(baseURL string) providers.ChatCompletionRequ
 		Messages: []providers.ChatMessage{
 			{Role: "user", Content: "hello"},
 		},
+	}
+}
+
+func TestGenerateAndSendResponseFallsBackToStableModelOnFailure(t *testing.T) {
+	t.Parallel()
+
+	const (
+		botUserID          = "bot-user"
+		channelID          = "channel-1"
+		userID             = "user-1"
+		sourceMessageID    = "user-message-1"
+		assistantMessageID = "assistant-message-1"
+		fallbackReplyText  = "Fallback reply from 9router stable model"
+	)
+
+	sourceMessage := newPromptMessage(sourceMessageID, channelID, userID, botUserID)
+	assistantMessage := newAssistantReplyMessage(
+		assistantMessageID,
+		newDiscordUser(botUserID, true),
+		sourceMessage,
+	)
+
+	messageDescriptions := make([]string, 0, 2)
+	messageAuthors := make([]string, 0, 2)
+	messageWarnings := make([][]string, 0, 2)
+	session := newDirectMessageTestSession(t, channelID, botUserID, roundTripFunc(func(
+		request *http.Request,
+	) (*http.Response, error) {
+		t.Helper()
+
+		if (request.Method == http.MethodPost && request.URL.Path == "/api/v9/channels/"+channelID+"/messages") ||
+			(request.Method == http.MethodPatch && strings.HasPrefix(request.URL.Path, "/api/v9/channels/"+channelID+"/messages/")) {
+			body, _ := io.ReadAll(request.Body)
+
+			var payload struct {
+				Embeds []struct {
+					Description string `json:"description"`
+					Author      struct {
+						Name string `json:"name"`
+					} `json:"author"`
+					Fields []struct {
+						Name  string `json:"name"`
+						Value string `json:"value"`
+					} `json:"fields"`
+				} `json:"embeds"`
+			}
+
+			_ = json.Unmarshal(body, &payload)
+			if len(payload.Embeds) > 0 {
+				messageDescriptions = append(messageDescriptions, payload.Embeds[0].Description)
+				messageAuthors = append(messageAuthors, payload.Embeds[0].Author.Name)
+
+				fieldNames := make([]string, 0, len(payload.Embeds[0].Fields))
+				for _, field := range payload.Embeds[0].Fields {
+					fieldNames = append(fieldNames, field.Name)
+				}
+
+				messageWarnings = append(messageWarnings, fieldNames)
+			}
+
+			return newJSONResponse(t, request, assistantMessage), nil
+		}
+
+		return newNoContentResponse(request), nil
+	}))
+
+	var attemptedModels []string
+
+	instance := new(bot)
+	instance.session = session
+	instance.nodes = newMessageNodeStore(10)
+	instance.chatCompletions = newStubChatClient(func(
+		_ context.Context,
+		req chatCompletionRequest,
+		handle func(streamDelta) error,
+	) error {
+		attemptedModels = append(attemptedModels, req.ConfiguredModel)
+		if req.ConfiguredModel == "gemini-search/gemini-3.7-flash-medium:vision" {
+			return errors.New("upstream primary model overloaded 503")
+		}
+
+		if req.ConfiguredModel == "9router/stable_model:vision" {
+			_ = handle(newStreamDelta(fallbackReplyText, ""))
+
+			return nil
+		}
+
+		return errors.New("unknown model")
+	})
+
+	loadedConfig := config{
+		Providers: map[string]providerConfig{
+			"gemini-search": {
+				Name: "gemini-search",
+			},
+			"9router": {
+				Name:    "9router",
+				BaseURL: "http://localhost:20128/v1",
+			},
+		},
+		Models: map[string]map[string]any{
+			"gemini-search/gemini-3.7-flash-medium:vision": nil,
+			"9router/stable_model:vision":                  nil,
+		},
+		ModelOrder:    []string{"gemini-search/gemini-3.7-flash-medium:vision", "9router/stable_model:vision"},
+		FallbackModel: "9router/stable_model:vision",
+	}
+
+	request := chatCompletionRequest{
+		ConfiguredModel: "gemini-search/gemini-3.7-flash-medium:vision",
+		Model:           "gemini-3.7-flash-medium",
+		Messages: []chatMessage{
+			{Role: messageRoleUser, Content: "Hello"},
+		},
+	}
+	tracker := newResponseTracker(sourceMessage, request.ConfiguredModel)
+
+	err := instance.generateAndSendResponse(
+		context.Background(),
+		loadedConfig,
+		request,
+		tracker,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("unexpected generateAndSendResponse error: %v", err)
+	}
+
+	if len(attemptedModels) != 2 {
+		t.Fatalf("expected 2 attempted models, got: %v", attemptedModels)
+	}
+
+	if attemptedModels[0] != "gemini-search/gemini-3.7-flash-medium:vision" ||
+		attemptedModels[1] != "9router/stable_model:vision" {
+		t.Fatalf("unexpected attempted models order: %v", attemptedModels)
+	}
+
+	if len(messageDescriptions) == 0 ||
+		!strings.Contains(messageDescriptions[len(messageDescriptions)-1], fallbackReplyText) {
+		t.Fatalf("unexpected message description: %v", messageDescriptions)
+	}
+
+	if len(messageAuthors) == 0 || messageAuthors[len(messageAuthors)-1] != "9router/stable_model:vision" {
+		t.Fatalf("unexpected message author: %v", messageAuthors)
+	}
+
+	expectedWarning := "Warning: fallback to 9router/stable_model:vision"
+	if len(messageWarnings) == 0 || !slicesContainsString(messageWarnings[len(messageWarnings)-1], expectedWarning) {
+		t.Fatalf("expected fallback warning %q in final embed fields, got: %v", expectedWarning, messageWarnings)
+	}
+}
+
+func TestGenerateAndSendResponseRendersFailureWhenFallbackModelAlsoFails(t *testing.T) {
+	t.Parallel()
+
+	const (
+		botUserID          = "bot-user"
+		channelID          = "channel-1"
+		userID             = "user-1"
+		sourceMessageID    = "user-message-1"
+		assistantMessageID = "assistant-message-1"
+	)
+
+	sourceMessage := newPromptMessage(sourceMessageID, channelID, userID, botUserID)
+	assistantMessage := newAssistantReplyMessage(
+		assistantMessageID,
+		newDiscordUser(botUserID, true),
+		sourceMessage,
+	)
+
+	messageDescriptions := make([]string, 0, 2)
+	messageAuthors := make([]string, 0, 2)
+	session := newDirectMessageTestSession(t, channelID, botUserID, roundTripFunc(func(
+		request *http.Request,
+	) (*http.Response, error) {
+		t.Helper()
+
+		if (request.Method == http.MethodPost && request.URL.Path == "/api/v9/channels/"+channelID+"/messages") ||
+			(request.Method == http.MethodPatch && strings.HasPrefix(request.URL.Path, "/api/v9/channels/"+channelID+"/messages/")) {
+			body, _ := io.ReadAll(request.Body)
+
+			var payload struct {
+				Embeds []struct {
+					Description string `json:"description"`
+					Author      struct {
+						Name string `json:"name"`
+					} `json:"author"`
+				} `json:"embeds"`
+			}
+
+			_ = json.Unmarshal(body, &payload)
+			if len(payload.Embeds) > 0 {
+				messageDescriptions = append(messageDescriptions, payload.Embeds[0].Description)
+				messageAuthors = append(messageAuthors, payload.Embeds[0].Author.Name)
+			}
+
+			return newJSONResponse(t, request, assistantMessage), nil
+		}
+
+		return newNoContentResponse(request), nil
+	}))
+
+	var attemptedModels []string
+
+	instance := new(bot)
+	instance.session = session
+	instance.nodes = newMessageNodeStore(10)
+	instance.chatCompletions = newStubChatClient(func(
+		_ context.Context,
+		req chatCompletionRequest,
+		_ func(streamDelta) error,
+	) error {
+		attemptedModels = append(attemptedModels, req.ConfiguredModel)
+
+		return errors.New("model failure")
+	})
+
+	loadedConfig := config{
+		Providers: map[string]providerConfig{
+			"gemini-search": {Name: "gemini-search"},
+			"9router":       {Name: "9router", BaseURL: "http://localhost:20128/v1"},
+		},
+		Models: map[string]map[string]any{
+			"gemini-search/gemini-3.7-flash-medium:vision": nil,
+			"9router/stable_model:vision":                  nil,
+		},
+		ModelOrder:    []string{"gemini-search/gemini-3.7-flash-medium:vision", "9router/stable_model:vision"},
+		FallbackModel: "9router/stable_model:vision",
+	}
+
+	request := chatCompletionRequest{
+		ConfiguredModel: "gemini-search/gemini-3.7-flash-medium:vision",
+		Model:           "gemini-3.7-flash-medium",
+		Messages: []chatMessage{
+			{Role: messageRoleUser, Content: "Hello"},
+		},
+	}
+	tracker := newResponseTracker(sourceMessage, request.ConfiguredModel)
+
+	err := instance.generateAndSendResponse(
+		context.Background(),
+		loadedConfig,
+		request,
+		tracker,
+		nil,
+	)
+	if err == nil {
+		t.Fatal("expected error when both primary and fallback fail")
+	}
+
+	if len(attemptedModels) != 2 {
+		t.Fatalf("expected 2 attempted models, got: %v", attemptedModels)
+	}
+
+	if len(messageDescriptions) == 0 ||
+		!strings.Contains(messageDescriptions[len(messageDescriptions)-1], "model failure") {
+		t.Fatalf("unexpected failure message description: %v", messageDescriptions)
+	}
+}
+
+func TestGenerateAndSendResponseDoesNotFallbackWhenPrimaryIsAlreadyFallbackModel(t *testing.T) {
+	t.Parallel()
+
+	const (
+		botUserID          = "bot-user"
+		channelID          = "channel-1"
+		userID             = "user-1"
+		sourceMessageID    = "user-message-1"
+		assistantMessageID = "assistant-message-1"
+	)
+
+	sourceMessage := newPromptMessage(sourceMessageID, channelID, userID, botUserID)
+	assistantMessage := newAssistantReplyMessage(
+		assistantMessageID,
+		newDiscordUser(botUserID, true),
+		sourceMessage,
+	)
+
+	session := newDirectMessageTestSession(t, channelID, botUserID, roundTripFunc(func(
+		request *http.Request,
+	) (*http.Response, error) {
+		t.Helper()
+
+		if (request.Method == http.MethodPost && request.URL.Path == "/api/v9/channels/"+channelID+"/messages") ||
+			(request.Method == http.MethodPatch && strings.HasPrefix(request.URL.Path, "/api/v9/channels/"+channelID+"/messages/")) {
+			return newJSONResponse(t, request, assistantMessage), nil
+		}
+
+		return newNoContentResponse(request), nil
+	}))
+
+	var attemptedCount int
+
+	instance := new(bot)
+	instance.session = session
+	instance.nodes = newMessageNodeStore(10)
+	instance.chatCompletions = newStubChatClient(func(
+		_ context.Context,
+		_ chatCompletionRequest,
+		_ func(streamDelta) error,
+	) error {
+		attemptedCount++
+
+		return errors.New("stable model failed")
+	})
+
+	loadedConfig := config{
+		Providers: map[string]providerConfig{
+			"9router": {Name: "9router", BaseURL: "http://localhost:20128/v1"},
+		},
+		Models: map[string]map[string]any{
+			"9router/stable_model:vision": nil,
+		},
+		ModelOrder:    []string{"9router/stable_model:vision"},
+		FallbackModel: "9router/stable_model:vision",
+	}
+
+	request := chatCompletionRequest{
+		ConfiguredModel: "9router/stable_model:vision",
+		Model:           "stable_model:vision",
+		Messages: []chatMessage{
+			{Role: messageRoleUser, Content: "Hello"},
+		},
+	}
+	tracker := newResponseTracker(sourceMessage, request.ConfiguredModel)
+
+	err := instance.generateAndSendResponse(
+		context.Background(),
+		loadedConfig,
+		request,
+		tracker,
+		nil,
+	)
+	if err == nil {
+		t.Fatal("expected error when stable model fails")
+	}
+
+	if attemptedCount != 1 {
+		t.Fatalf("expected exactly 1 attempt without fallback recursion, got %d", attemptedCount)
+	}
+}
+
+func TestFallbackModelWarning(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name          string
+		fallbackModel string
+		want          string
+	}{
+		{
+			name:          "empty fallback model",
+			fallbackModel: "",
+			want:          "",
+		},
+		{
+			name:          "whitespace only fallback model",
+			fallbackModel: "   ",
+			want:          "",
+		},
+		{
+			name:          "stable model fallback",
+			fallbackModel: "9router/stable_model:vision",
+			want:          "Warning: fallback to 9router/stable_model:vision",
+		},
+		{
+			name:          "trimmed model fallback",
+			fallbackModel: "  custom/model:vision  ",
+			want:          "Warning: fallback to custom/model:vision",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := fallbackModelWarning(tc.fallbackModel)
+			if got != tc.want {
+				t.Fatalf("fallbackModelWarning(%q) = %q, want %q", tc.fallbackModel, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestAppendFallbackWarning(t *testing.T) {
+	t.Parallel()
+
+	existing := []string{"Warning: web search unavailable", "Warning: unsupported attachments"}
+	result := appendFallbackWarning(existing, "9router/stable_model:vision")
+
+	expected := []string{
+		"Warning: fallback to 9router/stable_model:vision",
+		"Warning: unsupported attachments",
+		"Warning: web search unavailable",
+	}
+
+	if len(result) != len(expected) {
+		t.Fatalf("unexpected warning count: got %d want %d (%v)", len(result), len(expected), result)
+	}
+
+	for index, exp := range expected {
+		if result[index] != exp {
+			t.Fatalf("result[%d] = %q, want %q", index, result[index], exp)
+		}
+	}
+
+	// Verify idempotency / deduplication
+	dedupResult := appendFallbackWarning(result, "9router/stable_model:vision")
+	if len(dedupResult) != len(expected) {
+		t.Fatalf("expected duplicate warning to be deduplicated: got %v", dedupResult)
 	}
 }

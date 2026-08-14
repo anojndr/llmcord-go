@@ -223,6 +223,7 @@ type rawConfig struct {
 	ChannelSearchDeciderModelLocks map[string]scalarString      `yaml:"channel_search_decider_model_locks"`
 	SearchDeciderModel             scalarString                 `yaml:"search_decider_model"`
 	MediaAnalysisModel             scalarString                 `yaml:"media_analysis_model"`
+	FallbackModel                  scalarString                 `yaml:"fallback_model"`
 	SystemPrompt                   string                       `yaml:"system_prompt"`
 }
 
@@ -245,6 +246,7 @@ type config struct {
 	ChannelSearchDeciderModelLocks map[string]string
 	SearchDeciderModel             string
 	MediaAnalysisModel             string
+	FallbackModel                  string
 	SystemPrompt                   string
 }
 
@@ -296,6 +298,7 @@ func buildLoadedConfig(
 	searchDeciderModel := normalizedSearchDeciderModel(rawLoadedConfig.SearchDeciderModel, modelOrder)
 
 	mediaAnalysisModel := strings.TrimSpace(string(rawLoadedConfig.MediaAnalysisModel))
+	fallbackModel := normalizedFallbackModel(rawLoadedConfig.FallbackModel, rawLoadedConfig.Models)
 	channelModelLocks := normalizeStringScalarMap(rawLoadedConfig.ChannelModelLocks)
 	channelSearchDeciderModelLocks := normalizeStringScalarMap(rawLoadedConfig.ChannelSearchDeciderModelLocks)
 
@@ -323,6 +326,7 @@ func buildLoadedConfig(
 		ChannelSearchDeciderModelLocks: channelSearchDeciderModelLocks,
 		SearchDeciderModel:             searchDeciderModel,
 		MediaAnalysisModel:             mediaAnalysisModel,
+		FallbackModel:                  fallbackModel,
 		SystemPrompt:                   rawLoadedConfig.SystemPrompt,
 	}
 
@@ -425,6 +429,21 @@ func normalizedSearchDeciderModel(rawValue scalarString, modelOrder []string) st
 	}
 
 	return searchDeciderModel
+}
+
+const defaultStableModelFallback = "9router/stable_model:vision"
+
+func normalizedFallbackModel(rawValue scalarString, models map[string]map[string]any) string {
+	fallbackModel := strings.TrimSpace(string(rawValue))
+	if fallbackModel != "" {
+		return fallbackModel
+	}
+
+	if _, ok := models[defaultStableModelFallback]; ok {
+		return defaultStableModelFallback
+	}
+
+	return ""
 }
 
 func normalizeProviderConfig(providerName string, rawProvider rawProviderConfig) providerConfig {
@@ -586,7 +605,12 @@ func validateConfig(loadedConfig config) error {
 		return err
 	}
 
-	return validateMediaAnalysisModel(loadedConfig)
+	err = validateMediaAnalysisModel(loadedConfig)
+	if err != nil {
+		return err
+	}
+
+	return validateFallbackModel(loadedConfig)
 }
 
 func validateConfigBasics(loadedConfig config) error {
@@ -766,6 +790,22 @@ func validateMediaAnalysisModel(loadedConfig config) error {
 			"media_analysis_model %q must use a gemini provider: %w",
 			loadedConfig.MediaAnalysisModel,
 			os.ErrInvalid,
+		)
+	}
+
+	return nil
+}
+
+func validateFallbackModel(loadedConfig config) error {
+	if strings.TrimSpace(loadedConfig.FallbackModel) == "" {
+		return nil
+	}
+
+	if !loadedConfig.hasModel(loadedConfig.FallbackModel) {
+		return fmt.Errorf(
+			"fallback_model %q is not defined in models: %w",
+			loadedConfig.FallbackModel,
+			os.ErrNotExist,
 		)
 	}
 

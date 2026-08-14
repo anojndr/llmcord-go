@@ -151,6 +151,8 @@ channel_search_decider_model_locks:
 
 search_decider_model: google/gemini-3.6-flash
 media_analysis_model: google/gemini-3.6-flash
+# Optional: model to fall back to before returning an error (defaults to 9router/stable_model:vision if present).
+# fallback_model: 9router/stable_model:vision
 
 web_search:
   # Web search runs Exa by default: `mcp` uses Exa as primary with Tavily as
