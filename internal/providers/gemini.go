@@ -122,18 +122,73 @@ type geminiClient struct {
 	newClient  geminiClientFactory
 }
 
+// GeminiAPIError extracts the genai.APIError from the error chain if present.
+func GeminiAPIError(err error) (genai.APIError, bool) {
+	if err == nil {
+		return genai.APIError{}, false
+	}
+
+	var apiErr *genai.APIError
+	if errors.As(err, &apiErr) && apiErr != nil {
+		return *apiErr, true
+	}
+
+	var valErr genai.APIError
+	if errors.As(err, &valErr) {
+		return valErr, true
+	}
+
+	return genai.APIError{}, false
+}
+
 // GeminiAPIStatusCode extracts the HTTP status code from a Gemini API error
 // when the error chain contains one. The genai SDK surfaces server failures
 // as *genai.APIError values, so callers can distinguish model-level rejections
 // (e.g. audio sent to a model without audio support, which the API reports as
 // 500 INTERNAL) from client-side failures.
 func GeminiAPIStatusCode(err error) (int, bool) {
-	var apiErr *genai.APIError
-	if !errors.As(err, &apiErr) {
+	apiErr, found := GeminiAPIError(err)
+	if !found {
 		return 0, false
 	}
 
 	return apiErr.Code, true
+}
+
+// IsGeminiTransientError reports whether a Gemini API error is a transient
+// failure (e.g. 503 UNAVAILABLE, 504 DEADLINE_EXCEEDED, 429 RESOURCE_EXHAUSTED,
+// 502 BAD_GATEWAY, 500 INTERNAL, or deadline expired).
+func IsGeminiTransientError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	if apiErr, found := GeminiAPIError(err); found {
+		switch apiErr.Code {
+		case http.StatusServiceUnavailable,
+			http.StatusGatewayTimeout,
+			http.StatusBadGateway,
+			http.StatusInternalServerError,
+			http.StatusTooManyRequests:
+			return true
+		}
+
+		status := strings.ToUpper(strings.TrimSpace(apiErr.Status))
+		switch status {
+		case "UNAVAILABLE", "DEADLINE_EXCEEDED", "RESOURCE_EXHAUSTED", "INTERNAL":
+			return true
+		}
+
+		message := strings.ToLower(apiErr.Message)
+		if strings.Contains(message, "deadline expired") ||
+			strings.Contains(message, "overloaded") ||
+			strings.Contains(message, "rate limit") ||
+			strings.Contains(message, "quota") {
+			return true
+		}
+	}
+
+	return false
 }
 
 func newGeminiClient(httpClient *http.Client) geminiClient {

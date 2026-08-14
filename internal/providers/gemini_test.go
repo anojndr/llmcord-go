@@ -1855,6 +1855,198 @@ func TestGeminiClientRetriesEmptyModelResponse(t *testing.T) {
 	}
 }
 
+func TestGeminiClientRetries503DeadlineExpired(t *testing.T) {
+	t.Parallel()
+
+	calls := new(atomic.Int32)
+
+	router := newStubGeminiStreamingRouter(func() iter.Seq2[*genai.GenerateContentResponse, error] {
+		return func(yield func(*genai.GenerateContentResponse, error) bool) {
+			if calls.Add(1) == 1 {
+				// First attempt fails with 503 UNAVAILABLE "Deadline expired before operation could complete."
+				_ = yield(nil, &genai.APIError{
+					Code:    http.StatusServiceUnavailable,
+					Message: "Deadline expired before operation could complete.",
+					Status:  "UNAVAILABLE",
+				})
+
+				return
+			}
+
+			_ = yield(newGeminiGenerateContentResponse("retried after 503", genai.FinishReasonStop), nil)
+		}
+	})
+
+	var joinedText strings.Builder
+
+	err := router.StreamChatCompletion(
+		context.Background(),
+		newSimpleGeminiStreamRequest(),
+		func(delta StreamDelta) error {
+			joinedText.WriteString(delta.Content)
+
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("stream gemini completion: %v", err)
+	}
+
+	if calls.Load() != 2 {
+		t.Fatalf("gemini calls = %d, want 2 (503 deadline expired then retry)", calls.Load())
+	}
+
+	if joinedText.String() != "retried after 503" {
+		t.Fatalf("unexpected gemini content: %q", joinedText.String())
+	}
+}
+
+func TestGeminiClientRetriesWithKeyRotationOnTransientError(t *testing.T) {
+	t.Parallel()
+
+	calls := new(atomic.Int32)
+	var observedKeys []string
+
+	router := ChatCompletionRouter{
+		openAI: newOpenAIClient(nil),
+		keys:   NewAPIKeyRotator(),
+		gemini: geminiClient{
+			httpClient: new(http.Client),
+			newClient: func(
+				_ context.Context,
+				cfg *genai.ClientConfig,
+			) (geminiAPIClient, error) {
+				observedKeys = append(observedKeys, cfg.APIKey)
+
+				var stubClient stubGeminiAPIClient
+				stubClient.generateContentStream = func(
+					_ context.Context,
+					_ string,
+					_ []*genai.Content,
+					_ *genai.GenerateContentConfig,
+				) iter.Seq2[*genai.GenerateContentResponse, error] {
+					return func(yield func(*genai.GenerateContentResponse, error) bool) {
+						if calls.Add(1) == 1 {
+							_ = yield(nil, &genai.APIError{
+								Code:    http.StatusServiceUnavailable,
+								Message: "Deadline expired before operation could complete.",
+								Status:  "UNAVAILABLE",
+							})
+
+							return
+						}
+
+						_ = yield(newGeminiGenerateContentResponse("success with key 2", genai.FinishReasonStop), nil)
+					}
+				}
+
+				return stubClient, nil
+			},
+		},
+	}
+
+	request := newSimpleGeminiStreamRequest()
+	request.Provider.APIKeys = []string{"key-1", "key-2"}
+
+	var joinedText strings.Builder
+
+	err := router.StreamChatCompletion(
+		context.Background(),
+		request,
+		func(delta StreamDelta) error {
+			joinedText.WriteString(delta.Content)
+
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("stream gemini completion: %v", err)
+	}
+
+	if calls.Load() != 2 {
+		t.Fatalf("gemini calls = %d, want 2", calls.Load())
+	}
+
+	if len(observedKeys) != 2 || observedKeys[0] != "key-1" || observedKeys[1] != "key-2" {
+		t.Fatalf("unexpected observed keys: %v, want [key-1, key-2]", observedKeys)
+	}
+
+	if joinedText.String() != "success with key 2" {
+		t.Fatalf("unexpected gemini content: %q", joinedText.String())
+	}
+}
+
+func TestGeminiClientExhausts503DeadlineExpiredRetries(t *testing.T) {
+	t.Parallel()
+
+	calls := new(atomic.Int32)
+
+	router := newStubGeminiStreamingRouter(func() iter.Seq2[*genai.GenerateContentResponse, error] {
+		return func(yield func(*genai.GenerateContentResponse, error) bool) {
+			calls.Add(1)
+			_ = yield(nil, &genai.APIError{
+				Code:    http.StatusServiceUnavailable,
+				Message: "Deadline expired before operation could complete.",
+				Status:  "UNAVAILABLE",
+			})
+		}
+	})
+
+	err := router.StreamChatCompletion(
+		context.Background(),
+		newSimpleGeminiStreamRequest(),
+		func(StreamDelta) error { return nil },
+	)
+	if err == nil {
+		t.Fatal("expected persistent 503 error to fail")
+	}
+
+	if calls.Load() != 2 {
+		t.Fatalf("gemini calls = %d, want 2 (retry budget exhausted)", calls.Load())
+	}
+
+	if !containsFold(err.Error(), "Deadline expired") {
+		t.Fatalf("unexpected gemini error: %v", err)
+	}
+}
+
+func TestIsGeminiTransientError(t *testing.T) {
+	t.Parallel()
+
+	transientErrors := []error{
+		&genai.APIError{Code: 503, Message: "Deadline expired before operation could complete.", Status: "UNAVAILABLE"},
+		genai.APIError{Code: 503, Message: "The model is overloaded. Please try again later.", Status: "UNAVAILABLE"},
+		&genai.APIError{Code: 504, Message: "Deadline expired.", Status: "DEADLINE_EXCEEDED"},
+		&genai.APIError{Code: 429, Message: "Resource has been exhausted.", Status: "RESOURCE_EXHAUSTED"},
+		&genai.APIError{Code: 502, Message: "Bad gateway.", Status: "BAD_GATEWAY"},
+		&genai.APIError{Code: 500, Message: "Internal server error.", Status: "INTERNAL"},
+		fmt.Errorf("stream gemini content: %w", &genai.APIError{Code: 503, Message: "Deadline expired", Status: "UNAVAILABLE"}),
+	}
+
+	for _, err := range transientErrors {
+		if !IsGeminiTransientError(err) {
+			t.Errorf("IsGeminiTransientError(%v) = false, want true", err)
+		}
+		if !IsTransientStreamError(err) {
+			t.Errorf("IsTransientStreamError(%v) = false, want true", err)
+		}
+	}
+
+	nonTransientErrors := []error{
+		nil,
+		&genai.APIError{Code: 400, Message: "Invalid argument", Status: "INVALID_ARGUMENT"},
+		&genai.APIError{Code: 401, Message: "API key not valid", Status: "UNAUTHENTICATED"},
+		&genai.APIError{Code: 403, Message: "Permission denied", Status: "PERMISSION_DENIED"},
+		&genai.APIError{Code: 404, Message: "Model not found", Status: "NOT_FOUND"},
+	}
+
+	for _, err := range nonTransientErrors {
+		if IsGeminiTransientError(err) {
+			t.Errorf("IsGeminiTransientError(%v) = true, want false", err)
+		}
+	}
+}
+
 func containsFold(text, fragment string) bool {
 	return strings.Contains(strings.ToLower(text), strings.ToLower(fragment))
 }
