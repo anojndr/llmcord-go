@@ -1904,8 +1904,10 @@ func TestGeminiClientRetries503DeadlineExpired(t *testing.T) {
 func TestGeminiClientRetriesWithKeyRotationOnTransientError(t *testing.T) {
 	t.Parallel()
 
-	calls := new(atomic.Int32)
-	var observedKeys []string
+	var (
+		calls        atomic.Int32
+		observedKeys []string
+	)
 
 	router := ChatCompletionRouter{
 		openAI: newOpenAIClient(nil),
@@ -1919,6 +1921,7 @@ func TestGeminiClientRetriesWithKeyRotationOnTransientError(t *testing.T) {
 				observedKeys = append(observedKeys, cfg.APIKey)
 
 				var stubClient stubGeminiAPIClient
+
 				stubClient.generateContentStream = func(
 					_ context.Context,
 					_ string,
@@ -1984,6 +1987,7 @@ func TestGeminiClientExhausts503DeadlineExpiredRetries(t *testing.T) {
 	router := newStubGeminiStreamingRouter(func() iter.Seq2[*genai.GenerateContentResponse, error] {
 		return func(yield func(*genai.GenerateContentResponse, error) bool) {
 			calls.Add(1)
+
 			_ = yield(nil, &genai.APIError{
 				Code:    http.StatusServiceUnavailable,
 				Message: "Deadline expired before operation could complete.",
@@ -2027,6 +2031,7 @@ func TestIsGeminiTransientError(t *testing.T) {
 		if !IsGeminiTransientError(err) {
 			t.Errorf("IsGeminiTransientError(%v) = false, want true", err)
 		}
+
 		if !IsTransientStreamError(err) {
 			t.Errorf("IsTransientStreamError(%v) = false, want true", err)
 		}

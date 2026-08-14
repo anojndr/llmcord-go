@@ -230,7 +230,7 @@ func (instance *bot) respondToMessage(
 		message.Content,
 	)
 
-	err = instance.generateAndSendResponse(ctx, request, tracker, warnings)
+	err = instance.generateAndSendResponse(ctx, loadedConfig, request, tracker, warnings)
 	if err != nil {
 		return fmt.Errorf("generate and send response: %w", err)
 	}
@@ -282,21 +282,22 @@ func (instance *bot) prepareMessageResponse(
 			fmt.Errorf("augment prepared message response: %w", err)
 	}
 
+	unmutatedMessages := append([]chatMessage(nil), messages...)
+
 	provider, err := configuredModelProvider(loadedConfig, providerSlashModel)
 	if err != nil {
 		return chatCompletionRequest{}, nil, nil, err
 	}
 
+	requestMessages := messages
 	if !provider.DontSendSystemPrompt {
-		messages = prependSystemPrompt(messages, loadedConfig.SystemPrompt, time.Now())
+		requestMessages = prependSystemPrompt(messages, loadedConfig.SystemPrompt, time.Now())
 	}
-
-	unmutatedMessages := append([]chatMessage(nil), messages...)
 
 	request, err := buildChatCompletionRequest(
 		loadedConfig,
 		providerSlashModel,
-		messages,
+		requestMessages,
 		instance.currentGroundingEnabled(provider),
 	)
 	if err != nil {
@@ -317,6 +318,55 @@ func (instance *bot) prepareMessageResponse(
 	}
 
 	return request, tracker, warnings, nil
+}
+
+func (instance *bot) buildFallbackRequest(
+	loadedConfig config,
+	fallbackModel string,
+	request chatCompletionRequest,
+	tracker *responseTracker,
+) (chatCompletionRequest, error) {
+	fallbackProvider, err := configuredModelProvider(loadedConfig, fallbackModel)
+	if err != nil {
+		return chatCompletionRequest{}, err
+	}
+
+	messages := request.Messages
+	if tracker != nil && len(tracker.originalMessages) > 0 {
+		messages = tracker.originalMessages
+		if !fallbackProvider.DontSendSystemPrompt {
+			messages = prependSystemPrompt(messages, loadedConfig.SystemPrompt, time.Now())
+		}
+	}
+
+	fallbackRequest, err := buildChatCompletionRequest(
+		loadedConfig,
+		fallbackModel,
+		messages,
+		instance.currentGroundingEnabled(fallbackProvider),
+	)
+	if err != nil {
+		return chatCompletionRequest{}, err
+	}
+
+	fallbackRequest.RequestID = request.RequestID
+
+	if tracker != nil && tracker.sourceMessage != nil {
+		providers.AssignOpenAIPromptCacheKey(
+			&fallbackRequest,
+			tracker.sourceMessage,
+			instance.nodes,
+			loadedConfig.MaxMessages,
+		)
+		providers.AssignXAIPreviousResponseID(
+			&fallbackRequest,
+			tracker.sourceMessage,
+			instance.nodes,
+			loadedConfig.MaxMessages,
+		)
+	}
+
+	return fallbackRequest, nil
 }
 
 func fallbackAttachmentDownloadConversation(

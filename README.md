@@ -26,7 +26,7 @@ cp config-example.yaml config.yaml
 Edit `config.yaml`:
 
 - Required: `bot_token`, at least one `providers` entry, at least one `models` entry
-- Optional: `client_id` (startup invite URL log), `search_decider_model`, `media_analysis_model`, `database.connection_string`
+- Optional: `client_id` (startup invite URL log), `search_decider_model`, `media_analysis_model`, `fallback_model`, `database.connection_string`
 
 Run:
 
@@ -78,6 +78,7 @@ Providers are declared with `base_url` (OpenAI-compatible). The provider name se
 | `channel_search_decider_model_locks` | Map of channel IDs to configured search decider models. `/searchdecidermodel` is disabled in locked channels. |
 | `search_decider_model` | Model used to decide whether web search is needed. Defaults to the first configured model. |
 | `media_analysis_model` | Gemini model used to preprocess audio and video for non-Gemini replies; auto-selected when unset. |
+| `fallback_model` | Model to fall back to before returning an error (defaults to `9router/stable_model:vision` when configured in `models`). |
 | `database.connection_string` | PostgreSQL connection string for persisted history (`postgres://` or `postgresql://`). |
 | `database.store_key` | Logical key selecting the persisted history row. |
 | `gist.api_key` | GitHub personal access token (with the `gist` scope) used by the "View response better on GitHub Gist" button. Get one at https://github.com/settings/tokens. Accepts a string or a YAML list, round-robin across multiple tokens. Publishing is disabled without a key. |

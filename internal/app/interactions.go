@@ -1157,6 +1157,7 @@ func (instance *bot) handleMoveChannelCommand(
 	if guildID == "" {
 		guildID = channel.GuildID
 	}
+
 	if guildID == "" {
 		return respondInteractionText(
 			session,
@@ -1178,6 +1179,7 @@ func (instance *bot) handleMoveChannelCommand(
 
 	orderedGuild := orderedGuildChannels(channels)
 	orderedSiblings := orderedSiblingChannels(orderedGuild, channel)
+
 	targetIndex := channelIndex(orderedSiblings, channelID)
 	if targetIndex < 0 {
 		return respondInteractionText(
@@ -1193,9 +1195,11 @@ func (instance *bot) handleMoveChannelCommand(
 	} else {
 		destinationIndex += howMany
 	}
+
 	if destinationIndex < 0 {
 		destinationIndex = 0
 	}
+
 	if destinationIndex >= len(orderedSiblings) {
 		destinationIndex = len(orderedSiblings) - 1
 	}
@@ -1204,6 +1208,7 @@ func (instance *bot) handleMoveChannelCommand(
 	if actualMove < 0 {
 		actualMove = -actualMove
 	}
+
 	if actualMove == 0 {
 		return respondInteractionText(
 			session,
@@ -1214,7 +1219,9 @@ func (instance *bot) handleMoveChannelCommand(
 
 	orderedAfterMove := moveChannelInOrder(orderedSiblings, targetIndex, destinationIndex)
 	orderedAfterGuild := guildOrderAfterSiblingMove(orderedGuild, orderedSiblings, orderedAfterMove)
+
 	updates := channelPositionUpdates(orderedGuild, orderedAfterGuild)
+
 	if err := session.GuildChannelsReorder(guildID, updates); err != nil {
 		logWarn("move channel command failed", err, "channel_id", channelID, "guild_id", guildID)
 
@@ -1294,6 +1301,7 @@ func orderedSiblingChannels(channels []*discordgo.Channel, channel *discordgo.Ch
 	ordered := orderedGuildChannels(channels)
 	section := channelRootSection(ordered, channel)
 	siblings := make([]*discordgo.Channel, 0, len(channels))
+
 	for _, candidate := range ordered {
 		if candidate.ParentID == channel.ParentID &&
 			candidate.Type != discordgo.ChannelTypeGuildCategory &&
@@ -1311,10 +1319,12 @@ func channelRootSection(channels []*discordgo.Channel, channel *discordgo.Channe
 	}
 
 	section := 0
+
 	for _, candidate := range channels {
 		if candidate.ID == channel.ID {
 			break
 		}
+
 		if candidate.Type == discordgo.ChannelTypeGuildCategory {
 			section++
 		}
@@ -1348,6 +1358,7 @@ func guildOrderAfterSiblingMove(
 ) []*discordgo.Channel {
 	result := append([]*discordgo.Channel(nil), guildChannels...)
 	siblingPositions := make(map[string]int, len(beforeSiblings))
+
 	for index, channel := range beforeSiblings {
 		siblingPositions[channel.ID] = index
 	}
@@ -1366,11 +1377,13 @@ func channelPositionUpdates(
 ) []*discordgo.Channel {
 	seenPositions := make(map[int]struct{}, len(before))
 	duplicatePosition := false
+
 	for _, channel := range before {
 		if _, seen := seenPositions[channel.Position]; seen {
 			duplicatePosition = true
 			break
 		}
+
 		seenPositions[channel.Position] = struct{}{}
 	}
 
@@ -1384,6 +1397,7 @@ func channelPositionUpdates(
 		if duplicatePosition {
 			position = index
 		}
+
 		updates = append(updates, &discordgo.Channel{ID: channel.ID, Position: position})
 	}
 
