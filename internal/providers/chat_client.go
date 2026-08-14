@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"strings"
@@ -108,6 +109,11 @@ func (client ChatCompletionRouter) StreamChatCompletion(
 		if sleepErr != nil {
 			return sleepErr
 		}
+
+		if len(request.Provider.APIKeys) > 1 {
+			request.Provider.APIKeys = client.keys.Rotate(request.Provider.APIKeys)
+			request.Provider.APIKey = firstAPIKey(request.Provider.APIKeys)
+		}
 	}
 }
 
@@ -129,7 +135,9 @@ type streamRetry struct {
 // dedicated budget and delay; a clean-but-empty response (err == nil) is an
 // empty model response and reuses the transient budget, as do disconnected
 // streams before [DONE] / before response.completed and Gemini upstream
-// NetworkError interruptions. Anything else is returned unchanged.
+// NetworkError interruptions or transient server errors (503 UNAVAILABLE,
+// 504 DEADLINE_EXCEEDED, 429 RESOURCE_EXHAUSTED, 502, 500, deadline expired).
+// Anything else is returned unchanged.
 func streamRetryAction(err error) streamRetry {
 	transient := streamRetry{
 		kind:        streamRetryKindTransient,
@@ -168,19 +176,40 @@ func deltaReferencesContent(delta StreamDelta) bool {
 
 // IsTransientStreamError reports whether a stream failure is safe to retry:
 // the proxy connection dropped mid-stream (chat completions ending before
-// [DONE], Responses ending before response.completed) or the Gemini upstream
-// NetworkError interruption observed in production logs. Explicit provider
-// errors (status codes, finish reasons, stream event errors) are not
-// transient, and an empty model response is handled separately.
+// [DONE], Responses ending before response.completed), Gemini upstream
+// NetworkError interruptions or server-side transient errors (503 UNAVAILABLE,
+// 504 DEADLINE_EXCEEDED, 429 RESOURCE_EXHAUSTED, 502, 500, deadline expired),
+// and connection drops or unexpected EOFs before delivery of visible content.
+// Explicit non-transient client errors (e.g. 400 Bad Request, 401 Unauthorized,
+// 403 Forbidden, 404 Not Found, unsupported parameters) are not retried.
 func IsTransientStreamError(err error) bool {
 	if err == nil {
 		return false
 	}
 
+	if IsGeminiTransientError(err) {
+		return true
+	}
+
+	if errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, io.EOF) ||
+		errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, os.ErrDeadlineExceeded) {
+		return true
+	}
+
 	text := strings.ToLower(err.Error())
 
 	return strings.Contains(text, "ended before") ||
-		strings.Contains(text, "stream interrupted: networkerror")
+		strings.Contains(text, "stream interrupted: networkerror") ||
+		strings.Contains(text, "deadline expired before operation could complete") ||
+		strings.Contains(text, "the model is overloaded") ||
+		strings.Contains(text, "status: unavailable") ||
+		strings.Contains(text, "status: deadline_exceeded") ||
+		strings.Contains(text, "connection reset") ||
+		strings.Contains(text, "connection refused") ||
+		strings.Contains(text, "i/o timeout") ||
+		strings.Contains(text, "tls handshake timeout")
 }
 
 // IsQueueFullQueueError reports whether an error is the proxy queue-full signal.
