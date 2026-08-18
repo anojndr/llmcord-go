@@ -381,6 +381,7 @@ func (instance *bot) syncCommands() error {
 	commands = append(commands, newSearchTypeCommand())
 	commands = append(commands, newSearchDeciderModelCommand())
 	commands = append(commands, newGroundingCommand())
+	commands = append(commands, newCreateChannelCommand())
 	commands = append(commands, newEditChannelNameCommand())
 	commands = append(commands, newMoveChannelCommand())
 
@@ -426,6 +427,23 @@ func newGroundingCommand() *discordgo.ApplicationCommand {
 	option.Required = false
 
 	command.Options = []*discordgo.ApplicationCommandOption{option}
+
+	return command
+}
+
+func newCreateChannelCommand() *discordgo.ApplicationCommand {
+	command := new(discordgo.ApplicationCommand)
+	command.Name = createChannelCommandName
+	command.Description = createChannelCommandDescription
+	command.Type = discordgo.ChatApplicationCommand
+
+	nameOption := new(discordgo.ApplicationCommandOption)
+	nameOption.Name = createChannelNameOptionName
+	nameOption.Description = createChannelNameOptionDescription
+	nameOption.Type = discordgo.ApplicationCommandOptionString
+	nameOption.Required = true
+
+	command.Options = []*discordgo.ApplicationCommandOption{nameOption}
 
 	return command
 }

@@ -236,6 +236,263 @@ func TestNewEditChannelNameCommand(t *testing.T) {
 	}
 }
 
+func TestHandleCreateChannelCommandCreatesChannelInCurrentCategory(t *testing.T) {
+	t.Parallel()
+
+	var (
+		response discordgo.InteractionResponse
+		capture  createChannelTestCapture
+	)
+
+	session := newCreateChannelTestSession(
+		t,
+		&response,
+		http.StatusOK,
+		`{"id":"current-channel-id","guild_id":"guild-id","parent_id":"section-id"}`,
+		http.StatusOK,
+		`{"id":"new-channel-id","name":"new-name","guild_id":"guild-id","parent_id":"section-id"}`,
+		&capture,
+	)
+
+	err := new(bot).handleCreateChannelCommand(
+		session,
+		newCreateChannelCommandInteraction("new-name"),
+	)
+	if err != nil {
+		t.Fatalf("handle create channel command: %v", err)
+	}
+
+	if response.Data == nil || response.Data.Content != "Created channel `new-name`." {
+		t.Fatalf("unexpected response: %+v", response.Data)
+	}
+
+	var createBody struct {
+		Name     string `json:"name"`
+		Type     int    `json:"type"`
+		ParentID string `json:"parent_id"`
+	}
+
+	err = json.Unmarshal([]byte(capture.createBody), &createBody)
+	if err != nil {
+		t.Fatalf("decode create body: %v", err)
+	}
+
+	if createBody.Name != "new-name" ||
+		createBody.Type != int(discordgo.ChannelTypeGuildText) ||
+		createBody.ParentID != "section-id" {
+		t.Fatalf("unexpected create body: %+v", createBody)
+	}
+}
+
+func TestHandleCreateChannelCommandCreatesChannelAtGuildRoot(t *testing.T) {
+	t.Parallel()
+
+	var (
+		response discordgo.InteractionResponse
+		capture  createChannelTestCapture
+	)
+
+	session := newCreateChannelTestSession(
+		t,
+		&response,
+		http.StatusOK,
+		`{"id":"current-channel-id","guild_id":"guild-id"}`,
+		http.StatusOK,
+		`{"id":"new-channel-id","name":"new-name","guild_id":"guild-id"}`,
+		&capture,
+	)
+
+	err := new(bot).handleCreateChannelCommand(
+		session,
+		newCreateChannelCommandInteraction("new-name"),
+	)
+	if err != nil {
+		t.Fatalf("handle create channel command: %v", err)
+	}
+
+	var createBody struct {
+		Name     string `json:"name"`
+		Type     int    `json:"type"`
+		ParentID string `json:"parent_id"`
+	}
+
+	err = json.Unmarshal([]byte(capture.createBody), &createBody)
+	if err != nil {
+		t.Fatalf("decode create body: %v", err)
+	}
+
+	if createBody.Name != "new-name" ||
+		createBody.Type != int(discordgo.ChannelTypeGuildText) ||
+		createBody.ParentID != "" {
+		t.Fatalf("unexpected create body: %+v", createBody)
+	}
+}
+
+func TestHandleCreateChannelCommandRequiresChannelName(t *testing.T) {
+	t.Parallel()
+
+	var response discordgo.InteractionResponse
+
+	session := newCreateChannelTestSession(
+		t,
+		&response,
+		http.StatusOK,
+		`{"id":"current-channel-id","guild_id":"guild-id"}`,
+		http.StatusOK,
+		`{"id":"new-channel-id","name":"new-name","guild_id":"guild-id"}`,
+		nil,
+	)
+
+	err := new(bot).handleCreateChannelCommand(
+		session,
+		newCreateChannelCommandInteraction(""),
+	)
+	if err != nil {
+		t.Fatalf("handle create channel command: %v", err)
+	}
+
+	if response.Data == nil || response.Data.Content != "`channelname` is required." {
+		t.Fatalf("unexpected response: %+v", response.Data)
+	}
+}
+
+func TestHandleCreateChannelCommandRejectsNonGuildInteraction(t *testing.T) {
+	t.Parallel()
+
+	var response discordgo.InteractionResponse
+
+	session := newCreateChannelTestSession(
+		t,
+		&response,
+		http.StatusOK,
+		`{"id":"current-channel-id","guild_id":"guild-id"}`,
+		http.StatusOK,
+		`{"id":"new-channel-id","name":"new-name","guild_id":"guild-id"}`,
+		nil,
+	)
+
+	interaction := newCreateChannelCommandInteraction("new-name")
+	interaction.GuildID = ""
+
+	err := new(bot).handleCreateChannelCommand(session, interaction)
+	if err != nil {
+		t.Fatalf("handle create channel command: %v", err)
+	}
+
+	if response.Data == nil || response.Data.Content != "This command can only be used in a guild." {
+		t.Fatalf("unexpected response: %+v", response.Data)
+	}
+}
+
+func TestHandleCreateChannelCommandReportsChannelCreateFailure(t *testing.T) {
+	t.Parallel()
+
+	var response discordgo.InteractionResponse
+
+	session := newCreateChannelTestSession(
+		t,
+		&response,
+		http.StatusOK,
+		`{"id":"current-channel-id","guild_id":"guild-id","parent_id":"section-id"}`,
+		http.StatusForbidden,
+		`{"message":"Missing Permissions","code":50013}`,
+		nil,
+	)
+
+	err := new(bot).handleCreateChannelCommand(
+		session,
+		newCreateChannelCommandInteraction("new-name"),
+	)
+	if err != nil {
+		t.Fatalf("handle create channel command: %v", err)
+	}
+
+	if response.Data == nil || response.Data.Content != "Failed to create channel `new-name`." {
+		t.Fatalf("unexpected response: %+v", response.Data)
+	}
+}
+
+func TestHandleCreateChannelCommandReportsCurrentChannelLoadFailure(t *testing.T) {
+	t.Parallel()
+
+	var response discordgo.InteractionResponse
+
+	session := newCreateChannelTestSession(
+		t,
+		&response,
+		http.StatusInternalServerError,
+		`{"message":"Internal Server Error","code":0}`,
+		http.StatusOK,
+		`{"id":"new-channel-id","name":"new-name","guild_id":"guild-id"}`,
+		nil,
+	)
+
+	err := new(bot).handleCreateChannelCommand(
+		session,
+		newCreateChannelCommandInteraction("new-name"),
+	)
+	if err != nil {
+		t.Fatalf("handle create channel command: %v", err)
+	}
+
+	if response.Data == nil || response.Data.Content != "Failed to load channel `current-channel-id`." {
+		t.Fatalf("unexpected response: %+v", response.Data)
+	}
+}
+
+func TestHandleApplicationCommandInteractionDispatchesCreateChannel(t *testing.T) {
+	t.Parallel()
+
+	var response discordgo.InteractionResponse
+
+	session := newCreateChannelTestSession(
+		t,
+		&response,
+		http.StatusOK,
+		`{"id":"current-channel-id","guild_id":"guild-id"}`,
+		http.StatusOK,
+		`{"id":"new-channel-id","name":"new-name","guild_id":"guild-id"}`,
+		nil,
+	)
+
+	err := new(bot).handleApplicationCommandInteraction(
+		session,
+		newCreateChannelCommandInteraction("new-name"),
+	)
+	if err != nil {
+		t.Fatalf("handle application command interaction: %v", err)
+	}
+
+	if response.Data == nil || response.Data.Content != "Created channel `new-name`." {
+		t.Fatalf("unexpected response: %+v", response.Data)
+	}
+}
+
+func TestNewCreateChannelCommand(t *testing.T) {
+	t.Parallel()
+
+	command := newCreateChannelCommand()
+
+	if command.Name != createChannelCommandName {
+		t.Fatalf("unexpected command name: got %q want %q", command.Name, createChannelCommandName)
+	}
+
+	if command.Description != createChannelCommandDescription {
+		t.Fatalf("unexpected command description: got %q want %q", command.Description, createChannelCommandDescription)
+	}
+
+	if len(command.Options) != 1 {
+		t.Fatalf("unexpected option count: got %d want 1", len(command.Options))
+	}
+
+	nameOption := command.Options[0]
+	if nameOption.Name != createChannelNameOptionName ||
+		nameOption.Type != discordgo.ApplicationCommandOptionString ||
+		!nameOption.Required {
+		t.Fatalf("unexpected channel name option: %+v", nameOption)
+	}
+}
+
 func TestHandleMoveChannelCommandMovesChannelUpAcrossTwoSiblings(t *testing.T) {
 	t.Parallel()
 
@@ -1876,6 +2133,47 @@ func newMoveChannelTestSession(
 	)
 }
 
+type createChannelTestCapture struct {
+	createBody string
+}
+
+func newCreateChannelTestSession(
+	t *testing.T,
+	response *discordgo.InteractionResponse,
+	currentChannelStatusCode int,
+	currentChannelBody string,
+	channelCreateStatusCode int,
+	channelCreateBody string,
+	capture *createChannelTestCapture,
+) *discordgo.Session {
+	t.Helper()
+
+	return newInteractionTestSessionWithTransport(
+		t,
+		roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			t.Helper()
+
+			switch {
+			case request.Method == http.MethodGet && request.URL.Path == "/api/v9/channels/current-channel-id":
+				return newInteractionJSONResponse(request, currentChannelStatusCode, currentChannelBody), nil
+			case request.Method == http.MethodPost && request.URL.Path == "/api/v9/guilds/guild-id/channels":
+				if capture != nil {
+					body, err := io.ReadAll(request.Body)
+					if err != nil {
+						t.Fatalf("read channel create request body: %v", err)
+					}
+
+					capture.createBody = string(body)
+				}
+
+				return newInteractionJSONResponse(request, channelCreateStatusCode, channelCreateBody), nil
+			default:
+				return captureInteractionCallbackRequest(t, request, response)
+			}
+		}),
+	)
+}
+
 func newDeferredInteractionTestSession(
 	t *testing.T,
 	capture *deferredInteractionCapture,
@@ -2175,6 +2473,39 @@ func newMoveChannelCommandInteraction(
 	interaction.Token = "interaction-token"
 	interaction.Type = discordgo.InteractionApplicationCommand
 	interaction.GuildID = "guild-id"
+	interaction.Member = member
+	interaction.Data = commandData
+
+	result := new(discordgo.InteractionCreate)
+	result.Interaction = interaction
+
+	return result
+}
+
+func newCreateChannelCommandInteraction(channelName string) *discordgo.InteractionCreate {
+	user := new(discordgo.User)
+	user.ID = "member-user"
+
+	member := new(discordgo.Member)
+	member.User = user
+
+	nameOption := new(discordgo.ApplicationCommandInteractionDataOption)
+	nameOption.Name = createChannelNameOptionName
+	nameOption.Type = discordgo.ApplicationCommandOptionString
+	nameOption.Value = channelName
+
+	var commandData discordgo.ApplicationCommandInteractionData
+
+	commandData.Name = createChannelCommandName
+	commandData.Options = []*discordgo.ApplicationCommandInteractionDataOption{nameOption}
+
+	interaction := new(discordgo.Interaction)
+	interaction.ID = "interaction-id"
+	interaction.AppID = "application-id"
+	interaction.Token = "interaction-token"
+	interaction.Type = discordgo.InteractionApplicationCommand
+	interaction.GuildID = "guild-id"
+	interaction.ChannelID = "current-channel-id"
 	interaction.Member = member
 	interaction.Data = commandData
 
