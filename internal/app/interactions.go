@@ -93,6 +93,8 @@ func (instance *bot) handleApplicationCommandInteraction(
 		return nil
 	case groundingCommandName:
 		return instance.handleGroundingCommand(session, interaction)
+	case createChannelCommandName:
+		return instance.handleCreateChannelCommand(session, interaction)
 	case editChannelNameCommandName:
 		return instance.handleEditChannelNameCommand(session, interaction)
 	case moveChannelCommandName:
@@ -1059,6 +1061,99 @@ func (instance *bot) handleGroundingCommand(
 		session,
 		interaction.Interaction,
 		fmt.Sprintf("Gemini grounding switched to: `%t`", *requestedEnabled),
+	)
+}
+
+func (instance *bot) handleCreateChannelCommand(
+	session *discordgo.Session,
+	interaction *discordgo.InteractionCreate,
+) error {
+	commandData := interaction.ApplicationCommandData()
+
+	nameOption := commandData.GetOption(createChannelNameOptionName)
+
+	channelName := ""
+	if nameOption != nil {
+		channelName = nameOption.StringValue()
+	}
+
+	if channelName == "" {
+		return respondInteractionText(
+			session,
+			interaction.Interaction,
+			"`channelname` is required.",
+		)
+	}
+
+	guildID := interaction.GuildID
+	if guildID == "" {
+		return respondInteractionText(
+			session,
+			interaction.Interaction,
+			"This command can only be used in a guild.",
+		)
+	}
+
+	parentID := ""
+
+	if interaction.ChannelID != "" {
+		currentChannel, err := session.Channel(interaction.ChannelID)
+		if err != nil {
+			logWarn(
+				"create channel command failed to load current channel",
+				err,
+				"channel_id",
+				interaction.ChannelID,
+			)
+
+			return respondInteractionText(
+				session,
+				interaction.Interaction,
+				fmt.Sprintf("Failed to load channel `%s`.", interaction.ChannelID),
+			)
+		}
+
+		parentID = currentChannel.ParentID
+	}
+
+	createData := discordgo.GuildChannelCreateData{
+		Name:                 channelName,
+		Type:                 discordgo.ChannelTypeGuildText,
+		Topic:                "",
+		Bitrate:              0,
+		UserLimit:            0,
+		RateLimitPerUser:     0,
+		Position:             0,
+		PermissionOverwrites: nil,
+		ParentID:             parentID,
+		NSFW:                 false,
+	}
+
+	createdChannel, err := session.GuildChannelCreateComplex(guildID, createData)
+	if err != nil {
+		logWarn("create channel command failed", err, "guild_id", guildID, "name", channelName)
+
+		return respondInteractionText(
+			session,
+			interaction.Interaction,
+			fmt.Sprintf("Failed to create channel `%s`.", channelName),
+		)
+	}
+
+	slog.Info(
+		"channel created",
+		"channel_id",
+		createdChannel.ID,
+		"guild_id",
+		guildID,
+		"name",
+		createdChannel.Name,
+	)
+
+	return respondInteractionText(
+		session,
+		interaction.Interaction,
+		fmt.Sprintf("Created channel `%s`.", createdChannel.Name),
 	)
 }
 

@@ -19,7 +19,7 @@ const (
 	defaultMaxImages                     = 5
 	defaultMaxMessages                   = 25
 	maxMessageNodes                      = 500
-	registeredCommandCount               = 6
+	registeredCommandCount               = 7
 	maxAutocompleteChoices               = 25
 	statusMessageMaxLength               = 128
 	streamingIndicator                   = " ..."
@@ -53,6 +53,11 @@ const (
 	groundingCommandDescription          = "View or switch Gemini grounding (native search)"
 	groundingOptionName                  = "enabled"
 	groundingOptionDescription           = "Whether grounding should be enabled"
+
+	createChannelCommandName           = "createchannel"
+	createChannelCommandDescription    = "Create a Discord text channel"
+	createChannelNameOptionName        = "channelname"
+	createChannelNameOptionDescription = "Name for the new channel"
 
 	editChannelNameCommandName                = "editchannelname"
 	editChannelNameCommandDescription         = "Rename a Discord channel"

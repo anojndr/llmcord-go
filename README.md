@@ -120,6 +120,7 @@ Generic website URL extraction runs Firecrawl Scrape first when `web_search.fire
 - `/searchdecidermodel`: switch the search-decider model
 - `/searchtype`: switch Exa Search mode (`instant`, `fast`, `auto`, `deep-lite`, `deep`, `deep-reasoning`; lowest to highest latency)
 - `/grounding`: toggle native Gemini grounding
+- `/createchannel <channelname>`: create a text channel in the category you are currently in (requires `Manage Channels`)
 - `/editchannelname <channelid> <newchannelname>`: rename a channel (requires `Manage Channels`)
 - `/movechannel <channelid> <movement> <howmany>`: move a channel up/down by visible sibling channels within its category (requires `Manage Channels`)
 - Attach files or images for multimodal context
