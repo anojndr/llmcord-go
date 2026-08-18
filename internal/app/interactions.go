@@ -1094,6 +1094,15 @@ func (instance *bot) handleCreateChannelCommand(
 		)
 	}
 
+	err := respondInteractionDeferredWithFlags(
+		session,
+		interaction.Interaction,
+		0,
+	)
+	if err != nil {
+		return fmt.Errorf("defer create channel interaction response: %w", err)
+	}
+
 	parentID := ""
 
 	if interaction.ChannelID != "" {
@@ -1106,7 +1115,7 @@ func (instance *bot) handleCreateChannelCommand(
 				interaction.ChannelID,
 			)
 
-			return respondInteractionText(
+			return editInteractionResponseText(
 				session,
 				interaction.Interaction,
 				fmt.Sprintf("Failed to load channel `%s`.", interaction.ChannelID),
@@ -1133,7 +1142,7 @@ func (instance *bot) handleCreateChannelCommand(
 	if err != nil {
 		logWarn("create channel command failed", err, "guild_id", guildID, "name", channelName)
 
-		return respondInteractionText(
+		return editInteractionResponseText(
 			session,
 			interaction.Interaction,
 			fmt.Sprintf("Failed to create channel `%s`.", channelName),
@@ -1150,7 +1159,7 @@ func (instance *bot) handleCreateChannelCommand(
 		createdChannel.Name,
 	)
 
-	return respondInteractionText(
+	return editInteractionResponseText(
 		session,
 		interaction.Interaction,
 		fmt.Sprintf("Created channel `%s`.", createdChannel.Name),
@@ -1184,6 +1193,15 @@ func (instance *bot) handleEditChannelNameCommand(
 		)
 	}
 
+	err := respondInteractionDeferredWithFlags(
+		session,
+		interaction.Interaction,
+		0,
+	)
+	if err != nil {
+		return fmt.Errorf("defer edit channel name interaction response: %w", err)
+	}
+
 	channelEdit := new(discordgo.ChannelEdit)
 	channelEdit.Name = newName
 
@@ -1191,7 +1209,7 @@ func (instance *bot) handleEditChannelNameCommand(
 	if err != nil {
 		logWarn("edit channel name command failed", err, "channel_id", channelID)
 
-		return respondInteractionText(
+		return editInteractionResponseText(
 			session,
 			interaction.Interaction,
 			fmt.Sprintf("Failed to rename channel `%s`.", channelID),
@@ -1200,7 +1218,7 @@ func (instance *bot) handleEditChannelNameCommand(
 
 	slog.Info("channel renamed", "channel_id", channelID, "name", editedChannel.Name)
 
-	return respondInteractionText(
+	return editInteractionResponseText(
 		session,
 		interaction.Interaction,
 		fmt.Sprintf("Renamed channel to `%s`.", editedChannel.Name),
@@ -1237,11 +1255,20 @@ func (instance *bot) handleMoveChannelCommand(
 		)
 	}
 
+	err := respondInteractionDeferredWithFlags(
+		session,
+		interaction.Interaction,
+		0,
+	)
+	if err != nil {
+		return fmt.Errorf("defer move channel interaction response: %w", err)
+	}
+
 	channel, err := session.Channel(channelID)
 	if err != nil {
 		logWarn("move channel command failed to load channel", err, "channel_id", channelID)
 
-		return respondInteractionText(
+		return editInteractionResponseText(
 			session,
 			interaction.Interaction,
 			fmt.Sprintf("Failed to load channel `%s`.", channelID),
@@ -1254,7 +1281,7 @@ func (instance *bot) handleMoveChannelCommand(
 	}
 
 	if guildID == "" {
-		return respondInteractionText(
+		return editInteractionResponseText(
 			session,
 			interaction.Interaction,
 			fmt.Sprintf("Channel `%s` is not in a guild.", channel.Name),
@@ -1265,7 +1292,7 @@ func (instance *bot) handleMoveChannelCommand(
 	if err != nil {
 		logWarn("move channel command failed to load guild channels", err, "guild_id", guildID)
 
-		return respondInteractionText(
+		return editInteractionResponseText(
 			session,
 			interaction.Interaction,
 			fmt.Sprintf("Failed to load channels for guild `%s`.", guildID),
@@ -1277,7 +1304,7 @@ func (instance *bot) handleMoveChannelCommand(
 
 	targetIndex := channelIndex(orderedSiblings, channelID)
 	if targetIndex < 0 {
-		return respondInteractionText(
+		return editInteractionResponseText(
 			session,
 			interaction.Interaction,
 			fmt.Sprintf("Failed to find channel `%s` in its current section.", channel.Name),
@@ -1305,7 +1332,7 @@ func (instance *bot) handleMoveChannelCommand(
 	}
 
 	if actualMove == 0 {
-		return respondInteractionText(
+		return editInteractionResponseText(
 			session,
 			interaction.Interaction,
 			fmt.Sprintf("Channel `%s` is already as far %s as possible.", channel.Name, movement),
@@ -1320,7 +1347,7 @@ func (instance *bot) handleMoveChannelCommand(
 	if err := session.GuildChannelsReorder(guildID, updates); err != nil {
 		logWarn("move channel command failed", err, "channel_id", channelID, "guild_id", guildID)
 
-		return respondInteractionText(
+		return editInteractionResponseText(
 			session,
 			interaction.Interaction,
 			fmt.Sprintf("Failed to move channel `%s`.", channelID),
@@ -1341,7 +1368,7 @@ func (instance *bot) handleMoveChannelCommand(
 		actualMove,
 	)
 
-	return respondInteractionText(
+	return editInteractionResponseText(
 		session,
 		interaction.Interaction,
 		fmt.Sprintf(

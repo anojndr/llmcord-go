@@ -80,13 +80,17 @@ func TestHandleModelCommandAllowsNonAdminSwitch(t *testing.T) {
 func TestHandleEditChannelNameCommandRenamesChannel(t *testing.T) {
 	t.Parallel()
 
-	var response discordgo.InteractionResponse
+	var (
+		response discordgo.InteractionResponse
+		capture  editChannelNameTestCapture
+	)
 
 	session := newEditChannelNameTestSession(
 		t,
 		&response,
 		http.StatusOK,
 		`{"id":"channel-id","name":"new-name"}`,
+		&capture,
 	)
 	instance := new(bot)
 	interaction := newEditChannelNameCommandInteraction("channel-id", "new-name")
@@ -96,13 +100,11 @@ func TestHandleEditChannelNameCommandRenamesChannel(t *testing.T) {
 		t.Fatalf("handle edit channel name command: %v", err)
 	}
 
-	if response.Data == nil {
-		t.Fatal("expected interaction response data")
-	}
+	assertDeferredInteractionResponse(t, &response)
 
 	expectedContent := "Renamed channel to `new-name`."
-	if response.Data.Content != expectedContent {
-		t.Fatalf("unexpected response content: got %q want %q", response.Data.Content, expectedContent)
+	if capture.editedResponse.Content != expectedContent {
+		t.Fatalf("unexpected edited response content: got %q want %q", capture.editedResponse.Content, expectedContent)
 	}
 }
 
@@ -149,13 +151,17 @@ func TestHandleEditChannelNameCommandRequiresOptions(t *testing.T) {
 func TestHandleEditChannelNameCommandReportsChannelEditFailure(t *testing.T) {
 	t.Parallel()
 
-	var response discordgo.InteractionResponse
+	var (
+		response discordgo.InteractionResponse
+		capture  editChannelNameTestCapture
+	)
 
 	session := newEditChannelNameTestSession(
 		t,
 		&response,
 		http.StatusForbidden,
 		`{"message":"Missing Permissions","code":50013}`,
+		&capture,
 	)
 	instance := new(bot)
 	interaction := newEditChannelNameCommandInteraction("channel-id", "new-name")
@@ -165,26 +171,28 @@ func TestHandleEditChannelNameCommandReportsChannelEditFailure(t *testing.T) {
 		t.Fatalf("handle edit channel name command: %v", err)
 	}
 
-	if response.Data == nil {
-		t.Fatal("expected interaction response data")
-	}
+	assertDeferredInteractionResponse(t, &response)
 
 	expectedContent := "Failed to rename channel `channel-id`."
-	if response.Data.Content != expectedContent {
-		t.Fatalf("unexpected response content: got %q want %q", response.Data.Content, expectedContent)
+	if capture.editedResponse.Content != expectedContent {
+		t.Fatalf("unexpected edited response content: got %q want %q", capture.editedResponse.Content, expectedContent)
 	}
 }
 
 func TestHandleApplicationCommandInteractionDispatchesEditChannelName(t *testing.T) {
 	t.Parallel()
 
-	var response discordgo.InteractionResponse
+	var (
+		response discordgo.InteractionResponse
+		capture  editChannelNameTestCapture
+	)
 
 	session := newEditChannelNameTestSession(
 		t,
 		&response,
 		http.StatusOK,
 		`{"id":"channel-id","name":"new-name"}`,
+		&capture,
 	)
 	instance := new(bot)
 	interaction := newEditChannelNameCommandInteraction("channel-id", "new-name")
@@ -194,13 +202,11 @@ func TestHandleApplicationCommandInteractionDispatchesEditChannelName(t *testing
 		t.Fatalf("handle application command interaction: %v", err)
 	}
 
-	if response.Data == nil {
-		t.Fatal("expected interaction response data")
-	}
+	assertDeferredInteractionResponse(t, &response)
 
 	expectedContent := "Renamed channel to `new-name`."
-	if response.Data.Content != expectedContent {
-		t.Fatalf("unexpected response content: got %q want %q", response.Data.Content, expectedContent)
+	if capture.editedResponse.Content != expectedContent {
+		t.Fatalf("unexpected edited response content: got %q want %q", capture.editedResponse.Content, expectedContent)
 	}
 }
 
@@ -262,8 +268,10 @@ func TestHandleCreateChannelCommandCreatesChannelInCurrentCategory(t *testing.T)
 		t.Fatalf("handle create channel command: %v", err)
 	}
 
-	if response.Data == nil || response.Data.Content != "Created channel `new-name`." {
-		t.Fatalf("unexpected response: %+v", response.Data)
+	assertDeferredInteractionResponse(t, &response)
+
+	if capture.editedResponse.Content != "Created channel `new-name`." {
+		t.Fatalf("unexpected edited response content: %q", capture.editedResponse.Content)
 	}
 
 	var createBody struct {
@@ -308,6 +316,12 @@ func TestHandleCreateChannelCommandCreatesChannelAtGuildRoot(t *testing.T) {
 	)
 	if err != nil {
 		t.Fatalf("handle create channel command: %v", err)
+	}
+
+	assertDeferredInteractionResponse(t, &response)
+
+	if capture.editedResponse.Content != "Created channel `new-name`." {
+		t.Fatalf("unexpected edited response content: %q", capture.editedResponse.Content)
 	}
 
 	var createBody struct {
@@ -387,7 +401,10 @@ func TestHandleCreateChannelCommandRejectsNonGuildInteraction(t *testing.T) {
 func TestHandleCreateChannelCommandReportsChannelCreateFailure(t *testing.T) {
 	t.Parallel()
 
-	var response discordgo.InteractionResponse
+	var (
+		response discordgo.InteractionResponse
+		capture  createChannelTestCapture
+	)
 
 	session := newCreateChannelTestSession(
 		t,
@@ -396,7 +413,7 @@ func TestHandleCreateChannelCommandReportsChannelCreateFailure(t *testing.T) {
 		`{"id":"current-channel-id","guild_id":"guild-id","parent_id":"section-id"}`,
 		http.StatusForbidden,
 		`{"message":"Missing Permissions","code":50013}`,
-		nil,
+		&capture,
 	)
 
 	err := new(bot).handleCreateChannelCommand(
@@ -407,15 +424,20 @@ func TestHandleCreateChannelCommandReportsChannelCreateFailure(t *testing.T) {
 		t.Fatalf("handle create channel command: %v", err)
 	}
 
-	if response.Data == nil || response.Data.Content != "Failed to create channel `new-name`." {
-		t.Fatalf("unexpected response: %+v", response.Data)
+	assertDeferredInteractionResponse(t, &response)
+
+	if capture.editedResponse.Content != "Failed to create channel `new-name`." {
+		t.Fatalf("unexpected edited response content: %q", capture.editedResponse.Content)
 	}
 }
 
 func TestHandleCreateChannelCommandReportsCurrentChannelLoadFailure(t *testing.T) {
 	t.Parallel()
 
-	var response discordgo.InteractionResponse
+	var (
+		response discordgo.InteractionResponse
+		capture  createChannelTestCapture
+	)
 
 	session := newCreateChannelTestSession(
 		t,
@@ -424,7 +446,7 @@ func TestHandleCreateChannelCommandReportsCurrentChannelLoadFailure(t *testing.T
 		`{"message":"Internal Server Error","code":0}`,
 		http.StatusOK,
 		`{"id":"new-channel-id","name":"new-name","guild_id":"guild-id"}`,
-		nil,
+		&capture,
 	)
 
 	err := new(bot).handleCreateChannelCommand(
@@ -435,15 +457,20 @@ func TestHandleCreateChannelCommandReportsCurrentChannelLoadFailure(t *testing.T
 		t.Fatalf("handle create channel command: %v", err)
 	}
 
-	if response.Data == nil || response.Data.Content != "Failed to load channel `current-channel-id`." {
-		t.Fatalf("unexpected response: %+v", response.Data)
+	assertDeferredInteractionResponse(t, &response)
+
+	if capture.editedResponse.Content != "Failed to load channel `current-channel-id`." {
+		t.Fatalf("unexpected edited response content: %q", capture.editedResponse.Content)
 	}
 }
 
 func TestHandleApplicationCommandInteractionDispatchesCreateChannel(t *testing.T) {
 	t.Parallel()
 
-	var response discordgo.InteractionResponse
+	var (
+		response discordgo.InteractionResponse
+		capture  createChannelTestCapture
+	)
 
 	session := newCreateChannelTestSession(
 		t,
@@ -452,7 +479,7 @@ func TestHandleApplicationCommandInteractionDispatchesCreateChannel(t *testing.T
 		`{"id":"current-channel-id","guild_id":"guild-id"}`,
 		http.StatusOK,
 		`{"id":"new-channel-id","name":"new-name","guild_id":"guild-id"}`,
-		nil,
+		&capture,
 	)
 
 	err := new(bot).handleApplicationCommandInteraction(
@@ -463,8 +490,10 @@ func TestHandleApplicationCommandInteractionDispatchesCreateChannel(t *testing.T
 		t.Fatalf("handle application command interaction: %v", err)
 	}
 
-	if response.Data == nil || response.Data.Content != "Created channel `new-name`." {
-		t.Fatalf("unexpected response: %+v", response.Data)
+	assertDeferredInteractionResponse(t, &response)
+
+	if capture.editedResponse.Content != "Created channel `new-name`." {
+		t.Fatalf("unexpected edited response content: %q", capture.editedResponse.Content)
 	}
 }
 
@@ -518,8 +547,10 @@ func TestHandleMoveChannelCommandMovesChannelUpAcrossTwoSiblings(t *testing.T) {
 		t.Fatalf("handle move channel command: %v", err)
 	}
 
-	if response.Data == nil || response.Data.Content != "Moved channel `general` up 2 visible channel(s)." {
-		t.Fatalf("unexpected response: %+v", response.Data)
+	assertDeferredInteractionResponse(t, &response)
+
+	if capture.editedResponse.Content != "Moved channel `general` up 2 visible channel(s)." {
+		t.Fatalf("unexpected edited response content: %q", capture.editedResponse.Content)
 	}
 
 	var updates []struct {
@@ -570,8 +601,10 @@ func TestHandleMoveChannelCommandMovesChannelDown(t *testing.T) {
 		t.Fatalf("handle move channel command: %v", err)
 	}
 
-	if response.Data == nil || response.Data.Content != "Moved channel `general` down 2 visible channel(s)." {
-		t.Fatalf("unexpected response: %+v", response.Data)
+	assertDeferredInteractionResponse(t, &response)
+
+	if capture.editedResponse.Content != "Moved channel `general` down 2 visible channel(s)." {
+		t.Fatalf("unexpected edited response content: %q", capture.editedResponse.Content)
 	}
 
 	var updates []struct {
@@ -622,8 +655,10 @@ func TestHandleMoveChannelCommandClampsAtSectionBoundary(t *testing.T) {
 		t.Fatalf("handle move channel command: %v", err)
 	}
 
-	if response.Data == nil || response.Data.Content != "Moved channel `general` up 1 visible channel(s)." {
-		t.Fatalf("unexpected response: %+v", response.Data)
+	assertDeferredInteractionResponse(t, &response)
+
+	if capture.editedResponse.Content != "Moved channel `general` up 1 visible channel(s)." {
+		t.Fatalf("unexpected edited response content: %q", capture.editedResponse.Content)
 	}
 
 	var updates []struct {
@@ -664,8 +699,10 @@ func TestHandleMoveChannelCommandDoesNotCrossDifferentParent(t *testing.T) {
 		t.Fatalf("handle move channel command: %v", err)
 	}
 
-	if response.Data == nil || response.Data.Content != "Channel `general` is already as far down as possible." {
-		t.Fatalf("unexpected response: %+v", response.Data)
+	assertDeferredInteractionResponse(t, &response)
+
+	if capture.editedResponse.Content != "Channel `general` is already as far down as possible." {
+		t.Fatalf("unexpected edited response content: %q", capture.editedResponse.Content)
 	}
 
 	if capture.editBody != "" {
@@ -765,7 +802,10 @@ func TestHandleMoveChannelCommandRejectsInvalidInput(t *testing.T) {
 func TestHandleMoveChannelCommandReportsChannelLoadFailure(t *testing.T) {
 	t.Parallel()
 
-	var response discordgo.InteractionResponse
+	var (
+		response discordgo.InteractionResponse
+		capture  moveChannelTestCapture
+	)
 
 	session := newMoveChannelTestSession(
 		t,
@@ -776,7 +816,7 @@ func TestHandleMoveChannelCommandReportsChannelLoadFailure(t *testing.T) {
 		"",
 		0,
 		"",
-		nil,
+		&capture,
 	)
 	instance := new(bot)
 	interaction := newMoveChannelCommandInteraction("channel-id", "up", 1)
@@ -786,20 +826,21 @@ func TestHandleMoveChannelCommandReportsChannelLoadFailure(t *testing.T) {
 		t.Fatalf("handle move channel command: %v", err)
 	}
 
-	if response.Data == nil {
-		t.Fatal("expected interaction response data")
-	}
+	assertDeferredInteractionResponse(t, &response)
 
 	expectedContent := "Failed to load channel `channel-id`."
-	if response.Data.Content != expectedContent {
-		t.Fatalf("unexpected response content: got %q want %q", response.Data.Content, expectedContent)
+	if capture.editedResponse.Content != expectedContent {
+		t.Fatalf("unexpected edited response content: got %q want %q", capture.editedResponse.Content, expectedContent)
 	}
 }
 
 func TestHandleMoveChannelCommandReportsMoveFailure(t *testing.T) {
 	t.Parallel()
 
-	var response discordgo.InteractionResponse
+	var (
+		response discordgo.InteractionResponse
+		capture  moveChannelTestCapture
+	)
 
 	session := newMoveChannelTestSession(
 		t,
@@ -810,7 +851,7 @@ func TestHandleMoveChannelCommandReportsMoveFailure(t *testing.T) {
 		`[{"id":"first","name":"first","position":4},{"id":"channel-id","name":"general","position":5}]`,
 		http.StatusForbidden,
 		`{"message":"Missing Permissions","code":50013}`,
-		nil,
+		&capture,
 	)
 	instance := new(bot)
 	interaction := newMoveChannelCommandInteraction("channel-id", "up", 1)
@@ -820,20 +861,21 @@ func TestHandleMoveChannelCommandReportsMoveFailure(t *testing.T) {
 		t.Fatalf("handle move channel command: %v", err)
 	}
 
-	if response.Data == nil {
-		t.Fatal("expected interaction response data")
-	}
+	assertDeferredInteractionResponse(t, &response)
 
 	expectedContent := "Failed to move channel `channel-id`."
-	if response.Data.Content != expectedContent {
-		t.Fatalf("unexpected response content: got %q want %q", response.Data.Content, expectedContent)
+	if capture.editedResponse.Content != expectedContent {
+		t.Fatalf("unexpected edited response content: got %q want %q", capture.editedResponse.Content, expectedContent)
 	}
 }
 
 func TestHandleApplicationCommandInteractionDispatchesMoveChannel(t *testing.T) {
 	t.Parallel()
 
-	var response discordgo.InteractionResponse
+	var (
+		response discordgo.InteractionResponse
+		capture  moveChannelTestCapture
+	)
 
 	session := newMoveChannelTestSession(
 		t,
@@ -844,7 +886,7 @@ func TestHandleApplicationCommandInteractionDispatchesMoveChannel(t *testing.T) 
 		`[{"id":"first","name":"first","position":4},{"id":"channel-id","name":"general","position":5}]`,
 		http.StatusNoContent,
 		"",
-		nil,
+		&capture,
 	)
 	instance := new(bot)
 	interaction := newMoveChannelCommandInteraction("channel-id", "up", 2)
@@ -854,13 +896,11 @@ func TestHandleApplicationCommandInteractionDispatchesMoveChannel(t *testing.T) 
 		t.Fatalf("handle application command interaction: %v", err)
 	}
 
-	if response.Data == nil {
-		t.Fatal("expected interaction response data")
-	}
+	assertDeferredInteractionResponse(t, &response)
 
 	expectedContent := "Moved channel `general` up 1 visible channel(s)."
-	if response.Data.Content != expectedContent {
-		t.Fatalf("unexpected response content: got %q want %q", response.Data.Content, expectedContent)
+	if capture.editedResponse.Content != expectedContent {
+		t.Fatalf("unexpected edited response content: got %q want %q", capture.editedResponse.Content, expectedContent)
 	}
 }
 
@@ -2061,11 +2101,16 @@ func newInteractionTestSessionWithTransport(
 	return session
 }
 
+type editChannelNameTestCapture struct {
+	editedResponse editedInteractionResponse
+}
+
 func newEditChannelNameTestSession(
 	t *testing.T,
 	response *discordgo.InteractionResponse,
 	channelEditStatusCode int,
 	channelEditBody string,
+	capture *editChannelNameTestCapture,
 ) *discordgo.Session {
 	t.Helper()
 
@@ -2074,18 +2119,27 @@ func newEditChannelNameTestSession(
 		roundTripFunc(func(request *http.Request) (*http.Response, error) {
 			t.Helper()
 
-			if request.Method == http.MethodPatch &&
-				request.URL.Path == "/api/v9/channels/channel-id" {
+			switch {
+			case request.Method == http.MethodPatch &&
+				request.URL.Path == "/api/v9/channels/channel-id":
 				return newInteractionJSONResponse(request, channelEditStatusCode, channelEditBody), nil
-			}
+			case request.Method == http.MethodPatch &&
+				strings.HasSuffix(request.URL.Path, "/messages/@original"):
+				if capture == nil {
+					t.Fatal("unexpected interaction response edit")
+				}
 
-			return captureInteractionCallbackRequest(t, request, response)
+				return captureEditedInteractionRequest(t, request, &capture.editedResponse)
+			default:
+				return captureInteractionCallbackRequest(t, request, response)
+			}
 		}),
 	)
 }
 
 type moveChannelTestCapture struct {
-	editBody string
+	editBody       string
+	editedResponse editedInteractionResponse
 }
 
 func newMoveChannelTestSession(
@@ -2126,6 +2180,13 @@ func newMoveChannelTestSession(
 				}
 
 				return newInteractionJSONResponse(request, reorderStatusCode, reorderBody), nil
+			case request.Method == http.MethodPatch &&
+				strings.HasSuffix(request.URL.Path, "/messages/@original"):
+				if capture == nil {
+					t.Fatal("unexpected interaction response edit")
+				}
+
+				return captureEditedInteractionRequest(t, request, &capture.editedResponse)
 			default:
 				return captureInteractionCallbackRequest(t, request, response)
 			}
@@ -2134,7 +2195,8 @@ func newMoveChannelTestSession(
 }
 
 type createChannelTestCapture struct {
-	createBody string
+	createBody     string
+	editedResponse editedInteractionResponse
 }
 
 func newCreateChannelTestSession(
@@ -2167,6 +2229,13 @@ func newCreateChannelTestSession(
 				}
 
 				return newInteractionJSONResponse(request, channelCreateStatusCode, channelCreateBody), nil
+			case request.Method == http.MethodPatch &&
+				strings.HasSuffix(request.URL.Path, "/messages/@original"):
+				if capture == nil {
+					t.Fatal("unexpected interaction response edit")
+				}
+
+				return captureEditedInteractionRequest(t, request, &capture.editedResponse)
 			default:
 				return captureInteractionCallbackRequest(t, request, response)
 			}
@@ -2317,6 +2386,21 @@ func assertDeferredEphemeralInteractionResponse(
 
 	if response.Data.Flags != discordgo.MessageFlagsEphemeral {
 		t.Fatalf("unexpected deferred response flags: %v", response.Data.Flags)
+	}
+}
+
+func assertDeferredInteractionResponse(
+	t *testing.T,
+	response *discordgo.InteractionResponse,
+) {
+	t.Helper()
+
+	if response.Type != discordgo.InteractionResponseDeferredChannelMessageWithSource {
+		t.Fatalf(
+			"unexpected deferred response type: got %v want %v",
+			response.Type,
+			discordgo.InteractionResponseDeferredChannelMessageWithSource,
+		)
 	}
 }
 
