@@ -308,7 +308,6 @@ func (instance *bot) prepareMessageResponse(
 	request.RequestID = strings.TrimSpace(message.ID)
 
 	providers.AssignOpenAIPromptCacheKey(&request, message, instance.nodes, loadedConfig.MaxMessages)
-	providers.AssignXAIPreviousResponseID(&request, message, instance.nodes, loadedConfig.MaxMessages)
 
 	progress.advance(requestProgressStageGeneratingResponse)
 
@@ -353,12 +352,6 @@ func (instance *bot) buildFallbackRequest(
 
 	if tracker != nil && tracker.sourceMessage != nil {
 		providers.AssignOpenAIPromptCacheKey(
-			&fallbackRequest,
-			tracker.sourceMessage,
-			instance.nodes,
-			loadedConfig.MaxMessages,
-		)
-		providers.AssignXAIPreviousResponseID(
 			&fallbackRequest,
 			tracker.sourceMessage,
 			instance.nodes,
@@ -604,19 +597,17 @@ func (instance *bot) augmentConversationWithVideoURLs(
 	urlExtractionText string,
 ) ([]chatMessage, []string, error) {
 	var stages []preparedAugmentationStage
-	if !providerHandlesTikTokURLsDirectly(providerSlashModel) {
-		stages = append(stages, preparedAugmentationStage{
-			name: "tiktok",
-			prepare: func(taskContext context.Context) (preparedConversationAugmentation, error) {
-				return instance.prepareTikTokAugmentation(
-					taskContext,
-					loadedConfig,
-					providerSlashModel,
-					urlExtractionText,
-				)
-			},
-		})
-	}
+	stages = append(stages, preparedAugmentationStage{
+		name: "tiktok",
+		prepare: func(taskContext context.Context) (preparedConversationAugmentation, error) {
+			return instance.prepareTikTokAugmentation(
+				taskContext,
+				loadedConfig,
+				providerSlashModel,
+				urlExtractionText,
+			)
+		},
+	})
 
 	stages = append(stages, preparedAugmentationStage{
 		name: "facebook",
@@ -696,110 +687,7 @@ func (instance *bot) buildMessageConversation(
 		usePDFExtraction,
 	)
 
-	messages, err = instance.maybeAugmentConversationWithXAIImageContext(
-		ctx,
-		loadedConfig,
-		providerSlashModel,
-		message,
-		messages,
-	)
-	if err != nil {
-		return nil, nil, fmt.Errorf("augment conversation with xAI image context: %w", err)
-	}
-
 	return messages, warnings, nil
-}
-
-func (instance *bot) maybeAugmentConversationWithXAIImageContext(
-	ctx context.Context,
-	loadedConfig config,
-	providerSlashModel string,
-	sourceMessage *discordgo.Message,
-	conversation []chatMessage,
-) ([]chatMessage, error) {
-	if !providers.XAIConfiguredModel(providerSlashModel) {
-		return conversation, nil
-	}
-
-	if providers.XAIConversationPreviousResponseID(
-		providerSlashModel,
-		sourceMessage,
-		instance.nodes,
-		loadedConfig.MaxMessages,
-	) != "" {
-		return conversation, nil
-	}
-
-	contentOptions, err := messageContentOptionsForModel(loadedConfig, providerSlashModel)
-	if err != nil {
-		return nil, fmt.Errorf("build xAI image content options: %w", err)
-	}
-
-	if contentOptions.maxImages <= 0 {
-		return conversation, nil
-	}
-
-	remainingImageSlots, err := remainingImageSlotsForConversation(
-		conversation,
-		contentOptions.maxImages,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("calculate remaining xAI image slots: %w", err)
-	}
-
-	if remainingImageSlots == 0 {
-		return conversation, nil
-	}
-
-	imageURLSet, candidateImageParts, err := searchDeciderImagePartSet(
-		conversation,
-		remainingImageSlots,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("collect existing xAI image parts: %w", err)
-	}
-
-	if len(imageURLSet) > 0 {
-		return conversation, nil
-	}
-
-	for _, attachmentMessage := range instance.attachmentAugmentationMessages(ctx, sourceMessage) {
-		imageParts, loadErr := instance.imagePartsForMessage(ctx, attachmentMessage)
-		if loadErr != nil {
-			return nil, fmt.Errorf("load xAI attachment image parts: %w", loadErr)
-		}
-
-		var (
-			complete  bool
-			appendErr error
-		)
-
-		candidateImageParts, complete, appendErr = appendSearchDeciderImageParts(
-			candidateImageParts,
-			imageURLSet,
-			imageParts,
-			remainingImageSlots,
-			"append xAI attachment image",
-		)
-		if appendErr != nil {
-			return nil, appendErr
-		}
-
-		if complete {
-			break
-		}
-	}
-
-	if len(candidateImageParts) == 0 {
-		return conversation, nil
-	}
-
-	augmentedConversation, err := appendMediaPartsToConversation(conversation, candidateImageParts)
-	if err != nil {
-		return nil, fmt.Errorf("append xAI image context to latest user message: %w", err)
-	}
-
-	return augmentedConversation, nil
 }
 
 func messageContentOptionsForModel(
@@ -822,12 +710,6 @@ func messageContentOptionsForModel(
 		options.allowFiles = true
 		options.allowedDocumentMIMETypes = allowedGeminiDocumentMIMETypes()
 		options.allowVideo = true
-	}
-
-	if providers.XAIConfiguredModel(providerSlashModel) {
-		options.allowDocuments = true
-		options.allowFiles = true
-		options.allowedDocumentMIMETypes = nil
 	}
 
 	return options, nil
@@ -911,34 +793,31 @@ func (instance *bot) augmentConversation(
 		},
 	}
 
-	if !providerHandlesGeneralURLsDirectly(providerSlashModel) {
-		stages = append(
-			stages,
-			preparedAugmentationStage{
-				name: "website",
-				prepare: func(taskContext context.Context) (preparedConversationAugmentation, error) {
-					return instance.prepareWebsiteAugmentation(
-						taskContext,
-						loadedConfig,
-						providerSlashModel,
-						urlExtractionText,
-					)
-				},
+	stages = append(
+		stages,
+		preparedAugmentationStage{
+			name: "website",
+			prepare: func(taskContext context.Context) (preparedConversationAugmentation, error) {
+				return instance.prepareWebsiteAugmentation(
+					taskContext,
+					loadedConfig,
+					urlExtractionText,
+				)
 			},
-			preparedAugmentationStage{
-				name: "youtube",
-				prepare: func(taskContext context.Context) (preparedConversationAugmentation, error) {
-					return instance.prepareYouTubeAugmentation(taskContext, urlExtractionText)
-				},
+		},
+		preparedAugmentationStage{
+			name: "youtube",
+			prepare: func(taskContext context.Context) (preparedConversationAugmentation, error) {
+				return instance.prepareYouTubeAugmentation(taskContext, urlExtractionText)
 			},
-			preparedAugmentationStage{
-				name: "reddit",
-				prepare: func(taskContext context.Context) (preparedConversationAugmentation, error) {
-					return instance.prepareRedditAugmentation(taskContext, urlExtractionText)
-				},
+		},
+		preparedAugmentationStage{
+			name: "reddit",
+			prepare: func(taskContext context.Context) (preparedConversationAugmentation, error) {
+				return instance.prepareRedditAugmentation(taskContext, urlExtractionText)
 			},
-		)
-	}
+		},
+	)
 
 	stageResults := prepareAugmentationStages(ctx, stages)
 
@@ -952,8 +831,7 @@ func (instance *bot) augmentConversation(
 		return nil, nil, nil, err
 	}
 
-	if providerHandlesGeneralURLsDirectly(providerSlashModel) ||
-		provider.DisableSearchDecider ||
+	if provider.DisableSearchDecider ||
 		instance.currentGroundingEnabled(provider) {
 		return augmentedMessages, searchMetadata, warnings, nil
 	}
@@ -983,14 +861,6 @@ func (instance *bot) sourceMessageURLExtractionText(
 	replyTargetText, _ := instance.messageNodeURLExtractionText(ctx, parentMessage)
 
 	return joinNonEmpty([]string{replyTargetText, sourceText})
-}
-
-func providerHandlesGeneralURLsDirectly(providerSlashModel string) bool {
-	return providers.XAIConfiguredModel(providerSlashModel)
-}
-
-func providerHandlesTikTokURLsDirectly(providerSlashModel string) bool {
-	return providers.XAIConfiguredModel(providerSlashModel)
 }
 
 func (instance *bot) messageNodeURLExtractionText(
@@ -1173,9 +1043,7 @@ func buildChatCompletionRequest(
 	}
 
 	if providerAPIKind == providerAPIKindOpenAI {
-		isXAIOrGrok := strings.EqualFold(providerName, providers.XAIProviderName) ||
-			strings.Contains(strings.ToLower(providerName), "grok")
-		if useResponsesAPI && (usesBuiltInOpenAIProvider(providerName, providerAPIKind) || isXAIOrGrok) {
+		if useResponsesAPI && usesBuiltInOpenAIProvider(providerName, providerAPIKind) {
 			modelName, extraBody = providers.NormalizeOpenAIResponsesModelAlias(modelName, extraBody)
 			extraBody = providers.NormalizeOpenAIResponsesExtraBody(modelName, extraBody)
 		} else {
@@ -1197,11 +1065,10 @@ func buildChatCompletionRequest(
 			ExtraQuery:      provider.ExtraQuery,
 			ExtraBody:       extraBody,
 		},
-		Model:              modelName,
-		ConfiguredModel:    providerSlashModel,
-		SessionID:          "",
-		PreviousResponseID: "",
-		RequestID:          "",
-		Messages:           messages,
+		Model:           modelName,
+		ConfiguredModel: providerSlashModel,
+		SessionID:       "",
+		RequestID:       "",
+		Messages:        messages,
 	}, nil
 }

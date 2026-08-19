@@ -16,6 +16,7 @@ const (
 	testOpenAIAuthHeader            = "Bearer test-key"
 	testOpenAIClientRequestID       = "discord-message-1"
 	testOpenAIPromptCacheKey        = "openai-session-123"
+	testOpenAIAPIVersion            = "2024-12-01-preview"
 	testOpenAIResponsesPath         = "/v1/responses"
 	testOpenAIResponsesResponseID   = "resp_test_123"
 	testOpenAIResponsesSystemPrompt = "You are concise."
@@ -64,7 +65,7 @@ func assertStreamingRequest(t *testing.T, request *http.Request) {
 		t.Fatalf("unexpected path: %s", request.URL.Path)
 	}
 
-	if request.URL.Query().Get("api-version") != testXAIAPIVersion {
+	if request.URL.Query().Get("api-version") != testOpenAIAPIVersion {
 		t.Fatalf("unexpected query string: %s", request.URL.RawQuery)
 	}
 
@@ -137,17 +138,16 @@ func TestOpenAIClientStreamChatCompletion(t *testing.T) {
 				"X-Test": testHeaderPresent,
 			},
 			ExtraQuery: map[string]any{
-				"api-version": testXAIAPIVersion,
+				"api-version": testOpenAIAPIVersion,
 			},
 			ExtraBody: map[string]any{
 				"temperature": 0.2,
 			},
 		},
-		Model:              "gpt-test",
-		ConfiguredModel:    "",
-		SessionID:          "",
-		PreviousResponseID: "",
-		RequestID:          "",
+		Model:           "gpt-test",
+		ConfiguredModel: "",
+		SessionID:       "",
+		RequestID:       "",
 		Messages: []ChatMessage{
 			{Role: "user", Content: "hello"},
 		},
@@ -195,11 +195,10 @@ func TestBuildChatCompletionRequestBodyAddsPlaceholderForImageOnlyUserMessage(t 
 			ExtraQuery:      nil,
 			ExtraBody:       nil,
 		},
-		Model:              "gpt-test",
-		ConfiguredModel:    "",
-		SessionID:          "",
-		PreviousResponseID: "",
-		RequestID:          "",
+		Model:           "gpt-test",
+		ConfiguredModel: "",
+		SessionID:       "",
+		RequestID:       "",
 		Messages: []ChatMessage{{
 			Role: searchtypes.MessageRoleUser,
 			Content: []ContentPart{
@@ -249,11 +248,10 @@ func TestBuildChatCompletionRequestBodyAddsPlaceholderForDocumentOnlyUserMessage
 			ExtraQuery:      nil,
 			ExtraBody:       nil,
 		},
-		Model:              "gpt-test",
-		ConfiguredModel:    "",
-		SessionID:          "",
-		PreviousResponseID: "",
-		RequestID:          "",
+		Model:           "gpt-test",
+		ConfiguredModel: "",
+		SessionID:       "",
+		RequestID:       "",
 		Messages: []ChatMessage{{
 			Role: searchtypes.MessageRoleUser,
 			Content: []ContentPart{
@@ -305,11 +303,10 @@ func TestBuildChatCompletionRequestBodyAddsPlaceholderForFileOnlyUserMessage(t *
 			ExtraQuery:      nil,
 			ExtraBody:       nil,
 		},
-		Model:              "gpt-test",
-		ConfiguredModel:    "",
-		SessionID:          "",
-		PreviousResponseID: "",
-		RequestID:          "",
+		Model:           "gpt-test",
+		ConfiguredModel: "",
+		SessionID:       "",
+		RequestID:       "",
 		Messages: []ChatMessage{{
 			Role: searchtypes.MessageRoleUser,
 			Content: []ContentPart{
@@ -360,12 +357,11 @@ func TestBuildChatCompletionRequestBodyIncludesPromptCacheKeyForOpenAIProvider(t
 			ExtraQuery:      nil,
 			ExtraBody:       nil,
 		},
-		Model:              "gpt-test",
-		ConfiguredModel:    "openai/gpt-test",
-		SessionID:          testOpenAIPromptCacheKey,
-		PreviousResponseID: "",
-		RequestID:          "",
-		Messages:           []ChatMessage{{Role: searchtypes.MessageRoleUser, Content: "hello"}},
+		Model:           "gpt-test",
+		ConfiguredModel: "openai/gpt-test",
+		SessionID:       testOpenAIPromptCacheKey,
+		RequestID:       "",
+		Messages:        []ChatMessage{{Role: searchtypes.MessageRoleUser, Content: "hello"}},
 	}
 
 	requestBody := buildChatCompletionRequestBody(request)
@@ -390,12 +386,11 @@ func TestBuildChatCompletionRequestBodySkipsPromptCacheKeyForNonOpenAIProvider(t
 			ExtraQuery:      nil,
 			ExtraBody:       nil,
 		},
-		Model:              "gpt-test",
-		ConfiguredModel:    "compatible/gpt-test",
-		SessionID:          testOpenAIPromptCacheKey,
-		PreviousResponseID: "",
-		RequestID:          "",
-		Messages:           []ChatMessage{{Role: searchtypes.MessageRoleUser, Content: "hello"}},
+		Model:           "gpt-test",
+		ConfiguredModel: "compatible/gpt-test",
+		SessionID:       testOpenAIPromptCacheKey,
+		RequestID:       "",
+		Messages:        []ChatMessage{{Role: searchtypes.MessageRoleUser, Content: "hello"}},
 	}
 
 	requestBody := buildChatCompletionRequestBody(request)
@@ -429,12 +424,11 @@ func TestOpenAIClientStreamChatCompletionReturnsStatusErrors(t *testing.T) {
 			ExtraQuery:      nil,
 			ExtraBody:       nil,
 		},
-		Model:              "gpt-test",
-		ConfiguredModel:    "",
-		SessionID:          "",
-		PreviousResponseID: "",
-		RequestID:          "",
-		Messages:           []ChatMessage{{Role: "user", Content: "hello"}},
+		Model:           "gpt-test",
+		ConfiguredModel: "",
+		SessionID:       "",
+		RequestID:       "",
+		Messages:        []ChatMessage{{Role: "user", Content: "hello"}},
 	}
 
 	err := client.streamChatCompletion(context.Background(), request, func(StreamDelta) error {
@@ -480,12 +474,11 @@ func TestOpenAIClientStreamChatCompletionParsesJSONStatusErrors(t *testing.T) {
 			ExtraQuery:      nil,
 			ExtraBody:       nil,
 		},
-		Model:              "gpt-test",
-		ConfiguredModel:    "",
-		SessionID:          "",
-		PreviousResponseID: "",
-		RequestID:          "",
-		Messages:           []ChatMessage{{Role: "user", Content: "hello"}},
+		Model:           "gpt-test",
+		ConfiguredModel: "",
+		SessionID:       "",
+		RequestID:       "",
+		Messages:        []ChatMessage{{Role: "user", Content: "hello"}},
 	}
 
 	err := client.streamChatCompletion(context.Background(), request, func(StreamDelta) error {
@@ -537,12 +530,11 @@ func TestOpenAIClientStreamChatCompletionReturnsStreamEventErrors(t *testing.T) 
 			ExtraQuery:      nil,
 			ExtraBody:       nil,
 		},
-		Model:              "gpt-test",
-		ConfiguredModel:    "",
-		SessionID:          "",
-		PreviousResponseID: "",
-		RequestID:          "",
-		Messages:           []ChatMessage{{Role: "user", Content: "hello"}},
+		Model:           "gpt-test",
+		ConfiguredModel: "",
+		SessionID:       "",
+		RequestID:       "",
+		Messages:        []ChatMessage{{Role: "user", Content: "hello"}},
 	}
 
 	err := client.streamChatCompletion(context.Background(), request, func(StreamDelta) error {
@@ -588,12 +580,11 @@ func TestOpenAIClientStreamChatCompletionReturnsBlockedFinishReasonErrors(t *tes
 			ExtraQuery:      nil,
 			ExtraBody:       nil,
 		},
-		Model:              "gpt-test",
-		ConfiguredModel:    "",
-		SessionID:          "",
-		PreviousResponseID: "",
-		RequestID:          "",
-		Messages:           []ChatMessage{{Role: "user", Content: "hello"}},
+		Model:           "gpt-test",
+		ConfiguredModel: "",
+		SessionID:       "",
+		RequestID:       "",
+		Messages:        []ChatMessage{{Role: "user", Content: "hello"}},
 	}
 
 	err := client.streamChatCompletion(context.Background(), request, func(StreamDelta) error {
@@ -637,12 +628,11 @@ func TestOpenAIClientStreamChatCompletionReturnsErrorWithoutDoneMarker(t *testin
 			ExtraQuery:      nil,
 			ExtraBody:       nil,
 		},
-		Model:              "gpt-test",
-		ConfiguredModel:    "",
-		SessionID:          "",
-		PreviousResponseID: "",
-		RequestID:          "",
-		Messages:           []ChatMessage{{Role: "user", Content: "hello"}},
+		Model:           "gpt-test",
+		ConfiguredModel: "",
+		SessionID:       "",
+		RequestID:       "",
+		Messages:        []ChatMessage{{Role: "user", Content: "hello"}},
 	}
 
 	err := client.streamChatCompletion(context.Background(), request, func(StreamDelta) error {
@@ -691,11 +681,10 @@ func TestOpenAIClientStreamResponses(t *testing.T) {
 			ExtraQuery: nil,
 			ExtraBody:  nil,
 		},
-		Model:              "gpt-5",
-		ConfiguredModel:    "openai/gpt-5",
-		SessionID:          "",
-		PreviousResponseID: "",
-		RequestID:          testOpenAIClientRequestID,
+		Model:           "gpt-5",
+		ConfiguredModel: "openai/gpt-5",
+		SessionID:       "",
+		RequestID:       testOpenAIClientRequestID,
 		Messages: []ChatMessage{
 			{Role: searchtypes.MessageRoleSystem, Content: testOpenAIResponsesSystemPrompt},
 			{
@@ -810,17 +799,16 @@ func TestBuildOpenAIResponsesRequestBodyNormalizesReasoningConfig(t *testing.T) 
 				"reasoning_summary": OpenAIReasoningSummaryConcise,
 			},
 		},
-		Model:              OpenAIReasoningModelGPT54,
-		ConfiguredModel:    "openai/gpt-5.4",
-		SessionID:          "",
-		PreviousResponseID: "",
-		RequestID:          "",
+		Model:           OpenAIReasoningModelGPT54,
+		ConfiguredModel: "openai/gpt-5.4",
+		SessionID:       "",
+		RequestID:       "",
 		Messages: []ChatMessage{
 			{Role: searchtypes.MessageRoleUser, Content: "hello"},
 		},
 	}
 
-	requestBody, err := buildXAIResponsesRequestBody(request)
+	requestBody, err := buildResponsesRequestBody(request)
 	if err != nil {
 		t.Fatalf("build responses request body: %v", err)
 	}
@@ -866,17 +854,16 @@ func TestBuildOpenAIResponsesRequestBodyDefaultsReasoningSummary(t *testing.T) {
 			ExtraQuery:      nil,
 			ExtraBody:       nil,
 		},
-		Model:              OpenAIReasoningModelGPT54,
-		ConfiguredModel:    "openai/gpt-5.4",
-		SessionID:          "",
-		PreviousResponseID: "",
-		RequestID:          "",
+		Model:           OpenAIReasoningModelGPT54,
+		ConfiguredModel: "openai/gpt-5.4",
+		SessionID:       "",
+		RequestID:       "",
 		Messages: []ChatMessage{
 			{Role: searchtypes.MessageRoleUser, Content: "hello"},
 		},
 	}
 
-	requestBody, err := buildXAIResponsesRequestBody(request)
+	requestBody, err := buildResponsesRequestBody(request)
 	if err != nil {
 		t.Fatalf("build responses request body: %v", err)
 	}
@@ -906,17 +893,16 @@ func TestBuildOpenAIResponsesRequestBodyIncludesPromptCacheKeyForOpenAIProvider(
 			ExtraQuery:      nil,
 			ExtraBody:       nil,
 		},
-		Model:              "gpt-5",
-		ConfiguredModel:    "openai/gpt-5",
-		SessionID:          testOpenAIPromptCacheKey,
-		PreviousResponseID: "",
-		RequestID:          "",
+		Model:           "gpt-5",
+		ConfiguredModel: "openai/gpt-5",
+		SessionID:       testOpenAIPromptCacheKey,
+		RequestID:       "",
 		Messages: []ChatMessage{
 			{Role: searchtypes.MessageRoleUser, Content: "hello"},
 		},
 	}
 
-	requestBody, err := buildXAIResponsesRequestBody(request)
+	requestBody, err := buildResponsesRequestBody(request)
 	if err != nil {
 		t.Fatalf("build responses request body: %v", err)
 	}
@@ -942,12 +928,11 @@ func newOpenAIClientRequestIDTestRequest(
 			ExtraQuery:      nil,
 			ExtraBody:       nil,
 		},
-		Model:              "",
-		ConfiguredModel:    configuredModel,
-		SessionID:          "",
-		PreviousResponseID: "",
-		RequestID:          testOpenAIClientRequestID,
-		Messages:           nil,
+		Model:           "",
+		ConfiguredModel: configuredModel,
+		SessionID:       "",
+		RequestID:       testOpenAIClientRequestID,
+		Messages:        nil,
 	}
 }
 
@@ -1074,7 +1059,7 @@ func assertOpenAIResponsesRequestPayload(t *testing.T, payload map[string]any) {
 	}
 
 	if _, exists := payload["source_attribution"]; exists {
-		t.Fatalf("did not expect xAI-only source attribution: %#v", payload["source_attribution"])
+		t.Fatalf("did not expect request-level source attribution: %#v", payload["source_attribution"])
 	}
 
 	inputPayload, inputOK := payload["input"].([]any)
@@ -1118,7 +1103,7 @@ func assertOpenAIResponsesUserMessage(t *testing.T, rawMessage any) {
 		t.Fatalf("unexpected first user content part: %#v", userContent[0])
 	}
 
-	if firstPart["type"] != xAIResponsesInputTextType ||
+	if firstPart["type"] != responsesInputTextType ||
 		firstPart["text"] != testOpenAIResponsesVisionPrompt {
 		t.Fatalf("unexpected first user content part: %#v", firstPart)
 	}
@@ -1128,7 +1113,7 @@ func assertOpenAIResponsesUserMessage(t *testing.T, rawMessage any) {
 		t.Fatalf("unexpected second user content part: %#v", userContent[1])
 	}
 
-	if secondPart["type"] != xAIResponsesInputImageType {
+	if secondPart["type"] != responsesInputImageType {
 		t.Fatalf("unexpected second user content part: %#v", secondPart)
 	}
 
@@ -1136,7 +1121,7 @@ func assertOpenAIResponsesUserMessage(t *testing.T, rawMessage any) {
 		t.Fatalf("unexpected image_url: %#v", secondPart["image_url"])
 	}
 
-	if secondPart["detail"] != xAIResponsesImageDetailAuto {
+	if secondPart["detail"] != responsesImageDetailAuto {
 		t.Fatalf("unexpected image detail: %#v", secondPart["detail"])
 	}
 }
@@ -1167,12 +1152,11 @@ func TestOpenAIClientStreamChatCompletionSucceedsWithoutDoneIfChoicesSeen(t *tes
 			ExtraQuery:      nil,
 			ExtraBody:       nil,
 		},
-		Model:              "gpt-test",
-		ConfiguredModel:    "9router/unli_free",
-		SessionID:          "",
-		PreviousResponseID: "",
-		RequestID:          "",
-		Messages:           nil,
+		Model:           "gpt-test",
+		ConfiguredModel: "9router/unli_free",
+		SessionID:       "",
+		RequestID:       "",
+		Messages:        nil,
 	}
 
 	var responseText strings.Builder
@@ -1283,12 +1267,11 @@ func runOpenAIClientAuthorizationHeaderFor9RouterSubtest(t *testing.T, testCase 
 			ExtraQuery:      nil,
 			ExtraBody:       nil,
 		},
-		Model:              "gpt-test",
-		ConfiguredModel:    testCase.configuredModel,
-		SessionID:          "",
-		PreviousResponseID: "",
-		RequestID:          "",
-		Messages:           nil,
+		Model:           "gpt-test",
+		ConfiguredModel: testCase.configuredModel,
+		SessionID:       "",
+		RequestID:       "",
+		Messages:        nil,
 	}
 
 	err = client.streamChatCompletion(context.Background(), request, func(_ StreamDelta) error {
@@ -1339,12 +1322,11 @@ func TestOpenAIClientStreamChatCompletionDefaultsServiceTierToPriority(t *testin
 			ExtraQuery:      nil,
 			ExtraBody:       nil,
 		},
-		Model:              "gpt-4o",
-		ConfiguredModel:    "",
-		SessionID:          "",
-		PreviousResponseID: "",
-		RequestID:          "",
-		Messages:           nil,
+		Model:           "gpt-4o",
+		ConfiguredModel: "",
+		SessionID:       "",
+		RequestID:       "",
+		Messages:        nil,
 	}
 
 	err := client.streamChatCompletion(context.Background(), request, func(_ StreamDelta) error {
@@ -1393,12 +1375,11 @@ func TestOpenAIClientStreamChatCompletionPreservesCustomServiceTier(t *testing.T
 				"service_tier": "standard",
 			},
 		},
-		Model:              "gpt-4o",
-		ConfiguredModel:    "",
-		SessionID:          "",
-		PreviousResponseID: "",
-		RequestID:          "",
-		Messages:           nil,
+		Model:           "gpt-4o",
+		ConfiguredModel: "",
+		SessionID:       "",
+		RequestID:       "",
+		Messages:        nil,
 	}
 
 	err := client.streamChatCompletion(context.Background(), request, func(_ StreamDelta) error {
@@ -1481,11 +1462,10 @@ func TestBuildChatCompletionRequestBodyNormalizesImagesForOpenAICompatible(t *te
 			ExtraQuery:      nil,
 			ExtraBody:       nil,
 		},
-		Model:              "anthropic/claude-3.5-sonnet",
-		ConfiguredModel:    "",
-		SessionID:          "",
-		PreviousResponseID: "",
-		RequestID:          "",
+		Model:           "anthropic/claude-3.5-sonnet",
+		ConfiguredModel: "",
+		SessionID:       "",
+		RequestID:       "",
 		Messages: []ChatMessage{
 			{
 				Role: searchtypes.MessageRoleUser,

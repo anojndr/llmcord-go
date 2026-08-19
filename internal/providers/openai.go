@@ -451,7 +451,7 @@ func openAINormalizeContentPart(part ContentPart) (ContentPart, bool) {
 	case string:
 		normalizedPart["image_url"] = map[string]string{
 			searchtypes.MessageURLKey:    typed,
-			searchtypes.MessageDetailKey: xAIResponsesImageDetailAuto,
+			searchtypes.MessageDetailKey: responsesImageDetailAuto,
 		}
 
 		return normalizedPart, true
@@ -459,7 +459,7 @@ func openAINormalizeContentPart(part ContentPart) (ContentPart, bool) {
 	case map[string]string:
 		if _, hasDetail := typed[searchtypes.MessageDetailKey]; !hasDetail {
 			clonedMap := maps.Clone(typed)
-			clonedMap[searchtypes.MessageDetailKey] = xAIResponsesImageDetailAuto
+			clonedMap[searchtypes.MessageDetailKey] = responsesImageDetailAuto
 			normalizedPart["image_url"] = clonedMap
 
 			return normalizedPart, true
@@ -470,7 +470,7 @@ func openAINormalizeContentPart(part ContentPart) (ContentPart, bool) {
 	case map[string]any:
 		if _, hasDetail := typed[searchtypes.MessageDetailKey]; !hasDetail {
 			clonedMap := maps.Clone(typed)
-			clonedMap[searchtypes.MessageDetailKey] = xAIResponsesImageDetailAuto
+			clonedMap[searchtypes.MessageDetailKey] = responsesImageDetailAuto
 			normalizedPart["image_url"] = clonedMap
 
 			return normalizedPart, true
@@ -500,7 +500,7 @@ func openAINormalizeContentPartMap(part map[string]any) (map[string]any, bool) {
 	case string:
 		normalizedPart["image_url"] = map[string]string{
 			searchtypes.MessageURLKey:    typed,
-			searchtypes.MessageDetailKey: xAIResponsesImageDetailAuto,
+			searchtypes.MessageDetailKey: responsesImageDetailAuto,
 		}
 
 		return normalizedPart, true

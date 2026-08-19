@@ -465,7 +465,7 @@ func testMessageNodeSnapshotsWithNULs() map[string]messageNodeSnapshot {
 			URLScanText:              "scan\x00text",
 			GistURL:                  "https://example.com/\x00notes",
 			ProviderResponseID:       "resp-\x00id",
-			ProviderResponseModel:    "x-ai/grok-\x004",
+			ProviderResponseModel:    "openai/gpt-5.\x004",
 			Media:                    testContentPartSnapshotsWithNULs(),
 			SearchMetadata:           testSearchMetadataWithNULs(),
 			HasBadAttachments:        false,

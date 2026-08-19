@@ -438,7 +438,7 @@ func TestBuildResponseEmbedLeavesGeneratedImageURLInDescription(t *testing.T) {
 
 	embed := buildResponseEmbed(
 		"Result.\n\nGenerated image:\n"+testGeneratedImageURL,
-		"x-ai/grok-4",
+		"openai/gpt-5",
 		embedColorComplete,
 		nil,
 		"",
@@ -490,7 +490,7 @@ func testRenderFinalResponseResendsPixelVaultURLsWithoutBreakingReplyHistory(t *
 		sourceMessageID   = "user-message-1"
 		responseID        = "assistant-message-1"
 		pixelVaultReplyID = "assistant-message-2"
-		modelName         = "x-ai/grok-4"
+		modelName         = "openai/gpt-5"
 		followUpText      = "repeat the image link"
 		pixelVaultURL     = "https://img.pixelvault.dev/proj_xyz789/img_abc123.jpg"
 	)
@@ -523,7 +523,7 @@ func testRenderFinalResponseResendsPixelVaultURLsWithoutBreakingReplyHistory(t *
 	instance.nodes = newMessageNodeStore(10)
 
 	tracker := newResponseTracker(sourceMessage, modelName)
-	tracker.providerResponseID = testXAIProviderResponseID
+	tracker.providerResponseID = testProviderResponseID
 
 	accumulator := newSegmentAccumulator(embedResponseMaxLength)
 	_ = accumulator.appendText(answerText)
@@ -551,7 +551,7 @@ func testRenderFinalResponseResendsPixelVaultURLsWithoutBreakingReplyHistory(t *
 		instance.nodes,
 		pixelVaultReplyID,
 		responseID,
-		testXAIProviderResponseID,
+		testProviderResponseID,
 		modelName,
 	)
 	assertPixelVaultReplyConversation(
@@ -745,7 +745,7 @@ func TestEditEmbedMessageLeavesGeneratedImageURLInDescription(t *testing.T) {
 		assertRequestEmbed(
 			t,
 			request,
-			"x-ai/grok-4",
+			"openai/gpt-5",
 			"Result.\n\nGenerated image:\n"+testGeneratedImageURL,
 			"",
 		)
@@ -767,7 +767,7 @@ func TestEditEmbedMessageLeavesGeneratedImageURLInDescription(t *testing.T) {
 
 	embed := buildResponseEmbed(
 		"Result.\n\nGenerated image:\n"+testGeneratedImageURL,
-		"x-ai/grok-4",
+		"openai/gpt-5",
 		embedColorComplete,
 		nil,
 		"",
@@ -1256,252 +1256,6 @@ func TestGenerateAndSendResponseShowsThinkingDuringStreamButNotFinalResponse(t *
 	}
 }
 
-func TestGenerateAndSendResponseDoesNotStreamXAISourceAppendix(t *testing.T) {
-	t.Parallel()
-
-	const (
-		botUserID          = "bot-user"
-		channelID          = "channel-1"
-		userID             = "user-1"
-		sourceMessageID    = "user-message-1"
-		assistantMessageID = "assistant-message-1"
-		answerText         = "Answer paragraph."
-		sourceURL          = "https://example.com/source"
-	)
-
-	sourceMessage := newPromptMessage(sourceMessageID, channelID, userID, botUserID)
-	assistantMessage := newAssistantReplyMessage(
-		assistantMessageID,
-		newDiscordUser(botUserID, true),
-		sourceMessage,
-	)
-
-	messageDescriptions := make([]string, 0, 2)
-	patchDescriptions := make([]string, 0, 2)
-	messageSendCount := 0
-	instance := newXAISourceAppendixStreamingTestBot(
-		t,
-		channelID,
-		botUserID,
-		assistantMessage,
-		&messageDescriptions,
-		&patchDescriptions,
-		&messageSendCount,
-		answerText,
-		sourceURL,
-	)
-
-	request := newResponseXAIStreamingRequest("http://127.0.0.1:8787/v1")
-	tracker := newResponseTracker(sourceMessage, "")
-
-	err := instance.generateAndSendResponse(
-		context.Background(),
-		config{},
-		request,
-		tracker,
-		nil,
-	)
-	if err != nil {
-		t.Fatalf("generate and send response: %v", err)
-	}
-
-	if messageSendCount != 1 {
-		t.Fatalf("unexpected streamed message send count: %d", messageSendCount)
-	}
-
-	if len(messageDescriptions) != 1 {
-		t.Fatalf("unexpected streamed message descriptions: %#v", messageDescriptions)
-	}
-
-	if !containsFold(messageDescriptions[0], answerText) {
-		t.Fatalf("unexpected streamed response body: %q", messageDescriptions[0])
-	}
-
-	if containsFold(messageDescriptions[0], sourceURL) {
-		t.Fatalf("expected streamed response to omit source appendix: %q", messageDescriptions[0])
-	}
-
-	if len(patchDescriptions) != 1 {
-		t.Fatalf("unexpected final patch descriptions: %#v", patchDescriptions)
-	}
-
-	if patchDescriptions[0] != answerText {
-		t.Fatalf("unexpected final response body: %q", patchDescriptions[0])
-	}
-
-	if containsFold(patchDescriptions[0], sourceURL) {
-		t.Fatalf("expected final response to omit source appendix: %q", patchDescriptions[0])
-	}
-
-	assertRenderedDescriptionsHideSources(
-		t,
-		sourceURL,
-		append(messageDescriptions, patchDescriptions...),
-	)
-	assertStoredXAISourceAppendixResponse(t, tracker, answerText, sourceURL)
-}
-
-func TestGenerateAndSendResponseShowsSourcesButtonForNonGrokModelWithBridgeSources(t *testing.T) {
-	t.Parallel()
-
-	const (
-		botUserID          = "bot-user"
-		channelID          = "channel-1"
-		userID             = "user-1"
-		sourceMessageID    = "user-message-1"
-		assistantMessageID = "assistant-message-1"
-		answerText         = "Answer text."
-		sourceURL          = "https://example.com/source"
-	)
-
-	sourceMessage := newPromptMessage(sourceMessageID, channelID, userID, botUserID)
-	assistantMessage := newAssistantReplyMessage(
-		assistantMessageID,
-		newDiscordUser(botUserID, true),
-		sourceMessage,
-	)
-
-	messageDescriptions := make([]string, 0, 2)
-	patchDescriptions := make([]string, 0, 2)
-	messageSendCount := 0
-	instance := newXAISourceAppendixStreamingTestBot(
-		t,
-		channelID,
-		botUserID,
-		assistantMessage,
-		&messageDescriptions,
-		&patchDescriptions,
-		&messageSendCount,
-		answerText,
-		sourceURL,
-	)
-
-	request := chatCompletionRequest{
-		Provider: providerRequestConfig{
-			APIKind:         providers.ProviderAPIKindOpenAI,
-			BaseURL:         "http://127.0.0.1:8787/v1",
-			APIKey:          "test-key",
-			APIKeys:         nil,
-			UseResponsesAPI: true,
-			EnableGrounding: false,
-			ExtraHeaders:    nil,
-			ExtraQuery:      nil,
-			ExtraBody:       nil,
-		},
-		Model:              "deepseek-chat",
-		ConfiguredModel:    "openai/deepseek-chat",
-		SessionID:          "",
-		PreviousResponseID: "",
-		RequestID:          "",
-		Messages:           nil,
-	}
-	tracker := newResponseTracker(sourceMessage, "")
-
-	err := instance.generateAndSendResponse(
-		context.Background(),
-		config{},
-		request,
-		tracker,
-		nil,
-	)
-	if err != nil {
-		t.Fatalf("generate and send response: %v", err)
-	}
-
-	if tracker.searchMetadata == nil {
-		t.Fatal("expected search metadata to be set on tracker for non-grok model")
-	}
-
-	totalSources := countSearchSources(tracker.searchMetadata)
-	if totalSources != 1 {
-		t.Fatalf("expected 1 parsed source for non-grok model, got %d", totalSources)
-	}
-}
-
-func newXAISourceAppendixStreamingTestBot(
-	t *testing.T,
-	channelID string,
-	botUserID string,
-	assistantMessage *discordgo.Message,
-	messageDescriptions *[]string,
-	patchDescriptions *[]string,
-	messageSendCount *int,
-	answerText string,
-	sourceURL string,
-) *bot {
-	t.Helper()
-
-	session := newPartialFailureResponseSession(
-		t,
-		channelID,
-		botUserID,
-		assistantMessage,
-		messageDescriptions,
-		patchDescriptions,
-		messageSendCount,
-	)
-
-	instance := new(bot)
-	instance.session = session
-	instance.nodes = newMessageNodeStore(10)
-	instance.chatCompletions = fakeChatCompletionClient{
-		deltas: []streamDelta{
-			newStreamDelta(answerText, ""),
-			newStreamDelta("\n", ""),
-			newStreamDelta("\n### ", ""),
-			newStreamDelta("Sources:\n1. [Example Source]("+sourceURL+")", ""),
-			newStreamDelta(
-				" (example.com/source) via `latest ai news`\n\nSearch Queries\n1. `latest ai news`\n",
-				"",
-			),
-			newStreamDelta("", finishReasonStop),
-		},
-	}
-
-	return instance
-}
-
-func assertRenderedDescriptionsHideSources(
-	t *testing.T,
-	sourceURL string,
-	descriptions []string,
-) {
-	t.Helper()
-
-	for _, description := range descriptions {
-		if containsFold(description, "Sources") || containsFold(description, sourceURL) {
-			t.Fatalf("expected sources to stay hidden during response rendering: %q", description)
-		}
-	}
-}
-
-func assertStoredXAISourceAppendixResponse(
-	t *testing.T,
-	tracker *responseTracker,
-	answerText string,
-	sourceURL string,
-) {
-	t.Helper()
-
-	if len(tracker.pendingResponses) != 1 {
-		t.Fatalf("unexpected pending response count: %d", len(tracker.pendingResponses))
-	}
-
-	storedNode := tracker.pendingResponses[0].node
-	if storedNode.text != answerText {
-		t.Fatalf("unexpected stored assistant text: %q", storedNode.text)
-	}
-
-	if storedNode.searchMetadata == nil || len(storedNode.searchMetadata.Results) != 1 {
-		t.Fatalf("expected parsed source metadata on stored node: %#v", storedNode.searchMetadata)
-	}
-
-	storedSources := extractSearchSources(storedNode.searchMetadata.Results[0].Text)
-	if len(storedSources) != 1 || storedSources[0].URL != sourceURL {
-		t.Fatalf("unexpected stored source metadata: %#v", storedSources)
-	}
-}
-
 func TestGenerateAndSendResponsePersistsThinkingInConversationHistory(t *testing.T) {
 	t.Parallel()
 
@@ -1958,7 +1712,7 @@ func newTestDiscordMessage(messageID string) *discordgo.Message {
 	return message
 }
 
-const testGeneratedImageURL = "https://assets.grok.com/generated/image.jpg"
+const testGeneratedImageURL = "https://assets.example.com/generated/image.jpg"
 
 func newAssistantReplyMessage(
 	messageID string,
@@ -1975,31 +1729,7 @@ func newAssistantReplyMessage(
 	return message
 }
 
-const testXAIProviderResponseID = "resp_123"
-
-func newResponseXAIStreamingRequest(baseURL string) providers.ChatCompletionRequest {
-	return providers.ChatCompletionRequest{
-		Provider: providers.ProviderRequestConfig{
-			APIKind:         providers.ProviderAPIKindOpenAI,
-			BaseURL:         baseURL,
-			APIKey:          "test-key",
-			APIKeys:         nil,
-			UseResponsesAPI: true,
-			EnableGrounding: false,
-			ExtraHeaders:    nil,
-			ExtraQuery:      nil,
-			ExtraBody:       nil,
-		},
-		Model:              "grok-4",
-		ConfiguredModel:    "x-ai/grok-4",
-		SessionID:          "",
-		PreviousResponseID: "",
-		RequestID:          "",
-		Messages: []providers.ChatMessage{
-			{Role: "user", Content: "hello"},
-		},
-	}
-}
+const testProviderResponseID = "resp_123"
 
 func TestGenerateAndSendResponseFallsBackToStableModelOnFailure(t *testing.T) {
 	t.Parallel()

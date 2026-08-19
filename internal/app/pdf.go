@@ -173,10 +173,6 @@ func canExtractPDFContents(
 		return false, err
 	}
 
-	if providers.XAIConfiguredModel(providerSlashModel) {
-		return false, nil
-	}
-
 	return true, nil
 }
 

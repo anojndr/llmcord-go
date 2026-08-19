@@ -5,8 +5,7 @@ import (
 )
 
 // NodeSnapshot is the slice of a cached message node that provider request
-// assembly needs to walk reply chains (prompt-cache anchors and xAI
-// previous-response continuation).
+// assembly needs to walk reply chains (prompt-cache anchors).
 type NodeSnapshot struct {
 	Role                  string
 	ProviderResponseID    string

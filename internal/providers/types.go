@@ -17,13 +17,12 @@ type ChatMessage struct {
 // ChatCompletionRequest carries everything a provider client needs to stream
 // one completion.
 type ChatCompletionRequest struct {
-	Provider           ProviderRequestConfig
-	Model              string
-	ConfiguredModel    string
-	SessionID          string
-	PreviousResponseID string
-	RequestID          string
-	Messages           []ChatMessage
+	Provider        ProviderRequestConfig
+	Model           string
+	ConfiguredModel string
+	SessionID       string
+	RequestID       string
+	Messages        []ChatMessage
 }
 
 // ProviderRequestConfig is the per-request provider identity and options.

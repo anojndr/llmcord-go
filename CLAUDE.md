@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-`llmcord-go` is a Go Discord bot that turns reply chains into a frontend for LLM chat-completion APIs: OpenAI-compatible providers (Ollama, LM Studio, vLLM, xAI, OpenRouter…) and native Gemini. See README.md for the full feature list and config reference.
+`llmcord-go` is a Go Discord bot that turns reply chains into a frontend for LLM chat-completion APIs: OpenAI-compatible providers (Ollama, LM Studio, vLLM, OpenRouter…) and native Gemini. See README.md for the full feature list and config reference.
 
 ## Standing workflow rules
 
@@ -26,7 +26,7 @@ internal/app          the bot: bot struct, messages, interactions, response, con
                       augmentation, search, scrapers, store, config loading glue
 internal/store        messageNode/messageNodeStore + Postgres persistence
 internal/providers    streaming provider clients (OpenAI-compatible + Responses, Gemini,
-                      xAI/Grok, retries, caching, errors)
+                      retries, caching, errors)
 internal/searchtypes  shared search metadata types, message-part keys, embedded prompt
 internal/support      tiny shared helpers (rune counts, MIME normalization)
 ```
@@ -100,4 +100,4 @@ The router performs no retries and no attempt timeouts except one narrow case: `
 
 - The config struct uses custom YAML unmarshaling (`scalarString`, `idList`, `scalarStringList`) so a YAML scalar or list is accepted for `api_key` and friends; new config fields should follow that pattern.
 - `depguard` blocks new imports — any new dependency must be added to the allowlist in `.golangci.yml`.
-- Attachments and media: text-like files are inlined for providers that can't read raw files; Gemini uploads large images via the Files API; xAI/Grok bridges oversized images through `/v1/files`. Document/video handling lives in `ooxml.go`, `pdf.go`, `media_analysis.go`, `attachment*` (inline_image.go, attachments.go).
+- Attachments and media: text-like files are inlined for providers that can't read raw files; Gemini uploads large images via the Files API. Document/video handling lives in `ooxml.go`, `pdf.go`, `media_analysis.go`, `attachment*` (inline_image.go, attachments.go).
