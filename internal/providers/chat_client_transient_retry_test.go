@@ -394,12 +394,11 @@ func openAIChatCompletionRetryTestRequest(baseURL string) ChatCompletionRequest 
 			ExtraQuery:      nil,
 			ExtraBody:       nil,
 		},
-		Model:              "gpt-test",
-		ConfiguredModel:    "",
-		SessionID:          "",
-		PreviousResponseID: "",
-		RequestID:          "",
-		Messages:           []ChatMessage{{Role: "user", Content: "hello"}},
+		Model:           "gpt-test",
+		ConfiguredModel: "",
+		SessionID:       "",
+		RequestID:       "",
+		Messages:        []ChatMessage{{Role: "user", Content: "hello"}},
 	}
 }
 
@@ -418,11 +417,10 @@ func openAIChatCompletionsRetryTestRequest(baseURL string) ChatCompletionRequest
 			ExtraQuery:      nil,
 			ExtraBody:       nil,
 		},
-		Model:              "gpt-5",
-		ConfiguredModel:    "openai/gpt-5",
-		SessionID:          "",
-		PreviousResponseID: "",
-		RequestID:          "",
+		Model:           "gpt-5",
+		ConfiguredModel: "openai/gpt-5",
+		SessionID:       "",
+		RequestID:       "",
 		Messages: []ChatMessage{
 			{Role: searchtypes.MessageRoleUser, Content: "hello"},
 		},

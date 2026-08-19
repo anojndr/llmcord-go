@@ -74,12 +74,6 @@ func (data Base64ImageDataURL) DecodedLengthEstimate() int {
 	return len(trimmedPayload) * base64DecodedLengthNumerator / base64DecodedLengthDenominator
 }
 
-func base64DecodedLengthEstimate(payload string) int {
-	trimmedPayload := strings.TrimRight(strings.TrimSpace(payload), "=")
-
-	return len(trimmedPayload) * base64DecodedLengthNumerator / base64DecodedLengthDenominator
-}
-
 // Decoder returns a reader over the image payload.
 func (data Base64ImageDataURL) Decoder() io.Reader {
 	return base64.NewDecoder(base64.StdEncoding, strings.NewReader(data.Payload))

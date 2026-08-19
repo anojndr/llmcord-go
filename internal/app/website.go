@@ -84,14 +84,13 @@ func newWebsiteClient(httpClient *http.Client) websiteClient {
 func (instance *bot) prepareWebsiteAugmentation(
 	ctx context.Context,
 	loadedConfig config,
-	providerSlashModel string,
 	urlExtractionText string,
 ) (preparedConversationAugmentation, error) {
 	if instance.website == nil {
 		return emptyPreparedConversationAugmentation(), nil
 	}
 
-	websiteURLs := extractWebsiteURLsForProvider(urlExtractionText, providerSlashModel)
+	websiteURLs := extractWebsiteURLsForProvider(urlExtractionText)
 	if len(websiteURLs) == 0 {
 		return emptyPreparedConversationAugmentation(), nil
 	}
@@ -1487,13 +1486,8 @@ func extractWebsiteURLs(text string) []string {
 	return normalizedURLs
 }
 
-func extractWebsiteURLsForProvider(text string, providerSlashModel string) []string {
-	websiteURLs := extractWebsiteURLs(text)
-	if !providerHandlesGeneralURLsDirectly(providerSlashModel) {
-		return websiteURLs
-	}
-
-	return nil
+func extractWebsiteURLsForProvider(text string) []string {
+	return extractWebsiteURLs(text)
 }
 
 func normalizeWebsiteURL(rawURL string) (string, error) {

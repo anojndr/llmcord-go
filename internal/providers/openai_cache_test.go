@@ -1,6 +1,8 @@
 package providers
 
 import (
+	"reflect"
+
 	searchtypes "llmcord-go/internal/searchtypes"
 	"testing"
 )
@@ -26,8 +28,7 @@ func TestBuildChatCompletionRequestBodySkipsCacheOptionsWithoutSessionID(t *test
 		Messages: []ChatMessage{
 			{Role: searchtypes.MessageRoleUser, Content: "hello"},
 		},
-		PreviousResponseID: "",
-		RequestID:          "",
+		RequestID: "",
 	}
 
 	requestBody := buildChatCompletionRequestBody(request)
@@ -72,8 +73,7 @@ func TestBuildChatCompletionRequestBodySkipsCacheBreakpointWithoutSessionID(t *t
 			{Role: searchtypes.MessageRoleSystem, Content: "You are concise."},
 			{Role: searchtypes.MessageRoleUser, Content: "hello"},
 		},
-		PreviousResponseID: "",
-		RequestID:          "",
+		RequestID: "",
 	}
 
 	requestBody := buildChatCompletionRequestBody(request)
@@ -118,8 +118,7 @@ func TestBuildChatCompletionRequestBodySkipsCacheBreakpointForNonExplicitMode(t 
 			{Role: searchtypes.MessageRoleSystem, Content: "You are concise."},
 			{Role: searchtypes.MessageRoleUser, Content: "hello"},
 		},
-		PreviousResponseID: "",
-		RequestID:          "",
+		RequestID: "",
 	}
 
 	requestBody := buildChatCompletionRequestBody(request)
@@ -160,8 +159,7 @@ func TestBuildChatCompletionRequestBodyAddsCacheOptionsForOpenAIProvider(t *test
 			{Role: searchtypes.MessageRoleSystem, Content: "You are concise."},
 			{Role: searchtypes.MessageRoleUser, Content: "hello"},
 		},
-		PreviousResponseID: "",
-		RequestID:          "",
+		RequestID: "",
 	}
 
 	requestBody := buildChatCompletionRequestBody(request)
@@ -222,8 +220,7 @@ func TestBuildChatCompletionRequestBodyPlacesStablePrefixCacheBreakpoint(t *test
 			{Role: searchtypes.MessageRoleAssistant, Content: "previous answer"},
 			{Role: searchtypes.MessageRoleUser, Content: "hello"},
 		},
-		PreviousResponseID: "",
-		RequestID:          "",
+		RequestID: "",
 	}
 
 	requestBody := buildChatCompletionRequestBody(request)
@@ -277,8 +274,7 @@ func TestBuildChatCompletionRequestBodyExplicitModePlacesBreakpointOnFirstMessag
 		Messages: []ChatMessage{
 			{Role: searchtypes.MessageRoleUser, Content: "hello"},
 		},
-		PreviousResponseID: "",
-		RequestID:          "",
+		RequestID: "",
 	}
 
 	requestBody := buildChatCompletionRequestBody(request)
@@ -339,11 +335,10 @@ func TestBuildChatCompletionRequestBodySkipsCacheOptionsForOtherProviders(t *tes
 					ExtraQuery:      nil,
 					ExtraBody:       nil,
 				},
-				Model:              "gpt-test",
-				ConfiguredModel:    testCase.configuredModel,
-				SessionID:          testOpenAIPromptCacheKey,
-				PreviousResponseID: "",
-				RequestID:          "",
+				Model:           "gpt-test",
+				ConfiguredModel: testCase.configuredModel,
+				SessionID:       testOpenAIPromptCacheKey,
+				RequestID:       "",
 				Messages: []ChatMessage{
 					{Role: searchtypes.MessageRoleUser, Content: "hello"},
 				},
@@ -385,11 +380,10 @@ func TestBuildChatCompletionRequestBodySkipsCacheOptionsForResponsesAPI(t *testi
 			ExtraQuery:      nil,
 			ExtraBody:       nil,
 		},
-		Model:              "gpt-test",
-		ConfiguredModel:    "openai/gpt-test",
-		SessionID:          testOpenAIPromptCacheKey,
-		PreviousResponseID: "",
-		RequestID:          "",
+		Model:           "gpt-test",
+		ConfiguredModel: "openai/gpt-test",
+		SessionID:       testOpenAIPromptCacheKey,
+		RequestID:       "",
 		Messages: []ChatMessage{
 			{Role: searchtypes.MessageRoleUser, Content: "hello"},
 		},
@@ -424,8 +418,7 @@ func TestBuildChatCompletionRequestBodyRewritesSystemRoleForGPT56(t *testing.T) 
 			{Role: searchtypes.MessageRoleSystem, Content: "You are concise."},
 			{Role: searchtypes.MessageRoleUser, Content: "hello"},
 		},
-		PreviousResponseID: "",
-		RequestID:          "",
+		RequestID: "",
 	}
 
 	requestBody := buildChatCompletionRequestBody(request)
@@ -466,8 +459,7 @@ func TestBuildChatCompletionRequestBodyKeepsSystemRoleForOlderModels(t *testing.
 			{Role: searchtypes.MessageRoleSystem, Content: "You are concise."},
 			{Role: searchtypes.MessageRoleUser, Content: "hello"},
 		},
-		PreviousResponseID: "",
-		RequestID:          "",
+		RequestID: "",
 	}
 
 	requestBody := buildChatCompletionRequestBody(request)
@@ -482,7 +474,7 @@ func TestBuildChatCompletionRequestBodyKeepsSystemRoleForOlderModels(t *testing.
 	}
 }
 
-func TestBuildXAIResponsesRequestBodyAddsCacheOptionsForOpenAIProvider(t *testing.T) {
+func TestBuildResponsesRequestBodyAddsCacheOptionsForOpenAIProvider(t *testing.T) {
 	t.Parallel()
 
 	request := ChatCompletionRequest{
@@ -504,13 +496,12 @@ func TestBuildXAIResponsesRequestBodyAddsCacheOptionsForOpenAIProvider(t *testin
 			{Role: searchtypes.MessageRoleSystem, Content: "You are concise."},
 			{Role: searchtypes.MessageRoleUser, Content: "hello"},
 		},
-		PreviousResponseID: "",
-		RequestID:          "",
+		RequestID: "",
 	}
 
-	requestBody, err := buildXAIResponsesRequestBody(request)
+	requestBody, err := buildResponsesRequestBody(request)
 	if err != nil {
-		t.Fatalf("build xAI responses request body: %v", err)
+		t.Fatalf("build responses request body: %v", err)
 	}
 
 	cacheOptions, cacheOptionsOK := requestBody["prompt_cache_options"].(map[string]any)
@@ -532,42 +523,59 @@ func TestBuildXAIResponsesRequestBodyAddsCacheOptionsForOpenAIProvider(t *testin
 	}
 }
 
-func TestBuildXAIResponsesRequestBodySkipsCacheOptionsForXAIModels(t *testing.T) {
+func TestBuildResponsesRequestBodySkipsCacheOptionsForNonOpenAIModels(t *testing.T) {
 	t.Parallel()
 
 	request := ChatCompletionRequest{
 		Provider: ProviderRequestConfig{
 			APIKind:         ProviderAPIKindOpenAI,
-			BaseURL:         "https://api.x.ai/v1",
+			BaseURL:         "https://example.com/v1",
 			APIKey:          "test-key",
 			UseResponsesAPI: true,
 			APIKeys:         nil,
 			EnableGrounding: false,
 			ExtraHeaders:    nil,
 			ExtraQuery:      nil,
-			ExtraBody:       nil,
+			ExtraBody: map[string]any{
+				"prompt_cache_options": map[string]any{
+					"mode": "implicit",
+				},
+			},
 		},
-		Model:           "grok-test",
-		ConfiguredModel: "x-ai/grok-test",
+		Model:           "gpt-test",
+		ConfiguredModel: "compatible/gpt-test",
 		SessionID:       testOpenAIPromptCacheKey,
 		Messages: []ChatMessage{
 			{Role: searchtypes.MessageRoleUser, Content: "hello"},
 		},
-		PreviousResponseID: "",
-		RequestID:          "",
+		RequestID: "",
 	}
 
-	requestBody, err := buildXAIResponsesRequestBody(request)
+	requestBody, err := buildResponsesRequestBody(request)
 	if err != nil {
-		t.Fatalf("build xAI responses request body: %v", err)
+		t.Fatalf("build responses request body: %v", err)
 	}
 
-	if _, exists := requestBody["prompt_cache_options"]; exists {
-		t.Fatalf("unexpected prompt_cache_options for xAI: %#v", requestBody["prompt_cache_options"])
+	// A non-built-in-OpenAI configured model gets no derived caching: no
+	// prompt_cache_key and no cache breakpoint inserted into the input.
+	// (prompt_cache_options in the body would only echo the user's own
+	// extra_body verbatim, so it is not asserted here.)
+	if _, exists := requestBody["prompt_cache_key"]; exists {
+		t.Fatalf("unexpected prompt_cache_key: %#v", requestBody["prompt_cache_key"])
+	}
+
+	input, inputOK := requestBody["input"].([]map[string]any)
+	if !inputOK || len(input) != 1 {
+		t.Fatalf("unexpected input Payload: %#v", requestBody["input"])
+	}
+
+	content, contentOK := input[0]["content"].(string)
+	if !contentOK || content != "hello" {
+		t.Fatalf("expected plain user content without a cache breakpoint: %#v", input[0]["content"])
 	}
 }
 
-func TestXAIResponsesStreamPayloadDeltaMarksCompletedEventTerminal(t *testing.T) {
+func TestResponsesStreamPayloadDeltaMarksCompletedEventTerminal(t *testing.T) {
 	t.Parallel()
 
 	payload := []byte(`{
@@ -586,9 +594,9 @@ func TestXAIResponsesStreamPayloadDeltaMarksCompletedEventTerminal(t *testing.T)
 		}
 	}`)
 
-	_, terminal, err := xAIResponsesStreamPayloadDelta(payload, newXAIResponsesStreamState())
+	_, terminal, err := responsesStreamPayloadDelta(payload, newResponsesStreamState())
 	if err != nil {
-		t.Fatalf("decode xAI responses stream Payload: %v", err)
+		t.Fatalf("decode responses stream Payload: %v", err)
 	}
 
 	if !terminal {
@@ -617,5 +625,85 @@ func TestOpenAIStreamPayloadDeltaContentFields(t *testing.T) {
 
 	if delta.Content != "Hel" {
 		t.Fatalf("unexpected content: %q", delta.Content)
+	}
+}
+
+func TestOpenAIResponsesCacheBreakpointMessagesUncomparableContent(t *testing.T) {
+	t.Parallel()
+
+	// Regression test: when the breakpoint message's Content is a slice
+	// ([]map[string]any or []ContentPart), the breakpoint comparison used to
+	// panic with "runtime error: comparing uncomparable type ...". Slices
+	// that are already fully marked must pass through unchanged instead.
+	messages := []ChatMessage{
+		{Role: searchtypes.MessageRoleUser, Content: "older user"},
+		{Role: searchtypes.MessageRoleAssistant, Content: "assistant turn"},
+		{Role: searchtypes.MessageRoleUser, Content: []map[string]any{
+			{"type": responsesInputTextType, "text": "latest user"},
+			{
+				"type": responsesInputTextType,
+				"text": "second part",
+				openAICacheBreakpointKey: map[string]any{
+					openAICacheOptionsModeKey: openAICacheBreakpointModeExplicit,
+				},
+			},
+		}},
+	}
+
+	assertSameContent := func(t *testing.T, before, after []ChatMessage) {
+		t.Helper()
+
+		if len(before) != len(after) {
+			t.Fatalf(
+				"expected post-breakpoint message count to match input: got %d, want %d",
+				len(after),
+				len(before),
+			)
+		}
+
+		for index := range before {
+			if after[index].Role != before[index].Role {
+				t.Fatalf("message %d role changed: got %q, want %q", index, after[index].Role, before[index].Role)
+			}
+
+			if !reflect.DeepEqual(after[index].Content, before[index].Content) {
+				t.Fatalf("message %d content changed: got %#v, want %#v", index, after[index].Content, before[index].Content)
+			}
+		}
+	}
+
+	// The stable-prefix breakpoint lands on the message after the last
+	// assistant turn, i.e. the tail user slice message. Its last part is
+	// already marked, so the conversion is a pass-through that must not
+	// panic while comparing the uncomparable slice.
+	normalized := openAIResponsesCacheBreakpointMessages(messages)
+	assertSameContent(t, messages, normalized)
+}
+
+func TestOpenAIResponsesCacheBreakpointMessagesThreadsThroughMapSlice(t *testing.T) {
+	t.Parallel()
+
+	// An unmarked tail part gets marked once; the breakpoint is sitting on
+	// the message after the last assistant turn, whose Content is an
+	// uncomparable []map[string]any slice. The comparison must not panic.
+	messages := []ChatMessage{
+		{Role: searchtypes.MessageRoleUser, Content: "older user"},
+		{Role: searchtypes.MessageRoleAssistant, Content: "assistant turn"},
+		{Role: searchtypes.MessageRoleUser, Content: []map[string]any{
+			{"type": responsesInputTextType, "text": "latest user"},
+			{"type": responsesInputTextType, "text": "plain tail"},
+		}},
+	}
+
+	normalized := openAIResponsesCacheBreakpointMessages(messages)
+
+	content, ok := normalized[2].Content.([]map[string]any)
+	if !ok {
+		t.Fatalf("expected []map[string]any content, got %T", normalized[2].Content)
+	}
+
+	lastPart := content[len(content)-1]
+	if _, marked := lastPart[openAICacheBreakpointKey]; !marked {
+		t.Fatal("expected last content part to be marked with a cache breakpoint")
 	}
 }

@@ -324,24 +324,7 @@ func TestExtractWebsiteURLsIgnoresNonURLLogIdentifiers(t *testing.T) {
 	}
 }
 
-func TestExtractWebsiteURLsForProviderSkipsAllURLsForXAIModels(t *testing.T) {
-	t.Parallel()
-
-	text := strings.Join([]string{
-		"https://x.com/example/status/123",
-		"https://twitter.com/example/status/456",
-		"https://t.co/example",
-		"https://example.com/article",
-	}, " ")
-
-	urls := extractWebsiteURLsForProvider(text, "x-ai/grok-4")
-
-	if len(urls) != 0 {
-		t.Fatalf("unexpected urls: %#v", urls)
-	}
-}
-
-func TestExtractWebsiteURLsForProviderKeepsXHostsForNonXAIModels(t *testing.T) {
+func TestExtractWebsiteURLsKeepsXHosts(t *testing.T) {
 	t.Parallel()
 
 	text := strings.Join([]string{
@@ -350,7 +333,7 @@ func TestExtractWebsiteURLsForProviderKeepsXHostsForNonXAIModels(t *testing.T) {
 		"https://t.co/example",
 	}, " ")
 
-	urls := extractWebsiteURLsForProvider(text, "openai/gpt-5")
+	urls := extractWebsiteURLsForProvider(text)
 
 	expected := []string{
 		"https://x.com/example/status/123",
@@ -437,7 +420,6 @@ func TestMaybeAugmentConversationWithWebsiteFetchesMultipleURLsConcurrentlyAndKe
 	prepared, err := instance.prepareWebsiteAugmentation(
 		ctx,
 		testSearchConfig(),
-		"",
 		messageContentText(conversation[0].Content),
 	)
 	if err != nil {
@@ -506,7 +488,6 @@ func TestMaybeAugmentConversationWithWebsiteIgnoresURLsOnlyPresentInDocumentCont
 			prepared, err := instance.prepareWebsiteAugmentation(
 				ctx,
 				testSearchConfig(),
-				"",
 				urlExtractionText,
 			)
 			if err != nil {

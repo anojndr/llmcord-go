@@ -110,17 +110,10 @@ providers:
     # To disable that default for this provider, uncomment:
     # extra_body:
     #   transforms: []
-    # `:online` models (e.g. openrouter/x-ai/grok-4-fast:online) formerly
+    # `:online` models (e.g. openrouter/<vendor>/<model>:online) formerly
     # skipped the web-search decider by name. To keep that behavior, uncomment
     # (this applies to every openrouter model):
     # disable_search_decider: true
-
-  x-ai:
-    base_url: https://api.x.ai/v1
-    api_key: 
-    # x-ai/grok models formerly skipped the web-search decider by name; keep
-    # that behavior explicitly:
-    disable_search_decider: true 
 
   # Local providers:
   lmstudio:
@@ -138,8 +131,6 @@ models:
   openai/gpt-5.4:
   openai/gpt-5.4-low:
   openai/gpt-5.4-high:
-
-  openrouter/x-ai/grok-4-fast:online:
 
   ollama/llama4:
 

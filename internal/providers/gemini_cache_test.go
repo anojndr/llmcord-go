@@ -578,12 +578,11 @@ func TestGeminiCacheDisplayNameFallsBack(t *testing.T) {
 			ExtraQuery:      nil,
 			ExtraBody:       nil,
 		},
-		Model:              "",
-		ConfiguredModel:    "",
-		SessionID:          "",
-		PreviousResponseID: "",
-		RequestID:          "",
-		Messages:           nil,
+		Model:           "",
+		ConfiguredModel: "",
+		SessionID:       "",
+		RequestID:       "",
+		Messages:        nil,
 	}); displayName != "llmcord-go" {
 		t.Fatalf("unexpected fallback display name: %q", displayName)
 	}
