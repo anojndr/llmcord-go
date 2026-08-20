@@ -227,9 +227,23 @@ func (instance *bot) runGenerationAttempt(
 		finishReason = providers.OpenAIStreamErrorEventType
 	}
 
-	cleanedAnswerText := streamState.rawAnswerText
+	finalAnswerText := streamState.rawAnswerText
+	cleanedAnswerText, parsedSearchMetadata := providers.FinalizeBridgeSourceAppendixAnswer(
+		finalAnswerText,
+		tracker.searchMetadata,
+	)
+
+	if parsedSearchMetadata != nil {
+		tracker.searchMetadata = searchtypes.MergeSearchMetadata(tracker.searchMetadata, parsedSearchMetadata)
+	}
 
 	finalAccumulator := accumulator
+
+	if cleanedAnswerText != finalAnswerText {
+		finalAccumulator = newSegmentAccumulator(embedResponseMaxLength)
+
+		_ = finalAccumulator.appendText(cleanedAnswerText)
+	}
 
 	responseErr := instance.renderFinalResponse(
 		ctx,
@@ -249,7 +263,7 @@ func (instance *bot) runGenerationAttempt(
 		responseErr = errEmptyModelResponse
 	}
 
-	return cleanedAnswerText, thinkingAccumulator.joined(), nil, responseErr
+	return cleanedAnswerText, thinkingAccumulator.joined(), parsedSearchMetadata, responseErr
 }
 
 func (instance *bot) generateAndSendResponse(
@@ -431,7 +445,7 @@ func (instance *bot) handleGeneratedStreamDelta(
 func (state *generatedStreamState) appendAnswerText(answerDelta string) (bool, error) {
 	state.rawAnswerText += answerDelta
 
-	visibleAnswerText := state.rawAnswerText
+	visibleAnswerText := providers.StreamingBridgeSourceAppendixVisibleText(state.rawAnswerText)
 	if !strings.HasPrefix(visibleAnswerText, state.renderedAnswerText) {
 		return false, errStreamedAnswerVisibilityRegressed
 	}
