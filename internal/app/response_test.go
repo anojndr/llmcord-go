@@ -1110,6 +1110,380 @@ var errPartialStreamFailure = errors.New("partial stream failure")
 
 var errUnexpectedTestRequest = errors.New("unexpected test request")
 
+func TestGenerateAndSendResponseRetriesPrematureStreamUntilFinishReason(t *testing.T) {
+	t.Parallel()
+
+	const (
+		botUserID          = "bot-user"
+		channelID          = "channel-1"
+		userID             = "user-1"
+		sourceMessageID    = "user-message-1"
+		assistantMessageID = "assistant-message-1"
+		prematureText      = "truncated repl"
+		finalText          = "full completed reply"
+	)
+
+	sourceMessage := newPromptMessage(sourceMessageID, channelID, userID, botUserID)
+	assistantMessage := newAssistantReplyMessage(
+		assistantMessageID,
+		newDiscordUser(botUserID, true),
+		sourceMessage,
+	)
+
+	messageDescriptions := make([]string, 0, 1)
+	patchDescriptions := make([]string, 0, 6)
+	messageSendCount := 0
+	session := newPartialFailureResponseSession(
+		t,
+		channelID,
+		botUserID,
+		assistantMessage,
+		&messageDescriptions,
+		&patchDescriptions,
+		&messageSendCount,
+	)
+
+	streamCalls := 0
+	instance := newPrematureStreamResponseBot(session, func(_ chatCompletionRequest, handle func(streamDelta) error) error {
+		streamCalls++
+
+		if streamCalls <= 2 {
+			return handle(newStreamDelta(prematureText, ""))
+		}
+
+		return handle(newStreamDelta(finalText, finishReasonStop))
+	})
+
+	err := instance.generateAndSendResponse(
+		context.Background(),
+		config{},
+		chatCompletionRequest{},
+		newResponseTracker(sourceMessage, ""),
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("generate and send response: %v", err)
+	}
+
+	if streamCalls != 3 {
+		t.Fatalf("unexpected stream call count: %d", streamCalls)
+	}
+
+	if messageSendCount != 1 {
+		t.Fatalf("unexpected message send count: %d", messageSendCount)
+	}
+
+	if len(patchDescriptions) == 0 {
+		t.Fatal("expected final response patch")
+	}
+
+	lastPatch := patchDescriptions[len(patchDescriptions)-1]
+	if containsFold(lastPatch, prematureText) {
+		t.Fatalf("retry duplicated truncated text in final patch: %q", lastPatch)
+	}
+
+	if !containsFold(lastPatch, finalText) {
+		t.Fatalf("unexpected final response patch: %q", lastPatch)
+	}
+}
+
+func TestGenerateAndSendResponseExhaustsPrematureStreamRetries(t *testing.T) {
+	t.Parallel()
+
+	const (
+		botUserID          = "bot-user"
+		channelID          = "channel-1"
+		userID             = "user-1"
+		sourceMessageID    = "user-message-1"
+		assistantMessageID = "assistant-message-1"
+		prematureText      = "truncated reply"
+	)
+
+	sourceMessage := newPromptMessage(sourceMessageID, channelID, userID, botUserID)
+	assistantMessage := newAssistantReplyMessage(
+		assistantMessageID,
+		newDiscordUser(botUserID, true),
+		sourceMessage,
+	)
+
+	messageDescriptions := make([]string, 0, 1)
+	patchDescriptions := make([]string, 0, 8)
+	messageSendCount := 0
+	session := newPartialFailureResponseSession(
+		t,
+		channelID,
+		botUserID,
+		assistantMessage,
+		&messageDescriptions,
+		&patchDescriptions,
+		&messageSendCount,
+	)
+
+	streamCalls := 0
+	instance := newPrematureStreamResponseBot(session, func(_ chatCompletionRequest, handle func(streamDelta) error) error {
+		streamCalls++
+
+		return handle(newStreamDelta(prematureText, ""))
+	})
+
+	err := instance.generateAndSendResponse(
+		context.Background(),
+		config{},
+		chatCompletionRequest{},
+		newResponseTracker(sourceMessage, ""),
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("generate and send response: %v", err)
+	}
+
+	if streamCalls != prematureStreamRetryMaxAttempts {
+		t.Fatalf("unexpected stream call count: %d", streamCalls)
+	}
+
+	if messageSendCount != 1 {
+		t.Fatalf("unexpected message send count: %d", messageSendCount)
+	}
+
+	if len(patchDescriptions) == 0 {
+		t.Fatal("expected truncated response patch")
+	}
+
+	lastPatch := patchDescriptions[len(patchDescriptions)-1]
+	if !containsFold(lastPatch, prematureText) {
+		t.Fatalf("unexpected final response patch: %q", lastPatch)
+	}
+}
+
+func TestGenerateAndSendResponseRetriesPrematureStreamOnFallbackModel(t *testing.T) {
+	t.Parallel()
+
+	const (
+		botUserID          = "bot-user"
+		channelID          = "channel-1"
+		userID             = "user-1"
+		sourceMessageID    = "user-message-1"
+		assistantMessageID = "assistant-message-1"
+		primaryModel       = "gemini-search/gemini-3.7-flash-medium:vision"
+		fallbackModel      = "9router/stable_model:vision"
+		prematureText      = "fallback truncated reply"
+	)
+
+	sourceMessage := newPromptMessage(sourceMessageID, channelID, userID, botUserID)
+	assistantMessage := newAssistantReplyMessage(
+		assistantMessageID,
+		newDiscordUser(botUserID, true),
+		sourceMessage,
+	)
+
+	messageDescriptions := make([]string, 0, 1)
+	patchDescriptions := make([]string, 0, 8)
+	messageSendCount := 0
+	session := newPartialFailureResponseSession(
+		t,
+		channelID,
+		botUserID,
+		assistantMessage,
+		&messageDescriptions,
+		&patchDescriptions,
+		&messageSendCount,
+	)
+
+	attemptedModels := make([]string, 0, prematureStreamRetryMaxAttempts+1)
+	instance := newPrematureStreamResponseBot(session, func(request chatCompletionRequest, handle func(streamDelta) error) error {
+		attemptedModels = append(attemptedModels, request.ConfiguredModel)
+
+		if request.ConfiguredModel != fallbackModel {
+			return errors.New("upstream primary model overloaded 503")
+		}
+
+		return handle(newStreamDelta(prematureText, ""))
+	})
+
+	loadedConfig := config{
+		Providers: map[string]providerConfig{
+			"gemini-search": {
+				Name: "gemini-search",
+			},
+			"9router": {
+				Name:    "9router",
+				BaseURL: "http://localhost:20128/v1",
+			},
+		},
+		Models: map[string]map[string]any{
+			primaryModel:  nil,
+			fallbackModel: nil,
+		},
+		FallbackModel: fallbackModel,
+	}
+
+	request := chatCompletionRequest{
+		ConfiguredModel: primaryModel,
+		Messages: []chatMessage{
+			{Role: messageRoleUser, Content: "Hello"},
+		},
+	}
+	tracker := newResponseTracker(sourceMessage, request.ConfiguredModel)
+	// The fallback path would otherwise consult an unconfigured decider.
+	tracker.webSearchDecided = true
+
+	err := instance.generateAndSendResponse(
+		context.Background(),
+		loadedConfig,
+		request,
+		tracker,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("generate and send response: %v", err)
+	}
+
+	if len(attemptedModels) != prematureStreamRetryMaxAttempts+1 {
+		t.Fatalf("unexpected attempted model count: %v", attemptedModels)
+	}
+
+	if attemptedModels[0] != primaryModel {
+		t.Fatalf("unexpected first attempted model: %q", attemptedModels[0])
+	}
+
+	for _, attemptedModel := range attemptedModels[1:] {
+		if attemptedModel != fallbackModel {
+			t.Fatalf("unexpected retried model: %v", attemptedModels)
+		}
+	}
+
+	if len(patchDescriptions) == 0 {
+		t.Fatal("expected truncated fallback response patch")
+	}
+
+	lastPatch := patchDescriptions[len(patchDescriptions)-1]
+	if !containsFold(lastPatch, prematureText) {
+		t.Fatalf("unexpected final response patch: %q", lastPatch)
+	}
+}
+
+func TestRenderFinalResponseSkipsDuplicatePixelVaultURLRepliesAcrossAttempts(t *testing.T) {
+	t.Parallel()
+
+	const (
+		botUserID         = "bot-user"
+		channelID         = "channel-1"
+		userID            = "user-1"
+		sourceMessageID   = "user-message-1"
+		responseID        = "assistant-message-1"
+		pixelVaultReplyID = "assistant-message-2"
+		modelName         = "openai/gpt-5"
+		pixelVaultURL     = "https://img.pixelvault.dev/proj_xyz789/img_abc123.jpg"
+	)
+
+	answerText := "Result.\n\nGenerated image:\n" +
+		"[https://img.pixelvault.dev/proj_xyz789/img_abc123.jpg](https://img.pixelvault.dev/proj_xyz789/img_abc123.jpg)"
+
+	sourceMessage := newPromptMessage(sourceMessageID, channelID, userID, botUserID)
+	responseMessage := newAssistantReplyMessage(
+		responseID,
+		newDiscordUser(botUserID, true),
+		sourceMessage,
+	)
+	pixelVaultReplyMessage := newAssistantReplyMessage(
+		pixelVaultReplyID,
+		newDiscordUser(botUserID, true),
+		responseMessage,
+	)
+
+	urlReplyCount := 0
+
+	session, sessionErr := discordgo.New("Bot discord-token")
+	if sessionErr != nil {
+		t.Fatalf("create discord session: %v", sessionErr)
+	}
+
+	session.State.User = newDiscordUser(botUserID, true)
+
+	channel := new(discordgo.Channel)
+	channel.ID = channelID
+	channel.Type = discordgo.ChannelTypeDM
+
+	if err := session.State.ChannelAdd(channel); err != nil {
+		t.Fatalf("add channel to state: %v", err)
+	}
+
+	session.Client = &http.Client{Transport: roundTripFunc(func(
+		request *http.Request,
+	) (*http.Response, error) {
+		t.Helper()
+
+		bodyBytes, err := io.ReadAll(request.Body)
+		if err != nil {
+			t.Fatalf("read request body: %v", err)
+		}
+
+		var payload map[string]any
+		if err := json.Unmarshal(bodyBytes, &payload); err != nil {
+			t.Fatalf("decode request payload: %v", err)
+		}
+
+		if content, contentOK := payload["content"].(string); contentOK && containsFold(content, pixelVaultURL) {
+			urlReplyCount++
+
+			return newJSONResponse(t, request, pixelVaultReplyMessage), nil
+		}
+
+		return newJSONResponse(t, request, responseMessage), nil
+	})}
+
+	instance := new(bot)
+	instance.session = session
+	instance.nodes = newMessageNodeStore(10)
+
+	tracker := newResponseTracker(sourceMessage, modelName)
+
+	accumulator := newSegmentAccumulator(embedResponseMaxLength)
+	_ = accumulator.appendText(answerText)
+
+	// Two attempts finalize over the same tracker, mirroring a premature
+	// stream close followed by a retry that completes with the same URL.
+	for attempt := 0; attempt < 2; attempt++ {
+		err := instance.renderFinalResponse(
+			context.Background(),
+			tracker,
+			nil,
+			&accumulator,
+			"",
+			finishReasonStop,
+		)
+		if err != nil {
+			t.Fatalf("render final response attempt %d: %v", attempt+1, err)
+		}
+	}
+
+	if urlReplyCount != 1 {
+		t.Fatalf("unexpected pixelVault url reply count: %d", urlReplyCount)
+	}
+}
+
+// newPrematureStreamResponseBot builds a bot whose chat completion streamer
+// invokes stream for every attempt, so tests can count attempts, inspect the
+// requested model, and decide per attempt whether the stream closes
+// prematurely or completes.
+func newPrematureStreamResponseBot(
+	session *discordgo.Session,
+	stream func(request chatCompletionRequest, handle func(streamDelta) error) error,
+) *bot {
+	instance := new(bot)
+	instance.session = session
+	instance.nodes = newMessageNodeStore(10)
+	instance.chatCompletions = newStubChatClient(func(
+		_ context.Context,
+		request chatCompletionRequest,
+		handle func(streamDelta) error,
+	) error {
+		return stream(request, handle)
+	})
+
+	return instance
+}
+
 func TestGenerateAndSendResponseKeepsAssistantReplyInConversationHistory(t *testing.T) {
 	t.Parallel()
 
@@ -2164,7 +2538,7 @@ func TestGenerateAndSendResponseFallsBackToStableModelOnFailure(t *testing.T) {
 		}
 
 		if req.ConfiguredModel == "9router/stable_model:vision" {
-			_ = handle(newStreamDelta(fallbackReplyText, ""))
+			_ = handle(newStreamDelta(fallbackReplyText, finishReasonStop))
 
 			return nil
 		}

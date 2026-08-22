@@ -37,17 +37,18 @@ type pendingResponse struct {
 }
 
 type responseTracker struct {
-	sourceMessage      *discordgo.Message
-	searchMetadata     *searchMetadata
-	modelName          string
-	originalModel      string
-	providerResponseID string
-	responseMessages   []*discordgo.Message
-	pendingResponses   []pendingResponse
-	renderedSpecs      []renderSpec
-	progressActive     bool
-	responseVisible    bool
-	originalMessages   []chatMessage
+	sourceMessage         *discordgo.Message
+	searchMetadata        *searchMetadata
+	modelName             string
+	originalModel         string
+	providerResponseID    string
+	responseMessages      []*discordgo.Message
+	pendingResponses      []pendingResponse
+	renderedSpecs         []renderSpec
+	pixelVaultRepliedURLs map[string]struct{}
+	progressActive        bool
+	responseVisible       bool
+	originalMessages      []chatMessage
 	// webSearchDecided records whether the primary preparation already ran
 	// the search-decider stage for its provider. When it did not (decider
 	// disabled or grounding enabled for the primary provider), the fallback
@@ -201,7 +202,7 @@ func (instance *bot) runGenerationAttempt(
 	request chatCompletionRequest,
 	tracker *responseTracker,
 	warnings []string,
-) (string, string, *searchMetadata, error) {
+) (string, string, *searchMetadata, string, error) {
 	accumulator := newSegmentAccumulator(embedResponseMaxLength)
 	thinkingAccumulator := newSegmentAccumulator(embedResponseMaxLength)
 
@@ -268,7 +269,76 @@ func (instance *bot) runGenerationAttempt(
 		responseErr = errEmptyModelResponse
 	}
 
-	return cleanedAnswerText, thinkingAccumulator.joined(), parsedSearchMetadata, responseErr
+	return cleanedAnswerText, thinkingAccumulator.joined(), parsedSearchMetadata, finishReason, responseErr
+}
+
+// runGenerationAttemptWithRetry wraps runGenerationAttempt with a bounded
+// same-model retry for streams that end without delivering a finish reason:
+// the provider closed the stream mid-response, the partial text renders as an
+// incomplete message, and nothing else surfaces the failure. Each retry runs
+// with fresh accumulators and re-renders over the tracker's existing messages
+// in place, so a truncated reply is replaced rather than duplicated, and
+// auxiliary PixelVault url replies are claimed once per response. Up to
+// prematureStreamRetryMaxAttempts streams are attempted in total; exhausted
+// retries keep the existing behavior of releasing the truncated reply.
+func (instance *bot) runGenerationAttemptWithRetry(
+	ctx context.Context,
+	request chatCompletionRequest,
+	tracker *responseTracker,
+	warnings []string,
+) (string, string, *searchMetadata, error) {
+	cleanedText, thinkingText, metadata, finishReason, attemptErr := instance.runGenerationAttempt(
+		ctx,
+		request,
+		tracker,
+		warnings,
+	)
+
+	for attempt := 2; attemptErr == nil && finishReason == "" && attempt <= prematureStreamRetryMaxAttempts; attempt++ {
+		logWarn(
+			"stream ended without finish reason; retrying generation",
+			nil,
+			"attempt",
+			attempt,
+			"max_attempts",
+			prematureStreamRetryMaxAttempts,
+		)
+
+		sleepErr := sleepPrematureStreamRetry(ctx, prematureStreamRetryFixedDelay)
+		if sleepErr != nil {
+			return cleanedText, thinkingText, metadata, sleepErr
+		}
+
+		cleanedText, thinkingText, metadata, finishReason, attemptErr = instance.runGenerationAttempt(
+			ctx,
+			request,
+			tracker,
+			warnings,
+		)
+	}
+
+	if attemptErr == nil && finishReason == "" {
+		logWarn(
+			"stream kept ending without finish reason; giving up",
+			nil,
+			"max_attempts",
+			prematureStreamRetryMaxAttempts,
+		)
+	}
+
+	return cleanedText, thinkingText, metadata, attemptErr
+}
+
+func sleepPrematureStreamRetry(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return fmt.Errorf("wait for generation retry: %w", ctx.Err())
+	case <-timer.C:
+		return nil
+	}
 }
 
 func (instance *bot) generateAndSendResponse(
@@ -280,7 +350,7 @@ func (instance *bot) generateAndSendResponse(
 ) error {
 	tracker.modelName = strings.TrimSpace(request.ConfiguredModel)
 
-	cleanedText, thinkingText, _, responseErr := instance.runGenerationAttempt(
+	cleanedText, thinkingText, _, responseErr := instance.runGenerationAttemptWithRetry(
 		ctx,
 		request,
 		tracker,
@@ -326,7 +396,7 @@ func (instance *bot) generateAndSendResponse(
 				fallbackSearchWarnings...,
 			)
 
-			fallbackCleanedText, fallbackThinkingText, _, fallbackErr := instance.runGenerationAttempt(
+			fallbackCleanedText, fallbackThinkingText, _, fallbackErr := instance.runGenerationAttemptWithRetry(
 				ctx,
 				fallbackRequest,
 				tracker,
@@ -921,6 +991,33 @@ func contentBatchesForLines(lines []string, maxLength int) []string {
 	return batches
 }
 
+// unrepliedPixelVaultURLs filters urls down to those this response has not
+// replied with yet and claims them on the tracker, so a retried generation
+// attempt never re-posts duplicate PixelVault url replies.
+func unrepliedPixelVaultURLs(tracker *responseTracker, urls []string) []string {
+	if len(urls) == 0 {
+		return urls
+	}
+
+	if tracker.pixelVaultRepliedURLs == nil {
+		tracker.pixelVaultRepliedURLs = make(map[string]struct{}, len(urls))
+	}
+
+	unreplied := make([]string, 0, len(urls))
+
+	for _, url := range urls {
+		if _, replied := tracker.pixelVaultRepliedURLs[url]; replied {
+			continue
+		}
+
+		tracker.pixelVaultRepliedURLs[url] = struct{}{}
+
+		unreplied = append(unreplied, url)
+	}
+
+	return unreplied
+}
+
 func (instance *bot) sendPixelVaultURLReplies(tracker *responseTracker, answerText string) {
 	if instance == nil || instance.session == nil || tracker == nil || len(tracker.responseMessages) == 0 {
 		return
@@ -928,13 +1025,15 @@ func (instance *bot) sendPixelVaultURLReplies(tracker *responseTracker, answerTe
 
 	responseMessage := tracker.responseMessages[len(tracker.responseMessages)-1]
 
-	replyBatches := contentBatchesForLines(
-		pixelVaultResponseURLs(answerText),
-		discordMessageContentMaxLength,
-	)
-	if len(replyBatches) == 0 {
+	replyURLs := unrepliedPixelVaultURLs(tracker, pixelVaultResponseURLs(answerText))
+	if len(replyURLs) == 0 {
 		return
 	}
+
+	replyBatches := contentBatchesForLines(
+		replyURLs,
+		discordMessageContentMaxLength,
+	)
 
 	for _, replyBatch := range replyBatches {
 		send := newReplyMessage(responseMessage)
