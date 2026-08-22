@@ -171,8 +171,8 @@ func TestChatCompletionRouterExhaustsTransientStreamRetries(t *testing.T) {
 		t.Fatal("expected exhausted retries to fail")
 	}
 
-	if attempts.Load() != 2 {
-		t.Fatalf("attempts = %d, want 2 (retry budget exhausted)", attempts.Load())
+	if attempts.Load() != transientRetryMaxAttempts {
+		t.Fatalf("attempts = %d, want %d (retry budget exhausted)", attempts.Load(), transientRetryMaxAttempts)
 	}
 
 	if !errors.Is(err, io.ErrUnexpectedEOF) {
@@ -320,8 +320,8 @@ func TestChatCompletionRouterExhaustsEmptyModelResponseRetries(t *testing.T) {
 		t.Fatalf("expected ErrEmptyModelResponse, got: %v", err)
 	}
 
-	if attempts.Load() != 2 {
-		t.Fatalf("attempts = %d, want 2 (empty retry budget exhausted)", attempts.Load())
+	if attempts.Load() != transientRetryMaxAttempts {
+		t.Fatalf("attempts = %d, want %d (empty retry budget exhausted)", attempts.Load(), transientRetryMaxAttempts)
 	}
 }
 
