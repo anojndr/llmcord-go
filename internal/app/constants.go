@@ -97,6 +97,8 @@ const (
 	messageRoleAssistant                          = "assistant"
 	finishReasonStop                              = "stop"
 	finishReasonLength                            = "length"
+	prematureStreamRetryMaxAttempts               = 5
+	prematureStreamRetryFixedDelay                = 1 * time.Second
 	externalRequestConcurrency                    = 8
 	discordReconnectEnvVarName                    = "LLMCORD_RECONNECT"
 	DefaultConfigPath                             = "config.yaml"
