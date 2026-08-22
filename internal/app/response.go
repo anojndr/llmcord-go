@@ -48,6 +48,11 @@ type responseTracker struct {
 	progressActive     bool
 	responseVisible    bool
 	originalMessages   []chatMessage
+	// webSearchDecided records whether the primary preparation already ran
+	// the search-decider stage for its provider. When it did not (decider
+	// disabled or grounding enabled for the primary provider), the fallback
+	// attempt runs its own web-search decision.
+	webSearchDecided bool
 }
 
 const (
@@ -295,7 +300,8 @@ func (instance *bot) generateAndSendResponse(
 	if fallbackModel != "" &&
 		fallbackModel != strings.TrimSpace(request.ConfiguredModel) &&
 		loadedConfig.hasModel(fallbackModel) {
-		fallbackRequest, buildErr := instance.buildFallbackRequest(
+		fallbackRequest, fallbackSearchWarnings, buildErr := instance.buildFallbackRequest(
+			ctx,
 			loadedConfig,
 			fallbackModel,
 			request,
@@ -315,7 +321,10 @@ func (instance *bot) generateAndSendResponse(
 			tracker.providerResponseID = ""
 			tracker.renderedSpecs = nil
 
-			fallbackWarnings := appendFallbackWarning(warnings, fallbackModel)
+			fallbackWarnings := append(
+				appendFallbackWarning(warnings, fallbackModel),
+				fallbackSearchWarnings...,
+			)
 
 			fallbackCleanedText, fallbackThinkingText, _, fallbackErr := instance.runGenerationAttempt(
 				ctx,

@@ -314,28 +314,52 @@ func (instance *bot) prepareMessageResponse(
 	tracker := progress.handoff(request.ConfiguredModel, searchMetadata)
 	if tracker != nil {
 		tracker.originalMessages = unmutatedMessages
+		tracker.webSearchDecided = !provider.DisableSearchDecider &&
+			!instance.currentGroundingEnabled(provider)
 	}
 
 	return request, tracker, warnings, nil
 }
 
 func (instance *bot) buildFallbackRequest(
+	ctx context.Context,
 	loadedConfig config,
 	fallbackModel string,
 	request chatCompletionRequest,
 	tracker *responseTracker,
-) (chatCompletionRequest, error) {
+) (chatCompletionRequest, []string, error) {
 	fallbackProvider, err := configuredModelProvider(loadedConfig, fallbackModel)
 	if err != nil {
-		return chatCompletionRequest{}, err
+		return chatCompletionRequest{}, nil, err
 	}
 
 	messages := request.Messages
-	if tracker != nil && len(tracker.originalMessages) > 0 {
+
+	usingOriginalMessages := tracker != nil && len(tracker.originalMessages) > 0
+	if usingOriginalMessages {
 		messages = tracker.originalMessages
-		if !fallbackProvider.DontSendSystemPrompt {
-			messages = prependSystemPrompt(messages, loadedConfig.SystemPrompt, time.Now())
-		}
+	}
+
+	var searchWarnings []string
+	if tracker != nil &&
+		tracker.sourceMessage != nil &&
+		!tracker.webSearchDecided &&
+		!instance.currentGroundingEnabled(fallbackProvider) {
+		augmentedMessages, webSearchMetadata, warnings := instance.maybeAugmentConversationWithWebSearch(
+			ctx,
+			loadedConfig,
+			fallbackModel,
+			tracker.sourceMessage,
+			messages,
+		)
+
+		searchWarnings = warnings
+		messages = augmentedMessages
+		tracker.searchMetadata = mergeSearchMetadata(tracker.searchMetadata, webSearchMetadata)
+	}
+
+	if usingOriginalMessages && !fallbackProvider.DontSendSystemPrompt {
+		messages = prependSystemPrompt(messages, loadedConfig.SystemPrompt, time.Now())
 	}
 
 	fallbackRequest, err := buildChatCompletionRequest(
@@ -345,7 +369,7 @@ func (instance *bot) buildFallbackRequest(
 		instance.currentGroundingEnabled(fallbackProvider),
 	)
 	if err != nil {
-		return chatCompletionRequest{}, err
+		return chatCompletionRequest{}, nil, err
 	}
 
 	fallbackRequest.RequestID = request.RequestID
@@ -359,7 +383,7 @@ func (instance *bot) buildFallbackRequest(
 		)
 	}
 
-	return fallbackRequest, nil
+	return fallbackRequest, searchWarnings, nil
 }
 
 func fallbackAttachmentDownloadConversation(
