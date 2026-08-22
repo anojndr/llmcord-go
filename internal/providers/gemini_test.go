@@ -1765,8 +1765,8 @@ func TestGeminiClientExhaustsStreamInterruptedRetries(t *testing.T) {
 		t.Fatal("expected exhausted gemini transient retries to fail")
 	}
 
-	if calls.Load() != 2 {
-		t.Fatalf("gemini calls = %d, want 2 (retry budget exhausted)", calls.Load())
+	if calls.Load() != transientRetryMaxAttempts {
+		t.Fatalf("gemini calls = %d, want %d (retry budget exhausted)", calls.Load(), transientRetryMaxAttempts)
 	}
 
 	if !containsFold(err.Error(), "Stream interrupted") {
@@ -2002,8 +2002,8 @@ func TestGeminiClientExhausts503DeadlineExpiredRetries(t *testing.T) {
 		t.Fatal("expected persistent 503 error to fail")
 	}
 
-	if calls.Load() != 2 {
-		t.Fatalf("gemini calls = %d, want 2 (retry budget exhausted)", calls.Load())
+	if calls.Load() != transientRetryMaxAttempts {
+		t.Fatalf("gemini calls = %d, want %d (retry budget exhausted)", calls.Load(), transientRetryMaxAttempts)
 	}
 
 	if !containsFold(err.Error(), "Deadline expired") {

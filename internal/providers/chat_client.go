@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	queueFullRetryMaxAttempts = 2
+	queueFullRetryMaxAttempts = 5
 	queueFullRetryFixedDelay  = 3 * time.Second
 
 	// transientRetryMaxAttempts bounds re-sends for streams that fail without
@@ -22,7 +22,7 @@ const (
 	// interruptions, and clean-but-empty model responses. Once any content
 	// has been delivered a stream is never re-sent, so a partial reply is
 	// never duplicated.
-	transientRetryMaxAttempts = 2
+	transientRetryMaxAttempts = 5
 	transientRetryFixedDelay  = 1 * time.Second
 )
 
@@ -75,8 +75,8 @@ func (client ChatCompletionRouter) StreamChatCompletion(
 		}
 
 		// A clean-but-empty stream is an empty model response, classified as a
-		// transient retry: it is re-sent once before being surfaced as
-		// ErrEmptyModelResponse.
+		// transient retry: it is re-sent under the transient retry budget
+		// before being surfaced as ErrEmptyModelResponse.
 		retry := streamRetryAction(err)
 		if retry.giveUp {
 			if err == nil {
