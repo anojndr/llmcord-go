@@ -56,14 +56,18 @@ func TestRequestProgressHandoffDrainsPendingStageUpdates(t *testing.T) {
 		messageID = "prog-1"
 	)
 
-	patchCount := 0
+	patchDescriptions := make([]string, 0, 4)
+
 	session := newDirectMessageTestSession(t, channelID, botUserID, roundTripFunc(func(
 		request *http.Request,
 	) (*http.Response, error) {
 		t.Helper()
 
 		if request.Method == http.MethodPatch {
-			patchCount++
+			patchDescriptions = append(
+				patchDescriptions,
+				requestEmbedDescription(t, request),
+			)
 
 			patchMsg := new(discordgo.Message)
 			patchMsg.ID = messageID
@@ -87,13 +91,14 @@ func TestRequestProgressHandoffDrainsPendingStageUpdates(t *testing.T) {
 	progressMsg.ID = messageID
 	progressMsg.ChannelID = channelID
 
-	progress := new(requestProgress)
-	progress.instance = instance
-	progress.tracker = newResponseTracker(sourceMessage, "model-1")
-	progress.stageUpdates = make(chan requestProgressStage, 1)
-	progress.handoffs = make(chan requestProgressHandoff)
-	progress.failures = make(chan requestProgressFailure)
-	progress.message = progressMsg
+	progress := &requestProgress{
+		instance: instance,
+		tracker:  newResponseTracker(sourceMessage, "model-1"),
+		stages:   make(chan requestProgressStage, 1),
+		handoffs: make(chan requestProgressHandoff),
+		failures: make(chan requestProgressFailure),
+		message:  progressMsg,
+	}
 
 	go progress.run(t.Context())
 
@@ -103,6 +108,25 @@ func TestRequestProgressHandoffDrainsPendingStageUpdates(t *testing.T) {
 	tracker := progress.handoff("model-1", nil)
 	if tracker == nil {
 		t.Fatal("expected non-nil tracker from handoff")
+	}
+
+	if tracker.modelName != "model-1" {
+		t.Fatalf("unexpected tracker model: %q", tracker.modelName)
+	}
+
+	rendered := false
+
+	for _, description := range patchDescriptions {
+		if strings.Contains(description, "**Generating response**") {
+			rendered = true
+		}
+	}
+
+	if !rendered {
+		t.Fatalf(
+			"expected handoff drain to render the newest stage, got %#v",
+			patchDescriptions,
+		)
 	}
 }
 
@@ -147,13 +171,14 @@ func TestRequestProgressRunPeriodicallyRefreshes(t *testing.T) {
 	progressMsg.ID = messageID
 	progressMsg.ChannelID = channelID
 
-	progress := new(requestProgress)
-	progress.instance = instance
-	progress.tracker = newResponseTracker(sourceMessage, "model-1")
-	progress.stageUpdates = make(chan requestProgressStage, 1)
-	progress.handoffs = make(chan requestProgressHandoff)
-	progress.failures = make(chan requestProgressFailure)
-	progress.message = progressMsg
+	progress := &requestProgress{
+		instance: instance,
+		tracker:  newResponseTracker(sourceMessage, "model-1"),
+		stages:   make(chan requestProgressStage, 1),
+		handoffs: make(chan requestProgressHandoff),
+		failures: make(chan requestProgressFailure),
+		message:  progressMsg,
+	}
 
 	go progress.run(t.Context())
 
@@ -175,49 +200,152 @@ func TestRequestProgressRunPeriodicallyRefreshes(t *testing.T) {
 	}
 }
 
+func TestRequestProgressSpinnerFrameCycles(t *testing.T) {
+	t.Parallel()
+
+	total := len(requestProgressSpinnerFrames)
+	if total == 0 {
+		t.Fatal("expected spinner frames to be configured")
+	}
+
+	for ticks := range 2 * total {
+		want := string(requestProgressSpinnerFrames[ticks%total])
+
+		if got := requestProgressSpinnerFrame(ticks); got != want {
+			t.Fatalf("spinner frame %d: got %q, want %q", ticks, got, want)
+		}
+	}
+}
+func TestRequestProgressRenderAdvancesSpinnerFrame(t *testing.T) {
+	t.Parallel()
+
+	const (
+		channelID = "channel-1"
+		botUserID = "bot-user"
+		messageID = "prog-1"
+	)
+
+	patchDescriptions := make([]string, 0, 2)
+
+	session := newDirectMessageTestSession(t, channelID, botUserID, roundTripFunc(func(
+		request *http.Request,
+	) (*http.Response, error) {
+		t.Helper()
+
+		if request.Method == http.MethodPatch {
+			patchDescriptions = append(
+				patchDescriptions,
+				requestEmbedDescription(t, request),
+			)
+
+			patchMsg := new(discordgo.Message)
+			patchMsg.ID = messageID
+			patchMsg.ChannelID = channelID
+
+			return newJSONResponse(t, request, patchMsg), nil
+		}
+
+		return newNoContentResponse(request), nil
+	}))
+
+	instance := new(bot)
+	instance.session = session
+	instance.nodes = newMessageNodeStore(10)
+
+	sourceMessage := new(discordgo.Message)
+	sourceMessage.ID = "src-1"
+	sourceMessage.ChannelID = channelID
+
+	progressMsg := new(discordgo.Message)
+	progressMsg.ID = messageID
+	progressMsg.ChannelID = channelID
+
+	progress := &requestProgress{
+		instance: instance,
+		tracker:  newResponseTracker(sourceMessage, "model-1"),
+		stages:   make(chan requestProgressStage, 1),
+		handoffs: make(chan requestProgressHandoff),
+		failures: make(chan requestProgressFailure),
+		message:  progressMsg,
+	}
+
+	ctx := t.Context()
+	progress.render(ctx, requestProgressStageReadingConversation)
+	progress.render(ctx, requestProgressStageReadingConversation)
+
+	if len(patchDescriptions) != 2 {
+		t.Fatalf("unexpected patch count: %d", len(patchDescriptions))
+	}
+
+	first := string(requestProgressSpinnerFrames[0])
+	second := string(requestProgressSpinnerFrames[1])
+
+	if !strings.Contains(patchDescriptions[0], "### "+first) {
+		t.Fatalf("expected first render to embed %q: %#v", first, patchDescriptions[0])
+	}
+
+	if !strings.Contains(patchDescriptions[1], "### "+second) {
+		t.Fatalf("expected second render to advance the frame to %q: %#v", second, patchDescriptions[1])
+	}
+}
+
 func TestBuildRequestProgressEmbed(t *testing.T) {
 	t.Parallel()
 
-	startedAt := time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC)
+	startedAt := time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)
 	elapsed := 83 * time.Second
 
 	tests := []struct {
 		name            string
 		stage           requestProgressStage
+		spinnerFrame    string
 		wantDescription string
+		wantFooter      string
 	}{
 		{
-			name:  "reading conversation",
-			stage: requestProgressStageReadingConversation,
+			name:         "reading conversation",
+			stage:        requestProgressStageReadingConversation,
+			spinnerFrame: "⠋",
 			wantDescription: strings.Join([]string{
-				"▰▱▱▱▱▱▱▱▱▱ **10%** · ⏱ **1:23**",
+				"### ⠋ Reading conversation",
 				"",
-				"⏳ Reading conversation — Scanning the message, attachments, and reply history",
-				"⬜ Gathering context",
-				"⬜ Generating response",
+				"› **Reading conversation** — *Scanning the message, attachments, and reply history*",
+				"",
+				"○ Gathering context",
+				"",
+				"○ Generating response",
 			}, "\n"),
+			wantFooter: "Step 1 of 3 · 1:23",
 		},
 		{
-			name:  "gathering context",
-			stage: requestProgressStageGatheringContext,
+			name:         "gathering context",
+			stage:        requestProgressStageGatheringContext,
+			spinnerFrame: "⠙",
 			wantDescription: strings.Join([]string{
-				"▰▰▰▰▰▱▱▱▱▱ **45%** · ⏱ **1:23**",
+				"### ⠙ Gathering context",
 				"",
-				"✅ Reading conversation",
-				"⏳ Gathering context — Collecting links, documents, and search results",
-				"⬜ Generating response",
+				"✓ ~~Reading conversation~~",
+				"",
+				"› **Gathering context** — *Collecting links, documents, and search results*",
+				"",
+				"○ Generating response",
 			}, "\n"),
+			wantFooter: "Step 2 of 3 · 1:23",
 		},
 		{
-			name:  "generating response",
-			stage: requestProgressStageGeneratingResponse,
+			name:         "generating response",
+			stage:        requestProgressStageGeneratingResponse,
+			spinnerFrame: "⠹",
 			wantDescription: strings.Join([]string{
-				"▰▰▰▰▰▰▰▰▱▱ **80%** · ⏱ **1:23**",
+				"### ⠹ Generating response",
 				"",
-				"✅ Reading conversation",
-				"✅ Gathering context",
-				"⏳ Generating response — Waiting for the model to respond",
+				"✓ ~~Reading conversation~~",
+				"",
+				"✓ ~~Gathering context~~",
+				"",
+				"› **Generating response** — *Waiting for the model to respond*",
 			}, "\n"),
+			wantFooter: "Step 3 of 3 · 1:23",
 		},
 	}
 
@@ -225,18 +353,33 @@ func TestBuildRequestProgressEmbed(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
-			embed := buildRequestProgressEmbed(test.stage, "model-1", elapsed, startedAt)
-
-			if embed.Title != requestProgressTitleText {
-				t.Fatalf("unexpected embed title: %q", embed.Title)
-			}
+			embed := buildRequestProgressEmbed(
+				test.stage,
+				"model-1",
+				elapsed,
+				startedAt,
+				test.spinnerFrame,
+			)
 
 			if embed.Description != test.wantDescription {
-				t.Fatalf("unexpected embed description:\n%q\nwant:\n%q", embed.Description, test.wantDescription)
+				t.Fatalf("unexpected embed description:\n%q\nwant:\n%q",
+					embed.Description, test.wantDescription)
+			}
+
+			if embed.Footer == nil || embed.Footer.Text != test.wantFooter {
+				t.Fatalf("unexpected embed footer: %#v", embed.Footer)
 			}
 
 			if embed.Timestamp != startedAt.Format(time.RFC3339) {
 				t.Fatalf("unexpected embed timestamp: %q", embed.Timestamp)
+			}
+
+			if embed.Color != embedColorIncomplete {
+				t.Fatalf("unexpected embed color: %#x", embed.Color)
+			}
+
+			if embed.Author == nil || embed.Author.Name != "model-1" {
+				t.Fatalf("unexpected embed author: %#v", embed.Author)
 			}
 		})
 	}
@@ -250,6 +393,7 @@ func TestBuildRequestProgressEmbedOmitsTimestampWhenStartIsZero(t *testing.T) {
 		"model-1",
 		0,
 		time.Time{},
+		requestProgressSpinnerFrame(0),
 	)
 
 	if embed.Timestamp != "" {
@@ -257,14 +401,8 @@ func TestBuildRequestProgressEmbedOmitsTimestampWhenStartIsZero(t *testing.T) {
 	}
 }
 
-func TestFormatRequestProgressLine(t *testing.T) {
+func TestFormatRequestProgressStepLine(t *testing.T) {
 	t.Parallel()
-
-	info := requestProgressStageInfo{
-		label:   "Gathering context",
-		detail:  "Collecting links, documents, and search results",
-		percent: 45,
-	}
 
 	tests := []struct {
 		name         string
@@ -278,40 +416,37 @@ func TestFormatRequestProgressLine(t *testing.T) {
 			lineStage:    requestProgressStageReadingConversation,
 			currentStage: requestProgressStageGatheringContext,
 			info: requestProgressStageInfo{
-				label:   "Reading conversation",
-				detail:  "",
-				percent: 10,
+				label: "Reading conversation",
 			},
-			want: "✅ Reading conversation",
+			want: "✓ ~~Reading conversation~~",
 		},
 		{
 			name:         "current with detail",
 			lineStage:    requestProgressStageGatheringContext,
 			currentStage: requestProgressStageGatheringContext,
-			info:         info,
-			want:         "⏳ Gathering context — Collecting links, documents, and search results",
+			info: requestProgressStageInfo{
+				label:  "Gathering context",
+				detail: "Collecting links, documents, and search results",
+			},
+			want: "› **Gathering context** — *Collecting links, documents, and search results*",
 		},
 		{
 			name:         "current without detail",
 			lineStage:    requestProgressStageGatheringContext,
 			currentStage: requestProgressStageGatheringContext,
 			info: requestProgressStageInfo{
-				label:   "Gathering context",
-				detail:  "",
-				percent: 45,
+				label: "Gathering context",
 			},
-			want: "⏳ Gathering context",
+			want: "› **Gathering context**",
 		},
 		{
 			name:         "pending",
 			lineStage:    requestProgressStageGeneratingResponse,
 			currentStage: requestProgressStageGatheringContext,
 			info: requestProgressStageInfo{
-				label:   "Generating response",
-				detail:  "",
-				percent: 80,
+				label: "Generating response",
 			},
-			want: "⬜ Generating response",
+			want: "○ Generating response",
 		},
 	}
 
@@ -319,41 +454,24 @@ func TestFormatRequestProgressLine(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
-			got := formatRequestProgressLine(test.lineStage, test.currentStage, test.info)
+			got := formatRequestProgressStepLine(test.lineStage, test.currentStage, test.info)
 			if got != test.want {
-				t.Fatalf("unexpected progress line:\n%q\nwant:\n%q", got, test.want)
+				t.Fatalf("unexpected step line:\n%q\nwant:\n%q", got, test.want)
 			}
 		})
 	}
 }
 
-func TestBuildRequestProgressBar(t *testing.T) {
+func TestFormatRequestProgressFooterClampsStageBounds(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name    string
-		percent int
-		want    string
-	}{
-		{name: "zero", percent: 0, want: "▱▱▱▱▱▱▱▱▱▱"},
-		{name: "negative", percent: -10, want: "▱▱▱▱▱▱▱▱▱▱"},
-		{name: "ten percent", percent: 10, want: "▰▱▱▱▱▱▱▱▱▱"},
-		{name: "forty five percent", percent: 45, want: "▰▰▰▰▰▱▱▱▱▱"},
-		{name: "eighty percent", percent: 80, want: "▰▰▰▰▰▰▰▰▱▱"},
-		{name: "ninety nine percent", percent: 99, want: "▰▰▰▰▰▰▰▰▰▰"},
-		{name: "one hundred percent", percent: 100, want: "▰▰▰▰▰▰▰▰▰▰"},
-		{name: "over one hundred percent", percent: 150, want: "▰▰▰▰▰▰▰▰▰▰"},
+	if got := formatRequestProgressFooter(requestProgressStage(-1), 0); got != "Step 1 of 3 · 0:00" {
+		t.Fatalf("unexpected clamped low footer: %q", got)
 	}
 
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-
-			got := buildRequestProgressBar(test.percent)
-			if got != test.want {
-				t.Fatalf("unexpected progress bar: %q, want %q", got, test.want)
-			}
-		})
+	outOfRange := requestProgressStage(len(requestProgressStageTable) + 3)
+	if got := formatRequestProgressFooter(outOfRange, 0); got != "Step 3 of 3 · 0:00" {
+		t.Fatalf("unexpected clamped high footer: %q", got)
 	}
 }
 
