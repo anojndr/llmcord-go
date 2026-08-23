@@ -1845,8 +1845,8 @@ func TestHandleInteractionCreateRespondsToCreateGistButton(t *testing.T) {
 
 	assertDeferredEphemeralInteractionResponse(t, &capture.deferredResponse)
 
-	if !containsFold(capture.editedResponse.Content, gist.url) {
-		t.Fatalf("expected gist url in edited response content: %q", capture.editedResponse.Content)
+	if !strings.Contains(capture.editedResponse.Content, "<"+gist.url+">") {
+		t.Fatalf("expected angle-bracket-wrapped gist url in edited response content: %q", capture.editedResponse.Content)
 	}
 
 	if gist.callCount != 1 {
@@ -1896,8 +1896,8 @@ func TestHandleInteractionCreateReusesCachedGistURL(t *testing.T) {
 		t.Fatal("expected interaction response data")
 	}
 
-	if !containsFold(response.Data.Content, node.gistURL) {
-		t.Fatalf("expected cached gist url in response content: %q", response.Data.Content)
+	if !strings.Contains(response.Data.Content, "<"+node.gistURL+">") {
+		t.Fatalf("expected angle-bracket-wrapped cached gist url in response content: %q", response.Data.Content)
 	}
 
 	if gist.callCount != 0 {
