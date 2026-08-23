@@ -9,72 +9,91 @@ import (
 	"github.com/bwmarrin/discordgo"
 )
 
+// requestProgressStage identifies one step of the request lifecycle. Stages
+// are strictly ordered: a stage may only move forward.
 type requestProgressStage int
 
 const (
 	requestProgressStageReadingConversation requestProgressStage = iota
 	requestProgressStageGatheringContext
 	requestProgressStageGeneratingResponse
+	// requestProgressStageCount bounds the enum; it is not a real stage.
+	requestProgressStageCount
 )
 
 const (
+	// requestProgressRefreshInterval paces the live card: each tick advances
+	// the spinner frame and re-renders the elapsed time.
 	requestProgressRefreshInterval = 2 * time.Second
-	requestProgressBarWidth        = 10
-	requestProgressBarHalfPercent  = 50
-	requestProgressBarFullPercent  = 100
-	requestProgressElapsedHoursDiv = 3600
-	requestProgressElapsedMinsDiv  = 60
-	requestProgressEmbedExtraLines = 2
-	requestProgressTitleText       = "⏳ Working on it…"
-	requestProgressFailureTitle    = "❌ Request failed"
-	requestProgressDoneMarker      = "✅"
-	requestProgressCurrentMarker   = "⏳"
-	requestProgressPendingMarker   = "⬜"
-	requestProgressBarFilledCell   = "▰"
-	requestProgressBarEmptyCell    = "▱"
-	requestProgressElapsedPrefix   = "⏱"
+
+	requestProgressFailureTitle = "Request failed"
+
+	// Step-rail glyphs: completed steps collapse to a struck-through check,
+	// the active step carries the caret, queued steps stay hollow.
+	requestProgressDoneGlyph    = "✓"
+	requestProgressCurrentGlyph = "›"
+	requestProgressPendingGlyph = "○"
 )
+
+// requestProgressSpinnerFrames are cycled one per refresh tick so the periodic
+// edit produces visible motion instead of an identical re-render.
+var requestProgressSpinnerFrames = []rune("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
+
+func requestProgressSpinnerFrame(ticks int) string {
+	if len(requestProgressSpinnerFrames) == 0 {
+		return ""
+	}
+
+	frame := ticks % len(requestProgressSpinnerFrames)
+	if frame < 0 {
+		frame += len(requestProgressSpinnerFrames)
+	}
+
+	return string(requestProgressSpinnerFrames[frame])
+}
+
+// requestProgressStageTable is indexed by stage. The tripwire below ensures
+// its length matches the number of declared stages.
+var requestProgressStageTable = [...]requestProgressStageInfo{
+	requestProgressStageReadingConversation: {
+		label:  "Reading conversation",
+		detail: "Scanning the message, attachments, and reply history",
+	},
+	requestProgressStageGatheringContext: {
+		label:  "Gathering context",
+		detail: "Collecting links, documents, and search results",
+	},
+	requestProgressStageGeneratingResponse: {
+		label:  "Generating response",
+		detail: "Waiting for the model to respond",
+	},
+}
+
+// Compile-time tripwire: the build fails when a stage lacks a table entry.
+var _ [requestProgressStageCount]struct{} = [len(requestProgressStageTable)]struct{}{}
 
 type requestProgressStageInfo struct {
-	label   string
-	detail  string
-	percent int
+	label  string
+	detail string
 }
 
-func requestProgressStageInfos() []requestProgressStageInfo {
-	return []requestProgressStageInfo{
-		{
-			label:   "Reading conversation",
-			detail:  "Scanning the message, attachments, and reply history",
-			percent: requestProgressReadingPercent,
-		},
-		{
-			label:   "Gathering context",
-			detail:  "Collecting links, documents, and search results",
-			percent: requestProgressGatheringPercent,
-		},
-		{
-			label:   "Generating response",
-			detail:  "Waiting for the model to respond",
-			percent: requestProgressGeneratingPercent,
-		},
+func requestProgressStageInfoFor(stage requestProgressStage) requestProgressStageInfo {
+	if stage < 0 || int(stage) >= len(requestProgressStageTable) {
+		return requestProgressStageInfo{}
 	}
-}
 
-const (
-	requestProgressReadingPercent    = 10
-	requestProgressGatheringPercent  = 45
-	requestProgressGeneratingPercent = 80
-)
+	return requestProgressStageTable[stage]
+}
 
 type requestProgress struct {
-	instance     *bot
-	tracker      *responseTracker
-	message      *discordgo.Message
-	stageUpdates chan requestProgressStage
-	handoffs     chan requestProgressHandoff
-	failures     chan requestProgressFailure
-	startedAt    time.Time
+	instance  *bot
+	tracker   *responseTracker
+	message   *discordgo.Message
+	stages    chan requestProgressStage
+	handoffs  chan requestProgressHandoff
+	failures  chan requestProgressFailure
+	startedAt time.Time
+	ticks     int
 }
 
 type requestProgressHandoff struct {
@@ -88,32 +107,33 @@ type requestProgressFailure struct {
 	done chan struct{}
 }
 
+// startRequestProgress posts the live progress card for sourceMessage and
+// starts its refresh loop. The card message becomes tracker.responseMessages[0]
+// so the final answer later edits in place over it.
 func (instance *bot) startRequestProgress(
 	ctx context.Context,
 	sourceMessage *discordgo.Message,
 	modelName string,
 ) *requestProgress {
-	progress := new(requestProgress)
-	progress.instance = instance
-	progress.tracker = newResponseTracker(sourceMessage, modelName)
-	progress.startedAt = time.Now()
-	progress.stageUpdates = make(chan requestProgressStage, 1)
-	progress.handoffs = make(chan requestProgressHandoff)
-	progress.failures = make(chan requestProgressFailure)
-
-	var actions responseActions
-
-	progressEmbed := buildRequestProgressEmbed(
-		requestProgressStageReadingConversation,
-		progress.tracker.modelName,
-		0,
-		progress.startedAt,
-	)
+	progress := &requestProgress{
+		instance:  instance,
+		tracker:   newResponseTracker(sourceMessage, modelName),
+		startedAt: time.Now(),
+		stages:    make(chan requestProgressStage, 1),
+		handoffs:  make(chan requestProgressHandoff),
+		failures:  make(chan requestProgressFailure),
+	}
 
 	sentMessage, pending, err := instance.sendEmbedMessage(
 		progress.tracker,
-		progressEmbed,
-		actions,
+		buildRequestProgressEmbed(
+			requestProgressStageReadingConversation,
+			progress.tracker.modelName,
+			0,
+			progress.startedAt,
+			requestProgressSpinnerFrame(progress.ticks),
+		),
+		responseActions{},
 	)
 	if err != nil {
 		logWarn(
@@ -134,26 +154,31 @@ func (instance *bot) startRequestProgress(
 	return progress
 }
 
+// advance queues a stage change without ever blocking the caller. If a stale
+// update is still queued it is replaced by the newer stage (latest wins).
 func (progress *requestProgress) advance(stage requestProgressStage) {
 	if progress == nil {
 		return
 	}
 
 	select {
-	case progress.stageUpdates <- stage:
+	case progress.stages <- stage:
 	default:
 		select {
-		case <-progress.stageUpdates:
+		case <-progress.stages:
 		default:
 		}
 
 		select {
-		case progress.stageUpdates <- stage:
+		case progress.stages <- stage:
 		default:
 		}
 	}
 }
 
+// handoff transfers ownership of the response tracker back to the caller and
+// stops the refresh loop. It blocks until the loop has drained pending stage
+// updates and stamped the handoff metadata onto the tracker.
 func (progress *requestProgress) handoff(
 	modelName string,
 	searchMetadata *searchMetadata,
@@ -172,6 +197,9 @@ func (progress *requestProgress) handoff(
 	return <-result
 }
 
+// fail reports a terminal failure through the refresh loop so the failure card
+// replaces the live card on Discord. When the loop is no longer running (the
+// card already handed off) it falls back to rendering directly.
 func (progress *requestProgress) fail(ctx context.Context, err error) {
 	if progress == nil {
 		return
@@ -201,10 +229,15 @@ func (progress *requestProgress) fail(ctx context.Context, err error) {
 	}
 }
 
-func (progress *requestProgress) renderStageUpdate(ctx context.Context, stage requestProgressStage) {
+// render pushes a new card revision. Each render advances the spinner frame,
+// so repeated renders animate even when the stage is unchanged.
+func (progress *requestProgress) render(ctx context.Context, stage requestProgressStage) {
 	if progress.message == nil {
 		return
 	}
+
+	spinnerFrame := requestProgressSpinnerFrame(progress.ticks)
+	progress.ticks++
 
 	waitErr := progress.instance.waitForEditSlotForMessage(
 		ctx,
@@ -226,6 +259,7 @@ func (progress *requestProgress) renderStageUpdate(ctx context.Context, stage re
 			progress.tracker.modelName,
 			progress.elapsed(),
 			progress.startedAt,
+			spinnerFrame,
 		),
 		nil,
 	)
@@ -252,12 +286,14 @@ func (progress *requestProgress) elapsed() time.Duration {
 	return elapsed
 }
 
-func (progress *requestProgress) handlePendingHandoffStage(ctx context.Context, currentStage *requestProgressStage) {
+// drainPendingStage applies the newest queued stage update before a handoff so
+// the card never hands off showing a stale step.
+func (progress *requestProgress) drainPendingStage(ctx context.Context, currentStage *requestProgressStage) {
 	select {
-	case stage := <-progress.stageUpdates:
+	case stage := <-progress.stages:
 		if stage > *currentStage && progress.message != nil {
 			*currentStage = stage
-			progress.renderStageUpdate(ctx, stage)
+			progress.render(ctx, stage)
 		}
 	default:
 	}
@@ -272,17 +308,17 @@ func (progress *requestProgress) run(ctx context.Context) {
 
 	for {
 		select {
-		case stage := <-progress.stageUpdates:
+		case stage := <-progress.stages:
 			if stage <= currentStage {
 				continue
 			}
 
 			currentStage = stage
-			progress.renderStageUpdate(ctx, stage)
+			progress.render(ctx, stage)
 		case <-ticker.C:
-			progress.renderStageUpdate(ctx, currentStage)
+			progress.render(ctx, currentStage)
 		case handoff := <-progress.handoffs:
-			progress.handlePendingHandoffStage(ctx, &currentStage)
+			progress.drainPendingStage(ctx, &currentStage)
 
 			tracker.modelName = strings.TrimSpace(handoff.modelName)
 			tracker.originalModel = tracker.modelName
@@ -313,30 +349,41 @@ func (progress *requestProgress) run(ctx context.Context) {
 	}
 }
 
+// buildRequestProgressEmbed renders the live card: a spinner headline naming
+// the active step above a step rail of struck-through, active, and queued
+// steps. Step position and elapsed time move to the footer so the body stays
+// scannable.
 func buildRequestProgressEmbed(
 	stage requestProgressStage,
 	modelName string,
 	elapsed time.Duration,
 	startedAt time.Time,
+	spinnerFrame string,
 ) *discordgo.MessageEmbed {
-	infos := requestProgressStageInfos()
+	headline := requestProgressStageInfoFor(stage)
 
-	lines := make([]string, 0, len(infos)+requestProgressEmbedExtraLines)
-	lines = append(
-		lines,
-		buildRequestProgressStatusLine(stage, elapsed),
-		"",
-	)
+	lines := make([]string, 0, 3*len(requestProgressStageTable))
+	lines = append(lines, "### "+spinnerFrame+" "+headline.label, "")
 
-	for lineStage, info := range infos {
-		lines = append(
-			lines,
-			formatRequestProgressLine(requestProgressStage(lineStage), stage, info),
-		)
+	for index := range requestProgressStageTable {
+		if index > 0 {
+			lines = append(lines, "")
+		}
+
+		lines = append(lines, formatRequestProgressStepLine(
+			requestProgressStage(index),
+			stage,
+			requestProgressStageTable[index],
+		))
 	}
 
-	embed := buildResponseEmbed(strings.Join(lines, "\n"), modelName, embedColorIncomplete, nil, "")
-	embed.Title = requestProgressTitleText
+	embed := buildResponseEmbed(
+		strings.Join(lines, "\n"),
+		modelName,
+		embedColorIncomplete,
+		nil,
+		formatRequestProgressFooter(stage, elapsed),
+	)
 
 	if !startedAt.IsZero() {
 		embed.Timestamp = startedAt.Format(time.RFC3339)
@@ -345,6 +392,9 @@ func buildRequestProgressEmbed(
 	return embed
 }
 
+// buildRequestProgressFailureEmbed renders the terminal card. The description
+// stays exactly the trimmed error text: callers surface that string verbatim
+// when the progress message could not be edited.
 func buildRequestProgressFailureEmbed(
 	modelName, errorText string,
 ) *discordgo.MessageEmbed {
@@ -360,81 +410,53 @@ func buildRequestProgressFailureEmbed(
 	return embed
 }
 
-func formatRequestProgressLine(
+// formatRequestProgressStepLine renders one step-rail entry for the step's
+// state relative to currentStage.
+func formatRequestProgressStepLine(
 	lineStage requestProgressStage,
 	currentStage requestProgressStage,
 	info requestProgressStageInfo,
 ) string {
-	marker := requestProgressPendingMarker
-
 	switch {
 	case lineStage < currentStage:
-		marker = requestProgressDoneMarker
+		return requestProgressDoneGlyph + " ~~" + info.label + "~~"
 	case lineStage == currentStage:
-		marker = requestProgressCurrentMarker
-	}
+		line := requestProgressCurrentGlyph + " **" + info.label + "**"
 
-	line := marker + " " + info.label
-	if lineStage == currentStage && strings.TrimSpace(info.detail) != "" {
-		line += " — " + info.detail
-	}
+		if detail := strings.TrimSpace(info.detail); detail != "" {
+			line += " — *" + detail + "*"
+		}
 
-	return line
+		return line
+	default:
+		return requestProgressPendingGlyph + " " + info.label
+	}
 }
 
-func buildRequestProgressStatusLine(stage requestProgressStage, elapsed time.Duration) string {
-	info := requestProgressStageInfoFor(stage)
+func formatRequestProgressFooter(
+	stage requestProgressStage,
+	elapsed time.Duration,
+) string {
+	step := max(1, min(len(requestProgressStageTable), int(stage)+1))
 
 	return fmt.Sprintf(
-		"%s **%d%%** · %s **%s**",
-		buildRequestProgressBar(info.percent),
-		info.percent,
-		requestProgressElapsedPrefix,
+		"Step %d of %d · %s",
+		step,
+		len(requestProgressStageTable),
 		formatRequestProgressElapsed(elapsed),
 	)
-}
-
-func requestProgressStageInfoFor(stage requestProgressStage) requestProgressStageInfo {
-	infos := requestProgressStageInfos()
-
-	if stage < 0 || int(stage) >= len(infos) {
-		return requestProgressStageInfo{
-			label:   "",
-			detail:  "",
-			percent: 0,
-		}
-	}
-
-	return infos[stage]
-}
-
-func buildRequestProgressBar(percent int) string {
-	percent = max(0, min(requestProgressBarFullPercent, percent))
-
-	if percent == 0 {
-		return strings.Repeat(requestProgressBarEmptyCell, requestProgressBarWidth)
-	}
-
-	if percent == requestProgressBarFullPercent {
-		return strings.Repeat(requestProgressBarFilledCell, requestProgressBarWidth)
-	}
-
-	filled := (percent*requestProgressBarWidth + requestProgressBarHalfPercent) /
-		requestProgressBarFullPercent
-
-	return strings.Repeat(requestProgressBarFilledCell, filled) +
-		strings.Repeat(requestProgressBarEmptyCell, requestProgressBarWidth-filled)
 }
 
 func formatRequestProgressElapsed(elapsed time.Duration) string {
 	totalSeconds := max(0, int(elapsed.Seconds()))
 
-	hours := totalSeconds / requestProgressElapsedHoursDiv
-	minutes := (totalSeconds % requestProgressElapsedHoursDiv) / requestProgressElapsedMinsDiv
-	seconds := totalSeconds % requestProgressElapsedMinsDiv
+	minutes := totalSeconds / 60
+	seconds := totalSeconds % 60
 
-	if hours > 0 {
-		return fmt.Sprintf("%d:%02d:%02d", hours, minutes, seconds)
+	if minutes >= 60 {
+		hours := minutes / 60
+
+		return fmt.Sprintf("%d:%02d:%02d", hours, minutes%60, seconds)
 	}
 
 	return fmt.Sprintf("%d:%02d", minutes, seconds)
