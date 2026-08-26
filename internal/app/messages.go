@@ -40,7 +40,9 @@ func (instance *bot) handleMessageCreate(
 		botUserID = instance.session.State.User.ID
 	}
 
-	if shouldIgnoreIncomingMessage(message, botUserID) {
+	facebookVideoReply := shouldReplyWithFacebookVideos(message, botUserID)
+
+	if shouldIgnoreIncomingMessage(message, botUserID) && !facebookVideoReply {
 		return
 	}
 
@@ -71,6 +73,14 @@ func (instance *bot) handleMessageCreate(
 		ChannelIDs: channelIDs,
 	}
 	if !messageAllowed(loadedConfig, access) {
+		return
+	}
+
+	if facebookVideoReply {
+		instance.replyWithFacebookVideos(context.Background(), message)
+
+		instance.nodes.evictExcess()
+
 		return
 	}
 
@@ -110,6 +120,18 @@ func shouldIgnoreIncomingMessage(message *discordgo.Message, botUserID string) b
 	}
 
 	return !messageMentionsBot(message, botUserID)
+}
+
+func shouldReplyWithFacebookVideos(message *discordgo.Message, botUserID string) bool {
+	if message == nil || message.Author == nil || message.Author.Bot {
+		return false
+	}
+
+	if messageMentionsBot(message, botUserID) {
+		return false
+	}
+
+	return len(extractFacebookURLs(message.Content)) > 0
 }
 
 func isDirectMessage(message *discordgo.Message) bool {
