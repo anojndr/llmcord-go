@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/bwmarrin/discordgo"
 	"golang.org/x/net/html"
 	"golang.org/x/net/html/atom"
 )
@@ -29,6 +31,8 @@ const (
 	facebookDefaultHDQualityScore     = 720
 	facebookDefaultSDQualityScore     = 360
 	facebookDownloadCandidateCapacity = 4
+	facebookMaxReplyAttachments       = 10
+	facebookMaxUploadBytes            = 10 << 20
 	facebookWarningText               = "Warning: Facebook content unavailable"
 )
 
@@ -744,4 +748,188 @@ func facebookFileStem(value string) string {
 	sanitizedValue = strings.Trim(sanitizedValue, "_")
 
 	return sanitizedValue
+}
+
+func (instance *bot) replyWithFacebookVideos(
+	ctx context.Context,
+	message *discordgo.Message,
+) {
+	if instance == nil || instance.session == nil || instance.facebook == nil || message == nil {
+		return
+	}
+
+	facebookURLs := extractFacebookURLs(message.Content)
+	if len(facebookURLs) == 0 {
+		return
+	}
+
+	stopTyping := instance.startTyping(ctx, message.ChannelID)
+	defer stopTyping()
+
+	videoContents, _ := fetchDownloadedVideos(
+		ctx,
+		facebookURLs,
+		func(fetchCtx context.Context, rawURL string) (facebookVideoContent, error) {
+			return instance.facebook.fetch(fetchCtx, rawURL)
+		},
+		"fetch facebook video reply",
+		facebookWarningText,
+	)
+	if len(videoContents) == 0 {
+		return
+	}
+
+	files, fallbackLinks, deliverableContents := facebookVideoReplyAttachments(videoContents)
+	if len(files) == 0 && len(fallbackLinks) == 0 {
+		return
+	}
+
+	send := newReplyMessage(message)
+	send.Files = files
+	send.Content = strings.Join(fallbackLinks, "\n")
+
+	sentMessage, err := instance.session.ChannelMessageSendComplex(message.ChannelID, send)
+	if err != nil {
+		logWarn(
+			"send facebook video reply",
+			err,
+			"channel_id",
+			message.ChannelID,
+			"message_id",
+			message.ID,
+		)
+
+		return
+	}
+
+	instance.cacheFacebookVideoReply(
+		sentMessage,
+		message,
+		downloadedFacebookMediaParts(deliverableContents),
+	)
+}
+
+func facebookVideoReplyAttachments(
+	videoContents []facebookVideoContent,
+) ([]*discordgo.File, []string, []facebookVideoContent) {
+	files := make([]*discordgo.File, 0, min(len(videoContents), facebookMaxReplyAttachments))
+	fallbackLinks := make([]string, 0)
+	deliverableContents := make([]facebookVideoContent, 0, len(videoContents))
+
+	for _, videoContent := range videoContents {
+		if len(files) >= facebookMaxReplyAttachments {
+			fallbackLink := videoContent.downloadURL()
+			if fallbackLink != "" {
+				fallbackLinks = append(fallbackLinks, fallbackLink)
+				deliverableContents = append(deliverableContents, videoContent)
+			} else {
+				logWarn(
+					"facebook video exceeds attachment limit without download url",
+					os.ErrInvalid,
+					"url",
+					videoContent.resolvedURL(),
+				)
+			}
+
+			continue
+		}
+
+		file, fallbackLink := facebookVideoMediaFile(videoContent)
+		if file != nil {
+			files = append(files, file)
+			deliverableContents = append(deliverableContents, videoContent)
+		}
+
+		if fallbackLink != "" {
+			fallbackLinks = append(fallbackLinks, fallbackLink)
+			deliverableContents = append(deliverableContents, videoContent)
+		}
+
+		if file == nil && fallbackLink == "" {
+			logWarn(
+				"facebook video has no uploadable bytes or download url",
+				os.ErrInvalid,
+				"url",
+				videoContent.resolvedURL(),
+			)
+		}
+	}
+
+	return files, fallbackLinks, deliverableContents
+}
+
+func facebookVideoMediaFile(videoContent facebookVideoContent) (*discordgo.File, string) {
+	part := videoContent.mediaPart()
+
+	videoBytes, ok := part[contentFieldBytes].([]byte)
+	if !ok || len(videoBytes) == 0 {
+		return nil, videoContent.downloadURL()
+	}
+
+	if int64(len(videoBytes)) > facebookMaxUploadBytes {
+		return nil, videoContent.downloadURL()
+	}
+
+	filename, _ := part[contentFieldFilename].(string)
+	if strings.TrimSpace(filename) == "" {
+		filename = facebookDefaultFilename
+	}
+
+	mimeType, _ := part[contentFieldMIMEType].(string)
+	if strings.TrimSpace(mimeType) == "" {
+		mimeType = facebookDefaultMIMEType
+	}
+
+	return &discordgo.File{
+		Name:        filename,
+		ContentType: mimeType,
+		Reader:      bytes.NewReader(videoBytes),
+	}, ""
+}
+
+func (content facebookVideoContent) downloadURL() string {
+	return strings.TrimSpace(content.DownloadURL)
+}
+
+func downloadedFacebookMediaParts(videoContents []facebookVideoContent) []contentPart {
+	mediaParts := make([]contentPart, 0, len(videoContents))
+
+	for _, videoContent := range videoContents {
+		mediaParts = append(mediaParts, cloneContentPart(videoContent.mediaPart()))
+	}
+
+	return mediaParts
+}
+
+func (instance *bot) cacheFacebookVideoReply(
+	sentMessage *discordgo.Message,
+	parentMessage *discordgo.Message,
+	mediaParts []contentPart,
+) {
+	if instance == nil || instance.nodes == nil || sentMessage == nil {
+		return
+	}
+
+	node := instance.nodes.getOrCreate(sentMessage.ID)
+	node.mu.Lock()
+
+	node.role = messageRoleAssistant
+	node.text = ""
+	node.thinkingText = ""
+	node.urlScanText = ""
+	node.gistURL = ""
+	node.providerResponseID = ""
+	node.providerResponseModel = ""
+	node.searchMetadata = nil
+	node.media = mediaParts
+	node.hasBadAttachments = false
+	node.attachmentDownloadFailed = false
+	node.fetchParentFailed = false
+	node.parentMessage = parentMessage
+	node.initialized = true
+
+	instance.nodes.cacheLockedNode(sentMessage.ID, node)
+	node.mu.Unlock()
+
+	instance.nodes.persistBestEffort()
 }

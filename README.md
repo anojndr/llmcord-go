@@ -10,6 +10,7 @@ It turns Discord reply chains into a frontend for OpenAI-compatible chat-complet
 - Real-time streaming replies with a live progress embed (stage checklist, progress bar, elapsed timer), plus `Show Thinking`, `Show Sources`, and `View response better on GitHub Gist` (publishes the full reply as a GitHub Gist)
 - Multimodal input: images, audio, video, PDFs, DOCX, PPTX, and generic file attachments
 - URL enrichment for TikTok, Facebook, YouTube, Reddit, and generic websites (Firecrawl Scrape when a Firecrawl key is set)
+- Automatic Facebook video downloads: any message containing a Facebook or fb.watch link (no bot mention needed) gets a reply with the MP4 attached; oversized videos fall back to the direct download link
 - Web-search augmentation (Exa by default), reverse-image lookup (`vsearch`), and native Gemini grounding
 - Hot-reloaded `config.yaml`, permissions, channel model locks, and PostgreSQL-backed history
 
