@@ -27,6 +27,7 @@ type renderSpec struct {
 
 type responseActions struct {
 	showSources  bool
+	showImages   bool
 	showThinking bool
 	showGist     bool
 }
@@ -708,6 +709,7 @@ func buildRenderSpecs(
 			color:   0,
 			actions: responseActions{
 				showSources:  final && hasSearchMetadata && index == len(segments)-1,
+				showImages:   final && index == len(segments)-1,
 				showThinking: final && hasThinking && index == len(segments)-1,
 				showGist:     final && index == len(segments)-1,
 			},
@@ -1220,7 +1222,7 @@ func buildEmbedComponents(actions responseActions) []discordgo.MessageComponent 
 }
 
 func buildResponseButtons(actions responseActions) []discordgo.MessageComponent {
-	const maxResponseButtons = 3
+	const maxResponseButtons = 4
 
 	buttons := make([]discordgo.MessageComponent, 0, maxResponseButtons)
 
@@ -1237,6 +1239,15 @@ func buildResponseButtons(actions responseActions) []discordgo.MessageComponent 
 		button := new(discordgo.Button)
 		button.CustomID = showSourcesButtonCustomID
 		button.Label = showSourcesButtonLabel
+		button.Style = discordgo.SecondaryButton
+
+		buttons = append(buttons, button)
+	}
+
+	if actions.showImages {
+		button := new(discordgo.Button)
+		button.CustomID = showImagesButtonCustomID
+		button.Label = showImagesButtonLabel
 		button.Style = discordgo.SecondaryButton
 
 		buttons = append(buttons, button)

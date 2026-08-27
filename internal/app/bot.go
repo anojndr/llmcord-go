@@ -35,6 +35,7 @@ type bot struct {
 	webSearch                    webSearcher
 	visualSearch                 visualSearcher
 	serpAPIVisualSearch          serpAPIVisualSearcher
+	imageSearch                  imageSearcher
 	gist                         gistCreator
 	tiktok                       tiktokFetcher
 	facebook                     facebookFetcher
@@ -112,6 +113,7 @@ func newBot(ctx context.Context, configPath string, loadedConfig config) (*bot, 
 	instance.webSearch = newWebSearchClient(httpClient)
 	instance.visualSearch = newVisualSearchClient(httpClient)
 	instance.serpAPIVisualSearch = newSerpAPIVisualSearchClient(httpClient)
+	instance.imageSearch = newImageSearchClient(httpClient)
 	instance.gist = newGistClient(
 		httpClient,
 		loadedConfig.Gist.Endpoint,

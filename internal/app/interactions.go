@@ -113,12 +113,16 @@ func (instance *bot) handleMessageComponentInteraction(
 	switch {
 	case componentData.CustomID == showSourcesButtonCustomID:
 		return instance.handleShowSourcesButton(session, interaction)
+	case componentData.CustomID == showImagesButtonCustomID:
+		return instance.handleShowImagesButton(session, interaction)
 	case componentData.CustomID == showThinkingButtonCustomID:
 		return instance.handleShowThinkingButton(session, interaction)
 	case componentData.CustomID == createGistButtonCustomID:
 		return instance.handleCreateGistButton(session, interaction)
 	case strings.HasPrefix(componentData.CustomID, showSourcesPageButtonCustomIDPrefix):
 		return instance.handleShowSourcesPageButton(session, interaction)
+	case strings.HasPrefix(componentData.CustomID, showImagesPageButtonCustomIDPrefix):
+		return instance.handleShowImagesPageButton(session, interaction)
 	case strings.HasPrefix(componentData.CustomID, showThinkingPageButtonCustomIDPrefix):
 		return instance.handleShowThinkingPageButton(session, interaction)
 	default:
@@ -144,6 +148,82 @@ func (instance *bot) handleShowSourcesButton(
 		components,
 		discordgo.MessageFlagsEphemeral,
 	)
+}
+
+func (instance *bot) handleShowImagesButton(
+	session *discordgo.Session,
+	interaction *discordgo.InteractionCreate,
+) error {
+	if interaction == nil || interaction.Message == nil {
+		return fmt.Errorf("show images interaction without message: %w", os.ErrInvalid)
+	}
+
+	err := respondInteractionDeferredWithFlags(
+		session,
+		interaction.Interaction,
+		discordgo.MessageFlagsEphemeral,
+	)
+	if err != nil {
+		return fmt.Errorf("defer show images interaction response: %w", err)
+	}
+
+	query := instance.imageSearchQueryForMessage(interaction.Message.ID)
+	if strings.TrimSpace(query) == "" {
+		return editInteractionResponseText(
+			session,
+			interaction.Interaction,
+			"No search query available for images.",
+		)
+	}
+
+	if instance.imageSearch == nil {
+		return editInteractionResponseText(
+			session,
+			interaction.Interaction,
+			"Image search is unavailable right now.",
+		)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), imageSearchTimeout)
+	defer cancel()
+
+	result, err := instance.imageSearch.search(ctx, query, 1, maxImagesLimit)
+	if err != nil {
+		logWarn("image search failed", err, "message_id", interaction.Message.ID, "query", query)
+		return editInteractionResponseText(
+			session,
+			interaction.Interaction,
+			fmt.Sprintf("Failed to search images for %q.", query),
+		)
+	}
+
+	if result == nil || len(result.Items) == 0 {
+		return editInteractionResponseText(
+			session,
+			interaction.Interaction,
+			fmt.Sprintf("No images found for %q.", query),
+		)
+	}
+
+	downloadedItems := instance.imageSearch.downloadImages(ctx, result.Items)
+	embeds, files, attachments := buildImageEmbedsAndFiles(query, downloadedItems)
+
+	content := fmt.Sprintf("Top %d images for %q:", len(embeds), query)
+	webhookEdit := new(discordgo.WebhookEdit)
+	webhookEdit.Content = &content
+	webhookEdit.Embeds = &embeds
+	if len(files) > 0 {
+		webhookEdit.Files = files
+		webhookEdit.Attachments = &attachments
+	}
+
+	_, err = session.InteractionResponseEdit(interaction.Interaction, webhookEdit)
+	if err != nil {
+		logWarn("edit interaction response with images", err, "message_id", interaction.Message.ID)
+		return err
+	}
+
+	return nil
 }
 
 func (instance *bot) handleShowThinkingButton(
@@ -180,6 +260,31 @@ func (instance *bot) handleShowSourcesPageButton(
 	}
 
 	content, components := instance.showSourcesPageResponse(messageID, pageIndex)
+
+	return respondInteractionMessage(
+		session,
+		interaction.Interaction,
+		discordgo.InteractionResponseUpdateMessage,
+		content,
+		components,
+		0,
+	)
+}
+
+func (instance *bot) handleShowImagesPageButton(
+	session *discordgo.Session,
+	interaction *discordgo.InteractionCreate,
+) error {
+	if interaction == nil {
+		return fmt.Errorf("show images page interaction without interaction: %w", os.ErrInvalid)
+	}
+
+	messageID, pageIndex, ok := parseShowImagesPageButtonCustomID(interaction.MessageComponentData().CustomID)
+	if !ok {
+		return fmt.Errorf("invalid show images page interaction custom id: %w", os.ErrInvalid)
+	}
+
+	content, components := instance.showImagesPageResponse(messageID, pageIndex)
 
 	return respondInteractionMessage(
 		session,
@@ -245,6 +350,45 @@ func (instance *bot) showThinkingPageResponse(messageID string, pageIndex int) (
 		buildShowThinkingPaginationComponents(messageID, pageIndex, len(pages))
 }
 
+func (instance *bot) showImagesPageResponse(messageID string, pageIndex int) (string, []discordgo.MessageComponent) {
+	query := instance.imageSearchQueryForMessage(messageID)
+	if strings.TrimSpace(query) == "" {
+		return "No search query available for images.", []discordgo.MessageComponent{}
+	}
+
+	if instance.imageSearch == nil {
+		return "Image search is unavailable right now.", []discordgo.MessageComponent{}
+	}
+
+	const imagesPerPage = maxImagesLimit
+	if pageIndex < 0 {
+		pageIndex = 0
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), imageSearchTimeout)
+	defer cancel()
+
+	result, err := instance.imageSearch.search(ctx, query, pageIndex+1, imagesPerPage)
+	if err != nil {
+		logWarn("image search failed", err, "message_id", messageID, "query", query)
+		return fmt.Sprintf("Failed to search images for %q.", query), []discordgo.MessageComponent{}
+	}
+
+	if result == nil || len(result.Items) == 0 {
+		return fmt.Sprintf("No images found for %q.", query), []discordgo.MessageComponent{}
+	}
+
+	totalPages := result.TotalPages
+	if totalPages < 1 {
+		totalPages = 1
+	}
+
+	content := formatImageSearchResultsContent(query, result.Items, pageIndex, totalPages)
+	components := buildShowImagesPaginationComponents(messageID, pageIndex, totalPages)
+
+	return content, components
+}
+
 func (instance *bot) searchMetadataForMessage(messageID string) *searchMetadata {
 	messageNode, ok := instance.nodes.get(messageID)
 	if !ok {
@@ -272,6 +416,33 @@ func (instance *bot) thinkingTextForMessage(messageID string) string {
 	}
 
 	return extractThinkingText(messageNode.text)
+}
+
+func (instance *bot) imageSearchQueryForMessage(messageID string) string {
+	messageNode, ok := instance.nodes.get(messageID)
+	if !ok {
+		return ""
+	}
+
+	messageNode.mu.Lock()
+	defer messageNode.mu.Unlock()
+
+	if messageNode.searchMetadata != nil && len(messageNode.searchMetadata.Queries) > 0 {
+		return strings.TrimSpace(messageNode.searchMetadata.Queries[0])
+	}
+
+	if messageNode.parentMessage != nil {
+		botUserID := ""
+		if instance != nil && instance.session != nil && instance.session.State != nil && instance.session.State.User != nil {
+			botUserID = instance.session.State.User.ID
+		}
+		parentText := trimBotMention(messageNode.parentMessage.Content, botUserID)
+		if strings.TrimSpace(parentText) != "" {
+			return strings.TrimSpace(parentText)
+		}
+	}
+
+	return ""
 }
 
 func buildShowSourcesPaginationComponents(
@@ -348,8 +519,49 @@ func buildShowThinkingPaginationComponents(
 	return []discordgo.MessageComponent{row}
 }
 
+func buildShowImagesPaginationComponents(
+	messageID string,
+	pageIndex int,
+	pageCount int,
+) []discordgo.MessageComponent {
+	if pageCount <= 1 {
+		return []discordgo.MessageComponent{}
+	}
+
+	previousPageIndex := pageIndex
+	if previousPageIndex > 0 {
+		previousPageIndex--
+	}
+
+	nextPageIndex := pageIndex
+	if nextPageIndex < pageCount-1 {
+		nextPageIndex++
+	}
+
+	previousButton := new(discordgo.Button)
+	previousButton.CustomID = showImagesPageButtonCustomID(messageID, previousPageIndex)
+	previousButton.Label = showSourcesPreviousButtonLabel
+	previousButton.Style = discordgo.SecondaryButton
+	previousButton.Disabled = pageIndex == 0
+
+	nextButton := new(discordgo.Button)
+	nextButton.CustomID = showImagesPageButtonCustomID(messageID, nextPageIndex)
+	nextButton.Label = showSourcesNextButtonLabel
+	nextButton.Style = discordgo.SecondaryButton
+	nextButton.Disabled = pageIndex >= pageCount-1
+
+	row := new(discordgo.ActionsRow)
+	row.Components = []discordgo.MessageComponent{previousButton, nextButton}
+
+	return []discordgo.MessageComponent{row}
+}
+
 func showSourcesPageButtonCustomID(messageID string, pageIndex int) string {
 	return fmt.Sprintf("%s%s:%d", showSourcesPageButtonCustomIDPrefix, messageID, pageIndex)
+}
+
+func showImagesPageButtonCustomID(messageID string, pageIndex int) string {
+	return fmt.Sprintf("%s%s:%d", showImagesPageButtonCustomIDPrefix, messageID, pageIndex)
 }
 
 func showThinkingPageButtonCustomID(messageID string, pageIndex int) string {
@@ -358,6 +570,30 @@ func showThinkingPageButtonCustomID(messageID string, pageIndex int) string {
 
 func parseShowSourcesPageButtonCustomID(customID string) (string, int, bool) {
 	remainder, ok := strings.CutPrefix(customID, showSourcesPageButtonCustomIDPrefix)
+	if !ok {
+		return "", 0, false
+	}
+
+	separatorIndex := strings.LastIndex(remainder, ":")
+	if separatorIndex <= 0 || separatorIndex >= len(remainder)-1 {
+		return "", 0, false
+	}
+
+	pageIndex, err := strconv.Atoi(remainder[separatorIndex+1:])
+	if err != nil || pageIndex < 0 {
+		return "", 0, false
+	}
+
+	messageID := strings.TrimSpace(remainder[:separatorIndex])
+	if messageID == "" {
+		return "", 0, false
+	}
+
+	return messageID, pageIndex, true
+}
+
+func parseShowImagesPageButtonCustomID(customID string) (string, int, bool) {
+	remainder, ok := strings.CutPrefix(customID, showImagesPageButtonCustomIDPrefix)
 	if !ok {
 		return "", 0, false
 	}
@@ -429,6 +665,47 @@ func formatThinkingPageContent(pages []string, pageIndex int) string {
 	}
 
 	return fmt.Sprintf("Thinking Process (page %d/%d)\n\n%s", pageIndex+1, len(pages), pages[pageIndex])
+}
+
+func formatImageSearchResultsContent(
+	query string,
+	items []imageSearchResultItem,
+	pageIndex int,
+	totalPages int,
+) string {
+	var builder strings.Builder
+	if totalPages > 1 {
+		_, _ = fmt.Fprintf(&builder, "Images for %q (page %d/%d):\n\n", query, pageIndex+1, totalPages)
+	} else {
+		_, _ = fmt.Fprintf(&builder, "Images for %q:\n\n", query)
+	}
+
+	for index, item := range items {
+		num := index + 1 + (pageIndex * maxImagesLimit)
+		title := strings.TrimSpace(item.Title)
+		if title == "" {
+			title = "Image"
+		}
+		landingURL := strings.TrimSpace(item.LandingURL)
+		imageURL := strings.TrimSpace(item.URL)
+		thumbURL := strings.TrimSpace(item.Thumbnail)
+
+		bestURL := imageURL
+		if bestURL == "" {
+			bestURL = thumbURL
+		}
+		if bestURL == "" {
+			bestURL = landingURL
+		}
+
+		if landingURL != "" && landingURL != bestURL {
+			_, _ = fmt.Fprintf(&builder, "%d. [%s](<%s>) - <%s>\n", num, title, landingURL, bestURL)
+		} else {
+			_, _ = fmt.Fprintf(&builder, "%d. %s - <%s>\n", num, title, bestURL)
+		}
+	}
+
+	return strings.TrimSpace(builder.String())
 }
 
 func (instance *bot) handleCreateGistButton(
