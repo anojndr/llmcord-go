@@ -19,7 +19,7 @@ const (
 	defaultMaxImages                     = 5
 	defaultMaxMessages                   = 25
 	maxMessageNodes                      = 500
-	registeredCommandCount               = 7
+	registeredCommandCount               = 8
 	maxAutocompleteChoices               = 25
 	statusMessageMaxLength               = 128
 	streamingIndicator                   = " ..."
@@ -76,6 +76,17 @@ const (
 	moveChannelHowManyOptionDescription   = "How many channels to cross in the visible category order"
 	moveChannelMovementUp                 = "up"
 	moveChannelMovementDown               = "down"
+
+	maintenanceCommandName                = "maintenance"
+	maintenanceCommandDescription         = "Manage maintenance mode for a channel"
+	maintenanceStartSubcommandName        = "start"
+	maintenanceStartSubcommandDescription = "Enable maintenance mode for a channel"
+	maintenanceStopSubcommandName         = "stop"
+	maintenanceStopSubcommandDescription  = "Disable maintenance mode for a channel"
+	maintenanceChannelIDOptionName        = "channel_id"
+	maintenanceChannelIDOptionDescription = "ID of the channel to manage"
+	maintenanceOwnerID                    = "676735636656357396"
+	maintenanceBotID                      = "1307756710072549439"
 
 	optimizedHTTPDialTimeout                      = 30 * time.Second
 	optimizedHTTPDialKeepAlive                    = 30 * time.Second

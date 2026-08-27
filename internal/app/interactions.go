@@ -99,6 +99,8 @@ func (instance *bot) handleApplicationCommandInteraction(
 		return instance.handleEditChannelNameCommand(session, interaction)
 	case moveChannelCommandName:
 		return instance.handleMoveChannelCommand(session, interaction)
+	case maintenanceCommandName:
+		return instance.handleMaintenanceCommand(session, interaction)
 	default:
 		return nil
 	}
