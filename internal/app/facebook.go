@@ -26,6 +26,7 @@ import (
 const (
 	defaultFacebookGetMyFBProcessURL  = "https://getmyfb.com/process"
 	defaultAutocompressorBaseURL      = "https://autocompressor.net"
+	autocompressorTargetSize          = "8"
 	autocompressorDefaultPollInterval = time.Second
 	autocompressorMaxPollAttempts     = 120
 	facebookDefaultFilename           = "facebook.mp4"
@@ -684,7 +685,7 @@ func (client facebookClient) compressVideo(
 	rqReqBody, err := json.Marshal(autocompressorRQJobRequest{
 		SourceType:       "file",
 		CompressionLevel: "normal",
-		TargetSize:       "10",
+		TargetSize:       autocompressorTargetSize,
 		OutputFormat:     "mp4",
 		MoreOptions: map[string]interface{}{
 			"av1webm": false,
