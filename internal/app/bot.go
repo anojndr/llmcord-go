@@ -54,6 +54,8 @@ type bot struct {
 	nextEditAtByMessage          map[string]time.Time
 	messageDedupMu               sync.Mutex
 	messageProcessedAt           map[string]time.Time
+	maintenanceMu                sync.RWMutex
+	maintenanceChannels          map[string]struct{}
 	startupMu                    sync.Mutex
 	discordReady                 bool
 	sessionConfigured            bool
@@ -147,6 +149,7 @@ func newBot(ctx context.Context, configPath string, loadedConfig config) (*bot, 
 	instance.currentModel = loadedConfig.firstModel()
 	instance.currentExaSearchTypeValue = defaultExaSearchType
 	instance.currentSearchDeciderModel = loadedConfig.SearchDeciderModel
+	instance.maintenanceChannels = make(map[string]struct{})
 	instance.onlineOutput = os.Stdout
 
 	discordSession.Identify.Intents = discordgo.IntentsGuilds |
@@ -386,6 +389,7 @@ func (instance *bot) syncCommands() error {
 	commands = append(commands, newCreateChannelCommand())
 	commands = append(commands, newEditChannelNameCommand())
 	commands = append(commands, newMoveChannelCommand())
+	commands = append(commands, newMaintenanceCommand())
 
 	_, err := instance.session.ApplicationCommandBulkOverwrite(
 		instance.session.State.User.ID,

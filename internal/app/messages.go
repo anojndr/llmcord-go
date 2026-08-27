@@ -35,6 +35,10 @@ func (instance *bot) handleMessageCreate(
 		return
 	}
 
+	if instance.enforceMaintenanceMode(message) {
+		return
+	}
+
 	botUserID := ""
 	if instance.session.State != nil && instance.session.State.User != nil {
 		botUserID = instance.session.State.User.ID

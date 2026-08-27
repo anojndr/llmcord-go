@@ -124,6 +124,8 @@ Generic website URL extraction runs Firecrawl Scrape first when `web_search.fire
 - `/createchannel <channelname>`: create a text channel in the category you are currently in (requires `Manage Channels`)
 - `/editchannelname <channelid> <newchannelname>`: rename a channel (requires `Manage Channels`)
 - `/movechannel <channelid> <movement> <howmany>`: move a channel up/down by visible sibling channels within its category (requires `Manage Channels`)
+- `/maintenance start <channel_id>`: lock a channel so only user `676735636656357396` and the bot `1307756710072549439` can send messages (denies `Send Messages` for `@everyone`, allows for those users; bot also deletes messages from anyone else, so not even admins can bypass; only `676735636656357396` may invoke the command)
+- `/maintenance stop <channel_id>`: unlock a maintenance-locked channel (removes the permission overwrites; only `676735636656357396` may invoke)
 - Attach files or images for multimodal context
   Text-like files (JSON, CSV, logs, Markdown, source) are inlined when the provider can't read raw files; others stay attachments with metadata summaries, including ZIP manifests. Gemini sends single-image prompts text-first and uploads images over 4 MiB via the Files API.
 - Start a prompt with `vsearch` for reverse-image lookup
