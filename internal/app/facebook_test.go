@@ -1337,7 +1337,7 @@ func TestFacebookClientFetchCompressesOversizedVideo(t *testing.T) {
 	t.Parallel()
 
 	oversizedVideo := make([]byte, facebookMaxUploadBytes+1024)
-	compressedVideo := []byte("compressed-10mb-video")
+	compressedVideo := []byte("compressed-8mb-video")
 	var uploadFileBytes []byte
 
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -1352,7 +1352,7 @@ func TestFacebookClientFetchCompressesOversizedVideo(t *testing.T) {
 		case "/rqjob":
 			var req autocompressorRQJobRequest
 			_ = json.NewDecoder(request.Body).Decode(&req)
-			if req.TargetSize != "10" || req.OutputFormat != "mp4" {
+			if req.TargetSize != "8" || req.OutputFormat != "mp4" {
 				t.Errorf("unexpected rqjob request: %#v", req)
 			}
 			writer.Header().Set("Content-Type", "application/json")
@@ -1389,7 +1389,7 @@ func TestFacebookClientFetchCompressesOversizedVideo(t *testing.T) {
 			_ = json.NewEncoder(writer).Encode(resp)
 		case "/job/job-12345/download":
 			writer.Header().Set("Content-Type", "video/mp4")
-			writer.Header().Set("Content-Disposition", `attachment; filename="original-10.mp4"`)
+			writer.Header().Set("Content-Disposition", `attachment; filename="original-8.mp4"`)
 			_, _ = writer.Write(compressedVideo)
 		default:
 			t.Errorf("unexpected path: %s", request.URL.Path)
@@ -1413,8 +1413,8 @@ func TestFacebookClientFetchCompressesOversizedVideo(t *testing.T) {
 		t.Fatalf("got result bytes %q, want %q", string(resultBytes), string(compressedVideo))
 	}
 
-	if result.MediaPart[contentFieldFilename] != "original-10.mp4" {
-		t.Fatalf("got filename %q, want %q", result.MediaPart[contentFieldFilename], "original-10.mp4")
+	if result.MediaPart[contentFieldFilename] != "original-8.mp4" {
+		t.Fatalf("got filename %q, want %q", result.MediaPart[contentFieldFilename], "original-8.mp4")
 	}
 }
 
