@@ -238,6 +238,29 @@ func TestBuildResponseButtonsGistButtonLabel(t *testing.T) {
 	}
 }
 
+func TestBuildResponseButtonsShowImagesButton(t *testing.T) {
+	t.Parallel()
+
+	buttons := buildResponseButtons(responseActions{showSources: false, showImages: true, showThinking: false, showGist: false})
+	if len(buttons) != 1 {
+		t.Fatalf("unexpected button count: %#v", buttons)
+	}
+
+	button, ok := buttons[0].(*discordgo.Button)
+	if !ok {
+		t.Fatalf("unexpected component type: %#v", buttons[0])
+	}
+
+	if button.CustomID != showImagesButtonCustomID {
+		t.Fatalf("unexpected image button custom ID: %q", button.CustomID)
+	}
+
+	want := "Show Images"
+	if button.Label != want {
+		t.Fatalf("unexpected image button label: got %q, want %q", button.Label, want)
+	}
+}
+
 func TestBuildRenderSpecsAddsSourcesButtonOnlyToFinalSearchedSegment(t *testing.T) {
 	t.Parallel()
 
@@ -246,12 +269,12 @@ func TestBuildRenderSpecsAddsSourcesButtonOnlyToFinalSearchedSegment(t *testing.
 		t.Fatalf("unexpected spec count: %#v", specs)
 	}
 
-	if specs[0].actions.showSources || specs[0].actions.showThinking || specs[0].actions.showGist {
+	if specs[0].actions.showSources || specs[0].actions.showThinking || specs[0].actions.showGist || specs[0].actions.showImages {
 		t.Fatalf("expected no action buttons on first segment: %#v", specs[0])
 	}
 
-	if !specs[1].actions.showSources || specs[1].actions.showThinking || !specs[1].actions.showGist {
-		t.Fatalf("expected sources and gist buttons on final segment: %#v", specs[1])
+	if !specs[1].actions.showSources || specs[1].actions.showThinking || !specs[1].actions.showGist || !specs[1].actions.showImages {
+		t.Fatalf("expected sources, images, and gist buttons on final segment: %#v", specs[1])
 	}
 }
 
@@ -267,8 +290,8 @@ func TestBuildRenderSpecsAddsGistButtonToFinalNonSearchedSegment(t *testing.T) {
 		t.Fatalf("expected no sources button on non-searched response: %#v", specs[0])
 	}
 
-	if !specs[0].actions.showGist {
-		t.Fatalf("expected gist button on final non-searched response: %#v", specs[0])
+	if !specs[0].actions.showGist || !specs[0].actions.showImages {
+		t.Fatalf("expected gist and images button on final non-searched response: %#v", specs[0])
 	}
 }
 
