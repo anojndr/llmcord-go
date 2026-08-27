@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 )
@@ -958,6 +959,8 @@ func newTestFacebookClient(server *httptest.Server) facebookClient {
 			},
 		},
 		getMyFBProcessURL: server.URL + "/process",
+		compressorURL:     server.URL,
+		pollInterval:      time.Millisecond,
 	}
 }
 
@@ -1328,6 +1331,129 @@ func TestFacebookClientFetchRejectsEmptyGetMyFBDownloadResponses(t *testing.T) {
 
 	if !strings.Contains(err.Error(), "empty facebook video response") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+func TestFacebookClientFetchCompressesOversizedVideo(t *testing.T) {
+	t.Parallel()
+
+	oversizedVideo := make([]byte, facebookMaxUploadBytes+1024)
+	compressedVideo := []byte("compressed-10mb-video")
+	var uploadFileBytes []byte
+
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/process":
+			writer.Header().Set("Hx-Trigger", "resultsuccess")
+			_, _ = writer.Write([]byte(facebookGetMyFBSearchFragment()))
+		case "/downloads/video-hd.mp4":
+			writer.Header().Set("Content-Type", "video/mp4")
+			writer.Header().Set("Content-Disposition", `attachment; filename="original.mp4"`)
+			_, _ = writer.Write(oversizedVideo)
+		case "/rqjob":
+			var req autocompressorRQJobRequest
+			_ = json.NewDecoder(request.Body).Decode(&req)
+			if req.TargetSize != "10" || req.OutputFormat != "mp4" {
+				t.Errorf("unexpected rqjob request: %#v", req)
+			}
+			writer.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(writer).Encode(autocompressorRQJobResponse{
+				Allowed:     true,
+				Server:      "01",
+				Message:     "job-12345",
+				UploadLimit: 2147483648,
+			})
+		case "/job/job-12345/upload":
+			err := request.ParseMultipartForm(32 << 20)
+			if err != nil {
+				t.Errorf("parse multipart upload form: %v", err)
+			}
+			file, _, err := request.FormFile("filetoupload")
+			if err != nil {
+				t.Errorf("get filetoupload: %v", err)
+			} else {
+				uploadFileBytes, _ = io.ReadAll(file)
+				_ = file.Close()
+			}
+			writer.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(writer).Encode(autocompressorUploadResponse{
+				Error: false,
+			})
+		case "/job/job-12345/status":
+			writer.Header().Set("Content-Type", "application/json")
+			var resp autocompressorStatusResponse
+			resp.Status.Ended = true
+			resp.Status.Error = false
+			resp.Progress.Action = "Running final encoding pass"
+			resp.Progress.Quantified = true
+			resp.Progress.Progress = 1.0
+			_ = json.NewEncoder(writer).Encode(resp)
+		case "/job/job-12345/download":
+			writer.Header().Set("Content-Type", "video/mp4")
+			writer.Header().Set("Content-Disposition", `attachment; filename="original-10.mp4"`)
+			_, _ = writer.Write(compressedVideo)
+		default:
+			t.Errorf("unexpected path: %s", request.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client := newTestFacebookClient(server)
+
+	result, err := client.fetch(context.Background(), testFacebookURL)
+	if err != nil {
+		t.Fatalf("fetch facebook content: %v", err)
+	}
+
+	if len(uploadFileBytes) != len(oversizedVideo) {
+		t.Fatalf("uploaded file size = %d, want %d", len(uploadFileBytes), len(oversizedVideo))
+	}
+
+	resultBytes := result.MediaPart[contentFieldBytes].([]byte)
+	if string(resultBytes) != string(compressedVideo) {
+		t.Fatalf("got result bytes %q, want %q", string(resultBytes), string(compressedVideo))
+	}
+
+	if result.MediaPart[contentFieldFilename] != "original-10.mp4" {
+		t.Fatalf("got filename %q, want %q", result.MediaPart[contentFieldFilename], "original-10.mp4")
+	}
+}
+
+func TestFacebookClientFetchCompressFallbackOnFailure(t *testing.T) {
+	t.Parallel()
+
+	oversizedVideo := make([]byte, facebookMaxUploadBytes+1024)
+
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/process":
+			writer.Header().Set("Hx-Trigger", "resultsuccess")
+			_, _ = writer.Write([]byte(facebookGetMyFBSearchFragment()))
+		case "/downloads/video-hd.mp4":
+			writer.Header().Set("Content-Type", "video/mp4")
+			writer.Header().Set("Content-Disposition", `attachment; filename="original.mp4"`)
+			_, _ = writer.Write(oversizedVideo)
+		case "/rqjob":
+			writer.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(writer).Encode(autocompressorRQJobResponse{
+				Allowed: false,
+				Message: "Server full",
+			})
+		default:
+			t.Errorf("unexpected path: %s", request.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client := newTestFacebookClient(server)
+
+	result, err := client.fetch(context.Background(), testFacebookURL)
+	if err != nil {
+		t.Fatalf("fetch facebook content: %v", err)
+	}
+
+	resultBytes := result.MediaPart[contentFieldBytes].([]byte)
+	if len(resultBytes) != len(oversizedVideo) {
+		t.Fatalf("got result bytes len %d, want %d", len(resultBytes), len(oversizedVideo))
 	}
 }
 
