@@ -51,6 +51,8 @@ providers:
     # Skip prepending the global `system_prompt` to requests for this
     # provider's models:
     # dont_send_system_prompt: true
+    # Automatically append "search the web" to user queries if not already present:
+    # auto_append_search_web: true
     # Thought summaries are disabled by default. To turn them on:
     # extra_body:
     #   thinkingConfig:
@@ -78,6 +80,8 @@ providers:
   openai:
     base_url: https://api.openai.com/v1
     api_key: 
+    # Automatically append "search the web" to user queries if not already present:
+    # auto_append_search_web: true
     # Requests through the built-in `openai` provider default to `verbosity:
     # low` and derive a stable reply-chain `prompt_cache_key`, even if you
     # replace `base_url` with another OpenAI-compatible backend. The built-in

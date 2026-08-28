@@ -562,3 +562,51 @@ func setPromptSectionValue(prompt *augmentedUserPrompt, sectionName string, valu
 		prompt.WebSearchResults = trimmedValue
 	}
 }
+
+func containsSearchWebPhrase(text string) bool {
+	lower := strings.ToLower(text)
+
+	return strings.Contains(lower, "search web") || strings.Contains(lower, "search the web")
+}
+
+func maybeAppendSearchWebToConversation(conversation []chatMessage) ([]chatMessage, error) {
+	if len(conversation) == 0 {
+		return conversation, nil
+	}
+
+	index, err := latestUserMessageIndex(conversation)
+	if err != nil {
+		return conversation, nil
+	}
+
+	var userQuery string
+
+	switch typedContent := conversation[index].Content.(type) {
+	case string:
+		prompt := parseAugmentedUserPrompt(typedContent)
+		userQuery = prompt.UserQuery
+	case []contentPart:
+		contentText := contentPartsText(typedContent)
+		prompt := parseAugmentedUserPrompt(contentText)
+		userQuery = prompt.UserQuery
+	case nil:
+		userQuery = ""
+	default:
+		// Unknown content type - delegate to appendContextToConversation to surface
+		// the proper \"unsupported message content type\" error via the
+		// prepareMessageResponse / buildFallbackRequest error path.
+		userQuery = ""
+	}
+
+	if containsSearchWebPhrase(userQuery) {
+		return conversation, nil
+	}
+
+	return appendContextToConversation(conversation, func(prompt *augmentedUserPrompt) {
+		if containsSearchWebPhrase(prompt.UserQuery) {
+			return
+		}
+
+		prompt.UserQuery = appendPromptUserQuery(prompt.UserQuery, "search the web")
+	})
+}

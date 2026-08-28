@@ -308,11 +308,20 @@ func (instance *bot) prepareMessageResponse(
 			fmt.Errorf("augment prepared message response: %w", err)
 	}
 
-	unmutatedMessages := append([]chatMessage(nil), messages...)
-
 	provider, err := configuredModelProvider(loadedConfig, providerSlashModel)
 	if err != nil {
 		return chatCompletionRequest{}, nil, nil, err
+	}
+
+	unmutatedMessages := append([]chatMessage(nil), messages...)
+
+	if provider.AutoAppendSearchWeb {
+		appendedMessages, appendErr := maybeAppendSearchWebToConversation(messages)
+		if appendErr != nil {
+			return chatCompletionRequest{}, nil, nil, fmt.Errorf("append search web suffix: %w", appendErr)
+		}
+
+		messages = appendedMessages
 	}
 
 	requestMessages := messages
@@ -382,6 +391,15 @@ func (instance *bot) buildFallbackRequest(
 		searchWarnings = warnings
 		messages = augmentedMessages
 		tracker.searchMetadata = mergeSearchMetadata(tracker.searchMetadata, webSearchMetadata)
+	}
+
+	if fallbackProvider.AutoAppendSearchWeb {
+		appendedMessages, appendErr := maybeAppendSearchWebToConversation(messages)
+		if appendErr != nil {
+			return chatCompletionRequest{}, nil, fmt.Errorf("append search web suffix: %w", appendErr)
+		}
+
+		messages = appendedMessages
 	}
 
 	if usingOriginalMessages && !fallbackProvider.DontSendSystemPrompt {
