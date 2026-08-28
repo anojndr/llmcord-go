@@ -299,8 +299,6 @@ func (instance *bot) prepareMessageResponse(
 		}
 	}
 
-	messages = maybeExpandFragmentInConversation(messages)
-
 	progress.advance(requestProgressStageGatheringContext)
 
 	messages, searchMetadata, warnings, err := instance.augmentPreparedMessageResponse(
@@ -962,24 +960,6 @@ func (instance *bot) messageNodeURLExtractionText(
 	return normalizedURLExtractionText(node.urlScanText), node.parentMessage
 }
 
-func ensureFollowUpHandlingInSystemPrompt(prompt string) string {
-	// Skip tiny test prompts (e.g. "You are concise.") to keep unit tests stable.
-	// Real deployment prompts are hundreds of chars and contain date/identity markers.
-	if len([]rune(prompt)) < 120 {
-		return prompt
-	}
-	if strings.Contains(prompt, "Conversation continuity — short follow-up") {
-		return prompt
-	}
-	lower := strings.ToLower(prompt)
-	// Generic fallback for already-injected prompts that may have been added via config file (same header but maybe normalized)
-	if strings.Contains(lower, "short fragment") && strings.Contains(lower, "entity-correction") {
-		return prompt
-	}
-	addition := "\n\nConversation continuity — short follow-up / entity-correction handling: If the user's latest message is a short fragment (1-6 words) that corrects, clarifies, narrows, or disambiguates an entity you previously assumed — for example you assumed Australian BSB and the user then says \"Belarussian bsb bank\", \"no, the Belarusian one\", \"BSB Belarus\" — treat it as a continuation of the prior substantive question, NOT as a new standalone request for a generic entity profile. Re-answer the original functional question using the corrected entity. Acknowledge the correction briefly (e.g., \"Got it — Belarusian BSB Bank (JSC BSB Bank / Belarusian-Swiss Bank)\"), then provide the relevant functional answer. In the Oney ATM example this means: whether a Belarusian BSB Bank card has a PIN / personal number (= code confidentiel) and how to view/change it via BSB Bank app / internet banking / branch or call center, and how it works at an Oney ATM in Paris/France (French ATMs typically require a 4-digit numeric code confidentiel — verify via search if needed). Do NOT dump generic company history, full address, SWIFT UNBSBY2X, CEO name, shareholder list, branch counts, exchange points etc., unless directly relevant to answering the functional PIN/ATM question and the user explicitly asked for general information. For ambiguous follow-ups, always carry forward the original intent from prior user messages and your prior answer's assumed entity."
-	return prompt + addition
-}
-
 func prependSystemPrompt(
 	messages []chatMessage,
 	systemPrompt string,
@@ -989,12 +969,9 @@ func prependSystemPrompt(
 		return messages
 	}
 
-	rendered := systemPromptNow(systemPrompt, now)
-	rendered = ensureFollowUpHandlingInSystemPrompt(rendered)
-
 	return append([]chatMessage{{
 		Role:    messageRoleSystem,
-		Content: rendered,
+		Content: systemPromptNow(systemPrompt, now),
 	}}, messages...)
 }
 
