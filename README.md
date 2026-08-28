@@ -100,6 +100,7 @@ Model notes:
 ### Search and Visual Search
 
 Web search order is hardcoded: TinyFish Search (when `web_search.tinyfish.api_key` is set) -> Exa -> Tavily.
+> **Breaking change:** `web_search.primary_provider` was removed — configs containing `web_search.primary_provider` now fail to load with `web_search.primary_provider is removed; remove the field`. Remove the key from `config.yaml`; the order is fixed as TinyFish → Exa → Tavily (TinyFish is skipped when no `tinyfish.api_key` is set, so Tavily-only deployments now probe Exa first).
 
 | Setting | Purpose |
 | --- | --- |

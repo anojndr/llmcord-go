@@ -153,6 +153,8 @@ web_search:
   # Web search order is hardcoded: TinyFish Search (when `web_search.tinyfish.api_key` is set) -> Exa -> Tavily.
   # When TinyFish is configured, search uses the TinyFish Search API and enriches each result via the
   # TinyFish Fetch API. If TinyFish is unavailable or fails, search falls back to Exa, then Tavily.
+  # NOTE: web_search.primary_provider was removed; configs containing it will fail to load.
+  # Remove the field if present from older configs.
   # Maximum URLs to request for each search query.
   max_urls: 5
   # Generic website URL extraction runs Firecrawl Scrape first when a
