@@ -503,24 +503,30 @@ func TestSearchDeciderPromptRetainsCriticalInstructions(t *testing.T) {
 
 	expectedSnippets := []string{
 		`You are a search-decision model.`,
-		`Check explicit search instructions after reconstructing the effective request.`,
-		`Use conversation context to resolve references.`,
-		`extract the actual items from the image.`,
-		`Return {"needs_search": false} when the effective request can be produced from what is already given.`,
+		`8. Check explicit search instructions after reconstructing the effective request.`,
+		`9. Use conversation context to resolve references.`,
+		`If the user asks to search everything shown in an image, extract the actual items from the image.`,
+		`12. Return {"needs_search": false} when the effective request can be produced from what is already given.`,
 		`Return {"needs_search": true, "queries": [...]} in all other cases, especially when the effective request involves:`,
-		`Never generate web searches for information that is inherently private, account-specific, local-only, or inaccessible to the public web.`,
-		`Weigh the date of the claimed facts against the freshness of the request.`,
-		`Preserve the substance of the original question through follow-ups.`,
-		`Preserve the substance of a claim when the user asks to verify it.`,
+		`16. Never generate web searches for information that is inherently private, account-specific, local-only, or inaccessible to the public web.`,
+		`23. Weigh the date of the claimed facts against the freshness of the request.`,
+		`27. Preserve the substance of the original question through follow-ups.`,
+		`33. Preserve the substance of a claim when the user asks to verify it.`,
 	}
 
 	instant := time.Date(2026, time.March, 9, 13, 14, 15, 0, time.FixedZone("PHT", 8*60*60))
 	prompt := searchDeciderPrompt(instant)
 
+	lastIndex := -1
 	for _, expectedSnippet := range expectedSnippets {
-		if !strings.Contains(prompt, expectedSnippet) {
+		idx := strings.Index(prompt, expectedSnippet)
+		if idx == -1 {
 			t.Fatalf("expected search decider prompt to contain %q", expectedSnippet)
 		}
+		if idx < lastIndex {
+			t.Fatalf("expected search decider prompt snippets to appear in order, %q appears out of order", expectedSnippet)
+		}
+		lastIndex = idx
 	}
 }
 
@@ -1629,6 +1635,233 @@ func TestRoutedWebSearchClientFallsBackToTavilyWhenMCPFails(t *testing.T) {
 	if len(results) != 1 || results[0].Query != query {
 		t.Fatalf("unexpected fallback results: %#v", results)
 	}
+}
+
+func TestRoutedWebSearchClientHardcodedTinyFishExaTavilyChain(t *testing.T) {
+	t.Parallel()
+
+	tinyFishResult := []webSearchResult{{Query: "q", Text: "tinyfish result"}}
+	exaResult := []webSearchResult{{Query: "q", Text: "exa result"}}
+	tavilyResult := []webSearchResult{{Query: "q", Text: "tavily result"}}
+
+	tests := []struct {
+		name             string
+		tinyFishAPIKeys  []string
+		tinyFishSucceeds bool
+		exaSucceeds      bool
+		tavilySucceeds   bool
+		wantText         string
+		wantTinyCalls    int
+		wantExaCalls     int
+		wantTavilyCalls  int
+		wantErr          bool
+	}{
+		{
+			name:             "tinyfish success short-circuits exa and tavily",
+			tinyFishAPIKeys:  []string{"tf-key"},
+			tinyFishSucceeds: true,
+			exaSucceeds:      true,
+			tavilySucceeds:   true,
+			wantText:         "tinyfish result",
+			wantTinyCalls:    1,
+			wantExaCalls:     0,
+			wantTavilyCalls:  0,
+		},
+		{
+			name:             "tinyfish fails falls back to exa",
+			tinyFishAPIKeys:  []string{"tf-key"},
+			tinyFishSucceeds: false,
+			exaSucceeds:      true,
+			tavilySucceeds:   true,
+			wantText:         "exa result",
+			wantTinyCalls:    1,
+			wantExaCalls:     1,
+			wantTavilyCalls:  0,
+		},
+		{
+			name:             "tinyfish and exa fail falls back to tavily",
+			tinyFishAPIKeys:  []string{"tf-key"},
+			tinyFishSucceeds: false,
+			exaSucceeds:      false,
+			tavilySucceeds:   true,
+			wantText:         "tavily result",
+			wantTinyCalls:    1,
+			wantExaCalls:     1,
+			wantTavilyCalls:  1,
+		},
+		{
+			name:            "no tinyfish keys skips tinyfish and uses exa",
+			tinyFishAPIKeys: nil,
+			exaSucceeds:     true,
+			tavilySucceeds:  true,
+			wantText:        "exa result",
+			wantTinyCalls:   0,
+			wantExaCalls:    1,
+			wantTavilyCalls: 0,
+		},
+		{
+			name:            "no tinyfish exa fails uses tavily",
+			tinyFishAPIKeys: nil,
+			exaSucceeds:     false,
+			tavilySucceeds:  true,
+			wantText:        "tavily result",
+			wantTinyCalls:   0,
+			wantExaCalls:    1,
+			wantTavilyCalls: 1,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			tinyFishClient := newStubWebSearchClient(func(_ context.Context, _ config, _ []string) ([]webSearchResult, error) {
+				if tc.tinyFishSucceeds {
+					return tinyFishResult, nil
+				}
+				return nil, errSearchBackendUnavailable
+			})
+			exaClient := newStubWebSearchClient(func(_ context.Context, _ config, _ []string) ([]webSearchResult, error) {
+				if tc.exaSucceeds {
+					return exaResult, nil
+				}
+				return nil, errSearchBackendUnavailable
+			})
+			tavilyClient := newStubWebSearchClient(func(_ context.Context, _ config, _ []string) ([]webSearchResult, error) {
+				if tc.tavilySucceeds {
+					return tavilyResult, nil
+				}
+				return nil, errSearchBackendUnavailable
+			})
+
+			loadedConfig := testSearchConfig()
+			if len(tc.tinyFishAPIKeys) > 0 {
+				loadedConfig.WebSearch.TinyFish.APIKey = tc.tinyFishAPIKeys[0]
+				loadedConfig.WebSearch.TinyFish.APIKeys = tc.tinyFishAPIKeys
+			}
+
+			client := routedWebSearchClient{
+				tinyFish: tinyFishClient,
+				exa:      exaClient,
+				tavily:   tavilyClient,
+			}
+
+			results, err := client.search(context.Background(), loadedConfig, []string{"q"})
+			if tc.wantErr && err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("search: %v", err)
+			}
+			if !tc.wantErr {
+				if len(results) != 1 || results[0].Text != tc.wantText {
+					t.Fatalf("unexpected results: %#v want %q", results, tc.wantText)
+				}
+			}
+			if len(tinyFishClient.calls) != tc.wantTinyCalls {
+				t.Fatalf("tinyfish calls %d want %d", len(tinyFishClient.calls), tc.wantTinyCalls)
+			}
+			if len(exaClient.calls) != tc.wantExaCalls {
+				t.Fatalf("exa calls %d want %d", len(exaClient.calls), tc.wantExaCalls)
+			}
+			if len(tavilyClient.calls) != tc.wantTavilyCalls {
+				t.Fatalf("tavily calls %d want %d", len(tavilyClient.calls), tc.wantTavilyCalls)
+			}
+		})
+	}
+}
+
+func TestRoutedWebSearchClientHardcodedErrorMessagesAndExaName(t *testing.T) {
+	t.Parallel()
+
+	errTinyFish := errors.New("tinyfish boom")
+	errExa := errors.New("exa boom")
+	errTavily := errors.New("tavily boom")
+
+	t.Run("all fail with tinyfish uses TinyFish Search and Exa branch", func(t *testing.T) {
+		t.Parallel()
+
+		for _, tc := range []struct {
+			name       string
+			exaAPIKeys []string
+			wantExa    string
+		}{
+			{"exa MCP when no api key", nil, "Exa MCP"},
+			{"exa Search API when key set", []string{"exa-key"}, "Exa Search API"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+
+				tinyFishClient := newStubWebSearchClient(func(_ context.Context, _ config, _ []string) ([]webSearchResult, error) {
+					return nil, errTinyFish
+				})
+				exaClient := newStubWebSearchClient(func(_ context.Context, _ config, _ []string) ([]webSearchResult, error) {
+					return nil, errExa
+				})
+				tavilyClient := newStubWebSearchClient(func(_ context.Context, _ config, _ []string) ([]webSearchResult, error) {
+					return nil, errTavily
+				})
+
+				loadedConfig := testSearchConfig()
+				loadedConfig.WebSearch.TinyFish.APIKey = "tf-key"
+				loadedConfig.WebSearch.TinyFish.APIKeys = []string{"tf-key"}
+				if len(tc.exaAPIKeys) > 0 {
+					loadedConfig.WebSearch.Exa.APIKey = tc.exaAPIKeys[0]
+					loadedConfig.WebSearch.Exa.APIKeys = tc.exaAPIKeys
+				}
+
+				client := routedWebSearchClient{tinyFish: tinyFishClient, exa: exaClient, tavily: tavilyClient}
+				_, err := client.search(context.Background(), loadedConfig, []string{"q"})
+				if err == nil {
+					t.Fatal("expected error")
+				}
+				msg := err.Error()
+				if !strings.Contains(msg, "TinyFish Search") {
+					t.Fatalf("error missing TinyFish Search: %q", msg)
+				}
+				if !strings.Contains(msg, tc.wantExa) {
+					t.Fatalf("error missing %q: %q", tc.wantExa, msg)
+				}
+				if !strings.Contains(msg, "Tavily") {
+					t.Fatalf("error missing Tavily: %q", msg)
+				}
+				if !errors.Is(err, errTinyFish) || !errors.Is(err, errExa) || !errors.Is(err, errTavily) {
+					t.Fatalf("expected joined errors, got %v", err)
+				}
+			})
+		}
+	})
+
+	t.Run("all fail without tinyfish omits tinyfish and uses Exa branch", func(t *testing.T) {
+		t.Parallel()
+
+		exaClient := newStubWebSearchClient(func(_ context.Context, _ config, _ []string) ([]webSearchResult, error) {
+			return nil, errExa
+		})
+		tavilyClient := newStubWebSearchClient(func(_ context.Context, _ config, _ []string) ([]webSearchResult, error) {
+			return nil, errTavily
+		})
+
+		loadedConfig := testSearchConfig()
+		loadedConfig.WebSearch.Exa.APIKeys = nil
+		loadedConfig.WebSearch.Exa.APIKey = ""
+
+		client := routedWebSearchClient{exa: exaClient, tavily: tavilyClient}
+		_, err := client.search(context.Background(), loadedConfig, []string{"q"})
+		if err == nil {
+			t.Fatal("expected error")
+		}
+		msg := err.Error()
+		if strings.Contains(msg, "TinyFish") {
+			t.Fatalf("error should not contain TinyFish when not configured: %q", msg)
+		}
+		if !strings.Contains(msg, "Exa MCP") {
+			t.Fatalf("error missing Exa MCP: %q", msg)
+		}
+		if !strings.Contains(msg, "Tavily") {
+			t.Fatalf("error missing Tavily: %q", msg)
+		}
+	})
 }
 
 func TestTavilySearchClientSearchRotatesAPIKeysAcrossCalls(t *testing.T) {

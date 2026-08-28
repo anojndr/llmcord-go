@@ -469,6 +469,10 @@ func mergeSearchMetadata(left, right *searchMetadata) *searchMetadata {
 	return merged
 }
 
+ // search implements the hardcoded TinyFish -> Exa -> Tavily chain.
+ // TinyFish is skipped when no TinyFish API keys are configured; Exa is
+ // always probed before Tavily even for Tavily-only deployments (intentional
+ // per hardcoded spec — note the extra RTT for Tavily-only configs in README).
 func (client routedWebSearchClient) search(
 	ctx context.Context,
 	loadedConfig config,

@@ -388,7 +388,51 @@ func validateNoDeprecatedConfigSections(rootNode *yaml.Node) error {
 		)
 	}
 
+	hasPrimaryProvider, err := hasWebSearchPrimaryProvider(rootNode)
+	if err != nil {
+		return err
+	}
+
+	if hasPrimaryProvider {
+		return fmt.Errorf(
+			"web_search.primary_provider is removed; search order is hardcoded to TinyFish -> Exa -> Tavily: remove web_search.primary_provider: %w",
+			os.ErrInvalid,
+		)
+	}
+
 	return nil
+}
+
+func hasWebSearchPrimaryProvider(rootNode *yaml.Node) (bool, error) {
+	if len(rootNode.Content) == 0 {
+		return false, fmt.Errorf("decode document root: %w", os.ErrInvalid)
+	}
+
+	mappingNode := rootNode.Content[0]
+	if mappingNode.Kind != yaml.MappingNode {
+		return false, fmt.Errorf("decode mapping root: %w", os.ErrInvalid)
+	}
+
+	for index := 0; index < len(mappingNode.Content)-1; index += 2 {
+		if mappingNode.Content[index].Value != "web_search" {
+			continue
+		}
+
+		valueNode := mappingNode.Content[index+1]
+		if valueNode.Kind != yaml.MappingNode {
+			return false, nil
+		}
+
+		for subIndex := 0; subIndex < len(valueNode.Content)-1; subIndex += 2 {
+			if valueNode.Content[subIndex].Value == "primary_provider" {
+				return true, nil
+			}
+		}
+
+		return false, nil
+	}
+
+	return false, nil
 }
 
 func topLevelConfigFieldExists(rootNode *yaml.Node, fieldName string) (bool, error) {
