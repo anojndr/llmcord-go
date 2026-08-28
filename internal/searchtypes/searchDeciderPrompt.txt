@@ -35,10 +35,6 @@ Rules:
 
    * If the latest request says "verify this", "search that", "look it up", "compare them", or similar, use prior turns to determine what "this", "that", or "them" refers to.
    * Queries must target the actual claim, entity, item, or attribute being referred to, not the literal words "this", "that", or "verify this".
-   * If the latest user message is a short fragment (a few words, an entity name, nationality, brand, or correction such as "Belarussian bsb bank", "no the belarusian one", "belarusian BSB instead", "that one but from belarus") that appears to correct, clarify, narrow, or disambiguate an entity or assumption from the prior assistant answer, treat it as a continuation of the prior substantive question, not as a new standalone request for general information about that fragment. Reconstruct the full information need by combining the corrected/clarified entity with the functional question and context from the prior user message(s) and assistant answer.
-   * Example: prior user asked "Does my bsb bank card have a personal number for Oney ATM in Paris?" and the assistant assumed Australian BSB; latest user says "Belarussian bsb bank". The information need is NOT "tell me about Belarusian BSB Bank in general" but "does a Belarusian BSB Bank (JSC BSB Bank / Belarusian-Swiss Bank) card have a PIN / personal number and how to use it at an Oney ATM in Paris". Good queries: ["Belarusian BSB Bank card PIN Oney ATM Paris", "JSC BSB Bank Belarus card PIN how to view personal number", "Belarusian BSB Bank card PIN 4 digits France ATM"]. Bad queries: ["Belarussian BSB Bank"], ["BSB Bank Belarus history"], ["Belarusian BSB Bank contacts SWIFT"].
-   * Normalize typos: the user wrote "Belarussian" (common misspelling) — queries and answers should use the canonical "Belarusian" / "Belarusian BSB Bank", but you may note the original spelling in parentheses if needed.
-   * The same applies to any ambiguous 1-6 word follow-up that only makes sense with prior context: always expand it into a self-contained query that includes both the new fragment and the prior functional need. Never emit a query that is just the fragment alone when prior context provides the purpose.
 
 3. Use both text and images.
 
@@ -78,7 +74,7 @@ Rules:
 
 9. Do not re-search just because an earlier turn searched.
 
-   * A previous search result is context, not a reason to search again; decide from the current request alone. However, when the current request is a short fragment, correction, or reference, you MUST use prior conversation to interpret its meaning (see rule 2) — that is not "re-searching", it is correctly expanding the current need.
+   * A previous search result is context, not a reason to search again; decide from the current request alone.
 
 10. If any part of the request needs the web, search for that part.
 
@@ -143,15 +139,8 @@ Query generation rules:
 
     * Keep them concise, specific, factual, and self-contained; include disambiguating context (entity plus distinguishing detail) but no filler.
     * For time-sensitive topics, include the current date or year when it would change results, for example ["Nobel Prize winners 2026"] instead of ["Nobel Prize winners"].
-    * When the latest user message is a correction fragment (see rule 2), the query MUST include both the corrected entity and the prior functional need. A query that is just the fragment entity is incomplete and wrong. Always produce self-contained queries that a search engine could answer without seeing the conversation.
     * Queries are sent to a search engine verbatim.
 
 21. If needs_search is false, do not include a queries field.
 
 22. Output valid JSON only.
-
-Additional guidance for short follow-ups:
-
-23. If the latest user message has 1-6 words and no verb (e.g., "Belarussian bsb bank", "the belarusian one", "BSB Belarus"), and the prior turn contains a substantive question (e.g., about Oney ATM, PIN, personal number, France), the follow-up MUST be treated as an entity correction, not a new information request. The correct interpretation is: re-answer the prior question with the corrected entity. Therefore queries must combine the correction with the original question intent, as shown in the example in rule 2.
-
-24. Never generate a generic entity-profile query (history, address, SWIFT, CEO, branches) when the conversation history shows a functional need (PIN, ATM, card usage). The functional need always dominates; entity profile is only appropriate if the user explicitly asks for general information about the entity.

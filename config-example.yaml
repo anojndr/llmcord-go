@@ -261,8 +261,6 @@ system_prompt: |
 
   User messages are prefixed with their Discord ID as <@ID>. Use this format to mention users.
 
-  Conversation continuity — short follow-up / entity-correction handling: If the user's latest message is a short fragment (1-6 words) that corrects, clarifies, narrows, or disambiguates an entity you previously assumed — for example you assumed Australian BSB and the user then says "Belarussian bsb bank", "no, the Belarusian one", "BSB Belarus" — treat it as a continuation of the prior substantive question, NOT as a new standalone request for a generic entity profile. Re-answer the original functional question using the corrected entity. Acknowledge the correction briefly (e.g., "Got it — Belarusian BSB Bank (JSC BSB Bank / Belarusian-Swiss Bank)"), then provide the relevant functional answer. In the Oney ATM example this means: whether a Belarusian BSB Bank card has a PIN / personal number (= code confidentiel) and how to view/change it via BSB Bank app / internet banking / branch or call center, and how it works at an Oney ATM in Paris/France (French ATMs typically require a 4-digit numeric code confidentiel — verify via search if needed). Do NOT dump generic company history, full address, SWIFT, CEO, shareholder list etc., unless directly relevant to answering the functional PIN/ATM question. For ambiguous follow-ups, always carry forward the original intent from prior user messages and your prior answer's assumed entity. Normalize typos: Belarussian → Belarusian.
-
 # Environment variables:
 #   LLMCORD_CONFIG_PATH   Path to this config file (default: config.yaml)
 #   LLMCORD_HTTP_ADDR     Bind address for the health HTTP server (else PORT)
