@@ -44,12 +44,6 @@ func (instance *bot) handleMessageCreate(
 		botUserID = instance.session.State.User.ID
 	}
 
-	facebookVideoReply := shouldReplyWithFacebookVideos(message, botUserID)
-
-	if shouldIgnoreIncomingMessage(message, botUserID) && !facebookVideoReply {
-		return
-	}
-
 	loadedConfig, err := loadConfig(instance.configPath)
 	if err != nil {
 		LogError(
@@ -77,6 +71,18 @@ func (instance *bot) handleMessageCreate(
 		ChannelIDs: channelIDs,
 	}
 	if !messageAllowed(loadedConfig, access) {
+		return
+	}
+
+	if instance.handleXFixup(message, botUserID) {
+		instance.nodes.evictExcess()
+
+		return
+	}
+
+	facebookVideoReply := shouldReplyWithFacebookVideos(message, botUserID)
+
+	if shouldIgnoreIncomingMessage(message, botUserID) && !facebookVideoReply {
 		return
 	}
 
