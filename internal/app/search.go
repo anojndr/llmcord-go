@@ -827,15 +827,30 @@ func parseSearchDecision(responseText string) (searchDecision, error) {
 	trimmedResponse := trimCodeFence(responseText)
 
 	var decision searchDecision
-	if tryUnmarshalSearchDecision(trimmedResponse, &decision) {
+	if tryParseSearchDecisionCandidate(trimmedResponse, &decision) {
 		return validateSearchDecision(decision)
 	}
 
-	start := strings.Index(trimmedResponse, "{")
-	end := strings.LastIndex(trimmedResponse, "}")
+	startIndex := strings.Index(trimmedResponse, "{")
 
-	if start >= 0 && end > start {
-		trimmedResponse = trimmedResponse[start : end+1]
+	if startIndex >= 0 {
+		candidate := trimmedResponse[startIndex:]
+		if tryParseSearchDecisionCandidate(candidate, &decision) {
+			return validateSearchDecision(decision)
+		}
+
+		if endIndex := strings.LastIndex(candidate, "}"); endIndex > 0 {
+			if tryParseSearchDecisionCandidate(candidate[:endIndex+1], &decision) {
+				return validateSearchDecision(decision)
+			}
+		}
+	}
+
+	if endIndex := strings.LastIndex(trimmedResponse, "}"); startIndex >= 0 && endIndex > startIndex {
+		trimmedResponse = trimmedResponse[startIndex : endIndex+1]
+		if tryParseSearchDecisionCandidate(trimmedResponse, &decision) {
+			return validateSearchDecision(decision)
+		}
 	}
 
 	err := json.Unmarshal([]byte(trimmedResponse), &decision)
@@ -844,6 +859,18 @@ func parseSearchDecision(responseText string) (searchDecision, error) {
 	}
 
 	return validateSearchDecision(decision)
+}
+
+func tryParseSearchDecisionCandidate(candidate string, decision *searchDecision) bool {
+	if tryUnmarshalSearchDecision(candidate, decision) {
+		return true
+	}
+
+	if tryRepairTruncatedSearchDecision(candidate, decision) {
+		return true
+	}
+
+	return false
 }
 
 func tryUnmarshalSearchDecision(text string, decision *searchDecision) bool {
@@ -892,6 +919,314 @@ func tryUnmarshalSearchDecision(text string, decision *searchDecision) bool {
 		*decision = decodedDecision
 
 		return true
+	}
+
+	return false
+}
+
+func isInJSONString(input string) bool {
+	inString := false
+	escaped := false
+
+	for index := 0; index < len(input); index++ {
+		character := input[index]
+		if escaped {
+			escaped = false
+
+			continue
+		}
+
+		if inString {
+			if character == '\\' {
+				escaped = true
+			} else if character == '"' {
+				inString = false
+			}
+
+			continue
+		}
+
+		if character == '"' {
+			inString = true
+		}
+	}
+
+	return inString
+}
+
+func countTrailingBackslashes(input string) int {
+	count := 0
+
+	for index := len(input) - 1; index >= 0; index-- {
+		if input[index] != '\\' {
+			break
+		}
+
+		count++
+	}
+
+	return count
+}
+
+func neededJSONClosings(input string) string {
+	inString := false
+	escaped := false
+	stack := make([]rune, 0, 4)
+
+	for index := 0; index < len(input); index++ {
+		character := input[index]
+		if escaped {
+			escaped = false
+
+			continue
+		}
+
+		if inString {
+			if character == '\\' {
+				escaped = true
+			} else if character == '"' {
+				inString = false
+			}
+
+			continue
+		}
+
+		if character == '"' {
+			inString = true
+		} else if character == '{' || character == '[' {
+			stack = append(stack, rune(character))
+		} else if character == '}' {
+			if len(stack) > 0 && stack[len(stack)-1] == '{' {
+				stack = stack[:len(stack)-1]
+			}
+		} else if character == ']' {
+			if len(stack) > 0 && stack[len(stack)-1] == '[' {
+				stack = stack[:len(stack)-1]
+			}
+		}
+	}
+
+	var builder strings.Builder
+
+	builder.Grow(len(stack))
+
+	for index := len(stack) - 1; index >= 0; index-- {
+		if stack[index] == '{' {
+			builder.WriteByte('}')
+		} else {
+			builder.WriteByte(']')
+		}
+	}
+
+	return builder.String()
+}
+
+func closeTruncatedJSONString(input string) []string {
+	if !isInJSONString(input) {
+		return []string{input}
+	}
+
+	trailingBackslashes := countTrailingBackslashes(input)
+
+	if trailingBackslashes%2 == 1 {
+		return []string{
+			input + "\\\"",
+			strings.TrimSuffix(input, "\\") + "\"",
+			input + "\"",
+		}
+	}
+
+	return []string{input + "\""}
+}
+
+func generateRepairCandidates(input string) []string {
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return nil
+	}
+
+	seen := make(map[string]struct{})
+	candidates := make([]string, 0, 32)
+
+	addCandidate := func(candidate string) {
+		trimmedCandidate := strings.TrimSpace(candidate)
+		if trimmedCandidate == "" {
+			return
+		}
+
+		if _, ok := seen[trimmedCandidate]; ok {
+			return
+		}
+
+		seen[trimmedCandidate] = struct{}{}
+		candidates = append(candidates, trimmedCandidate)
+	}
+
+	bases := []string{input}
+
+	if isInJSONString(input) {
+		for _, closed := range closeTruncatedJSONString(input) {
+			if closed != input {
+				bases = append(bases, closed)
+			}
+		}
+	}
+
+	isInStr := isInJSONString(input)
+
+	expandedBases := make([]string, 0, len(bases)*2)
+	for _, base := range bases {
+		expandedBases = append(expandedBases, base)
+
+		trimmedBase := strings.TrimSpace(base)
+		trimmedBase = strings.TrimSuffix(trimmedBase, ",")
+		trimmedBase = strings.TrimSpace(trimmedBase)
+
+		if trimmedBase != base {
+			expandedBases = append(expandedBases, trimmedBase)
+		}
+	}
+
+	baseSet := make(map[string]struct{})
+	uniqBases := make([]string, 0, len(expandedBases))
+
+	for _, base := range expandedBases {
+		if _, ok := baseSet[base]; ok {
+			continue
+		}
+
+		baseSet[base] = struct{}{}
+		uniqBases = append(uniqBases, base)
+	}
+
+	for _, base := range uniqBases {
+		baseTrimmed := strings.TrimRight(base, " \t\n\r,")
+
+		for trim := range 3 {
+			trimmedBase := baseTrimmed
+
+			for range trim {
+				trimmedBase = strings.TrimSpace(trimmedBase)
+
+				if strings.HasSuffix(trimmedBase, "}") {
+					trimmedBase = strings.TrimSuffix(trimmedBase, "}")
+				} else if strings.HasSuffix(trimmedBase, "]") {
+					trimmedBase = strings.TrimSuffix(trimmedBase, "]")
+				} else {
+					break
+				}
+
+				trimmedBase = strings.TrimSpace(trimmedBase)
+				trimmedBase = strings.TrimSuffix(trimmedBase, ",")
+				trimmedBase = strings.TrimSpace(trimmedBase)
+			}
+
+			if isInJSONString(trimmedBase) {
+				if countTrailingBackslashes(trimmedBase)%2 == 1 {
+					trimmedBase = strings.TrimSuffix(trimmedBase, "\\")
+				}
+
+				trimmedBase += `"`
+			}
+
+			trimmedBase = strings.TrimRight(trimmedBase, " \t\n\r,")
+
+			needed := neededJSONClosings(trimmedBase)
+			if needed != "" {
+				addCandidate(trimmedBase + needed)
+
+				if len(needed) >= 1 {
+					addCandidate(trimmedBase + string(needed[0]))
+				}
+
+				if len(needed) >= 2 {
+					addCandidate(trimmedBase + needed[:2])
+				}
+			}
+		}
+	}
+
+	bruteSuffixes := []string{
+		"}",
+		"]",
+		"]}",
+		"}]",
+		"\"}",
+		"\"]}",
+		"\"]",
+		"\"",
+		"]}}",
+		"}}",
+		"]]",
+		"\",",
+		"\" ]}",
+	}
+
+	bruteSet := make(map[string]struct{})
+	uniqBrute := make([]string, 0, len(bruteSuffixes))
+
+	for _, suffix := range bruteSuffixes {
+		if _, ok := bruteSet[suffix]; ok {
+			continue
+		}
+
+		bruteSet[suffix] = struct{}{}
+		uniqBrute = append(uniqBrute, suffix)
+	}
+
+	for _, base := range uniqBases {
+		for _, suffix := range uniqBrute {
+			addCandidate(strings.TrimSpace(base) + suffix)
+
+			trimmedBase := strings.TrimRight(strings.TrimSpace(base), ", \t\n\r")
+
+			if isInJSONString(trimmedBase) {
+				if countTrailingBackslashes(trimmedBase)%2 == 1 {
+					trimmedBase = strings.TrimSuffix(trimmedBase, "\\")
+				}
+
+				trimmedBase += `"`
+			}
+
+			addCandidate(strings.TrimSpace(trimmedBase) + suffix)
+		}
+	}
+
+	addCandidate(input)
+
+	if isInStr {
+		addCandidate(input + `"`)
+
+		if !isInJSONString(input + `"`) {
+			needed := neededJSONClosings(input + `"`)
+			addCandidate(input + `"` + needed)
+		}
+	}
+
+	return candidates
+}
+
+func tryRepairTruncatedSearchDecision(input string, decision *searchDecision) bool {
+	candidates := generateRepairCandidates(input)
+
+	for _, candidate := range candidates {
+		var repairedDecision searchDecision
+		if tryUnmarshalSearchDecision(candidate, &repairedDecision) {
+			*decision = repairedDecision
+
+			return true
+		}
+
+		var directDecision searchDecision
+		if err := json.Unmarshal([]byte(candidate), &directDecision); err == nil {
+			if !strings.Contains(candidate, "needs_search") && !strings.Contains(candidate, "needsSearch") {
+				continue
+			}
+
+			*decision = directDecision
+
+			return true
+		}
 	}
 
 	return false
