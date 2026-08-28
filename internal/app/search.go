@@ -10,6 +10,7 @@ import (
 	providers "llmcord-go/internal/providers"
 	searchtypes "llmcord-go/internal/searchtypes"
 	"net/http"
+	"net/url"
 	"os"
 	"slices"
 	"strings"
@@ -101,9 +102,71 @@ type tavilySearchClient struct {
 	keys       *apiKeyRotator
 }
 
+type tinyFishSearchClient struct {
+	searchEndpoint string
+	fetchEndpoint  string
+	httpClient     *http.Client
+	keys           *apiKeyRotator
+}
+
 type routedWebSearchClient struct {
-	exa    webSearcher
-	tavily webSearcher
+	tinyFish webSearcher
+	exa      webSearcher
+	tavily   webSearcher
+}
+
+type tinyFishSearchResponse struct {
+	Query        string                   `json:"query"`
+	Results      []tinyFishSearchResult   `json:"results"`
+	TotalResults int                      `json:"total_results"`
+	Page         int                      `json:"page"`
+}
+
+type tinyFishSearchResult struct {
+	Position  int     `json:"position"`
+	SiteName  string  `json:"site_name"`
+	Title     string  `json:"title"`
+	Snippet   string  `json:"snippet"`
+	URL       string  `json:"url"`
+	Date      *string `json:"date"`
+	Publisher *string `json:"publisher"`
+	Authors   []string `json:"authors"`
+	Venue     *string `json:"venue"`
+	Year      *int    `json:"year"`
+	CitedByCount *int `json:"cited_by_count"`
+	PDFURL    *string `json:"pdf_url"`
+}
+
+type tinyFishFetchRequest struct {
+	URLs   []string `json:"urls"`
+	Format string   `json:"format"`
+}
+
+type tinyFishFetchResponse struct {
+	Results []tinyFishFetchResult `json:"results"`
+	Errors  []tinyFishFetchError  `json:"errors"`
+}
+
+type tinyFishFetchResult struct {
+	URL          string  `json:"url"`
+	FinalURL     string  `json:"final_url"`
+	Title        *string `json:"title"`
+	Description  *string `json:"description"`
+	Language     *string `json:"language"`
+	Format       string  `json:"format"`
+	Text         any     `json:"text"`
+	LatencyMs    *int    `json:"latency_ms"`
+}
+
+type tinyFishFetchError struct {
+	URL   string `json:"url"`
+	Error string `json:"error"`
+}
+
+type tinyFishStatusError struct {
+	StatusCode int
+	Message    string
+	Err        error
 }
 
 type exaSearchRequest struct {
@@ -199,6 +262,18 @@ type exaStatusError struct {
 	Err        error
 }
 
+func (err tinyFishStatusError) Error() string {
+	return err.Message
+}
+
+func (err tinyFishStatusError) Unwrap() error {
+	if err.Err == nil {
+		return os.ErrInvalid
+	}
+
+	return err.Err
+}
+
 func newExaSearchClient(httpClient *http.Client) exaSearchClient {
 	return exaSearchClient{
 		apiEndpoint: defaultExaSearchEndpoint,
@@ -216,10 +291,20 @@ func newTavilySearchClient(httpClient *http.Client) tavilySearchClient {
 	}
 }
 
+func newTinyFishSearchClient(httpClient *http.Client) tinyFishSearchClient {
+	return tinyFishSearchClient{
+		searchEndpoint: defaultTinyFishSearchEndpoint,
+		fetchEndpoint:  defaultTinyFishFetchEndpoint,
+		httpClient:     httpClient,
+		keys:           newAPIKeyRotator(),
+	}
+}
+
 func newWebSearchClient(httpClient *http.Client) routedWebSearchClient {
 	return routedWebSearchClient{
-		exa:    newExaSearchClient(httpClient),
-		tavily: newTavilySearchClient(httpClient),
+		tinyFish: newTinyFishSearchClient(httpClient),
+		exa:      newExaSearchClient(httpClient),
+		tavily:   newTavilySearchClient(httpClient),
 	}
 }
 
@@ -389,6 +474,16 @@ func (client routedWebSearchClient) search(
 	loadedConfig config,
 	queries []string,
 ) ([]webSearchResult, error) {
+	var tinyFishErr error
+	if len(loadedConfig.WebSearch.TinyFish.apiKeys()) > 0 {
+		results, err := client.tinyFish.search(ctx, loadedConfig, queries)
+		if err == nil {
+			return results, nil
+		}
+		tinyFishErr = err
+		logWarn("tinyfish search failed, trying fallback", err)
+	}
+
 	primaryProvider, fallbackProvider := loadedConfig.WebSearch.providersInOrder()
 
 	results, err := client.searchWithProvider(ctx, loadedConfig, primaryProvider, queries)
@@ -404,6 +499,16 @@ func (client routedWebSearchClient) search(
 	)
 	if fallbackErr == nil {
 		return fallbackResults, nil
+	}
+
+	if tinyFishErr != nil {
+		return nil, fmt.Errorf(
+			"search with %s failed, %s primary fallback failed, and %s fallback failed: %w",
+			webSearchProviderKindTinyFish.displayName(loadedConfig),
+			primaryProvider.displayName(loadedConfig),
+			fallbackProvider.displayName(loadedConfig),
+			errors.Join(tinyFishErr, err, fallbackErr),
+		)
 	}
 
 	return nil, fmt.Errorf(
@@ -425,6 +530,8 @@ func (client routedWebSearchClient) searchWithProvider(
 		return client.exa.search(ctx, loadedConfig, queries)
 	case webSearchProviderKindTavily:
 		return client.tavily.search(ctx, loadedConfig, queries)
+	case webSearchProviderKindTinyFish:
+		return client.tinyFish.search(ctx, loadedConfig, queries)
 	default:
 		return nil, fmt.Errorf("unsupported web search provider %q: %w", provider, os.ErrInvalid)
 	}
@@ -2371,6 +2478,324 @@ func (client tavilySearchClient) searchQueryOnce(
 	}, nil
 }
 
+func (client tinyFishSearchClient) search(
+	ctx context.Context,
+	loadedConfig config,
+	queries []string,
+) ([]webSearchResult, error) {
+	apiKeys := loadedConfig.WebSearch.TinyFish.apiKeys()
+	if len(apiKeys) == 0 {
+		return nil, fmt.Errorf("tinyfish search is not configured: %w", os.ErrNotExist)
+	}
+
+	maxURLs := loadedConfig.WebSearch.maxURLs()
+
+	return searchQueriesConcurrently(ctx, queries, func(queryContext context.Context, query string) (webSearchResult, error) {
+		apiKey := firstAPIKey(client.keys.rotate(apiKeys))
+
+		return client.searchSingleQuery(queryContext, apiKey, query, maxURLs)
+	})
+}
+
+func (client tinyFishSearchClient) searchSingleQuery(
+	ctx context.Context,
+	apiKey string,
+	query string,
+	maxURLs int,
+) (webSearchResult, error) {
+	searchResults, err := client.searchQuery(ctx, apiKey, query)
+	if err != nil {
+		return webSearchResult{}, err
+	}
+
+	if len(searchResults) > maxURLs {
+		searchResults = searchResults[:maxURLs]
+	}
+
+	if len(searchResults) == 0 {
+		return webSearchResult{
+			Query: query,
+			Text:  "No search results found.",
+		}, nil
+	}
+
+	urls := make([]string, 0, len(searchResults))
+	for _, result := range searchResults {
+		trimmedURL := strings.TrimSpace(result.URL)
+		if trimmedURL != "" {
+			urls = append(urls, trimmedURL)
+		}
+	}
+
+	// Canonicalize fetch results by lower-cased URL for case-insensitive lookup.
+	fetchedTextMap := make(map[string]string)
+	fetchedTitleMap := make(map[string]string)
+
+	if len(urls) > 0 {
+		fetchResponse, fetchErr := client.fetchContents(ctx, apiKey, urls)
+		if fetchErr != nil {
+			logWarn("tinyfish fetch for search enrichment failed", fetchErr, "query", query)
+		} else {
+			for _, fetchResult := range fetchResponse.Results {
+				textStr := tinyFishFetchResultText(fetchResult.Text)
+				textStr = strings.TrimSpace(textStr)
+				if textStr == "" {
+					continue
+				}
+				for _, rawURL := range []string{fetchResult.URL, fetchResult.FinalURL} {
+					trimmed := strings.TrimSpace(rawURL)
+					if trimmed == "" {
+						continue
+					}
+					key := strings.ToLower(trimmed)
+					fetchedTextMap[key] = textStr
+					if fetchResult.Title != nil {
+						if title := strings.TrimSpace(*fetchResult.Title); title != "" {
+							fetchedTitleMap[key] = title
+						}
+					}
+				}
+			}
+		}
+	}
+
+	formatted := formatTinyFishSearchResultText(searchResults, fetchedTextMap, fetchedTitleMap)
+
+	return webSearchResult{
+		Query: query,
+		Text:  formatted,
+	}, nil
+}
+
+func (client tinyFishSearchClient) searchQuery(
+	ctx context.Context,
+	apiKey string,
+	query string,
+) ([]tinyFishSearchResult, error) {
+	queryValues := url.Values{}
+	queryValues.Set("query", query)
+
+	searchURL := client.searchEndpoint
+	if strings.Contains(searchURL, "?") {
+		searchURL += "&" + queryValues.Encode()
+	} else {
+		searchURL += "?" + queryValues.Encode()
+	}
+
+	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodGet, searchURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create TinyFish search request for %q: %w", query, err)
+	}
+
+	httpRequest.Header.Set("Accept", applicationJSONContentType)
+	httpRequest.Header.Set("X-API-Key", strings.TrimSpace(apiKey))
+
+	httpResponse, err := client.httpClient.Do(httpRequest)
+	if err != nil {
+		return nil, fmt.Errorf("send TinyFish search request for %q: %w", query, err)
+	}
+	defer func() {
+		_ = httpResponse.Body.Close()
+	}()
+
+	if httpResponse.StatusCode < http.StatusOK || httpResponse.StatusCode >= http.StatusMultipleChoices {
+		responseBody, readErr := io.ReadAll(httpResponse.Body)
+		if readErr != nil {
+			return nil, fmt.Errorf(
+				"read TinyFish search error response for %q after status %d: %w",
+				query,
+				httpResponse.StatusCode,
+				readErr,
+			)
+		}
+
+		return nil, tinyFishStatusError{
+			StatusCode: httpResponse.StatusCode,
+			Message: fmt.Sprintf(
+				"TinyFish search request failed for %q with status %d: %s",
+				query,
+				httpResponse.StatusCode,
+				strings.TrimSpace(string(responseBody)),
+			),
+			Err: os.ErrInvalid,
+		}
+	}
+
+	var response tinyFishSearchResponse
+
+	err = json.NewDecoder(httpResponse.Body).Decode(&response)
+	if err != nil {
+		return nil, fmt.Errorf("decode TinyFish search response for %q: %w", query, err)
+	}
+
+	return response.Results, nil
+}
+
+func (client tinyFishSearchClient) fetchContents(
+	ctx context.Context,
+	apiKey string,
+	urls []string,
+) (tinyFishFetchResponse, error) {
+	if len(urls) == 0 {
+		return tinyFishFetchResponse{}, nil
+	}
+
+	// TinyFish Fetch supports up to 10 URLs per request; maxURLs is 5 so single batch suffices.
+	// If larger, chunk into 10-url batches and merge.
+	var mergedResults []tinyFishFetchResult
+	var mergedErrors []tinyFishFetchError
+
+	for start := 0; start < len(urls); start += 10 {
+		end := start + 10
+		if end > len(urls) {
+			end = len(urls)
+		}
+		batch := urls[start:end]
+
+		requestBody := tinyFishFetchRequest{
+			URLs:   batch,
+			Format: "markdown",
+		}
+
+		requestBytes, err := json.Marshal(requestBody)
+		if err != nil {
+			return tinyFishFetchResponse{}, fmt.Errorf("marshal TinyFish fetch request: %w", err)
+		}
+
+		httpRequest, err := http.NewRequestWithContext(
+			ctx,
+			http.MethodPost,
+			client.fetchEndpoint,
+			bytes.NewReader(requestBytes),
+		)
+		if err != nil {
+			return tinyFishFetchResponse{}, fmt.Errorf("create TinyFish fetch request: %w", err)
+		}
+
+		httpRequest.Header.Set("Accept", applicationJSONContentType)
+		httpRequest.Header.Set(contentTypeHeader, applicationJSONContentType)
+		httpRequest.Header.Set("X-API-Key", strings.TrimSpace(apiKey))
+
+		httpResponse, doErr := client.httpClient.Do(httpRequest)
+		if doErr != nil {
+			return tinyFishFetchResponse{}, fmt.Errorf("send TinyFish fetch request: %w", doErr)
+		}
+
+		batchResponse, batchErr := func() (tinyFishFetchResponse, error) {
+			defer func() { _ = httpResponse.Body.Close() }()
+
+			if httpResponse.StatusCode < http.StatusOK || httpResponse.StatusCode >= http.StatusMultipleChoices {
+				responseBody, readErr := io.ReadAll(httpResponse.Body)
+				if readErr != nil {
+					return tinyFishFetchResponse{}, fmt.Errorf("read TinyFish fetch error response after status %d: %w", httpResponse.StatusCode, readErr)
+				}
+
+				return tinyFishFetchResponse{}, tinyFishStatusError{
+					StatusCode: httpResponse.StatusCode,
+					Message: fmt.Sprintf(
+						"TinyFish fetch request failed with status %d: %s",
+						httpResponse.StatusCode,
+						strings.TrimSpace(string(responseBody)),
+					),
+					Err: os.ErrInvalid,
+				}
+			}
+
+			var br tinyFishFetchResponse
+			if decodeErr := json.NewDecoder(httpResponse.Body).Decode(&br); decodeErr != nil {
+				return tinyFishFetchResponse{}, fmt.Errorf("decode TinyFish fetch response: %w", decodeErr)
+			}
+
+			return br, nil
+		}()
+
+		if batchErr != nil {
+			return tinyFishFetchResponse{}, batchErr
+		}
+
+		mergedResults = append(mergedResults, batchResponse.Results...)
+		mergedErrors = append(mergedErrors, batchResponse.Errors...)
+	}
+
+	return tinyFishFetchResponse{
+		Results: mergedResults,
+		Errors:  mergedErrors,
+	}, nil
+}
+
+func tinyFishFetchResultText(rawText any) string {
+	switch value := rawText.(type) {
+	case string:
+		return value
+	case map[string]any:
+		if formatted, err := json.Marshal(value); err == nil {
+			return string(formatted)
+		}
+
+		return fmt.Sprint(value)
+	case nil:
+		return ""
+	default:
+		formatted, err := json.Marshal(value)
+		if err == nil {
+			return string(formatted)
+		}
+
+		return fmt.Sprint(value)
+	}
+}
+
+func formatTinyFishSearchResultText(
+	results []tinyFishSearchResult,
+	fetchedTextMap map[string]string,
+	fetchedTitleMap map[string]string,
+) string {
+	formattedResults := make([]string, 0, len(results))
+
+	for _, result := range results {
+		lines := make([]string, 0, 6)
+
+		title := strings.TrimSpace(result.Title)
+		if title == "" {
+			if fetchedTitle := strings.TrimSpace(fetchedTitleMap[strings.ToLower(strings.TrimSpace(result.URL))]); fetchedTitle != "" {
+				title = fetchedTitle
+			}
+		}
+		if title != "" {
+			lines = append(lines, "Title: "+title)
+		}
+
+		trimmedURL := strings.TrimSpace(result.URL)
+		if trimmedURL != "" {
+			lines = append(lines, "URL: "+trimmedURL)
+		}
+
+		if siteName := strings.TrimSpace(result.SiteName); siteName != "" {
+			lines = append(lines, "Site: "+siteName)
+		}
+
+		if snippet := strings.TrimSpace(result.Snippet); snippet != "" {
+			lines = append(lines, formatSearchMultilineField("Snippet", snippet))
+		}
+
+		fetchedText := fetchedTextMap[strings.ToLower(strings.TrimSpace(result.URL))]
+		if fetchedText != "" {
+			fetchedText = truncateRunes(strings.TrimSpace(fetchedText), maxWebsiteContentRunes)
+			lines = append(lines, formatSearchMultilineField("Content", fetchedText))
+		} else if snippet := strings.TrimSpace(result.Snippet); snippet == "" {
+			lines = append(lines, "Content: [No extracted content — fetch failed]")
+		}
+
+		if len(lines) == 0 {
+			continue
+		}
+
+		formattedResults = append(formattedResults, strings.Join(lines, "\n"))
+	}
+
+	return strings.Join(formattedResults, "\n\n")
+}
+
 func formatTavilySearchResultText(results []tavilySearchResponseResult) string {
 	formattedResults := make([]string, 0, len(results))
 
@@ -2676,11 +3101,18 @@ func mapStringSliceValue(values map[string]any, key string) []string {
 	return stringValues
 }
 
+ // providersInOrder returns the ordered fallback pair for Exa (MCP) and Tavily.
+ // TinyFish is always attempted first in routedWebSearchClient.search when
+ // configured, so this helper only orders the remaining Exa/Tavily fallbacks.
+ // When primary_provider is "tinyfish" we still fall back to MCP→Tavily to
+ // avoid a duplicate TinyFish attempt (already tried explicitly).
 func (settings webSearchConfig) providersInOrder() (webSearchProviderKind, webSearchProviderKind) {
 	switch settings.PrimaryProvider {
 	case webSearchProviderKindTavily:
 		return webSearchProviderKindTavily, webSearchProviderKindMCP
 	case webSearchProviderKindMCP:
+		return webSearchProviderKindMCP, webSearchProviderKindTavily
+	case webSearchProviderKindTinyFish:
 		return webSearchProviderKindMCP, webSearchProviderKindTavily
 	default:
 		return webSearchProviderKindMCP, webSearchProviderKindTavily
@@ -2697,6 +3129,8 @@ func (provider webSearchProviderKind) displayName(loadedConfig config) string {
 		}
 
 		return "Exa MCP"
+	case webSearchProviderKindTinyFish:
+		return "TinyFish Search"
 	default:
 		return string(provider)
 	}

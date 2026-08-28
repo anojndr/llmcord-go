@@ -7,12 +7,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/netip"
 	"net/url"
 	"os"
-	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -60,6 +58,7 @@ func newWebsiteTestClient(httpClient *http.Client, exaURL string, tavilyURL stri
 		exaContentsEndpoint:     exaURL,
 		tavilyExtractEndpoint:   tavilyURL,
 		firecrawlScrapeEndpoint: "",
+		tinyFishFetchEndpoint:   defaultTinyFishFetchEndpoint,
 		lookupIP:                testWebsiteLookupIP,
 		keys:                    newAPIKeyRotator(),
 	}
@@ -73,6 +72,32 @@ func newWebsiteTestClientWithFirecrawl(
 ) websiteClient {
 	client := newWebsiteTestClient(httpClient, exaURL, tavilyURL)
 	client.firecrawlScrapeEndpoint = firecrawlURL
+
+	return client
+}
+
+func newWebsiteTestClientWithTinyFish(
+	httpClient *http.Client,
+	tinyFishURL string,
+	exaURL string,
+	tavilyURL string,
+) websiteClient {
+	client := newWebsiteTestClient(httpClient, exaURL, tavilyURL)
+	client.tinyFishFetchEndpoint = tinyFishURL
+
+	return client
+}
+
+func newWebsiteTestClientWithFirecrawlAndTinyFish(
+	httpClient *http.Client,
+	firecrawlURL string,
+	tinyFishURL string,
+	exaURL string,
+	tavilyURL string,
+) websiteClient {
+	client := newWebsiteTestClient(httpClient, exaURL, tavilyURL)
+	client.firecrawlScrapeEndpoint = firecrawlURL
+	client.tinyFishFetchEndpoint = tinyFishURL
 
 	return client
 }
@@ -514,45 +539,29 @@ func TestMaybeAugmentConversationWithWebsiteIgnoresURLsOnlyPresentInDocumentCont
 func TestWebsiteClientFetchExtractsMainContentAndIgnoresChrome(t *testing.T) {
 	t.Parallel()
 
-	server := httptest.NewServer(http.HandlerFunc(func(
-		writer http.ResponseWriter,
-		_ *http.Request,
-	) {
-		writer.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = writer.Write([]byte(strings.Join([]string{
-			"<!doctype html>",
-			"<html>",
-			"<head>",
-			"<title>Go - Wikipedia</title>",
-			`<meta name="description" content="Go is a statically typed programming language.">`,
-			"</head>",
-			"<body>",
-			"<header>Site header</header>",
-			"<nav>Navigation links</nav>",
-			`<main id="mw-content-text">`,
-			"<p>Go is a statically typed programming language designed at Google.</p>",
-			"<p>It is syntactically similar to C and focuses on simplicity.</p>",
-			"</main>",
-			"<footer>Footer links</footer>",
-			"</body>",
-			"</html>",
-		}, "")))
-	}))
-	defer server.Close()
+	htmlBody := strings.Join([]string{
+		"<!doctype html>",
+		"<html>",
+		"<head>",
+		"<title>Go - Wikipedia</title>",
+		`<meta name="description" content="Go is a statically typed programming language.">`,
+		"</head>",
+		"<body>",
+		"<header>Site header</header>",
+		"<nav>Navigation links</nav>",
+		`<main id="mw-content-text">`,
+		"<p>Go is a statically typed programming language designed at Google.</p>",
+		"<p>It is syntactically similar to C and focuses on simplicity.</p>",
+		"</main>",
+		"<footer>Footer links</footer>",
+		"</body>",
+		"</html>",
+	}, "")
 
-	client := newWebsiteTestClient(
-		newWebsiteForwardingHTTPClient(t, server, "example.com"),
-		defaultExaContentsEndpoint,
-		defaultTavilyExtractEndpoint,
-	)
-
-	result, err := client.fetch(
-		context.Background(),
-		testSearchConfig(),
-		"https://example.com/wiki/Go_(programming_language)",
-	)
+	// Local fallback removed: validate extraction via direct HTML parsing.
+	result, err := parseWebsiteHTML("https://example.com/wiki/Go_(programming_language)", []byte(htmlBody))
 	if err != nil {
-		t.Fatalf("fetch website content: %v", err)
+		t.Fatalf("parse website content: %v", err)
 	}
 
 	if result.Title != "Go - Wikipedia" {
@@ -626,249 +635,6 @@ func TestWebsiteClientFetchRejectsResolvedPrivateHosts(t *testing.T) {
 
 	if !errors.Is(err, errUnsafeWebsiteAddress) {
 		t.Fatalf("expected unsafe address error, got %v", err)
-	}
-}
-
-func TestWebsiteClientFetchRejectsRedirectToUnsafeHost(t *testing.T) {
-	t.Parallel()
-
-	requestCount := 0
-
-	httpClient := new(http.Client)
-	httpClient.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
-		requestCount++
-
-		if requestCount != 1 {
-			t.Fatalf("unexpected request %d to %q", requestCount, request.URL.String())
-		}
-
-		if request.URL.String() != "https://redirect.example.com/article" {
-			t.Fatalf("unexpected redirect source request: %q", request.URL.String())
-		}
-
-		return newWebsiteTestResponse(
-			http.StatusFound,
-			http.Header{
-				"Location": []string{"http://metadata.example.com/latest/meta-data/"},
-			},
-			"",
-			request,
-		), nil
-	})
-
-	client := newWebsiteTestClient(httpClient, defaultExaContentsEndpoint, defaultTavilyExtractEndpoint)
-
-	_, err := client.fetch(context.Background(), testSearchConfig(), "https://redirect.example.com/article")
-	if err == nil {
-		t.Fatal("expected unsafe redirect to fail")
-	}
-
-	if !errors.Is(err, errUnsafeWebsiteAddress) {
-		t.Fatalf("expected unsafe address error, got %v", err)
-	}
-
-	if requestCount != 1 {
-		t.Fatalf("unexpected request count: %d", requestCount)
-	}
-}
-
-func TestWebsiteClientFetchFollowsAllowedRedirects(t *testing.T) {
-	t.Parallel()
-
-	requests := make([]string, 0, 2)
-
-	httpClient := new(http.Client)
-	httpClient.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
-		requests = append(requests, request.URL.String())
-
-		switch request.URL.String() {
-		case "https://redirect.example.com/article":
-			return newWebsiteTestResponse(
-				http.StatusFound,
-				http.Header{
-					"Location": []string{"https://target.example.com/article"},
-				},
-				"",
-				request,
-			), nil
-		case "https://target.example.com/article":
-			return newWebsiteTestResponse(
-				http.StatusOK,
-				http.Header{
-					"Content-Type": []string{"text/html; charset=utf-8"},
-				},
-				strings.Join([]string{
-					"<!doctype html>",
-					"<html><head><title>Redirect Target</title></head>",
-					"<body><main><p>Redirected content body.</p></main></body></html>",
-				}, ""),
-				request,
-			), nil
-		default:
-			t.Fatalf("unexpected request url: %q", request.URL.String())
-
-			return nil, os.ErrInvalid
-		}
-	})
-
-	client := newWebsiteTestClient(httpClient, defaultExaContentsEndpoint, defaultTavilyExtractEndpoint)
-
-	result, err := client.fetch(
-		context.Background(),
-		testSearchConfig(),
-		"https://redirect.example.com/article",
-	)
-	if err != nil {
-		t.Fatalf("fetch redirected website content: %v", err)
-	}
-
-	if len(requests) != 2 {
-		t.Fatalf("unexpected request count: %d", len(requests))
-	}
-
-	if result.URL != "https://target.example.com/article" {
-		t.Fatalf("unexpected final url: %q", result.URL)
-	}
-
-	if result.Title != "Redirect Target" {
-		t.Fatalf("unexpected title: %q", result.Title)
-	}
-
-	if !containsFold(result.Content, "Redirected content body.") {
-		t.Fatalf("unexpected content: %q", result.Content)
-	}
-}
-
-func TestWebsiteClientFetchPersistsCookiesAcrossAllowedRedirects(t *testing.T) {
-	t.Parallel()
-
-	const (
-		articleURL         = "https://redirect.example.com/article"
-		loginURL           = "https://login.example.com/sync"
-		websiteCookieName  = "website_session"
-		websiteCookieValue = "ready"
-	)
-
-	requests := make([]string, 0, 3)
-
-	httpClient := new(http.Client)
-	httpClient.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
-		requests = append(requests, request.URL.String())
-
-		cookie, cookieErr := request.Cookie(websiteCookieName)
-
-		switch request.URL.String() {
-		case articleURL:
-			if errors.Is(cookieErr, http.ErrNoCookie) {
-				return newWebsiteTestResponse(
-					http.StatusFound,
-					http.Header{
-						"Location": []string{loginURL},
-						"Set-Cookie": []string{
-							websiteCookieName + "=" + websiteCookieValue +
-								"; Domain=.example.com; Path=/; Secure; HttpOnly",
-						},
-					},
-					"",
-					request,
-				), nil
-			}
-
-			assertWebsiteTestCookie(t, cookie, cookieErr, websiteCookieName, websiteCookieValue)
-
-			return newWebsiteTestResponse(
-				http.StatusOK,
-				http.Header{contentTypeHeader: []string{"text/html; charset=utf-8"}},
-				strings.Join([]string{
-					"<!doctype html>",
-					"<html><head><title>Cookie Redirect Target</title></head>",
-					"<body><main><p>Cookie-backed redirect content.</p></main></body></html>",
-				}, ""),
-				request,
-			), nil
-		case loginURL:
-			assertWebsiteTestCookie(t, cookie, cookieErr, websiteCookieName, websiteCookieValue)
-
-			return newWebsiteTestResponse(
-				http.StatusFound,
-				http.Header{"Location": []string{articleURL}},
-				"",
-				request,
-			), nil
-		default:
-			t.Fatalf("unexpected request url: %q", request.URL.String())
-
-			return nil, os.ErrInvalid
-		}
-	})
-
-	client := newWebsiteTestClient(httpClient, defaultExaContentsEndpoint, defaultTavilyExtractEndpoint)
-
-	result, err := client.fetch(context.Background(), testSearchConfig(), articleURL)
-	if err != nil {
-		t.Fatalf("fetch cookie-backed redirected website content: %v", err)
-	}
-
-	expectedRequests := []string{articleURL, loginURL, articleURL}
-	if !slices.Equal(requests, expectedRequests) {
-		t.Fatalf("unexpected requests: got %#v want %#v", requests, expectedRequests)
-	}
-
-	if result.Title != "Cookie Redirect Target" {
-		t.Fatalf("unexpected title: %q", result.Title)
-	}
-
-	if !containsFold(result.Content, "Cookie-backed redirect content.") {
-		t.Fatalf("unexpected content: %q", result.Content)
-	}
-}
-
-func TestWebsiteClientFetchDoesNotShareCookiesBetweenFetches(t *testing.T) {
-	t.Parallel()
-
-	const (
-		articleURL         = "https://redirect.example.com/article"
-		websiteCookieName  = "website_session"
-		websiteCookieValue = "ready"
-	)
-
-	baseCookieJar, err := cookiejar.New(nil)
-	if err != nil {
-		t.Fatalf("create base cookie jar: %v", err)
-	}
-
-	httpClient := new(http.Client)
-	httpClient.Jar = baseCookieJar
-	httpClient.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
-		_, cookieErr := request.Cookie(websiteCookieName)
-		if !errors.Is(cookieErr, http.ErrNoCookie) {
-			t.Fatalf("website cookie leaked between fetches: %v", cookieErr)
-		}
-
-		return newWebsiteTestResponse(
-			http.StatusOK,
-			http.Header{
-				contentTypeHeader: []string{"text/html; charset=utf-8"},
-				"Set-Cookie": []string{
-					websiteCookieName + "=" + websiteCookieValue + "; Path=/; Secure; HttpOnly",
-				},
-			},
-			"<html><head><title>Isolated Cookies</title></head><body>Content.</body></html>",
-			request,
-		), nil
-	})
-
-	client := newWebsiteTestClient(httpClient, defaultExaContentsEndpoint, defaultTavilyExtractEndpoint)
-
-	for range 2 {
-		result, err := client.fetch(context.Background(), testSearchConfig(), articleURL)
-		if err != nil {
-			t.Fatalf("fetch website with isolated cookies: %v", err)
-		}
-
-		if result.Title != "Isolated Cookies" {
-			t.Fatalf("unexpected title: %q", result.Title)
-		}
 	}
 }
 
@@ -1488,6 +1254,208 @@ func TestWebsiteClientFetchSurfacesFirecrawlHTTPStatusError(t *testing.T) {
 
 	if !strings.Contains(err.Error(), "402") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestWebsiteClientFetchUsesTinyFishWhenConfigured(t *testing.T) {
+	t.Parallel()
+
+	var tinyFishCallCount int
+
+	tinyFishServer := httptest.NewServer(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		request *http.Request,
+	) {
+		tinyFishCallCount++
+
+		if request.Header.Get("X-API-Key") != "tf-test-key" {
+			t.Fatalf("unexpected TinyFish API key header: %q", request.Header.Get("X-API-Key"))
+		}
+		if request.Method != http.MethodPost {
+			t.Fatalf("unexpected TinyFish method: %q", request.Method)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Fatalf("decode TinyFish fetch request: %v", err)
+		}
+		assertTinyFishFetchRequest(t, body, "https://example.com/article")
+
+		responseWriter.Header().Set("Content-Type", "application/json")
+		resp := map[string]any{
+			"results": []map[string]any{{
+				"url":        "https://example.com/article",
+				"final_url":  "https://example.com/article",
+				"title":      "Example Article",
+				"description": "Example desc",
+				"language":   "en",
+				"format":     "markdown",
+				"text":       "# Example Article\n\nTinyFish extracted body.",
+			}},
+			"errors": []any{},
+		}
+		if err := json.NewEncoder(responseWriter).Encode(resp); err != nil {
+			t.Fatalf("encode TinyFish response: %v", err)
+		}
+	}))
+	defer tinyFishServer.Close()
+
+	loadedConfig := testSearchConfig()
+	loadedConfig.WebSearch.TinyFish = tinyFishSearchConfig{
+		APIKey:  "tf-test-key",
+		APIKeys: []string{"tf-test-key"},
+	}
+	client := newWebsiteTestClientWithTinyFish(
+		tinyFishServer.Client(),
+		tinyFishServer.URL,
+		"",
+		"",
+	)
+
+	result, err := client.fetch(context.Background(), loadedConfig, "https://example.com/article")
+	if err != nil {
+		t.Fatalf("fetch with TinyFish: %v", err)
+	}
+	if tinyFishCallCount != 1 {
+		t.Fatalf("unexpected TinyFish call count: %d", tinyFishCallCount)
+	}
+	if result.Title != "Example Article" {
+		t.Fatalf("unexpected title: %q", result.Title)
+	}
+	if !strings.Contains(result.Content, "TinyFish extracted body.") {
+		t.Fatalf("unexpected content: %q", result.Content)
+	}
+}
+
+func TestWebsiteClientFetchFallsBackToTinyFishOnFirecrawlFailure(t *testing.T) {
+	t.Parallel()
+
+	var firecrawlCalls int
+	var tinyFishCalls int
+
+	firecrawlServer := httptest.NewServer(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		_ *http.Request,
+	) {
+		firecrawlCalls++
+		responseWriter.Header().Set("Content-Type", "application/json")
+		resp := map[string]any{
+			"success": false,
+			"error":   "Failed to load URL",
+		}
+		_ = json.NewEncoder(responseWriter).Encode(resp)
+	}))
+	defer firecrawlServer.Close()
+
+	tinyFishServer := httptest.NewServer(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		request *http.Request,
+	) {
+		tinyFishCalls++
+		var body map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Fatalf("decode TinyFish fallback request: %v", err)
+		}
+		assertTinyFishFetchRequest(t, body, "https://example.com/article")
+		responseWriter.Header().Set("Content-Type", "application/json")
+		resp := map[string]any{
+			"results": []map[string]any{{
+				"url":       "https://example.com/article",
+				"final_url": "https://example.com/article",
+				"title":     "Fallback Article",
+				"format":    "markdown",
+				"text":      "Fallback body via TinyFish.",
+			}},
+			"errors": []any{},
+		}
+		_ = json.NewEncoder(responseWriter).Encode(resp)
+	}))
+	defer tinyFishServer.Close()
+
+	loadedConfig := testSearchConfig()
+	loadedConfig.WebSearch.Firecrawl = firecrawlSearchConfig{
+		APIKey:                "fc-test-key",
+		APIKeys:               []string{"fc-test-key"},
+		MaxMarkdownCharacters: defaultFirecrawlMaxMarkdownCharacters,
+	}
+	loadedConfig.WebSearch.TinyFish = tinyFishSearchConfig{
+		APIKey:  "tf-test-key",
+		APIKeys: []string{"tf-test-key"},
+	}
+	client := newWebsiteTestClientWithFirecrawlAndTinyFish(
+		firecrawlServer.Client(),
+		firecrawlServer.URL+"/v2/scrape",
+		tinyFishServer.URL,
+		"",
+		"",
+	)
+
+	result, err := client.fetch(context.Background(), loadedConfig, "https://example.com/article")
+	if err != nil {
+		t.Fatalf("fallback to TinyFish failed: %v", err)
+	}
+	if firecrawlCalls != 1 {
+		t.Fatalf("unexpected Firecrawl calls: %d", firecrawlCalls)
+	}
+	if tinyFishCalls != 1 {
+		t.Fatalf("unexpected TinyFish fallback calls: %d", tinyFishCalls)
+	}
+	if result.Title != "Fallback Article" {
+		t.Fatalf("unexpected fallback title: %q", result.Title)
+	}
+	if !strings.Contains(result.Content, "Fallback body via TinyFish") {
+		t.Fatalf("unexpected fallback content: %q", result.Content)
+	}
+}
+
+func TestWebsiteClientFetchSurfacesTinyFishError(t *testing.T) {
+	t.Parallel()
+
+	tinyFishServer := httptest.NewServer(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		_ *http.Request,
+	) {
+		responseWriter.Header().Set("Content-Type", "application/json")
+		resp := map[string]any{
+			"results": []any{},
+			"errors": []map[string]any{{
+				"url":   "https://example.com/article",
+				"error": "bot_blocked",
+			}},
+		}
+		_ = json.NewEncoder(responseWriter).Encode(resp)
+	}))
+	defer tinyFishServer.Close()
+
+	loadedConfig := testSearchConfig()
+	loadedConfig.WebSearch.TinyFish = tinyFishSearchConfig{
+		APIKey:  "tf-test-key",
+		APIKeys: []string{"tf-test-key"},
+	}
+	client := newWebsiteTestClientWithTinyFish(
+		tinyFishServer.Client(),
+		tinyFishServer.URL,
+		"",
+		"",
+	)
+
+	_, err := client.fetch(context.Background(), loadedConfig, "https://example.com/article")
+	if err == nil {
+		t.Fatal("expected TinyFish per-URL error to surface")
+	}
+	if !strings.Contains(err.Error(), "bot_blocked") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func assertTinyFishFetchRequest(t *testing.T, request map[string]any, requestURL string) {
+	t.Helper()
+
+	rawURLs, ok := request["urls"].([]any)
+	if !ok || len(rawURLs) != 1 || rawURLs[0] != requestURL {
+		t.Fatalf("unexpected TinyFish urls: %#v", request["urls"])
+	}
+	if fmt.Sprint(request["format"]) != "markdown" {
+		t.Fatalf("unexpected TinyFish format: %#v", request["format"])
 	}
 }
 

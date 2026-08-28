@@ -171,6 +171,10 @@ func (settings firecrawlSearchConfig) maxMarkdownCharacters() int {
 	return settings.MaxMarkdownCharacters
 }
 
+func (settings tinyFishSearchConfig) apiKeys() []string {
+	return providerAPIKeys(settings.APIKey, settings.APIKeys)
+}
+
 func (settings serpAPIVisualSearchConfig) apiKeys() []string {
 	return providerAPIKeys(settings.APIKey, settings.APIKeys)
 }

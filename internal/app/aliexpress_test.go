@@ -1,9 +1,6 @@
 package app
 
 import (
-	"context"
-	"net/http"
-	"os"
 	"strings"
 	"testing"
 )
@@ -27,27 +24,10 @@ func TestWebsiteClientFetchExtractsAliExpressEmbeddedProductMetadata(t *testing.
 		"<body><main>AliExpress global navigation shell without product details.</main></body></html>",
 	}, "")
 
-	httpClient := new(http.Client)
-	httpClient.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
-		if request.URL.String() != productURL {
-			t.Fatalf("unexpected request url: %q", request.URL.String())
-
-			return nil, os.ErrInvalid
-		}
-
-		return newWebsiteTestResponse(
-			http.StatusOK,
-			http.Header{contentTypeHeader: []string{"text/html; charset=utf-8"}},
-			htmlBody,
-			request,
-		), nil
-	})
-
-	client := newWebsiteTestClient(httpClient, defaultExaContentsEndpoint, defaultTavilyExtractEndpoint)
-
-	result, err := client.fetch(context.Background(), testSearchConfig(), productURL)
+	// Local fallback removed: verify extraction via direct HTML parsing.
+	result, err := parseWebsiteHTML(productURL, []byte(htmlBody))
 	if err != nil {
-		t.Fatalf("fetch AliExpress product metadata: %v", err)
+		t.Fatalf("parse AliExpress product metadata: %v", err)
 	}
 
 	if result.Title != "Precision Mouse Skates" {

@@ -10,7 +10,6 @@ import (
 	providers "llmcord-go/internal/providers"
 	"net"
 	"net/http"
-	"net/http/cookiejar"
 	"net/netip"
 	"net/url"
 	"os"
@@ -20,17 +19,14 @@ import (
 
 	"golang.org/x/net/html"
 	"golang.org/x/net/html/atom"
-	"golang.org/x/net/publicsuffix"
 )
 
 const (
 	websiteWarningText                  = "Warning: website content unavailable"
 	maxWebsiteContentRunes              = 12000
 	maxWebsiteDescriptionRunes          = 500
-	maxWebsiteResponseBytes             = 2 * 1024 * 1024
 	minimumWebsiteContentSelectionRunes = 300
 	websiteContentCandidateCapacity     = 7
-	websiteRedirectHopLimit             = 10
 	websiteSegmentCapacity              = 32
 )
 
@@ -58,6 +54,7 @@ type websiteClient struct {
 	exaContentsEndpoint     string
 	tavilyExtractEndpoint   string
 	firecrawlScrapeEndpoint string
+	tinyFishFetchEndpoint   string
 	lookupIP                websiteLookupIPFunc
 	keys                    *apiKeyRotator
 }
@@ -76,6 +73,7 @@ func newWebsiteClient(httpClient *http.Client) websiteClient {
 		exaContentsEndpoint:     defaultExaContentsEndpoint,
 		tavilyExtractEndpoint:   defaultTavilyExtractEndpoint,
 		firecrawlScrapeEndpoint: defaultFirecrawlScrapeEndpoint,
+		tinyFishFetchEndpoint:   defaultTinyFishFetchEndpoint,
 		lookupIP:                defaultWebsiteLookupIP,
 		keys:                    newAPIKeyRotator(),
 	}
@@ -188,7 +186,41 @@ func (client websiteClient) fetch(
 			return pageContent, nil
 		}
 
+		if tinyFishAPIKeys := loadedConfig.WebSearch.TinyFish.apiKeys(); len(tinyFishAPIKeys) > 0 {
+			tinyFishAPIKey := firstAPIKey(client.keys.rotate(tinyFishAPIKeys))
+
+			pageContent, tinyFishErr := client.fetchWithTinyFishFetch(
+				ctx,
+				normalizedURL,
+				tinyFishAPIKey,
+			)
+			if tinyFishErr == nil {
+				return pageContent, nil
+			}
+
+			return websitePageContent{}, fmt.Errorf(
+				websiteFetchErrorFormat,
+				rawURL,
+				errors.Join(firecrawlErr, tinyFishErr),
+			)
+		}
+
 		return websitePageContent{}, fmt.Errorf(websiteFetchErrorFormat, rawURL, firecrawlErr)
+	}
+
+	if tinyFishAPIKeys := loadedConfig.WebSearch.TinyFish.apiKeys(); len(tinyFishAPIKeys) > 0 {
+		tinyFishAPIKey := firstAPIKey(client.keys.rotate(tinyFishAPIKeys))
+
+		pageContent, tinyFishErr := client.fetchWithTinyFishFetch(
+			ctx,
+			normalizedURL,
+			tinyFishAPIKey,
+		)
+		if tinyFishErr == nil {
+			return pageContent, nil
+		}
+
+		return websitePageContent{}, fmt.Errorf(websiteFetchErrorFormat, rawURL, tinyFishErr)
 	}
 
 	if loadedConfig.WebSearch.exaUsesAPI() {
@@ -222,12 +254,7 @@ func (client websiteClient) fetch(
 		return websitePageContent{}, fmt.Errorf(websiteFetchErrorFormat, rawURL, tavilyErr)
 	}
 
-	pageContent, err := client.fetchWithCurrentImplementation(ctx, normalizedURL)
-	if err != nil {
-		return websitePageContent{}, fmt.Errorf(websiteFetchErrorFormat, rawURL, err)
-	}
-
-	return pageContent, nil
+	return websitePageContent{}, fmt.Errorf("no website fetch provider configured for %q: %w", rawURL, os.ErrNotExist)
 }
 
 type firecrawlScrapeResponse struct {
@@ -422,35 +449,6 @@ type firecrawlStatusError struct {
 
 func (err firecrawlStatusError) Error() string {
 	return err.Message
-}
-
-func (client websiteClient) fetchWithCurrentImplementation(
-	ctx context.Context,
-	requestURL string,
-) (websitePageContent, error) {
-	responseBody, responseURL, contentType, err := client.doRequest(ctx, requestURL)
-	if err != nil {
-		return websitePageContent{}, fmt.Errorf(websiteFetchErrorFormat, requestURL, err)
-	}
-
-	switch {
-	case isHTMLContentType(contentType):
-		pageContent, parseErr := parseWebsiteHTML(responseURL, responseBody)
-		if parseErr != nil {
-			return websitePageContent{}, fmt.Errorf("parse website html %q: %w", requestURL, parseErr)
-		}
-
-		return pageContent, nil
-	case isPlainTextContentType(contentType):
-		return newWebsitePageContent(responseURL, responseURL, "", string(responseBody))
-	default:
-		return websitePageContent{}, fmt.Errorf(
-			"unsupported website content type %q for %q: %w",
-			contentType,
-			requestURL,
-			os.ErrInvalid,
-		)
-	}
 }
 
 func (client websiteClient) fetchWithExaContents(
@@ -935,6 +933,135 @@ func tavilyExtractResultForURL(
 	return response.Results[0], true
 }
 
+func (client websiteClient) fetchWithTinyFishFetch(
+	ctx context.Context,
+	requestURL string,
+	apiKey string,
+) (websitePageContent, error) {
+	requestBody := map[string]any{
+		"urls":   []string{requestURL},
+		"format": "markdown",
+	}
+
+	requestBytes, err := json.Marshal(requestBody)
+	if err != nil {
+		return websitePageContent{}, fmt.Errorf("marshal TinyFish fetch request for %q: %w", requestURL, err)
+	}
+
+	httpRequest, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodPost,
+		client.tinyFishFetchEndpoint,
+		bytes.NewReader(requestBytes),
+	)
+	if err != nil {
+		return websitePageContent{}, fmt.Errorf("create TinyFish fetch request for %q: %w", requestURL, err)
+	}
+
+	httpRequest.Header.Set("Accept", applicationJSONContentType)
+	httpRequest.Header.Set(contentTypeHeader, applicationJSONContentType)
+	httpRequest.Header.Set("X-API-Key", strings.TrimSpace(apiKey))
+
+	httpResponse, err := client.httpClient.Do(httpRequest)
+	if err != nil {
+		return websitePageContent{}, fmt.Errorf("send TinyFish fetch request for %q: %w", requestURL, err)
+	}
+	defer func() {
+		_ = httpResponse.Body.Close()
+	}()
+
+	if httpResponse.StatusCode < http.StatusOK || httpResponse.StatusCode >= http.StatusMultipleChoices {
+		responseBody, readErr := io.ReadAll(httpResponse.Body)
+		if readErr != nil {
+			return websitePageContent{}, fmt.Errorf(
+				"read TinyFish fetch error response for %q after status %d: %w",
+				requestURL,
+				httpResponse.StatusCode,
+				readErr,
+			)
+		}
+
+		return websitePageContent{}, tinyFishStatusError{
+			StatusCode: httpResponse.StatusCode,
+			Message: fmt.Sprintf(
+				"TinyFish fetch request failed for %q with status %d: %s",
+				requestURL,
+				httpResponse.StatusCode,
+				strings.TrimSpace(extractStructuredAPIErrorMessage(responseBody)),
+			),
+			Err: os.ErrInvalid,
+		}
+	}
+
+	var response tinyFishFetchResponse
+
+	err = json.NewDecoder(httpResponse.Body).Decode(&response)
+	if err != nil {
+		return websitePageContent{}, fmt.Errorf("decode TinyFish fetch response for %q: %w", requestURL, err)
+	}
+
+	for _, fetchErr := range response.Errors {
+		if strings.EqualFold(strings.TrimSpace(fetchErr.URL), requestURL) {
+			return websitePageContent{}, fmt.Errorf(
+				"TinyFish fetch reported an error for %q: %s: %w",
+				requestURL,
+				strings.TrimSpace(fetchErr.Error),
+				os.ErrInvalid,
+			)
+		}
+	}
+
+	if len(response.Results) == 0 {
+		var errorsText string
+		if len(response.Errors) > 0 {
+			errorsText = response.Errors[0].Error
+		}
+		return websitePageContent{}, fmt.Errorf(
+			"TinyFish fetch response contained no result for %q: %s: %w",
+			requestURL,
+			strings.TrimSpace(errorsText),
+			os.ErrNotExist,
+		)
+	}
+
+	var matchedResult *tinyFishFetchResult
+	for index := range response.Results {
+		result := &response.Results[index]
+		if strings.EqualFold(strings.TrimSpace(result.URL), requestURL) ||
+			strings.EqualFold(strings.TrimSpace(result.FinalURL), requestURL) {
+			matchedResult = result
+
+			break
+		}
+	}
+	if matchedResult == nil {
+		matchedResult = &response.Results[0]
+	}
+
+	text := tinyFishFetchResultText(matchedResult.Text)
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return websitePageContent{}, fmt.Errorf("TinyFish fetch returned empty content for %q: %w", requestURL, os.ErrInvalid)
+	}
+
+	title := ""
+	if matchedResult.Title != nil {
+		title = strings.TrimSpace(*matchedResult.Title)
+	}
+	if title == "" {
+		title = firstNonEmptyString(matchedResult.URL, matchedResult.FinalURL, requestURL)
+	}
+
+	description := ""
+	if matchedResult.Description != nil {
+		description = strings.TrimSpace(*matchedResult.Description)
+	}
+
+	resultURL := firstNonEmptyString(matchedResult.FinalURL, matchedResult.URL, requestURL)
+
+	return newWebsitePageContent(resultURL, title, description, text)
+}
+
 func mapOptionalIntValue(values map[string]any, key string) *int {
 	value, exists := values[key]
 	if !exists || value == nil {
@@ -1168,297 +1295,20 @@ func isPublicWebsiteIP(address netip.Addr) bool {
 	return true
 }
 
-type validatingWebsiteTransport struct {
-	baseTransport http.RoundTripper
-	lookupIP      websiteLookupIPFunc
-}
 
-func (transport validatingWebsiteTransport) RoundTrip(
-	request *http.Request,
-) (*http.Response, error) {
-	err := validateWebsiteRequestURL(request.Context(), request.URL, transport.lookupIP)
-	if err != nil {
-		return nil, err
-	}
 
-	response, err := transport.baseTransport.RoundTrip(request)
-	if err != nil {
-		return nil, fmt.Errorf("round trip website request %q: %w", request.URL.String(), err)
-	}
 
-	return response, nil
-}
 
-type ssrfProtectedWebsiteTransport struct {
-	directTransport  *http.Transport
-	proxiedTransport *http.Transport
-	lookupIP         websiteLookupIPFunc
-}
 
-func (transport ssrfProtectedWebsiteTransport) RoundTrip(
-	request *http.Request,
-) (*http.Response, error) {
-	err := validateWebsiteRequestURL(request.Context(), request.URL, transport.lookupIP)
-	if err != nil {
-		return nil, err
-	}
 
-	if transport.proxiedTransport == nil || transport.proxiedTransport.Proxy == nil {
-		return roundTripWebsiteRequest(request, transport.directTransport)
-	}
 
-	proxyURL, err := transport.proxiedTransport.Proxy(request)
-	if err != nil {
-		return nil, fmt.Errorf("resolve website proxy for %q: %w", request.URL.String(), err)
-	}
 
-	if proxyURL != nil {
-		return roundTripWebsiteRequest(request, transport.proxiedTransport)
-	}
 
-	return roundTripWebsiteRequest(request, transport.directTransport)
-}
 
-func roundTripWebsiteRequest(
-	request *http.Request,
-	transport *http.Transport,
-) (*http.Response, error) {
-	response, err := transport.RoundTrip(request)
-	if err != nil {
-		return nil, fmt.Errorf("round trip website request %q: %w", request.URL.String(), err)
-	}
 
-	return response, nil
-}
 
-func newSSRFProtectedWebsiteTransport(
-	baseTransport http.RoundTripper,
-	lookupIP websiteLookupIPFunc,
-) http.RoundTripper {
-	switch transport := baseTransport.(type) {
-	case nil:
-		defaultTransport, ok := http.DefaultTransport.(*http.Transport)
-		if !ok {
-			return validatingWebsiteTransport{
-				baseTransport: http.DefaultTransport,
-				lookupIP:      lookupIP,
-			}
-		}
 
-		return newSSRFProtectedWebsiteHTTPTransport(defaultTransport.Clone(), lookupIP)
-	case *http.Transport:
-		return newSSRFProtectedWebsiteHTTPTransport(transport.Clone(), lookupIP)
-	default:
-		return validatingWebsiteTransport{
-			baseTransport: transport,
-			lookupIP:      lookupIP,
-		}
-	}
-}
 
-func newSSRFProtectedWebsiteHTTPTransport(
-	baseTransport *http.Transport,
-	lookupIP websiteLookupIPFunc,
-) http.RoundTripper {
-	directTransport := baseTransport.Clone()
-	directTransport.DialContext = newSSRFProtectedWebsiteDialContext(
-		directTransport.DialContext,
-		lookupIP,
-	)
-
-	if directTransport.DialTLSContext != nil {
-		directTransport.DialTLSContext = newSSRFProtectedWebsiteDialTLSContext(
-			directTransport.DialTLSContext,
-			lookupIP,
-		)
-	}
-
-	return ssrfProtectedWebsiteTransport{
-		directTransport:  directTransport,
-		proxiedTransport: baseTransport.Clone(),
-		lookupIP:         lookupIP,
-	}
-}
-
-func newSSRFProtectedWebsiteDialContext(
-	baseDialContext func(context.Context, string, string) (net.Conn, error),
-	lookupIP websiteLookupIPFunc,
-) func(context.Context, string, string) (net.Conn, error) {
-	return func(ctx context.Context, network string, address string) (net.Conn, error) {
-		err := validateWebsiteDialAddress(ctx, address, lookupIP)
-		if err != nil {
-			return nil, err
-		}
-
-		if baseDialContext != nil {
-			return baseDialContext(ctx, network, address)
-		}
-
-		var dialer net.Dialer
-
-		return dialer.DialContext(ctx, network, address)
-	}
-}
-
-func newSSRFProtectedWebsiteDialTLSContext(
-	baseDialTLSContext func(context.Context, string, string) (net.Conn, error),
-	lookupIP websiteLookupIPFunc,
-) func(context.Context, string, string) (net.Conn, error) {
-	return func(ctx context.Context, network string, address string) (net.Conn, error) {
-		err := validateWebsiteDialAddress(ctx, address, lookupIP)
-		if err != nil {
-			return nil, err
-		}
-
-		return baseDialTLSContext(ctx, network, address)
-	}
-}
-
-func validateWebsiteDialAddress(
-	ctx context.Context,
-	address string,
-	lookupIP websiteLookupIPFunc,
-) error {
-	host := address
-
-	dialHost, _, err := net.SplitHostPort(address)
-	if err == nil {
-		host = dialHost
-	}
-
-	return validateWebsiteHost(ctx, host, lookupIP)
-}
-
-func (client websiteClient) websiteFetchHTTPClient() (*http.Client, error) {
-	baseClient := client.httpClient
-	if baseClient == nil {
-		baseClient = new(http.Client)
-	}
-
-	fetchClient := new(http.Client)
-	*fetchClient = *baseClient
-
-	fetchClient.CheckRedirect = func(*http.Request, []*http.Request) error {
-		return http.ErrUseLastResponse
-	}
-
-	cookieJar, err := cookiejar.New(&cookiejar.Options{
-		PublicSuffixList: publicsuffix.List,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("create website cookie jar: %w", err)
-	}
-
-	fetchClient.Jar = cookieJar
-	fetchClient.Transport = newSSRFProtectedWebsiteTransport(
-		baseClient.Transport,
-		client.lookupWebsiteIP(),
-	)
-
-	return fetchClient, nil
-}
-
-func redirectWebsiteRequestURL(
-	currentURL *url.URL,
-	location string,
-) (*url.URL, error) {
-	trimmedLocation := strings.TrimSpace(location)
-	if trimmedLocation == "" {
-		return nil, fmt.Errorf(
-			"redirect website request %q missing location: %w",
-			currentURL.String(),
-			os.ErrInvalid,
-		)
-	}
-
-	nextURL, err := currentURL.Parse(trimmedLocation)
-	if err != nil {
-		return nil, fmt.Errorf(
-			"parse website redirect target %q from %q: %w",
-			trimmedLocation,
-			currentURL.String(),
-			err,
-		)
-	}
-
-	if !isWebsiteScheme(nextURL.Scheme) || strings.TrimSpace(nextURL.Hostname()) == "" {
-		return nil, fmt.Errorf(
-			"unsupported website redirect target %q from %q: %w",
-			trimmedLocation,
-			currentURL.String(),
-			os.ErrInvalid,
-		)
-	}
-
-	nextURL.Scheme = strings.ToLower(nextURL.Scheme)
-	nextURL.Host = strings.ToLower(nextURL.Host)
-	nextURL.Fragment = ""
-
-	return nextURL, nil
-}
-
-func isWebsiteRedirectStatus(statusCode int) bool {
-	switch statusCode {
-	case http.StatusMovedPermanently,
-		http.StatusFound,
-		http.StatusSeeOther,
-		http.StatusTemporaryRedirect,
-		http.StatusPermanentRedirect:
-		return true
-	default:
-		return false
-	}
-}
-
-func setWebsiteRequestHeaders(httpRequest *http.Request, userAgent string) {
-	httpRequest.Header.Set(
-		"Accept",
-		"text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.1",
-	)
-	httpRequest.Header.Set("Accept-Language", youtubeAcceptLanguage)
-	httpRequest.Header.Set("User-Agent", userAgent)
-}
-
-func (client websiteClient) doRequest(
-	ctx context.Context,
-	requestURL string,
-) ([]byte, string, string, error) {
-	currentURL, err := url.Parse(requestURL)
-	if err != nil {
-		return nil, "", "", fmt.Errorf("parse website request %q: %w", requestURL, err)
-	}
-
-	httpClient, err := client.websiteFetchHTTPClient()
-	if err != nil {
-		return nil, "", "", err
-	}
-
-	for redirectHop := 0; ; redirectHop++ {
-		httpResponse, err := client.sendWebsiteRequest(ctx, httpClient, currentURL)
-		if err != nil {
-			return nil, "", "", err
-		}
-
-		nextURL, redirected, err := client.redirectWebsiteRequest(
-			ctx,
-			requestURL,
-			currentURL,
-			httpResponse,
-			redirectHop,
-		)
-		if err != nil {
-			return nil, "", "", err
-		}
-
-		if redirected {
-			currentURL = nextURL
-
-			continue
-		}
-
-		return websiteResponseDetails(currentURL, httpResponse)
-	}
-}
 
 func extractWebsiteURLs(text string) []string {
 	text = normalizedURLExtractionText(text)
@@ -1581,18 +1431,18 @@ func isFacebookHost(host string) bool {
 		strings.HasSuffix(normalizedHost, ".fb.watch")
 }
 
-func isHTMLContentType(contentType string) bool {
-	trimmedContentType := strings.ToLower(strings.TrimSpace(contentType))
 
-	return trimmedContentType == "" ||
-		strings.HasPrefix(trimmedContentType, "text/html") ||
-		strings.HasPrefix(trimmedContentType, "application/xhtml+xml")
-}
 
-func isPlainTextContentType(contentType string) bool {
-	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(contentType)), "text/plain")
-}
-
+// parseWebsiteHTML and its helpers (extractWebsiteTitle, extractWebsiteBodyText,
+// websiteContentCandidates, renderWebsiteText etc.) are retained for direct
+// unit testing (e.g. TestWebsiteClientFetchExtractsMainContentAndIgnoresChrome
+// now calls parseWebsiteHTML directly). The local live-fetch path that used
+// doRequest/websiteFetchHTTPClient/SSRF transport was removed — website
+// extraction now goes exclusively via provider APIs (Firecrawl → TinyFish →
+// Exa → Tavily). Transport helpers below (newSSRFProtectedWebsiteTransport,
+// websiteFetchHTTPClient, doRequest, sendWebsiteRequest, redirectWebsiteRequest,
+// websiteResponseDetails, etc.) are currently dead code and kept only for
+// reference; they will be deleted in a follow-up cleanup.
 func parseWebsiteHTML(pageURL string, responseBody []byte) (websitePageContent, error) {
 	document, err := html.Parse(bytes.NewReader(responseBody))
 	if err != nil {
@@ -1849,107 +1699,9 @@ func renderWebsiteText(root *html.Node) string {
 	return truncateRunes(strings.Join(segments, "\n"), maxWebsiteContentRunes)
 }
 
-func (client websiteClient) sendWebsiteRequest(
-	ctx context.Context,
-	httpClient *http.Client,
-	currentURL *url.URL,
-) (*http.Response, error) {
-	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodGet, currentURL.String(), nil)
-	if err != nil {
-		return nil, fmt.Errorf("create website request %q: %w", currentURL.String(), err)
-	}
 
-	setWebsiteRequestHeaders(httpRequest, client.userAgent)
 
-	httpResponse, err := httpClient.Do(httpRequest)
-	if err != nil {
-		return nil, fmt.Errorf("send website request %q: %w", currentURL.String(), err)
-	}
 
-	return httpResponse, nil
-}
-
-func (client websiteClient) redirectWebsiteRequest(
-	ctx context.Context,
-	requestURL string,
-	currentURL *url.URL,
-	httpResponse *http.Response,
-	redirectHop int,
-) (*url.URL, bool, error) {
-	if !isWebsiteRedirectStatus(httpResponse.StatusCode) {
-		return nil, false, nil
-	}
-
-	_ = httpResponse.Body.Close()
-
-	if redirectHop >= websiteRedirectHopLimit {
-		return nil, false, fmt.Errorf(
-			"website request %q exceeded %d redirects: %w",
-			requestURL,
-			websiteRedirectHopLimit,
-			os.ErrInvalid,
-		)
-	}
-
-	nextURL, err := redirectWebsiteRequestURL(currentURL, httpResponse.Header.Get("Location"))
-	if err != nil {
-		return nil, false, err
-	}
-
-	err = validateWebsiteRequestURL(ctx, nextURL, client.lookupWebsiteIP())
-	if err != nil {
-		return nil, false, fmt.Errorf(
-			"validate website redirect %q from %q: %w",
-			nextURL.String(),
-			currentURL.String(),
-			err,
-		)
-	}
-
-	return nextURL, true, nil
-}
-
-func websiteResponseDetails(
-	currentURL *url.URL,
-	httpResponse *http.Response,
-) ([]byte, string, string, error) {
-	responseBody, err := io.ReadAll(io.LimitReader(httpResponse.Body, maxWebsiteResponseBytes+1))
-	_ = httpResponse.Body.Close()
-
-	if err != nil {
-		return nil, "", "", fmt.Errorf("read website response %q: %w", currentURL.String(), err)
-	}
-
-	if len(responseBody) > maxWebsiteResponseBytes {
-		return nil, "", "", fmt.Errorf(
-			"website response %q exceeds %d bytes: %w",
-			currentURL.String(),
-			maxWebsiteResponseBytes,
-			os.ErrInvalid,
-		)
-	}
-
-	if httpResponse.StatusCode < http.StatusOK || httpResponse.StatusCode >= http.StatusMultipleChoices {
-		return nil, "", "", fmt.Errorf(
-			"website request %q failed with status %d: %s: %w",
-			currentURL.String(),
-			httpResponse.StatusCode,
-			strings.TrimSpace(string(responseBody)),
-			os.ErrInvalid,
-		)
-	}
-
-	return responseBody, websiteResponseURL(currentURL, httpResponse), httpResponse.Header.Get(contentTypeHeader), nil
-}
-
-func websiteResponseURL(currentURL *url.URL, httpResponse *http.Response) string {
-	responseURL := currentURL.String()
-	if httpResponse.Request != nil && httpResponse.Request.URL != nil {
-		responseURL = httpResponse.Request.URL.String()
-	}
-
-	return responseURL
-}
 
 func renderWebsiteNode(
 	node *html.Node,

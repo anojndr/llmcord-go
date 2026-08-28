@@ -13,6 +13,8 @@ const (
 	defaultTavilySearchEndpoint          = "https://api.tavily.com/search"
 	defaultTavilyExtractEndpoint         = "https://api.tavily.com/extract"
 	defaultFirecrawlScrapeEndpoint       = "https://api.firecrawl.dev/v2/scrape"
+	defaultTinyFishSearchEndpoint        = "https://api.search.tinyfish.ai"
+	defaultTinyFishFetchEndpoint         = "https://api.fetch.tinyfish.ai"
 	defaultGithubGistEndpoint            = "https://api.github.com/gists"
 	defaultGistFilename                  = "llmcord-go reply.md"
 	defaultStatusMessage                 = "github.com/jakobdylanc/llmcord"

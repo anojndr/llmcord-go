@@ -150,18 +150,34 @@ media_analysis_model: google/gemini-3.6-flash
 # fallback_model: 9router/stable_model:vision
 
 web_search:
-  # Web search runs Exa by default: `mcp` uses Exa as primary with Tavily as
-  # fallback; when `web_search.exa.api_key` is set, Exa uses its Search API,
-  # and without a key it uses the Exa MCP. `tavily` flips the order and uses
-  # Exa as fallback.
+  # Web search now prefers TinyFish Search as primary; Exa and Tavily remain
+  # as fallbacks in the order dictated by `primary_provider` when TinyFish
+  # is unavailable or fails. When `web_search.tinyfish.api_key` is set,
+  # search uses the TinyFish Search API and enriches each result via the
+  # TinyFish Fetch API. `mcp` keeps Exa as the first fallback and Tavily as
+  # the second; `tavily` flips Exa/Tavily. `tinyfish` may be set as
+  # `primary_provider` but is treated as `mcp` for fallback ordering (TinyFish
+  # is already tried first explicitly, see providersInOrder).
   primary_provider: mcp
   # Maximum URLs to request for each search query.
   max_urls: 5
   # Generic website URL extraction runs Firecrawl Scrape first when a
-  # Firecrawl API key is set, then Exa Contents when an Exa API key is set,
-  # then Tavily Extract, then the in-process HTML fetcher. TikTok, YouTube,
-  # Facebook, and Reddit URLs never use Firecrawl (dedicated fetchers handle
-  # them).
+  # Firecrawl API key is set (with TinyFish Fetch as 1st fallback on
+  # Firecrawl failure). If Firecrawl is not configured, it tries TinyFish
+  # Fetch when configured, otherwise falls through to exclusive Exa
+  # Contents / Tavily Extract (only the first configured provider is tried,
+  # no chain — Exa failure does not fall through to Tavily). TikTok,
+  # YouTube, Facebook, and Reddit URLs never use Firecrawl/TinyFish for
+  # website extraction (dedicated fetchers handle them).
+  tinyfish:
+    # Optional. When set, web search uses the TinyFish Search API (with
+    # automatic TinyFish Fetch enrichment) and website extraction falls back
+    # to the TinyFish Fetch API. `api_key` also accepts a YAML list; requests
+    # are round-robin across them.
+    # api_key:
+    #   - tf-primary-key
+    #   - tf-backup-key
+    api_key:
   firecrawl:
     # Optional. When set, generic website extraction uses Firecrawl's Scrape
     # API (clean markdown, JS-rendered pages included). `api_key` also accepts
