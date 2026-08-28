@@ -2026,7 +2026,6 @@ func (client tinyFishSearchClient) search(
 
 	return searchQueriesConcurrently(ctx, queries, func(queryContext context.Context, query string) (webSearchResult, error) {
 		apiKey := firstAPIKey(client.keys.rotate(apiKeys))
-
 		return client.searchSingleQuery(queryContext, apiKey, query, maxURLs)
 	})
 }
@@ -2174,87 +2173,107 @@ func (client tinyFishSearchClient) fetchContents(
 		return tinyFishFetchResponse{}, nil
 	}
 
-	// TinyFish Fetch supports up to 10 URLs per request; maxURLs is 5 so single batch suffices.
-	// If larger, chunk into 10-url batches and merge.
+	batchCount := (len(urls) + 9) / 10
+	if batchCount == 1 {
+		return client.fetchTinyFishBatch(ctx, apiKey, urls)
+	}
+
+	taskResults := runTasksConcurrently(
+		ctx,
+		externalRequestConcurrency,
+		batchCount,
+		func(taskCtx context.Context, index int) (tinyFishFetchResponse, error) {
+			start := index * 10
+			end := start + 10
+			if end > len(urls) {
+				end = len(urls)
+			}
+			batch := urls[start:end]
+			return client.fetchTinyFishBatch(taskCtx, apiKey, batch)
+		},
+	)
+
 	var mergedResults []tinyFishFetchResult
 	var mergedErrors []tinyFishFetchError
-
-	for start := 0; start < len(urls); start += 10 {
-		end := start + 10
-		if end > len(urls) {
-			end = len(urls)
-		}
-		batch := urls[start:end]
-
-		requestBody := tinyFishFetchRequest{
-			URLs:   batch,
-			Format: "markdown",
-		}
-
-		requestBytes, err := json.Marshal(requestBody)
-		if err != nil {
-			return tinyFishFetchResponse{}, fmt.Errorf("marshal TinyFish fetch request: %w", err)
-		}
-
-		httpRequest, err := http.NewRequestWithContext(
-			ctx,
-			http.MethodPost,
-			client.fetchEndpoint,
-			bytes.NewReader(requestBytes),
-		)
-		if err != nil {
-			return tinyFishFetchResponse{}, fmt.Errorf("create TinyFish fetch request: %w", err)
-		}
-
-		httpRequest.Header.Set("Accept", applicationJSONContentType)
-		httpRequest.Header.Set(contentTypeHeader, applicationJSONContentType)
-		httpRequest.Header.Set("X-API-Key", strings.TrimSpace(apiKey))
-
-		httpResponse, doErr := client.httpClient.Do(httpRequest)
-		if doErr != nil {
-			return tinyFishFetchResponse{}, fmt.Errorf("send TinyFish fetch request: %w", doErr)
-		}
-
-		batchResponse, batchErr := func() (tinyFishFetchResponse, error) {
-			defer func() { _ = httpResponse.Body.Close() }()
-
-			if httpResponse.StatusCode < http.StatusOK || httpResponse.StatusCode >= http.StatusMultipleChoices {
-				responseBody, readErr := io.ReadAll(httpResponse.Body)
-				if readErr != nil {
-					return tinyFishFetchResponse{}, fmt.Errorf("read TinyFish fetch error response after status %d: %w", httpResponse.StatusCode, readErr)
-				}
-
-				return tinyFishFetchResponse{}, tinyFishStatusError{
-					StatusCode: httpResponse.StatusCode,
-					Message: fmt.Sprintf(
-						"TinyFish fetch request failed with status %d: %s",
-						httpResponse.StatusCode,
-						strings.TrimSpace(string(responseBody)),
-					),
-					Err: os.ErrInvalid,
-				}
+	hasSuccess := false
+	var firstErr error
+	for _, result := range taskResults {
+		if result.err != nil {
+			if firstErr == nil {
+				firstErr = result.err
 			}
-
-			var br tinyFishFetchResponse
-			if decodeErr := json.NewDecoder(httpResponse.Body).Decode(&br); decodeErr != nil {
-				return tinyFishFetchResponse{}, fmt.Errorf("decode TinyFish fetch response: %w", decodeErr)
-			}
-
-			return br, nil
-		}()
-
-		if batchErr != nil {
-			return tinyFishFetchResponse{}, batchErr
+			logWarn("tinyfish fetch batch failed", result.err)
+			continue
 		}
-
-		mergedResults = append(mergedResults, batchResponse.Results...)
-		mergedErrors = append(mergedErrors, batchResponse.Errors...)
+		hasSuccess = true
+		mergedResults = append(mergedResults, result.value.Results...)
+		mergedErrors = append(mergedErrors, result.value.Errors...)
+	}
+	if !hasSuccess && firstErr != nil {
+		return tinyFishFetchResponse{}, firstErr
 	}
 
 	return tinyFishFetchResponse{
 		Results: mergedResults,
 		Errors:  mergedErrors,
 	}, nil
+}
+
+func (client tinyFishSearchClient) fetchTinyFishBatch(
+	ctx context.Context,
+	apiKey string,
+	batch []string,
+) (tinyFishFetchResponse, error) {
+	if len(batch) == 0 {
+		return tinyFishFetchResponse{}, nil
+	}
+	requestBody := tinyFishFetchRequest{
+		URLs:   batch,
+		Format: "markdown",
+	}
+	requestBytes, err := json.Marshal(requestBody)
+	if err != nil {
+		return tinyFishFetchResponse{}, fmt.Errorf("marshal TinyFish fetch request: %w", err)
+	}
+	httpRequest, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodPost,
+		client.fetchEndpoint,
+		bytes.NewReader(requestBytes),
+	)
+	if err != nil {
+		return tinyFishFetchResponse{}, fmt.Errorf("create TinyFish fetch request: %w", err)
+	}
+	httpRequest.Header.Set("Accept", applicationJSONContentType)
+	httpRequest.Header.Set(contentTypeHeader, applicationJSONContentType)
+	httpRequest.Header.Set("X-API-Key", strings.TrimSpace(apiKey))
+
+	httpResponse, err := client.httpClient.Do(httpRequest)
+	if err != nil {
+		return tinyFishFetchResponse{}, fmt.Errorf("send TinyFish fetch request: %w", err)
+	}
+	defer func() { _ = httpResponse.Body.Close() }()
+
+	if httpResponse.StatusCode < http.StatusOK || httpResponse.StatusCode >= http.StatusMultipleChoices {
+		responseBody, readErr := io.ReadAll(httpResponse.Body)
+		if readErr != nil {
+			return tinyFishFetchResponse{}, fmt.Errorf("read TinyFish fetch error response after status %d: %w", httpResponse.StatusCode, readErr)
+		}
+		return tinyFishFetchResponse{}, tinyFishStatusError{
+			StatusCode: httpResponse.StatusCode,
+			Message: fmt.Sprintf(
+				"TinyFish fetch request failed with status %d: %s",
+				httpResponse.StatusCode,
+				strings.TrimSpace(string(responseBody)),
+			),
+			Err: os.ErrInvalid,
+		}
+	}
+	var batchResponse tinyFishFetchResponse
+	if err := json.NewDecoder(httpResponse.Body).Decode(&batchResponse); err != nil {
+		return tinyFishFetchResponse{}, fmt.Errorf("decode TinyFish fetch response: %w", err)
+	}
+	return batchResponse, nil
 }
 
 func tinyFishFetchResultText(rawText any) string {
