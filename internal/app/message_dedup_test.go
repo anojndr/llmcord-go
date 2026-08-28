@@ -261,7 +261,6 @@ func TestHandleMessageCreateLogsExactlyOnceThroughWebSearchDecision(t *testing.T
 		"    base_url: https://api.example.com/v1\n"+
 		"    api_key: test-key\n"+
 		"web_search:\n"+
-		"  primary_provider: mcp\n"+
 		"  exa:\n"+
 		"    api_key: test-key\n"+
 		"models:\n"+

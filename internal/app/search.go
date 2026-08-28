@@ -484,57 +484,34 @@ func (client routedWebSearchClient) search(
 		logWarn("tinyfish search failed, trying fallback", err)
 	}
 
-	primaryProvider, fallbackProvider := loadedConfig.WebSearch.providersInOrder()
-
-	results, err := client.searchWithProvider(ctx, loadedConfig, primaryProvider, queries)
-	if err == nil {
-		return results, nil
+	exaResults, exaErr := client.exa.search(ctx, loadedConfig, queries)
+	if exaErr == nil {
+		return exaResults, nil
 	}
 
-	fallbackResults, fallbackErr := client.searchWithProvider(
-		ctx,
-		loadedConfig,
-		fallbackProvider,
-		queries,
-	)
-	if fallbackErr == nil {
-		return fallbackResults, nil
+	tavilyResults, tavilyErr := client.tavily.search(ctx, loadedConfig, queries)
+	if tavilyErr == nil {
+		return tavilyResults, nil
+	}
+
+	exaName := "Exa MCP"
+	if loadedConfig.WebSearch.exaUsesAPI() {
+		exaName = "Exa Search API"
 	}
 
 	if tinyFishErr != nil {
 		return nil, fmt.Errorf(
-			"search with %s failed, %s primary fallback failed, and %s fallback failed: %w",
-			webSearchProviderKindTinyFish.displayName(loadedConfig),
-			primaryProvider.displayName(loadedConfig),
-			fallbackProvider.displayName(loadedConfig),
-			errors.Join(tinyFishErr, err, fallbackErr),
+			"search with TinyFish Search failed, %s primary fallback failed, and Tavily fallback failed: %w",
+			exaName,
+			errors.Join(tinyFishErr, exaErr, tavilyErr),
 		)
 	}
 
 	return nil, fmt.Errorf(
-		"search with %s failed, and %s fallback failed: %w",
-		primaryProvider.displayName(loadedConfig),
-		fallbackProvider.displayName(loadedConfig),
-		errors.Join(err, fallbackErr),
+		"search with %s failed, and Tavily fallback failed: %w",
+		exaName,
+		errors.Join(exaErr, tavilyErr),
 	)
-}
-
-func (client routedWebSearchClient) searchWithProvider(
-	ctx context.Context,
-	loadedConfig config,
-	provider webSearchProviderKind,
-	queries []string,
-) ([]webSearchResult, error) {
-	switch provider {
-	case webSearchProviderKindMCP:
-		return client.exa.search(ctx, loadedConfig, queries)
-	case webSearchProviderKindTavily:
-		return client.tavily.search(ctx, loadedConfig, queries)
-	case webSearchProviderKindTinyFish:
-		return client.tinyFish.search(ctx, loadedConfig, queries)
-	default:
-		return nil, fmt.Errorf("unsupported web search provider %q: %w", provider, os.ErrInvalid)
-	}
 }
 
 func (instance *bot) decideWebSearch(
@@ -2652,41 +2629,6 @@ func mapStringSliceValue(values map[string]any, key string) []string {
 	}
 
 	return stringValues
-}
-
- // providersInOrder returns the ordered fallback pair for Exa (MCP) and Tavily.
- // TinyFish is always attempted first in routedWebSearchClient.search when
- // configured, so this helper only orders the remaining Exa/Tavily fallbacks.
- // When primary_provider is "tinyfish" we still fall back to MCP→Tavily to
- // avoid a duplicate TinyFish attempt (already tried explicitly).
-func (settings webSearchConfig) providersInOrder() (webSearchProviderKind, webSearchProviderKind) {
-	switch settings.PrimaryProvider {
-	case webSearchProviderKindTavily:
-		return webSearchProviderKindTavily, webSearchProviderKindMCP
-	case webSearchProviderKindMCP:
-		return webSearchProviderKindMCP, webSearchProviderKindTavily
-	case webSearchProviderKindTinyFish:
-		return webSearchProviderKindMCP, webSearchProviderKindTavily
-	default:
-		return webSearchProviderKindMCP, webSearchProviderKindTavily
-	}
-}
-
-func (provider webSearchProviderKind) displayName(loadedConfig config) string {
-	switch provider {
-	case webSearchProviderKindTavily:
-		return "Tavily"
-	case webSearchProviderKindMCP:
-		if loadedConfig.WebSearch.exaUsesAPI() {
-			return "Exa Search API"
-		}
-
-		return "Exa MCP"
-	case webSearchProviderKindTinyFish:
-		return "TinyFish Search"
-	default:
-		return string(provider)
-	}
 }
 
 func mcpResultText(result *mcp.CallToolResult) string {

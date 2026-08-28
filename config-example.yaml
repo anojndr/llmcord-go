@@ -150,15 +150,9 @@ media_analysis_model: google/gemini-3.6-flash
 # fallback_model: 9router/stable_model:vision
 
 web_search:
-  # Web search now prefers TinyFish Search as primary; Exa and Tavily remain
-  # as fallbacks in the order dictated by `primary_provider` when TinyFish
-  # is unavailable or fails. When `web_search.tinyfish.api_key` is set,
-  # search uses the TinyFish Search API and enriches each result via the
-  # TinyFish Fetch API. `mcp` keeps Exa as the first fallback and Tavily as
-  # the second; `tavily` flips Exa/Tavily. `tinyfish` may be set as
-  # `primary_provider` but is treated as `mcp` for fallback ordering (TinyFish
-  # is already tried first explicitly, see providersInOrder).
-  primary_provider: mcp
+  # Web search order is hardcoded: TinyFish Search (when `web_search.tinyfish.api_key` is set) -> Exa -> Tavily.
+  # When TinyFish is configured, search uses the TinyFish Search API and enriches each result via the
+  # TinyFish Fetch API. If TinyFish is unavailable or fails, search falls back to Exa, then Tavily.
   # Maximum URLs to request for each search query.
   max_urls: 5
   # Generic website URL extraction runs Firecrawl Scrape first when a
@@ -208,10 +202,9 @@ web_search:
     #   - exa-backup-key
     api_key:
   tavily:
-    # Optional when `primary_provider: mcp`; required if you want Tavily as
-    # either primary or fallback. Generic website extraction also uses Tavily
-    # Extract as a fallback when Exa is unavailable. `api_key` accepts a
-    # YAML list; requests are round-robin across them.
+    # Optional. Used as final fallback after TinyFish and Exa; also used for
+    # generic website extraction via Tavily Extract when Exa is unavailable.
+    # `api_key` accepts a YAML list; requests are round-robin across them.
     # api_key:
     #   - tvly-primary-key
     #   - tvly-backup-key
