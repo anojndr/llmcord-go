@@ -93,6 +93,17 @@ func (instance *bot) prepareWebsiteAugmentation(
 		return emptyPreparedConversationAugmentation(), nil
 	}
 
+	if len(loadedConfig.WebSearch.Firecrawl.apiKeys()) == 0 && len(loadedConfig.WebSearch.TinyFish.apiKeys()) > 0 {
+		switch wc := instance.website.(type) {
+		case websiteClient:
+			return instance.prepareTinyFishWebsiteAugmentationBatch(ctx, loadedConfig, websiteURLs, wc)
+		case *websiteClient:
+			if wc != nil {
+				return instance.prepareTinyFishWebsiteAugmentationBatch(ctx, loadedConfig, websiteURLs, *wc)
+			}
+		}
+	}
+
 	return prepareConcurrentURLContentAugmentation(
 		ctx,
 		websiteURLs,
@@ -104,6 +115,277 @@ func (instance *bot) prepareWebsiteAugmentation(
 		formatWebsiteURLContent,
 		appendWebsiteContentToConversation,
 	)
+}
+
+func (instance *bot) prepareTinyFishWebsiteAugmentationBatch(
+	ctx context.Context,
+	loadedConfig config,
+	rawURLs []string,
+	wc websiteClient,
+) (preparedConversationAugmentation, error) {
+	apiKeys := loadedConfig.WebSearch.TinyFish.apiKeys()
+	if len(apiKeys) == 0 {
+		return emptyPreparedConversationAugmentation(), nil
+	}
+	type validationResult struct {
+		raw        string
+		normalized string
+		err        error
+	}
+	validationResults := runTasksConcurrently(
+		ctx,
+		externalRequestConcurrency,
+		len(rawURLs),
+		func(taskCtx context.Context, index int) (validationResult, error) {
+			rawURL := rawURLs[index]
+			normalizedURL, err := normalizeWebsiteURL(rawURL)
+			if err != nil {
+				return validationResult{raw: rawURL, err: err}, nil
+			}
+			parsedURL, err := url.Parse(normalizedURL)
+			if err != nil {
+				return validationResult{raw: rawURL, err: fmt.Errorf("parse normalized website url %q: %w", normalizedURL, err)}, nil
+			}
+			if err := validateWebsiteRequestURL(taskCtx, parsedURL, wc.lookupWebsiteIP()); err != nil {
+				return validationResult{raw: rawURL, err: fmt.Errorf("validate website url %q: %w", rawURL, err)}, nil
+			}
+			return validationResult{raw: rawURL, normalized: normalizedURL}, nil
+		},
+	)
+	validNormalized := make([]string, 0, len(rawURLs))
+	rawForNormalized := make(map[string]string)
+	seenNormalized := make(map[string]struct{})
+	hasValidationFailure := false
+	for _, res := range validationResults {
+		if res.value.err != nil {
+			logWarn("fetch website content", res.value.err, "url", res.value.raw)
+			hasValidationFailure = true
+			continue
+		}
+		lowerNorm := strings.ToLower(strings.TrimSpace(res.value.normalized))
+		if _, seen := seenNormalized[lowerNorm]; seen {
+			continue
+		}
+		seenNormalized[lowerNorm] = struct{}{}
+		validNormalized = append(validNormalized, res.value.normalized)
+		rawForNormalized[res.value.normalized] = res.value.raw
+	}
+	if len(validNormalized) == 0 {
+		warnings := []string(nil)
+		if hasValidationFailure {
+			warnings = []string{websiteWarningText}
+		}
+		return warningPreparedConversationAugmentation(warnings), nil
+	}
+	batchCount := (len(validNormalized) + 9) / 10
+	type batchFetchResult struct {
+		response tinyFishFetchResponse
+		batchURLs []string
+	}
+	batchResults := runTasksConcurrently(
+		ctx,
+		externalRequestConcurrency,
+		batchCount,
+		func(taskCtx context.Context, index int) (batchFetchResult, error) {
+			start := index * 10
+			end := start + 10
+			if end > len(validNormalized) {
+				end = len(validNormalized)
+			}
+			batch := validNormalized[start:end]
+			apiKey := firstAPIKey(wc.keys.rotate(apiKeys))
+			resp, err := wc.fetchTinyFishBatch(taskCtx, apiKey, batch)
+			if err != nil {
+				for _, u := range batch {
+					raw := rawForNormalized[u]
+					logWarn("fetch website content", err, "url", raw)
+				}
+				return batchFetchResult{}, err
+			}
+			return batchFetchResult{response: resp, batchURLs: batch}, nil
+		},
+	)
+	hasFetchFailure := hasValidationFailure
+	fetchedPageMap := make(map[string]websitePageContent)
+	for _, br := range batchResults {
+		if br.err != nil {
+			hasFetchFailure = true
+			continue
+		}
+		resp := br.value.response
+		errorMap := make(map[string]string)
+		for _, fe := range resp.Errors {
+			key := strings.ToLower(strings.TrimSpace(fe.URL))
+			if key != "" {
+				errorMap[key] = fe.Error
+				if raw, ok := rawForNormalized[fe.URL]; ok {
+					logWarn("fetch website content", fmt.Errorf("TinyFish fetch reported an error for %q: %s: %w", fe.URL, fe.Error, os.ErrInvalid), "url", raw)
+				} else {
+					for _, batchURL := range br.value.batchURLs {
+						if strings.EqualFold(batchURL, fe.URL) {
+							raw := rawForNormalized[batchURL]
+							logWarn("fetch website content", fmt.Errorf("TinyFish fetch reported an error for %q: %s: %w", fe.URL, fe.Error, os.ErrInvalid), "url", raw)
+							break
+						}
+					}
+				}
+			}
+		}
+		for _, result := range resp.Results {
+			rawText := tinyFishFetchResultText(result.Text)
+			rawText = strings.TrimSpace(rawText)
+			if rawText == "" {
+				if raw, ok := rawForNormalized[result.URL]; ok {
+					logWarn("fetch website content", fmt.Errorf("TinyFish fetch returned empty content for %q: %w", result.URL, os.ErrInvalid), "url", raw)
+				} else if raw, ok := rawForNormalized[result.FinalURL]; ok {
+					logWarn("fetch website content", fmt.Errorf("TinyFish fetch returned empty content for %q: %w", result.FinalURL, os.ErrInvalid), "url", raw)
+				} else {
+					for _, batchURL := range br.value.batchURLs {
+						if strings.EqualFold(batchURL, result.URL) || strings.EqualFold(batchURL, result.FinalURL) {
+							raw := rawForNormalized[batchURL]
+							logWarn("fetch website content", fmt.Errorf("TinyFish fetch returned empty content for %q: %w", result.URL, os.ErrInvalid), "url", raw)
+							break
+						}
+					}
+				}
+				hasFetchFailure = true
+				continue
+			}
+			isErrored := false
+			for _, candidateURL := range []string{result.URL, result.FinalURL} {
+				trimmed := strings.TrimSpace(candidateURL)
+				if trimmed == "" {
+					continue
+				}
+				lower := strings.ToLower(trimmed)
+				if _, exists := errorMap[lower]; exists {
+					isErrored = true
+					break
+				}
+			}
+			if isErrored {
+				hasFetchFailure = true
+				continue
+			}
+			title := ""
+			if result.Title != nil {
+				title = strings.TrimSpace(*result.Title)
+			}
+			description := ""
+			if result.Description != nil {
+				description = strings.TrimSpace(*result.Description)
+			}
+			resultURL := firstNonEmptyString(result.FinalURL, result.URL, "")
+			if strings.TrimSpace(resultURL) == "" {
+				continue
+			}
+			var pageContent websitePageContent
+			var err error
+			candidateTitle := title
+			if candidateTitle == "" {
+				candidateTitle = resultURL
+			}
+			pageContent, err = newWebsitePageContent(resultURL, candidateTitle, description, rawText)
+			if err != nil {
+				hasFetchFailure = true
+				continue
+			}
+			// Map via batch input URLs for canonicalization tolerance (slash-insensitive)
+			matchedInputLower := ""
+			for _, batchURL := range br.value.batchURLs {
+				trimBatch := strings.TrimSpace(batchURL)
+				trimResultURL := strings.TrimSpace(result.URL)
+				trimFinalURL := strings.TrimSpace(result.FinalURL)
+				if strings.EqualFold(trimBatch, trimResultURL) || strings.EqualFold(trimBatch, trimFinalURL) ||
+					strings.EqualFold(strings.TrimSuffix(trimBatch, "/"), strings.TrimSuffix(trimResultURL, "/")) ||
+					strings.EqualFold(strings.TrimSuffix(trimBatch, "/"), strings.TrimSuffix(trimFinalURL, "/")) {
+					matchedInputLower = strings.ToLower(trimBatch)
+					break
+				}
+			}
+			if matchedInputLower != "" {
+				if _, already := fetchedPageMap[matchedInputLower]; !already {
+					fetchedPageMap[matchedInputLower] = pageContent
+				}
+				// Also map slash variants for lookup tolerance
+				trimmedMatched := strings.TrimSuffix(matchedInputLower, "/")
+				if trimmedMatched != matchedInputLower {
+					if _, already := fetchedPageMap[trimmedMatched]; !already {
+						fetchedPageMap[trimmedMatched] = pageContent
+					}
+				} else {
+					withSlash := matchedInputLower + "/"
+					if _, already := fetchedPageMap[withSlash]; !already {
+						fetchedPageMap[withSlash] = pageContent
+					}
+				}
+			}
+			for _, origURL := range []string{result.URL, result.FinalURL} {
+				trimmedOrig := strings.TrimSpace(origURL)
+				if trimmedOrig == "" {
+					continue
+				}
+				lowerOrig := strings.ToLower(trimmedOrig)
+				if _, already := fetchedPageMap[lowerOrig]; !already {
+					fetchedPageMap[lowerOrig] = pageContent
+				}
+			}
+			lowerResultURL := strings.ToLower(strings.TrimSpace(resultURL))
+			if _, already := fetchedPageMap[lowerResultURL]; !already {
+				fetchedPageMap[lowerResultURL] = pageContent
+			}
+		}
+		for key := range errorMap {
+			hasFetchFailure = true
+			_ = key
+		}
+		if len(resp.Results) == 0 && len(resp.Errors) > 0 {
+			hasFetchFailure = true
+		}
+	}
+	orderedContents := make([]websitePageContent, 0, len(validNormalized))
+	seenContent := make(map[string]struct{})
+	for _, normalized := range validNormalized {
+		lower := strings.ToLower(strings.TrimSpace(normalized))
+		pc, ok := fetchedPageMap[lower]
+		if !ok {
+			// Try slash-insensitive lookup
+			trimmed := strings.TrimSuffix(lower, "/")
+			if trimmed != lower {
+				pc, ok = fetchedPageMap[trimmed]
+			} else {
+				pc, ok = fetchedPageMap[lower+"/"]
+			}
+			if !ok {
+				continue
+			}
+		}
+		urlKey := strings.ToLower(strings.TrimSpace(pc.URL))
+		if _, dup := seenContent[urlKey]; dup {
+			continue
+		}
+		seenContent[urlKey] = struct{}{}
+		orderedContents = append(orderedContents, pc)
+	}
+	if len(orderedContents) == 0 {
+		warnings := []string(nil)
+		if hasFetchFailure {
+			warnings = []string{websiteWarningText}
+		}
+		return warningPreparedConversationAugmentation(warnings), nil
+	}
+	formattedContent := formatWebsiteURLContent(orderedContents)
+	warnings := []string(nil)
+	if hasFetchFailure {
+		warnings = []string{websiteWarningText}
+	}
+	return newPreparedConversationAugmentation(
+		warnings,
+		nil,
+		func(conversation []chatMessage) ([]chatMessage, error) {
+			return appendWebsiteContentToConversation(conversation, formattedContent)
+		},
+	), nil
 }
 
 func latestUserPromptQuery(conversation []chatMessage) (string, error) {
@@ -1060,6 +1342,61 @@ func (client websiteClient) fetchWithTinyFishFetch(
 	resultURL := firstNonEmptyString(matchedResult.FinalURL, matchedResult.URL, requestURL)
 
 	return newWebsitePageContent(resultURL, title, description, text)
+}
+
+func (client websiteClient) fetchTinyFishBatch(
+	ctx context.Context,
+	apiKey string,
+	batch []string,
+) (tinyFishFetchResponse, error) {
+	if len(batch) == 0 {
+		return tinyFishFetchResponse{}, nil
+	}
+	requestBody := map[string]any{
+		"urls":   batch,
+		"format": "markdown",
+	}
+	requestBytes, err := json.Marshal(requestBody)
+	if err != nil {
+		return tinyFishFetchResponse{}, fmt.Errorf("marshal TinyFish fetch request: %w", err)
+	}
+	httpRequest, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodPost,
+		client.tinyFishFetchEndpoint,
+		bytes.NewReader(requestBytes),
+	)
+	if err != nil {
+		return tinyFishFetchResponse{}, fmt.Errorf("create TinyFish fetch request: %w", err)
+	}
+	httpRequest.Header.Set("Accept", applicationJSONContentType)
+	httpRequest.Header.Set(contentTypeHeader, applicationJSONContentType)
+	httpRequest.Header.Set("X-API-Key", strings.TrimSpace(apiKey))
+	httpResponse, err := client.httpClient.Do(httpRequest)
+	if err != nil {
+		return tinyFishFetchResponse{}, fmt.Errorf("send TinyFish fetch request: %w", err)
+	}
+	defer func() { _ = httpResponse.Body.Close() }()
+	if httpResponse.StatusCode < http.StatusOK || httpResponse.StatusCode >= http.StatusMultipleChoices {
+		responseBody, readErr := io.ReadAll(httpResponse.Body)
+		if readErr != nil {
+			return tinyFishFetchResponse{}, fmt.Errorf("read TinyFish fetch error response after status %d: %w", httpResponse.StatusCode, readErr)
+		}
+		return tinyFishFetchResponse{}, tinyFishStatusError{
+			StatusCode: httpResponse.StatusCode,
+			Message: fmt.Sprintf(
+				"TinyFish fetch request failed with status %d: %s",
+				httpResponse.StatusCode,
+				strings.TrimSpace(extractStructuredAPIErrorMessage(responseBody)),
+			),
+			Err: os.ErrInvalid,
+		}
+	}
+	var batchResponse tinyFishFetchResponse
+	if err := json.NewDecoder(httpResponse.Body).Decode(&batchResponse); err != nil {
+		return tinyFishFetchResponse{}, fmt.Errorf("decode TinyFish fetch response: %w", err)
+	}
+	return batchResponse, nil
 }
 
 func mapOptionalIntValue(values map[string]any, key string) *int {
