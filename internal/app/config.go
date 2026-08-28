@@ -113,12 +113,11 @@ type rawVisualSearchConfig struct {
 }
 
 type rawWebSearchConfig struct {
-	PrimaryProvider scalarString             `yaml:"primary_provider"`
-	MaxURLs         *int                     `yaml:"max_urls"`
-	Exa             rawExaSearchConfig       `yaml:"exa"`
-	Tavily          rawTavilySearchConfig    `yaml:"tavily"`
-	Firecrawl       rawFirecrawlSearchConfig `yaml:"firecrawl"`
-	TinyFish        rawTinyFishSearchConfig  `yaml:"tinyfish"`
+	MaxURLs   *int                     `yaml:"max_urls"`
+	Exa       rawExaSearchConfig       `yaml:"exa"`
+	Tavily    rawTavilySearchConfig    `yaml:"tavily"`
+	Firecrawl rawFirecrawlSearchConfig `yaml:"firecrawl"`
+	TinyFish  rawTinyFishSearchConfig  `yaml:"tinyfish"`
 }
 
 type rawDatabaseConfig struct {
@@ -181,21 +180,12 @@ type visualSearchConfig struct {
 	SerpAPI serpAPIVisualSearchConfig
 }
 
-type webSearchProviderKind string
-
-const (
-	webSearchProviderKindMCP      webSearchProviderKind = "mcp"
-	webSearchProviderKindTavily   webSearchProviderKind = "tavily"
-	webSearchProviderKindTinyFish webSearchProviderKind = "tinyfish"
-)
-
 type webSearchConfig struct {
-	PrimaryProvider webSearchProviderKind
-	MaxURLs         int
-	Exa             exaSearchConfig
-	Tavily          tavilySearchConfig
-	Firecrawl       firecrawlSearchConfig
-	TinyFish        tinyFishSearchConfig
+	MaxURLs   int
+	Exa       exaSearchConfig
+	Tavily    tavilySearchConfig
+	Firecrawl firecrawlSearchConfig
+	TinyFish  tinyFishSearchConfig
 }
 
 type databaseConfig struct {
@@ -529,8 +519,7 @@ func normalizeWebSearchConfig(rawLoadedConfig rawWebSearchConfig) webSearchConfi
 	tinyFishAPIKeys := normalizeAPIKeys([]string(rawLoadedConfig.TinyFish.APIKey))
 
 	return webSearchConfig{
-		PrimaryProvider: normalizeWebSearchProvider(rawLoadedConfig.PrimaryProvider),
-		MaxURLs:         intValueOrDefault(rawLoadedConfig.MaxURLs, defaultWebSearchMaxURLs),
+		MaxURLs: intValueOrDefault(rawLoadedConfig.MaxURLs, defaultWebSearchMaxURLs),
 		Exa: exaSearchConfig{
 			APIKey:             firstAPIKey(exaAPIKeys),
 			APIKeys:            exaAPIKeys,
@@ -555,21 +544,6 @@ func normalizeWebSearchConfig(rawLoadedConfig rawWebSearchConfig) webSearchConfi
 			APIKeys: tinyFishAPIKeys,
 		},
 	}
-}
-
-// normalizeWebSearchProvider maps the raw primary_provider value. Empty
-// defaults to MCP (Exa) for backwards compatibility — TinyFish is tried
-// explicitly before this ordering (see routedWebSearchClient.search and
-// providersInOrder), so an empty value does not need to be rewritten to
-// "tinyfish". When "tinyfish" is explicitly configured it is accepted and
-// providersInOrder treats it as MCP for the remaining fallback order.
-func normalizeWebSearchProvider(rawValue scalarString) webSearchProviderKind {
-	trimmedValue := strings.ToLower(strings.TrimSpace(string(rawValue)))
-	if trimmedValue == "" {
-		return webSearchProviderKindMCP
-	}
-
-	return webSearchProviderKind(trimmedValue)
 }
 
 func (loadedConfig webSearchConfig) maxURLs() int {
@@ -709,16 +683,7 @@ func validateWebSearchConfig(loadedConfig webSearchConfig) error {
 		)
 	}
 
-	switch loadedConfig.PrimaryProvider {
-	case webSearchProviderKindMCP, webSearchProviderKindTavily, webSearchProviderKindTinyFish:
-		return nil
-	default:
-		return fmt.Errorf(
-			"web_search.primary_provider %q is unsupported: %w",
-			loadedConfig.PrimaryProvider,
-			os.ErrInvalid,
-		)
-	}
+	return nil
 }
 
 func validateChannelModelLocks(loadedConfig config) error {

@@ -2922,7 +2922,6 @@ func newFallbackSearchDeciderTestConfig() config {
 	}
 	loadedConfig.FallbackModel = "9router/fallback-model"
 	loadedConfig.SearchDeciderModel = "openai/decider-model"
-	loadedConfig.WebSearch.PrimaryProvider = webSearchProviderKindMCP
 	loadedConfig.WebSearch.MaxURLs = defaultWebSearchMaxURLs
 	loadedConfig.MaxMessages = defaultMaxMessages
 

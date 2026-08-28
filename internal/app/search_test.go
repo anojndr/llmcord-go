@@ -45,7 +45,6 @@ func testExaAPIWebSearchConfig() config {
 
 func testTavilySearchConfig() config {
 	loadedConfig := testSearchConfig()
-	loadedConfig.WebSearch.PrimaryProvider = webSearchProviderKindMCP
 	loadedConfig.WebSearch.MaxURLs = testWebSearchMaxURLs
 	loadedConfig.WebSearch.Tavily = tavilySearchConfig{
 		APIKey:  testTavilyPrimaryAPIKey,
@@ -504,14 +503,15 @@ func TestSearchDeciderPromptRetainsCriticalInstructions(t *testing.T) {
 
 	expectedSnippets := []string{
 		`You are a search-decision model.`,
-		`1. Check explicit search instructions first.`,
-		`2. Use conversation context to resolve references.`,
-		`3. Use both text and images.`,
-		`4. Return {"needs_search": false} when the answer can be produced from what is already given.`,
-		`5. Return {"needs_search": true, "queries": [...]} in all other cases, especially when the request involves:`,
-		`8. Never search for content that is private, local, or otherwise unsearchable.`,
-		`12. Weigh the date of the claimed facts against the freshness of the request.`,
-		`18. Preserve the substance of the claim when the user asks to verify it.`,
+		`Check explicit search instructions after reconstructing the effective request.`,
+		`Use conversation context to resolve references.`,
+		`extract the actual items from the image.`,
+		`Return {"needs_search": false} when the effective request can be produced from what is already given.`,
+		`Return {"needs_search": true, "queries": [...]} in all other cases, especially when the effective request involves:`,
+		`Never generate web searches for information that is inherently private, account-specific, local-only, or inaccessible to the public web.`,
+		`Weigh the date of the claimed facts against the freshness of the request.`,
+		`Preserve the substance of the original question through follow-ups.`,
+		`Preserve the substance of a claim when the user asks to verify it.`,
 	}
 
 	instant := time.Date(2026, time.March, 9, 13, 14, 15, 0, time.FixedZone("PHT", 8*60*60))
@@ -1631,50 +1631,6 @@ func TestRoutedWebSearchClientFallsBackToTavilyWhenMCPFails(t *testing.T) {
 	}
 }
 
-func TestRoutedWebSearchClientUsesTavilyAsPrimaryWhenConfigured(t *testing.T) {
-	t.Parallel()
-
-	mcpClient := newStubWebSearchClient(func(
-		_ context.Context,
-		_ config,
-		_ []string,
-	) ([]webSearchResult, error) {
-		return []webSearchResult{{Query: "latest ai news", Text: "mcp result"}}, nil
-	})
-	tavilyClient := newStubWebSearchClient(func(
-		_ context.Context,
-		_ config,
-		queries []string,
-	) ([]webSearchResult, error) {
-		return []webSearchResult{{Query: queries[0], Text: "tavily result"}}, nil
-	})
-
-	loadedConfig := testTavilySearchConfig()
-	loadedConfig.WebSearch.PrimaryProvider = webSearchProviderKindTavily
-
-	client := routedWebSearchClient{
-		exa:    mcpClient,
-		tavily: tavilyClient,
-	}
-
-	results, err := client.search(context.Background(), loadedConfig, []string{"latest ai news"})
-	if err != nil {
-		t.Fatalf("search: %v", err)
-	}
-
-	if len(tavilyClient.calls) != 1 {
-		t.Fatalf("unexpected Tavily call count: %d", len(tavilyClient.calls))
-	}
-
-	if len(mcpClient.calls) != 0 {
-		t.Fatalf("expected MCP to be skipped, got %d calls", len(mcpClient.calls))
-	}
-
-	if len(results) != 1 || results[0].Text != "tavily result" {
-		t.Fatalf("unexpected primary Tavily results: %#v", results)
-	}
-}
-
 func TestTavilySearchClientSearchRotatesAPIKeysAcrossCalls(t *testing.T) {
 	t.Parallel()
 
@@ -1739,50 +1695,6 @@ func TestTavilySearchClientSearchRotatesAPIKeysAcrossCalls(t *testing.T) {
 		if authHeaders[index] != expected {
 			t.Fatalf("search %d: expected Authorization header %q, got %q", index, expected, authHeaders[index])
 		}
-	}
-}
-
-func TestRoutedWebSearchClientFallsBackToMCPWhenTavilyFails(t *testing.T) {
-	t.Parallel()
-
-	mcpClient := newStubWebSearchClient(func(
-		_ context.Context,
-		_ config,
-		queries []string,
-	) ([]webSearchResult, error) {
-		return []webSearchResult{{Query: queries[0], Text: "mcp fallback result"}}, nil
-	})
-	tavilyClient := newStubWebSearchClient(func(
-		_ context.Context,
-		_ config,
-		_ []string,
-	) ([]webSearchResult, error) {
-		return nil, errSearchBackendUnavailable
-	})
-
-	loadedConfig := testTavilySearchConfig()
-	loadedConfig.WebSearch.PrimaryProvider = webSearchProviderKindTavily
-
-	client := routedWebSearchClient{
-		exa:    mcpClient,
-		tavily: tavilyClient,
-	}
-
-	results, err := client.search(context.Background(), loadedConfig, []string{"latest ai news"})
-	if err != nil {
-		t.Fatalf("search: %v", err)
-	}
-
-	if len(tavilyClient.calls) != 1 {
-		t.Fatalf("unexpected Tavily call count: %d", len(tavilyClient.calls))
-	}
-
-	if len(mcpClient.calls) != 1 {
-		t.Fatalf("unexpected MCP call count: %d", len(mcpClient.calls))
-	}
-
-	if len(results) != 1 || results[0].Text != "mcp fallback result" {
-		t.Fatalf("unexpected MCP fallback results: %#v", results)
 	}
 }
 
@@ -2162,7 +2074,6 @@ func testSearchConfig() config {
 		"openai/main-model":    nil,
 		"openai/decider-model": nil,
 	}
-	loadedConfig.WebSearch.PrimaryProvider = webSearchProviderKindMCP
 	loadedConfig.WebSearch.MaxURLs = defaultWebSearchMaxURLs
 	loadedConfig.WebSearch.Exa = exaSearchConfig{
 		APIKey:             "",
@@ -2181,7 +2092,6 @@ func testSearchConfig() config {
 func testGeminiSearchConfig() config {
 	loadedConfig := new(config)
 	loadedConfig.MaxImages = defaultMaxImages
-	loadedConfig.WebSearch.PrimaryProvider = webSearchProviderKindMCP
 	loadedConfig.WebSearch.MaxURLs = defaultWebSearchMaxURLs
 	loadedConfig.WebSearch.Exa = exaSearchConfig{
 		APIKey:             "",

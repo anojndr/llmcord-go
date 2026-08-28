@@ -68,8 +68,7 @@ func TestMessageAllowed(t *testing.T) {
 
 func testPermissionsConfig() config {
 	searchConfig := webSearchConfig{
-		PrimaryProvider: webSearchProviderKindMCP,
-		MaxURLs:         defaultWebSearchMaxURLs,
+		MaxURLs: defaultWebSearchMaxURLs,
 		Exa: exaSearchConfig{
 			APIKey:             "",
 			APIKeys:            nil,

@@ -99,9 +99,10 @@ Model notes:
 
 ### Search and Visual Search
 
+Web search order is hardcoded: TinyFish Search (when `web_search.tinyfish.api_key` is set) -> Exa -> Tavily.
+
 | Setting | Purpose |
 | --- | --- |
-| `web_search.primary_provider` | Search backend order: `mcp` (Exa, default) or `tavily`. |
 | `web_search.max_urls` | Max URLs per query and in `Show Sources`. Default: `5`. |
 | `web_search.exa.api_key` | Enables Exa Search API; without it, Exa uses its MCP endpoint. |
 | `web_search.exa.text_max_characters` | Max full-page text from Exa per result. Default: `15000`. |
