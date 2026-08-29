@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	providers "llmcord-go/internal/providers"
+
 	"gopkg.in/yaml.v3"
 )
 
@@ -75,6 +77,7 @@ type permissionsConfig struct {
 
 type rawProviderConfig struct {
 	BaseURL              scalarString     `yaml:"base_url"`
+	API                  scalarString     `yaml:"api"`
 	APIKey               scalarStringList `yaml:"api_key"`
 	EnableGrounding      *bool            `yaml:"enable_grounding"`
 	DisableSearchDecider *bool            `yaml:"disable_search_decider"`
@@ -136,6 +139,7 @@ type rawGistConfig struct {
 type providerConfig struct {
 	Name                 string
 	BaseURL              string
+	API                  string
 	APIKey               string
 	APIKeys              []string
 	EnableGrounding      bool
@@ -497,10 +501,12 @@ func normalizedFallbackModel(rawValue scalarString, models map[string]map[string
 func normalizeProviderConfig(providerName string, rawProvider rawProviderConfig) providerConfig {
 	apiKeys := normalizeAPIKeys([]string(rawProvider.APIKey))
 	baseURL := strings.TrimSpace(string(rawProvider.BaseURL))
+	normalizedAPI := strings.ToLower(strings.TrimSpace(string(rawProvider.API)))
 
 	return providerConfig{
 		Name:                 strings.TrimSpace(providerName),
 		BaseURL:              baseURL,
+		API:                  normalizedAPI,
 		APIKey:               firstAPIKey(apiKeys),
 		APIKeys:              apiKeys,
 		EnableGrounding:      boolValueOrDefault(rawProvider.EnableGrounding, false),
@@ -922,6 +928,18 @@ func (provider providerConfig) usesOpenRouter() bool {
 }
 
 func (provider providerConfig) validate(providerName string) error {
+	if strings.TrimSpace(provider.API) != "" {
+		if provider.apiKind() != providerAPIKindOpenAI {
+			return fmt.Errorf("provider %q: api %q is only valid for OpenAI-compatible providers: %w", providerName, provider.API, os.ErrInvalid)
+		}
+
+		switch provider.API {
+		case providers.OpenAIAPIChatCompletions, providers.OpenAIAPIResponses:
+		default:
+			return fmt.Errorf("provider %q: api must be %q or %q: %w", providerName, providers.OpenAIAPIChatCompletions, providers.OpenAIAPIResponses, os.ErrInvalid)
+		}
+	}
+
 	if provider.apiKind() != providerAPIKindOpenAI {
 		return nil
 	}

@@ -1087,6 +1087,7 @@ func buildChatCompletionRequest(
 	providerAPIKind := provider.apiKind()
 	useResponsesAPI := providers.ProviderUsesResponsesAPI(providerName, providers.ProviderRequestConfig{
 		APIKind:         providers.ProviderAPIKind(providerAPIKind),
+		API:             provider.API,
 		BaseURL:         provider.BaseURL,
 		APIKey:          "",
 		APIKeys:         nil,
@@ -1117,7 +1118,7 @@ func buildChatCompletionRequest(
 	}
 
 	if providerAPIKind == providerAPIKindOpenAI {
-		if useResponsesAPI && usesBuiltInOpenAIProvider(providerName, providerAPIKind) {
+		if useResponsesAPI {
 			modelName, extraBody = providers.NormalizeOpenAIResponsesModelAlias(modelName, extraBody)
 			extraBody = providers.NormalizeOpenAIResponsesExtraBody(modelName, extraBody)
 		} else {
@@ -1130,6 +1131,7 @@ func buildChatCompletionRequest(
 	return chatCompletionRequest{
 		Provider: providerRequestConfig{
 			APIKind:         providers.ProviderAPIKind(providerAPIKind),
+			API:             provider.API,
 			BaseURL:         provider.BaseURL,
 			APIKey:          provider.primaryAPIKey(),
 			APIKeys:         provider.apiKeys(),

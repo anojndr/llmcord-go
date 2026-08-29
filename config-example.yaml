@@ -40,6 +40,14 @@ permissions:
 # Providers — keyed by name; name containing "gemini" => native Gemini API
 # `api_key` accepts string or YAML list (round-robin). `base_url` required
 # for OpenAI-compatible providers, omitted for native Gemini.
+# `api` selects the OpenAI wire protocol for OpenAI-compatible providers:
+#   api: openai-chat-completions  -> POST {base_url}/chat/completions (messages/choices, [DONE])
+#   api: openai-responses          -> POST {base_url}/responses (input/output, typed SSE)
+# If omitted, the built-in `openai` provider defaults to `openai-responses`,
+# all other OpenAI-compatible providers default to `openai-chat-completions`.
+# `api` is only valid for OpenAI-compatible providers; Gemini providers
+# (name contains "gemini" or base_url with generativelanguage.googleapis.com)
+# must not set `api` (validation will fail).
 # Per-provider flags: disable_search_decider, dont_send_system_prompt,
 # auto_append_search_web, enable_grounding (Gemini only).
 # -----------------------------------------------------------------------------
@@ -52,6 +60,7 @@ providers:
     #   - key-1
     #   - key-2
     api_key:
+    # api: openai-chat-completions  # or openai-responses
     extra_query:
       api-version: 2024-12-01-preview
 
@@ -89,20 +98,27 @@ providers:
   groq:
     base_url: https://api.groq.com/openai/v1
     api_key:
+    # api: openai-chat-completions  # default; or openai-responses for compatible backends
 
   mistral:
     base_url: https://api.mistral.ai/v1
     api_key:
+    # api: openai-chat-completions  # or openai-responses
 
   openai:
     base_url: https://api.openai.com/v1
     api_key:
+    api: openai-responses
+    # `api` selects the wire protocol; the built-in `openai` provider defaults
+    # to `openai-responses` (POST /responses). Set `api: openai-chat-completions`
+    # to use Chat Completions instead (POST /chat/completions).
+    # Any provider can use either value, e.g. a custom OpenAI-compatible
+    # backend: `api: openai-responses` enables the Responses API there too.
     # Automatically append "search the web" to user queries if not already present:
     # auto_append_search_web: true
     # Requests through the built-in `openai` provider default to `verbosity:
     # low` and derive a stable reply-chain `prompt_cache_key`, even if you
-    # replace `base_url` with another OpenAI-compatible backend. The built-in
-    # `openai` provider also uses the Responses API regardless of `base_url`.
+    # replace `base_url` with another OpenAI-compatible backend.
     # To override verbosity for every request, pin a default GPT-5 reasoning
     # level without model aliases, disable the default reasoning summaries, or
     # tune prompt caching:
@@ -120,13 +136,13 @@ providers:
     # the bot's thinking output.
     # GPT-5 aliases such as `openai/gpt-5.4-none`, `-low`, `-medium`, `-high`,
     # `-xhigh`, and `-max` normalize to the base GPT-5 model and set reasoning
-    # effort. On the built-in `openai` provider they map to Responses API
-    # `reasoning.effort`; on other OpenAI-compatible providers they map to
-    # `reasoning_effort`.
+    # effort. With `api: openai-responses` they map to `reasoning.effort`;
+    # with `api: openai-chat-completions` they map to `reasoning_effort`.
 
   openrouter:
     base_url: https://openrouter.ai/api/v1
     api_key:
+    # api: openai-chat-completions  # or openai-responses if the backend supports it
     # Requests to OpenRouter default to `transforms: ["middle-out"]`.
     # To disable that default for this provider, uncomment:
     # extra_body:
@@ -139,12 +155,15 @@ providers:
   # -- Local providers (OpenAI-compatible, unauthenticated) --
   lmstudio:
     base_url: http://localhost:1234/v1
+    # api: openai-chat-completions  # or openai-responses
 
   ollama:
     base_url: http://localhost:11434/v1
+    # api: openai-chat-completions  # or openai-responses
 
   vllm:
     base_url: http://localhost:8000/v1
+    # api: openai-chat-completions  # or openai-responses
 
 # -----------------------------------------------------------------------------
 # Models — ordered map `<provider>/<model>`; first entry is default.
