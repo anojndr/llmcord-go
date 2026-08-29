@@ -14,6 +14,8 @@ const (
 	OpenAIReasoningEffortLow = "low"
 	// OpenAIReasoningEffortMedium is a reasoning effort level.
 	OpenAIReasoningEffortMedium = "medium"
+	// OpenAIReasoningEffortHigh is a reasoning effort level.
+	OpenAIReasoningEffortHigh = "high"
 	openAIReasoningEffortXHigh  = "xhigh"
 	// OpenAIReasoningEffortMax is a reasoning effort level.
 	OpenAIReasoningEffortMax = "max"
@@ -25,6 +27,58 @@ const (
 	// OpenAIReasoningModelGPT54 is the gpt-5.4 model id.
 	OpenAIReasoningModelGPT54 = "gpt-5.4"
 )
+
+// IsValidOpenAIReasoningEffort reports whether effort is a valid OpenAI reasoning effort.
+func IsValidOpenAIReasoningEffort(effort string) bool {
+	switch strings.ToLower(strings.TrimSpace(effort)) {
+	case OpenAIReasoningEffortNone,
+		OpenAIReasoningEffortMinimal,
+		OpenAIReasoningEffortLow,
+		OpenAIReasoningEffortMedium,
+		OpenAIReasoningEffortHigh,
+		openAIReasoningEffortXHigh,
+		OpenAIReasoningEffortMax:
+		return true
+	default:
+		return false
+	}
+}
+
+// NormalizeOpenAIReasoningEffortForModel normalizes effort for a model.
+func NormalizeOpenAIReasoningEffortForModel(model, effort string) string {
+	return normalizeOpenAIReasoningEffort(model, effort)
+}
+
+// ApplyDedicatedReasoningEffort applies a dedicated reasoning effort to extraBody for the correct API.
+func ApplyDedicatedReasoningEffort(extraBody map[string]any, model string, effort string, isResponsesAPI bool) map[string]any {
+	trimmedEffort := strings.TrimSpace(effort)
+	if trimmedEffort == "" {
+		return extraBody
+	}
+	normalizedEffort := normalizeOpenAIReasoningEffort(model, trimmedEffort)
+	if normalizedEffort == "" {
+		return extraBody
+	}
+	normalizedExtraBody := maps.Clone(extraBody)
+	if normalizedExtraBody == nil {
+		normalizedExtraBody = make(map[string]any, 1)
+	}
+	if isResponsesAPI {
+		reasoningConfig := openAIReasoningConfigExtraBody(normalizedExtraBody)
+		reasoningConfig["effort"] = normalizedEffort
+		if _, hasSummary := reasoningConfig["summary"]; !hasSummary {
+			reasoningConfig["summary"] = OpenAIReasoningSummaryAuto
+		}
+		normalizedExtraBody["reasoning"] = reasoningConfig
+		delete(normalizedExtraBody, "reasoning_effort")
+		delete(normalizedExtraBody, "reasoning_summary")
+	} else {
+		normalizedExtraBody["reasoning_effort"] = normalizedEffort
+		delete(normalizedExtraBody, "reasoning")
+		delete(normalizedExtraBody, "reasoning_summary")
+	}
+	return normalizedExtraBody
+}
 
 // NormalizeOpenAIResponsesModelAlias resolves Responses API aliases.
 func NormalizeOpenAIResponsesModelAlias(model string, extraBody map[string]any) (string, map[string]any) {

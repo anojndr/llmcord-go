@@ -50,6 +50,15 @@ permissions:
 # must not set `api` (validation will fail).
 # Per-provider flags: disable_search_decider, dont_send_system_prompt,
 # auto_append_search_web, enable_grounding (Gemini only).
+# Per-provider reasoning effort for OpenAI-compatible providers:
+#   reasoning_effort: none | minimal | low | medium | high | xhigh | max
+# Maps to reasoning.effort (api: openai-responses) or reasoning_effort
+# (api: openai-chat-completions). Values are normalized per model:
+# minimal→low for gpt-5.2/5.3/5.4, xhigh/max→high for gpt-5.1.
+# Model-level reasoning_effort overrides this. Only valid for
+# OpenAI-compatible providers; Gemini providers must not set it
+# (validation will fail). Explicit reasoning_effort wins over
+# alias suffixes like openai/gpt-5.4-low.
 # -----------------------------------------------------------------------------
 providers:
   # -- Remote / managed providers (OpenAI-compatible + Gemini native) --
@@ -61,6 +70,7 @@ providers:
     #   - key-2
     api_key:
     # api: openai-chat-completions  # or openai-responses
+    # reasoning_effort: low  # OpenAI only: none | minimal | low | medium | high | xhigh | max (minimal→low for gpt-5.2/5.3/5.4, xhigh/max→high for gpt-5.1)
     extra_query:
       api-version: 2024-12-01-preview
 
@@ -99,11 +109,13 @@ providers:
     base_url: https://api.groq.com/openai/v1
     api_key:
     # api: openai-chat-completions  # default; or openai-responses for compatible backends
+    # reasoning_effort: low  # OpenAI only: none | minimal | low | medium | high | xhigh | max
 
   mistral:
     base_url: https://api.mistral.ai/v1
     api_key:
     # api: openai-chat-completions  # or openai-responses
+    # reasoning_effort: low  # OpenAI only: none | minimal | low | medium | high | xhigh | max
 
   openai:
     base_url: https://api.openai.com/v1
@@ -114,6 +126,11 @@ providers:
     # to use Chat Completions instead (POST /chat/completions).
     # Any provider can use either value, e.g. a custom OpenAI-compatible
     # backend: `api: openai-responses` enables the Responses API there too.
+    # Per-provider reasoning effort (OpenAI only): none | minimal | low | medium | high | xhigh | max
+    # With api: openai-responses this sends reasoning.effort, with
+    # api: openai-chat-completions it sends reasoning_effort. Per-model
+    # reasoning_effort overrides this; explicit wins over alias suffixes.
+    # reasoning_effort: medium
     # Automatically append "search the web" to user queries if not already present:
     # auto_append_search_web: true
     # Requests through the built-in `openai` provider default to `verbosity:
@@ -138,11 +155,17 @@ providers:
     # `-xhigh`, and `-max` normalize to the base GPT-5 model and set reasoning
     # effort. With `api: openai-responses` they map to `reasoning.effort`;
     # with `api: openai-chat-completions` they map to `reasoning_effort`.
+    # Prefer `reasoning_effort:` over alias suffixes when you need an
+    # explicit, API-agnostic setting:
+    #   models:
+    #     openai/gpt-5.4:
+    #       reasoning_effort: high
 
   openrouter:
     base_url: https://openrouter.ai/api/v1
     api_key:
     # api: openai-chat-completions  # or openai-responses if the backend supports it
+    # reasoning_effort: low  # OpenAI only: none | minimal | low | medium | high | xhigh | max
     # Requests to OpenRouter default to `transforms: ["middle-out"]`.
     # To disable that default for this provider, uncomment:
     # extra_body:
@@ -156,25 +179,50 @@ providers:
   lmstudio:
     base_url: http://localhost:1234/v1
     # api: openai-chat-completions  # or openai-responses
+    # reasoning_effort: low  # OpenAI only: none | minimal | low | medium | high | xhigh | max
 
   ollama:
     base_url: http://localhost:11434/v1
     # api: openai-chat-completions  # or openai-responses
+    # reasoning_effort: low  # OpenAI only: none | minimal | low | medium | high | xhigh | max
 
   vllm:
     base_url: http://localhost:8000/v1
     # api: openai-chat-completions  # or openai-responses
+    # reasoning_effort: low  # OpenAI only: none | minimal | low | medium | high | xhigh | max
 
 # -----------------------------------------------------------------------------
 # Models — ordered map `<provider>/<model>`; first entry is default.
 # `:vision` is a local hint for image-capability heuristics.
+# Per-model reasoning effort for OpenAI-compatible providers:
+#   <provider>/<model>:
+#     reasoning_effort: none | minimal | low | medium | high | xhigh | max
+# With api: openai-responses this sends reasoning.effort, with
+# api: openai-chat-completions it sends reasoning_effort. Values are
+# normalized per model: minimal→low for gpt-5.2/5.3/5.4, xhigh/max→high
+# for gpt-5.1. Per-model wins over per-provider reasoning_effort;
+# explicit wins over alias suffixes like -low/-high/-max. Only valid
+# for OpenAI-compatible providers.
 # -----------------------------------------------------------------------------
 models:
   google/gemini-3.6-flash:
 
   openai/gpt-5.4:
+    # reasoning_effort: high
+
   openai/gpt-5.4-low:
+    # reasoning_effort: medium  # explicit wins over -low alias
+
   openai/gpt-5.4-high:
+    # reasoning_effort: max
+
+  # Custom OpenAI-compatible examples with per-model reasoning effort:
+  # openai/gpt-5.6:
+  #   reasoning_effort: medium
+  # groq/gpt-oss-120b:
+  #   reasoning_effort: low
+  # openrouter/openai/gpt-5.4:
+  #   reasoning_effort: xhigh
 
   ollama/llama4:
 

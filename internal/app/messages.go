@@ -1059,6 +1059,17 @@ func defaultOpenRouterTransforms(provider providerConfig, extraBody map[string]a
 	return extraBody
 }
 
+func dedicatedReasoningEffort(provider providerConfig, modelParameters map[string]any) (string, bool) {
+	if effort, ok := modelReasoningEffortValue(modelParameters); ok {
+		return effort, true
+	}
+	trimmed := strings.TrimSpace(provider.ReasoningEffort)
+	if trimmed != "" {
+		return strings.ToLower(trimmed), true
+	}
+	return "", false
+}
+
 func buildChatCompletionRequest(
 	loadedConfig config,
 	providerSlashModel string,
@@ -1123,6 +1134,9 @@ func buildChatCompletionRequest(
 			extraBody = providers.NormalizeOpenAIResponsesExtraBody(modelName, extraBody)
 		} else {
 			modelName, extraBody = providers.NormalizeOpenAIChatCompletionsModelAlias(modelName, extraBody)
+		}
+		if dedicatedEffort, ok := dedicatedReasoningEffort(provider, modelParameters); ok {
+			extraBody = providers.ApplyDedicatedReasoningEffort(extraBody, modelName, dedicatedEffort, useResponsesAPI)
 		}
 	}
 

@@ -79,6 +79,7 @@ type rawProviderConfig struct {
 	BaseURL              scalarString     `yaml:"base_url"`
 	API                  scalarString     `yaml:"api"`
 	APIKey               scalarStringList `yaml:"api_key"`
+	ReasoningEffort      scalarString     `yaml:"reasoning_effort"`
 	EnableGrounding      *bool            `yaml:"enable_grounding"`
 	DisableSearchDecider *bool            `yaml:"disable_search_decider"`
 	DontSendSystemPrompt *bool            `yaml:"dont_send_system_prompt"`
@@ -142,6 +143,7 @@ type providerConfig struct {
 	API                  string
 	APIKey               string
 	APIKeys              []string
+	ReasoningEffort      string
 	EnableGrounding      bool
 	DisableSearchDecider bool
 	DontSendSystemPrompt bool
@@ -502,6 +504,7 @@ func normalizeProviderConfig(providerName string, rawProvider rawProviderConfig)
 	apiKeys := normalizeAPIKeys([]string(rawProvider.APIKey))
 	baseURL := strings.TrimSpace(string(rawProvider.BaseURL))
 	normalizedAPI := strings.ToLower(strings.TrimSpace(string(rawProvider.API)))
+	reasoningEffort := strings.ToLower(strings.TrimSpace(string(rawProvider.ReasoningEffort)))
 
 	return providerConfig{
 		Name:                 strings.TrimSpace(providerName),
@@ -509,6 +512,7 @@ func normalizeProviderConfig(providerName string, rawProvider rawProviderConfig)
 		API:                  normalizedAPI,
 		APIKey:               firstAPIKey(apiKeys),
 		APIKeys:              apiKeys,
+		ReasoningEffort:      reasoningEffort,
 		EnableGrounding:      boolValueOrDefault(rawProvider.EnableGrounding, false),
 		DisableSearchDecider: boolValueOrDefault(rawProvider.DisableSearchDecider, false),
 		DontSendSystemPrompt: boolValueOrDefault(rawProvider.DontSendSystemPrompt, false),
@@ -694,6 +698,25 @@ func validateConfiguredModels(loadedConfig config) error {
 		if err != nil {
 			return err
 		}
+
+		if provider.ReasoningEffort != "" {
+			if provider.apiKind() != providerAPIKindOpenAI {
+				return fmt.Errorf("provider %q: reasoning_effort is only valid for OpenAI-compatible providers: %w", providerName, os.ErrInvalid)
+			}
+			if !providers.IsValidOpenAIReasoningEffort(provider.ReasoningEffort) {
+				return fmt.Errorf("provider %q: reasoning_effort %q is invalid: %w", providerName, provider.ReasoningEffort, os.ErrInvalid)
+			}
+		}
+
+		modelParameters := loadedConfig.Models[modelName]
+		if effort, ok := modelReasoningEffortValue(modelParameters); ok {
+			if provider.apiKind() != providerAPIKindOpenAI {
+				return fmt.Errorf("model %q: reasoning_effort is only valid for OpenAI-compatible providers: %w", modelName, os.ErrInvalid)
+			}
+			if !providers.IsValidOpenAIReasoningEffort(effort) {
+				return fmt.Errorf("model %q: reasoning_effort %q is invalid: %w", modelName, effort, os.ErrInvalid)
+			}
+		}
 	}
 
 	if !loadedConfig.hasModel(loadedConfig.SearchDeciderModel) {
@@ -705,6 +728,31 @@ func validateConfiguredModels(loadedConfig config) error {
 	}
 
 	return nil
+}
+
+func modelReasoningEffortValue(modelParameters map[string]any) (string, bool) {
+	if len(modelParameters) == 0 {
+		return "", false
+	}
+	raw, ok := modelParameters["reasoning_effort"]
+	if !ok {
+		return "", false
+	}
+	if raw == nil {
+		return "", false
+	}
+	if effortStr, ok := raw.(string); ok {
+		trimmed := strings.TrimSpace(effortStr)
+		if trimmed == "" {
+			return "", false
+		}
+		return strings.ToLower(trimmed), true
+	}
+	trimmed := strings.TrimSpace(fmt.Sprint(raw))
+	if trimmed == "" {
+		return "", false
+	}
+	return strings.ToLower(trimmed), true
 }
 
 func validateWebSearchConfig(loadedConfig webSearchConfig) error {
@@ -941,7 +989,14 @@ func (provider providerConfig) validate(providerName string) error {
 	}
 
 	if provider.apiKind() != providerAPIKindOpenAI {
+		if strings.TrimSpace(provider.ReasoningEffort) != "" {
+			return fmt.Errorf("provider %q: reasoning_effort is only valid for OpenAI-compatible providers: %w", providerName, os.ErrInvalid)
+		}
 		return nil
+	}
+
+	if strings.TrimSpace(provider.ReasoningEffort) != "" && !providers.IsValidOpenAIReasoningEffort(provider.ReasoningEffort) {
+		return fmt.Errorf("provider %q: reasoning_effort %q is invalid: %w", providerName, provider.ReasoningEffort, os.ErrInvalid)
 	}
 
 	if strings.TrimSpace(provider.BaseURL) == "" {
