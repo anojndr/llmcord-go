@@ -28,6 +28,7 @@ type ChatCompletionRequest struct {
 // ProviderRequestConfig is the per-request provider identity and options.
 type ProviderRequestConfig struct {
 	APIKind         ProviderAPIKind
+	API             string
 	BaseURL         string
 	APIKey          string
 	APIKeys         []string
@@ -55,4 +56,11 @@ const (
 	ProviderAPIKindOpenAI ProviderAPIKind = "openai"
 	// ProviderAPIKindGemini is the native Gemini family.
 	ProviderAPIKindGemini ProviderAPIKind = "gemini"
+)
+
+const (
+	// OpenAIAPIChatCompletions selects the Chat Completions endpoint.
+	OpenAIAPIChatCompletions = "openai-chat-completions"
+	// OpenAIAPIResponses selects the Responses endpoint.
+	OpenAIAPIResponses = "openai-responses"
 )

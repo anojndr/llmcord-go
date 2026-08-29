@@ -97,7 +97,17 @@ func ProviderUsesResponsesAPI(providerName string, provider ProviderRequestConfi
 		return false
 	}
 
-	return usesBuiltInOpenAIProvider(providerName, apiKind)
+	normalizedAPI := strings.ToLower(strings.TrimSpace(provider.API))
+	switch normalizedAPI {
+	case OpenAIAPIResponses:
+		return true
+	case OpenAIAPIChatCompletions:
+		return false
+	case "":
+		return usesBuiltInOpenAIProvider(providerName, apiKind)
+	default:
+		return false
+	}
 }
 
 func (client openAIClient) streamResponses(
@@ -1064,7 +1074,7 @@ func splitConfiguredModel(configuredModel string) (string, error) {
 }
 
 func usesBuiltInOpenAIProvider(providerName string, apiKind ProviderAPIKind) bool {
-	return apiKind == ProviderAPIKindOpenAI && providerName == "openai"
+	return apiKind == ProviderAPIKindOpenAI && strings.EqualFold(strings.TrimSpace(providerName), "openai")
 }
 
 func chatMessageContentsEqual(left, right any) bool {
