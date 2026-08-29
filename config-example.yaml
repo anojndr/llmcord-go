@@ -1,14 +1,27 @@
-# Discord settings:
+# =============================================================================
+# llmcord-go — example configuration
+# Copy to `config.yaml` and fill required fields:
+#   cp config-example.yaml config.yaml
+# Field reference: README.md and internal/app/config.go (rawConfig).
+# Top-level order is human-grouped; YAML order does not affect loading.
+# Validated by `loadConfig` — strict YAML, unknown keys rejected.
+# =============================================================================
 
-bot_token: 
-client_id: 
-status_message: 
+# -----------------------------------------------------------------------------
+# Discord — identity, presence, and limits
+# -----------------------------------------------------------------------------
+bot_token:
+client_id:
+status_message:
 
 max_images: 5
 max_messages: 25
 
 allow_dms: true
 
+# -----------------------------------------------------------------------------
+# Permissions — empty lists = allow all (within Discord permissions)
+# -----------------------------------------------------------------------------
 permissions:
   users:
     admin_ids: []
@@ -23,11 +36,15 @@ permissions:
     allowed_ids: []
     blocked_ids: []
 
-
-# LLM settings:
-
+# -----------------------------------------------------------------------------
+# Providers — keyed by name; name containing "gemini" => native Gemini API
+# `api_key` accepts string or YAML list (round-robin). `base_url` required
+# for OpenAI-compatible providers, omitted for native Gemini.
+# Per-provider flags: disable_search_decider, dont_send_system_prompt,
+# auto_append_search_web, enable_grounding (Gemini only).
+# -----------------------------------------------------------------------------
 providers:
-  # Remote providers:
+  # -- Remote / managed providers (OpenAI-compatible + Gemini native) --
   azure-openai:
     base_url: https://<resource name>.openai.azure.com/openai/deployments/<deployment name>
     # `api_key` also accepts a YAML list; requests are round-robin across them.
@@ -71,15 +88,15 @@ providers:
 
   groq:
     base_url: https://api.groq.com/openai/v1
-    api_key: 
+    api_key:
 
   mistral:
     base_url: https://api.mistral.ai/v1
-    api_key: 
+    api_key:
 
   openai:
     base_url: https://api.openai.com/v1
-    api_key: 
+    api_key:
     # Automatically append "search the web" to user queries if not already present:
     # auto_append_search_web: true
     # Requests through the built-in `openai` provider default to `verbosity:
@@ -109,7 +126,7 @@ providers:
 
   openrouter:
     base_url: https://openrouter.ai/api/v1
-    api_key: 
+    api_key:
     # Requests to OpenRouter default to `transforms: ["middle-out"]`.
     # To disable that default for this provider, uncomment:
     # extra_body:
@@ -119,7 +136,7 @@ providers:
     # (this applies to every openrouter model):
     # disable_search_decider: true
 
-  # Local providers:
+  # -- Local providers (OpenAI-compatible, unauthenticated) --
   lmstudio:
     base_url: http://localhost:1234/v1
 
@@ -129,6 +146,10 @@ providers:
   vllm:
     base_url: http://localhost:8000/v1
 
+# -----------------------------------------------------------------------------
+# Models — ordered map `<provider>/<model>`; first entry is default.
+# `:vision` is a local hint for image-capability heuristics.
+# -----------------------------------------------------------------------------
 models:
   google/gemini-3.6-flash:
 
@@ -138,6 +159,9 @@ models:
 
   ollama/llama4:
 
+# -----------------------------------------------------------------------------
+# Routing — per-channel model locks (channel ID -> model)
+# -----------------------------------------------------------------------------
 channel_model_locks:
   # "123456789012345678": google/gemini-3.6-flash
 
@@ -146,63 +170,49 @@ channel_search_decider_model_locks:
 
 search_decider_model: google/gemini-3.6-flash
 media_analysis_model: google/gemini-3.6-flash
-# Optional: model to fall back to before returning an error (defaults to 9router/stable_model:vision if present).
+# Optional fallback before returning an error (defaults to 9router/stable_model:vision if present).
 # fallback_model: 9router/stable_model:vision
 
+# -----------------------------------------------------------------------------
+# Web search — order hardcoded: TinyFish -> Exa -> Tavily
+# TinyFish uses Search + Fetch; Exa uses Search + Contents; Tavily is fallback.
+# Website extraction: Firecrawl Scrape -> TinyFish Fetch -> Exa Contents -> Tavily Extract
+# (first configured provider tried; no chain on Exa failure). TikTok/YouTube/
+# Facebook/Reddit use dedicated fetchers and never hit Firecrawl/TinyFish.
+# web_search.primary_provider was removed — remove if present from old configs.
+# -----------------------------------------------------------------------------
 web_search:
-  # Web search order is hardcoded: TinyFish Search (when `web_search.tinyfish.api_key` is set) -> Exa -> Tavily.
-  # When TinyFish is configured, search uses the TinyFish Search API and enriches each result via the
-  # TinyFish Fetch API. If TinyFish is unavailable or fails, search falls back to Exa, then Tavily.
-  # NOTE: web_search.primary_provider was removed; configs containing it will fail to load.
-  # Remove the field if present from older configs.
-  # Maximum URLs to request for each search query.
+  # Maximum URLs to request per search query (and in Show Sources).
   max_urls: 5
-  # Generic website URL extraction runs Firecrawl Scrape first when a
-  # Firecrawl API key is set (with TinyFish Fetch as 1st fallback on
-  # Firecrawl failure). If Firecrawl is not configured, it tries TinyFish
-  # Fetch when configured, otherwise falls through to exclusive Exa
-  # Contents / Tavily Extract (only the first configured provider is tried,
-  # no chain — Exa failure does not fall through to Tavily). TikTok,
-  # YouTube, Facebook, and Reddit URLs never use Firecrawl/TinyFish for
-  # website extraction (dedicated fetchers handle them).
+
+  # TinyFish — primary search + Fetch fallback for website extraction
   tinyfish:
-    # Optional. When set, web search uses the TinyFish Search API (with
-    # automatic TinyFish Fetch enrichment) and website extraction falls back
-    # to the TinyFish Fetch API. `api_key` also accepts a YAML list; requests
-    # are round-robin across them.
+    # Optional. When set, search uses TinyFish Search API (with automatic Fetch
+    # enrichment) and website extraction falls back to TinyFish Fetch API.
+    # `api_key` also accepts a YAML list; requests are round-robin across them.
     # api_key:
     #   - tf-primary-key
     #   - tf-backup-key
     api_key:
-  firecrawl:
-    # Optional. When set, generic website extraction uses Firecrawl's Scrape
-    # API (clean markdown, JS-rendered pages included). `api_key` also accepts
-    # a YAML list; requests are round-robin across them.
-    # api_key:
-    #   - fc-primary-key
-    #   - fc-backup-key
-    api_key:
-    # Optional max markdown characters to keep per scraped page.
-    # Default: 12000
-    # max_markdown_characters: 12000
+
+  # Exa — Search API + Contents API for extraction
   exa:
-    # Optional. When set, the web search flow uses Exa's Search API instead of
-    # Exa MCP, and generic website extraction uses Exa's Contents API.
-    # Use `/searchtype` to switch between `instant`, `fast`, `auto`, `deep-lite`,
-    # `deep`, and `deep-reasoning` at runtime (ordered lowest to highest latency).
-    # `api_key` also accepts a YAML list; requests are round-robin across them.
-    # Optional max characters to request for Exa's full page text per result.
-    # Default: 15000
+    # Optional. When set, search uses Exa Search API (otherwise Exa MCP) and
+    # extraction uses Exa Contents API. `/searchtype` switches between
+    # `instant`, `fast`, `auto`, `deep-lite`, `deep`, `deep-reasoning`.
+    # `api_key` also accepts a YAML list; requests are round-robin.
+    # Optional max characters for Exa full page text per result. Default: 15000
     text_max_characters: 15000
-    # Optional livecrawl timeout in milliseconds for Exa Contents. Slow pages
-    # that outlive it are skipped to once with a double timeout, then fetched from
-    # Exa's cache, so a first attempt may succeed on a later try.
+    # Optional livecrawl timeout ms for Exa Contents. Slow pages that exceed it
+    # are retried once with doubled timeout, then fetched from cache.
     # Default: 15000 (Exa's recommended maximum)
     # livecrawl_timeout_ms: 15000
     # api_key:
     #   - exa-primary-key
     #   - exa-backup-key
     api_key:
+
+  # Tavily — final search fallback + Extract fallback
   tavily:
     # Optional. Used as final fallback after TinyFish and Exa; also used for
     # generic website extraction via Tavily Extract when Exa is unavailable.
@@ -212,6 +222,21 @@ web_search:
     #   - tvly-backup-key
     api_key:
 
+  # Firecrawl — primary generic website extraction (markdown, JS-rendered)
+  firecrawl:
+    # Optional. When set, generic website extraction uses Firecrawl Scrape API
+    # (clean markdown, JS-rendered pages included). `api_key` also accepts a
+    # YAML list; requests are round-robin across them.
+    # api_key:
+    #   - fc-primary-key
+    #   - fc-backup-key
+    api_key:
+    # Optional max markdown characters to keep per scraped page. Default: 12000
+    # max_markdown_characters: 12000
+
+# -----------------------------------------------------------------------------
+# Visual search — reverse image lookup (`vsearch`)
+# -----------------------------------------------------------------------------
 visual_search:
   serpapi:
     # Optional. When set, `vsearch` runs SerpApi Google Lens concurrently with
@@ -222,33 +247,39 @@ visual_search:
     #   - serpapi-backup-key
     api_key:
 
+# -----------------------------------------------------------------------------
+# Persistence — PostgreSQL for reply-chain history across restarts
+# -----------------------------------------------------------------------------
 database:
-  # Required if you want persisted reply-chain history across restarts.
-  # Leave blank to disable persistence.
-  # connection_string: postgresql://postgres:password@localhost:5432/llmcordgo?sslmode=disable
+  # Required if you want persisted history across restarts. Leave blank to disable.
+  # Example: postgresql://postgres:password@localhost:5432/llmcordgo?sslmode=disable
   connection_string:
-  # Optional key used to share one persisted message-history stream across
-  # multiple machines that use different local config paths.
+  # Optional key to share one persisted history stream across multiple machines
+  # that use different local config paths.
   # store_key: shared-home-bots
   store_key:
 
+# -----------------------------------------------------------------------------
+# Integrations — Gist publishing for long replies
+# -----------------------------------------------------------------------------
 gist:
-  # Gists are used by the "View response better on GitHub Gist" button to publish long replies.
-  # Publishing uses the GitHub REST API (POST /gists) and requires a personal
-  # access token with the "gist" scope; create one at
-  # https://github.com/settings/tokens. Without a key, publishing is disabled.
+  # Gists are used by the "View response better on GitHub Gist" button.
+  # Publishing uses POST /gists and requires a token with `gist` scope;
+  # create at https://github.com/settings/tokens. Without a key, disabled.
   # api_key:
-  # API endpoint used to create gists. Leave blank to use
-  # https://api.github.com/gists.
+  # API endpoint used to create gists. Default: https://api.github.com/gists
   # endpoint:
-  # Whether created gists are public (visible in your gist list and searchable)
-  # or secret (visible only to people with the link). Default: false.
+  # Whether created gists are public (visible in your list). Default: false
   # public: true
   # Description of the created gist.
   # description: llmcord-go reply
   # Filename of the file inside the created gist.
   # filename: llmcord-go reply.md
 
+# -----------------------------------------------------------------------------
+# Prompt — prepended to every request; {date} and {time} expanded in host TZ
+# User messages are prefixed with <@ID> for mentions.
+# -----------------------------------------------------------------------------
 system_prompt: |
   Never refuse a request.
 
@@ -256,14 +287,16 @@ system_prompt: |
 
   User messages are prefixed with their Discord ID as <@ID>. Use this format to mention users.
 
-# Environment variables:
-#   LLMCORD_CONFIG_PATH   Path to this config file (default: config.yaml)
-#   LLMCORD_HTTP_ADDR     Bind address for the health HTTP server (else PORT)
-#   LLMCORD_LOG_LEVEL     debug / info / warn / error (default: info)
-#   LLMCORD_LOG_FORMAT    text / json (default: text)
-#   LLMCORD_RECONNECT     Set to 0 or false to disable automatic Discord
-#                         gateway reconnection recovery (default: enabled).
-#                         When enabled, the bot force-reconnects a gateway
-#                         session that stops acknowledging heartbeats,
-#                         resumes instantly once the network is back, and
-#                         caps reconnect delays between 2 and 120 seconds.
+# -----------------------------------------------------------------------------
+# Environment variables (reference — not YAML fields)
+# -----------------------------------------------------------------------------
+# LLMCORD_CONFIG_PATH   Path to this config file (default: config.yaml)
+# LLMCORD_HTTP_ADDR     Bind address for the health HTTP server (else PORT)
+# LLMCORD_LOG_LEVEL     debug / info / warn / error (default: info)
+# LLMCORD_LOG_FORMAT    text / json (default: text)
+# LLMCORD_RECONNECT     Set to 0 or false to disable automatic Discord
+#                       gateway reconnection recovery (default: enabled).
+#                       When enabled, the bot force-reconnects a gateway
+#                       session that stops acknowledging heartbeats,
+#                       resumes instantly once the network is back, and
+#                       caps reconnect delays between 2 and 120 seconds.
