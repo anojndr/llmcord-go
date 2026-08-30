@@ -171,7 +171,10 @@ func streamRetryAction(err error) streamRetry {
 }
 
 func deltaReferencesContent(delta StreamDelta) bool {
-	return delta.Thinking != "" || delta.Content != "" || delta.SearchMetadata != nil
+	return delta.Thinking != "" ||
+		delta.Content != "" ||
+		delta.SearchMetadata != nil ||
+		len(delta.ToolCalls) > 0
 }
 
 // IsTransientStreamError reports whether a stream failure is safe to retry:

@@ -239,7 +239,7 @@ func countMessageReceivedLogs(records []capturedLog) int {
 	return count
 }
 
-func TestHandleMessageCreateLogsExactlyOnceThroughWebSearchDecision(t *testing.T) {
+func TestHandleMessageCreateLogsExactlyOncePerMessage(t *testing.T) {
 	// End-to-end: the full production entry path (handleMessageCreate →
 	// respondToMessage → buildMessageConversation → web-search decide →
 	// buildSearchDeciderConversation) must log "message received" exactly
@@ -264,8 +264,7 @@ func TestHandleMessageCreateLogsExactlyOnceThroughWebSearchDecision(t *testing.T
 		"  exa:\n"+
 		"    api_key: test-key\n"+
 		"models:\n"+
-		"  openai/main-model:\n"+
-		"  openai/decider-model:\n"), 0o600)
+		"  openai/main-model:\n"), 0o600)
 	if err != nil {
 		t.Fatalf("write test config: %v", err)
 	}
@@ -277,21 +276,14 @@ func TestHandleMessageCreateLogsExactlyOnceThroughWebSearchDecision(t *testing.T
 		instance.nodes = newMessageNodeStore(10)
 		instance.chatCompletions = newStubChatClient(func(
 			_ context.Context,
-			request chatCompletionRequest,
+			_ chatCompletionRequest,
 			handle func(streamDelta) error,
 		) error {
 			t.Helper()
 
-			// The search decider answers with needs_search=false so the
-			// pipeline resolves without a second web-search round.
-			if request.ConfiguredModel == "openai/decider-model" {
-				return handle(newStreamDelta(`{"needs_search":false}`, finishReasonStop))
-			}
-
 			return handle(newStreamDelta("hello", finishReasonStop))
 		})
 		instance.currentModel = "openai/main-model"
-		instance.currentSearchDeciderModel = "openai/decider-model"
 
 		sourceMessage := newPromptMessage("user-message-1", channelID, userID, botUserID)
 

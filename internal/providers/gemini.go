@@ -125,7 +125,9 @@ type geminiClient struct {
 // GeminiAPIError extracts the genai.APIError from the error chain if present.
 func GeminiAPIError(err error) (genai.APIError, bool) {
 	if err == nil {
-		return genai.APIError{}, false
+		var emptyErr genai.APIError
+
+		return emptyErr, false
 	}
 
 	var apiErr *genai.APIError
@@ -138,7 +140,9 @@ func GeminiAPIError(err error) (genai.APIError, bool) {
 		return valErr, true
 	}
 
-	return genai.APIError{}, false
+	var emptyErr genai.APIError
+
+	return emptyErr, false
 }
 
 // GeminiAPIStatusCode extracts the HTTP status code from a Gemini API error
@@ -296,6 +300,7 @@ func (splitter *geminiStreamHandleSplitter) handleDelta(delta StreamDelta) error
 			FinishReason:       "",
 			ProviderResponseID: "",
 			SearchMetadata:     nil,
+			ToolCalls:          nil,
 		})
 	}
 
@@ -306,6 +311,7 @@ func (splitter *geminiStreamHandleSplitter) handleDelta(delta StreamDelta) error
 			FinishReason:       "",
 			ProviderResponseID: "",
 			SearchMetadata:     nil,
+			ToolCalls:          nil,
 		})
 	}
 
@@ -316,6 +322,7 @@ func (splitter *geminiStreamHandleSplitter) handleDelta(delta StreamDelta) error
 			FinishReason:       "",
 			ProviderResponseID: "",
 			SearchMetadata:     nil,
+			ToolCalls:          nil,
 		})
 	}
 
@@ -330,6 +337,7 @@ func (splitter *geminiStreamHandleSplitter) handleDelta(delta StreamDelta) error
 			FinishReason:       "",
 			ProviderResponseID: "",
 			SearchMetadata:     delta.SearchMetadata,
+			ToolCalls:          nil,
 		})
 	}
 
@@ -356,6 +364,7 @@ func (splitter *geminiStreamHandleSplitter) finalize() error {
 			FinishReason:       "",
 			ProviderResponseID: "",
 			SearchMetadata:     nil,
+			ToolCalls:          nil,
 		})
 		if err != nil {
 			return fmt.Errorf(handleStreamDeltaErrorFormat, err)
@@ -369,6 +378,7 @@ func (splitter *geminiStreamHandleSplitter) finalize() error {
 			FinishReason:       "",
 			ProviderResponseID: "",
 			SearchMetadata:     nil,
+			ToolCalls:          nil,
 		})
 		if err != nil {
 			return fmt.Errorf(handleStreamDeltaErrorFormat, err)
@@ -522,6 +532,7 @@ func geminiHandleStreamUpdate(handle func(StreamDelta) error, delta StreamDelta)
 			FinishReason:       "",
 			ProviderResponseID: "",
 			SearchMetadata:     delta.SearchMetadata,
+			ToolCalls:          nil,
 		})
 		if err != nil {
 			return fmt.Errorf(handleStreamDeltaErrorFormat, err)
@@ -538,6 +549,7 @@ func geminiHandleFinishReason(handle func(StreamDelta) error, finishReason strin
 		FinishReason:       finishReason,
 		ProviderResponseID: "",
 		SearchMetadata:     nil,
+		ToolCalls:          nil,
 	})
 	if err != nil {
 		return fmt.Errorf(handleStreamDeltaErrorFormat, err)
@@ -1522,6 +1534,7 @@ func geminiStreamDelta(response *genai.GenerateContentResponse) (StreamDelta, er
 				FinishReason:       "",
 				ProviderResponseID: "",
 				SearchMetadata:     nil,
+				ToolCalls:          nil,
 			}, err
 		}
 	}

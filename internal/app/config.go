@@ -81,7 +81,7 @@ type rawProviderConfig struct {
 	APIKey                    scalarStringList `yaml:"api_key"`
 	ReasoningEffort           scalarString     `yaml:"reasoning_effort"`
 	EnableGrounding           *bool            `yaml:"enable_grounding"`
-	DisableSearchDecider      *bool            `yaml:"disable_search_decider"`
+	DisableWebSearch          *bool            `yaml:"disable_search_decider"`
 	DontSendSystemPrompt      *bool            `yaml:"dont_send_system_prompt"`
 	AutoAppendSearchWeb       *bool            `yaml:"auto_append_search_web"`
 	AutoAppendShortAnswer     *bool            `yaml:"auto_append_short_answer"`
@@ -140,21 +140,21 @@ type rawGistConfig struct {
 }
 
 type providerConfig struct {
-	Name                     string
-	BaseURL                  string
-	API                      string
-	APIKey                   string
-	APIKeys                  []string
-	ReasoningEffort          string
-	EnableGrounding          bool
-	DisableSearchDecider     bool
-	DontSendSystemPrompt     bool
-	AutoAppendSearchWeb      bool
-	AutoAppendShortAnswer    bool
+	Name                      string
+	BaseURL                   string
+	API                       string
+	APIKey                    string
+	APIKeys                   []string
+	ReasoningEffort           string
+	EnableGrounding           bool
+	DisableWebSearch          bool
+	DontSendSystemPrompt      bool
+	AutoAppendSearchWeb       bool
+	AutoAppendShortAnswer     bool
 	AutoAppendPrioritizeTruth bool
-	ExtraHeaders             map[string]any
-	ExtraQuery               map[string]any
-	ExtraBody                map[string]any
+	ExtraHeaders              map[string]any
+	ExtraQuery                map[string]any
+	ExtraBody                 map[string]any
 }
 
 type tavilySearchConfig struct {
@@ -220,48 +220,44 @@ const (
 )
 
 type rawConfig struct {
-	BotToken                       scalarString                 `yaml:"bot_token"`
-	ClientID                       scalarString                 `yaml:"client_id"`
-	StatusMessage                  string                       `yaml:"status_message"`
-	MaxImages                      *int                         `yaml:"max_images"`
-	MaxMessages                    *int                         `yaml:"max_messages"`
-	AllowDMs                       *bool                        `yaml:"allow_dms"`
-	Permissions                    permissionsConfig            `yaml:"permissions"`
-	Providers                      map[string]rawProviderConfig `yaml:"providers"`
-	WebSearch                      rawWebSearchConfig           `yaml:"web_search"`
-	VisualSearch                   rawVisualSearchConfig        `yaml:"visual_search"`
-	Database                       rawDatabaseConfig            `yaml:"database"`
-	Gist                           rawGistConfig                `yaml:"gist"`
-	Models                         map[string]map[string]any    `yaml:"models"`
-	ChannelModelLocks              map[string]scalarString      `yaml:"channel_model_locks"`
-	ChannelSearchDeciderModelLocks map[string]scalarString      `yaml:"channel_search_decider_model_locks"`
-	SearchDeciderModel             scalarString                 `yaml:"search_decider_model"`
-	MediaAnalysisModel             scalarString                 `yaml:"media_analysis_model"`
-	FallbackModel                  scalarString                 `yaml:"fallback_model"`
-	SystemPrompt                   string                       `yaml:"system_prompt"`
+	BotToken           scalarString                 `yaml:"bot_token"`
+	ClientID           scalarString                 `yaml:"client_id"`
+	StatusMessage      string                       `yaml:"status_message"`
+	MaxImages          *int                         `yaml:"max_images"`
+	MaxMessages        *int                         `yaml:"max_messages"`
+	AllowDMs           *bool                        `yaml:"allow_dms"`
+	Permissions        permissionsConfig            `yaml:"permissions"`
+	Providers          map[string]rawProviderConfig `yaml:"providers"`
+	WebSearch          rawWebSearchConfig           `yaml:"web_search"`
+	VisualSearch       rawVisualSearchConfig        `yaml:"visual_search"`
+	Database           rawDatabaseConfig            `yaml:"database"`
+	Gist               rawGistConfig                `yaml:"gist"`
+	Models             map[string]map[string]any    `yaml:"models"`
+	ChannelModelLocks  map[string]scalarString      `yaml:"channel_model_locks"`
+	MediaAnalysisModel scalarString                 `yaml:"media_analysis_model"`
+	FallbackModel      scalarString                 `yaml:"fallback_model"`
+	SystemPrompt       string                       `yaml:"system_prompt"`
 }
 
 type config struct {
-	BotToken                       string
-	ClientID                       string
-	StatusMessage                  string
-	MaxImages                      int
-	MaxMessages                    int
-	AllowDMs                       bool
-	Permissions                    permissionsConfig
-	Providers                      map[string]providerConfig
-	WebSearch                      webSearchConfig
-	VisualSearch                   visualSearchConfig
-	Database                       databaseConfig
-	Gist                           gistConfig
-	Models                         map[string]map[string]any
-	ModelOrder                     []string
-	ChannelModelLocks              map[string]string
-	ChannelSearchDeciderModelLocks map[string]string
-	SearchDeciderModel             string
-	MediaAnalysisModel             string
-	FallbackModel                  string
-	SystemPrompt                   string
+	BotToken           string
+	ClientID           string
+	StatusMessage      string
+	MaxImages          int
+	MaxMessages        int
+	AllowDMs           bool
+	Permissions        permissionsConfig
+	Providers          map[string]providerConfig
+	WebSearch          webSearchConfig
+	VisualSearch       visualSearchConfig
+	Database           databaseConfig
+	Gist               gistConfig
+	Models             map[string]map[string]any
+	ModelOrder         []string
+	ChannelModelLocks  map[string]string
+	MediaAnalysisModel string
+	FallbackModel      string
+	SystemPrompt       string
 }
 
 func loadConfig(filename string) (config, error) {
@@ -308,13 +304,12 @@ func buildLoadedConfig(
 	}
 
 	serpAPIVisualSearchKeys := normalizeAPIKeys([]string(rawLoadedConfig.VisualSearch.SerpAPI.APIKey))
+
 	allowDMs := boolValueOrDefault(rawLoadedConfig.AllowDMs, true)
-	searchDeciderModel := normalizedSearchDeciderModel(rawLoadedConfig.SearchDeciderModel, modelOrder)
 
 	mediaAnalysisModel := strings.TrimSpace(string(rawLoadedConfig.MediaAnalysisModel))
 	fallbackModel := normalizedFallbackModel(rawLoadedConfig.FallbackModel, rawLoadedConfig.Models)
 	channelModelLocks := normalizeStringScalarMap(rawLoadedConfig.ChannelModelLocks)
-	channelSearchDeciderModelLocks := normalizeStringScalarMap(rawLoadedConfig.ChannelSearchDeciderModelLocks)
 
 	loadedConfig := config{
 		BotToken:      string(rawLoadedConfig.BotToken),
@@ -332,16 +327,14 @@ func buildLoadedConfig(
 				APIKeys: serpAPIVisualSearchKeys,
 			},
 		},
-		Database:                       normalizeDatabaseConfig(rawLoadedConfig.Database),
-		Gist:                           normalizeGistConfig(rawLoadedConfig.Gist),
-		Models:                         rawLoadedConfig.Models,
-		ModelOrder:                     modelOrder,
-		ChannelModelLocks:              channelModelLocks,
-		ChannelSearchDeciderModelLocks: channelSearchDeciderModelLocks,
-		SearchDeciderModel:             searchDeciderModel,
-		MediaAnalysisModel:             mediaAnalysisModel,
-		FallbackModel:                  fallbackModel,
-		SystemPrompt:                   rawLoadedConfig.SystemPrompt,
+		Database:           normalizeDatabaseConfig(rawLoadedConfig.Database),
+		Gist:               normalizeGistConfig(rawLoadedConfig.Gist),
+		Models:             rawLoadedConfig.Models,
+		ModelOrder:         modelOrder,
+		ChannelModelLocks:  channelModelLocks,
+		MediaAnalysisModel: mediaAnalysisModel,
+		FallbackModel:      fallbackModel,
+		SystemPrompt:       rawLoadedConfig.SystemPrompt,
 	}
 
 	err = validateConfig(loadedConfig)
@@ -408,6 +401,37 @@ func validateNoDeprecatedConfigSections(rootNode *yaml.Node) error {
 			"web_search.primary_provider is removed; search order is hardcoded to TinyFish -> Exa -> Tavily: remove web_search.primary_provider: %w",
 			os.ErrInvalid,
 		)
+	}
+
+	deprecatedFields := []struct {
+		fieldName   string
+		description string
+	}{
+		{
+			fieldName:   "search_decider_model",
+			description: "web search now runs as a web_search tool call on the main model",
+		},
+		{
+			fieldName:   "channel_search_decider_model_locks",
+			description: "web search now runs as a web_search tool call on the main model",
+		},
+	}
+
+	for _, deprecatedField := range deprecatedFields {
+		exists, existsErr := topLevelConfigFieldExists(rootNode, deprecatedField.fieldName)
+		if existsErr != nil {
+			return existsErr
+		}
+
+		if exists {
+			return fmt.Errorf(
+				"%s is removed; %s: remove %s: %w",
+				deprecatedField.fieldName,
+				deprecatedField.description,
+				deprecatedField.fieldName,
+				os.ErrInvalid,
+			)
+		}
 	}
 
 	return nil
@@ -480,15 +504,6 @@ func boolValueOrDefault(value *bool, fallback bool) bool {
 	return *value
 }
 
-func normalizedSearchDeciderModel(rawValue scalarString, modelOrder []string) string {
-	searchDeciderModel := strings.TrimSpace(string(rawValue))
-	if searchDeciderModel == "" && len(modelOrder) > 0 {
-		return modelOrder[0]
-	}
-
-	return searchDeciderModel
-}
-
 const defaultStableModelFallback = "9router/stable_model:vision"
 
 func normalizedFallbackModel(rawValue scalarString, models map[string]map[string]any) string {
@@ -511,21 +526,21 @@ func normalizeProviderConfig(providerName string, rawProvider rawProviderConfig)
 	reasoningEffort := strings.ToLower(strings.TrimSpace(string(rawProvider.ReasoningEffort)))
 
 	return providerConfig{
-		Name:                     strings.TrimSpace(providerName),
-		BaseURL:                  baseURL,
-		API:                      normalizedAPI,
-		APIKey:                   firstAPIKey(apiKeys),
-		APIKeys:                  apiKeys,
-		ReasoningEffort:          reasoningEffort,
-		EnableGrounding:          boolValueOrDefault(rawProvider.EnableGrounding, false),
-		DisableSearchDecider:     boolValueOrDefault(rawProvider.DisableSearchDecider, false),
-		DontSendSystemPrompt:     boolValueOrDefault(rawProvider.DontSendSystemPrompt, false),
-		AutoAppendSearchWeb:      boolValueOrDefault(rawProvider.AutoAppendSearchWeb, false),
-		AutoAppendShortAnswer:    boolValueOrDefault(rawProvider.AutoAppendShortAnswer, false),
+		Name:                      strings.TrimSpace(providerName),
+		BaseURL:                   baseURL,
+		API:                       normalizedAPI,
+		APIKey:                    firstAPIKey(apiKeys),
+		APIKeys:                   apiKeys,
+		ReasoningEffort:           reasoningEffort,
+		EnableGrounding:           boolValueOrDefault(rawProvider.EnableGrounding, false),
+		DisableWebSearch:          boolValueOrDefault(rawProvider.DisableWebSearch, false),
+		DontSendSystemPrompt:      boolValueOrDefault(rawProvider.DontSendSystemPrompt, false),
+		AutoAppendSearchWeb:       boolValueOrDefault(rawProvider.AutoAppendSearchWeb, false),
+		AutoAppendShortAnswer:     boolValueOrDefault(rawProvider.AutoAppendShortAnswer, false),
 		AutoAppendPrioritizeTruth: boolValueOrDefault(rawProvider.AutoAppendPrioritizeTruth, false),
-		ExtraHeaders:             rawProvider.ExtraHeaders,
-		ExtraQuery:               rawProvider.ExtraQuery,
-		ExtraBody:                rawProvider.ExtraBody,
+		ExtraHeaders:              rawProvider.ExtraHeaders,
+		ExtraQuery:                rawProvider.ExtraQuery,
+		ExtraBody:                 rawProvider.ExtraBody,
 	}
 }
 
@@ -618,6 +633,14 @@ func (loadedConfig webSearchConfig) exaUsesAPI() bool {
 	return len(loadedConfig.Exa.apiKeys()) > 0
 }
 
+// hasWebSearchAPIKeys reports whether any routed web search provider
+// (TinyFish, Exa, or Tavily) has API keys configured.
+func (loadedConfig webSearchConfig) hasWebSearchAPIKeys() bool {
+	return len(loadedConfig.TinyFish.apiKeys()) > 0 ||
+		len(loadedConfig.Exa.apiKeys()) > 0 ||
+		len(loadedConfig.Tavily.apiKeys()) > 0
+}
+
 func (settings exaSearchConfig) textMaxCharacters() int {
 	if settings.TextMaxCharacters <= 0 {
 		return defaultExaSearchTextMaxCharacters
@@ -656,11 +679,6 @@ func validateConfig(loadedConfig config) error {
 	}
 
 	err = validateChannelModelLocks(loadedConfig)
-	if err != nil {
-		return err
-	}
-
-	err = validateChannelSearchDeciderModelLocks(loadedConfig)
 	if err != nil {
 		return err
 	}
@@ -723,14 +741,6 @@ func validateConfiguredModels(loadedConfig config) error {
 				return fmt.Errorf("model %q: reasoning_effort %q is invalid: %w", modelName, effort, os.ErrInvalid)
 			}
 		}
-	}
-
-	if !loadedConfig.hasModel(loadedConfig.SearchDeciderModel) {
-		return fmt.Errorf(
-			"search_decider_model %q is not defined in models: %w",
-			loadedConfig.SearchDeciderModel,
-			os.ErrNotExist,
-		)
 	}
 
 	return nil
@@ -799,28 +809,6 @@ func validateChannelModelLocks(loadedConfig config) error {
 		if !loadedConfig.hasModel(modelName) {
 			return fmt.Errorf(
 				"channel_model_locks %q references undefined model %q: %w",
-				channelID,
-				modelName,
-				os.ErrNotExist,
-			)
-		}
-	}
-
-	return nil
-}
-
-func validateChannelSearchDeciderModelLocks(loadedConfig config) error {
-	for channelID, modelName := range loadedConfig.ChannelSearchDeciderModelLocks {
-		if channelID == "" {
-			return fmt.Errorf(
-				"channel_search_decider_model_locks contains an empty channel id: %w",
-				os.ErrInvalid,
-			)
-		}
-
-		if !loadedConfig.hasModel(modelName) {
-			return fmt.Errorf(
-				"channel_search_decider_model_locks %q references undefined model %q: %w",
 				channelID,
 				modelName,
 				os.ErrNotExist,
@@ -924,17 +912,6 @@ func (loadedConfig config) hasModel(modelName string) bool {
 func (loadedConfig config) lockedModelForChannelIDs(channelIDs []string) (string, bool) {
 	for _, channelID := range channelIDs {
 		modelName, ok := loadedConfig.ChannelModelLocks[channelID]
-		if ok {
-			return modelName, true
-		}
-	}
-
-	return "", false
-}
-
-func (loadedConfig config) lockedSearchDeciderModelForChannelIDs(channelIDs []string) (string, bool) {
-	for _, channelID := range channelIDs {
-		modelName, ok := loadedConfig.ChannelSearchDeciderModelLocks[channelID]
 		if ok {
 			return modelName, true
 		}

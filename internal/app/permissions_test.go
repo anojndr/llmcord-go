@@ -126,12 +126,10 @@ func testPermissionsConfig() config {
 		VisualSearch: visualSearchConfig{
 			SerpAPI: serpAPIVisualSearchConfig{APIKey: "", APIKeys: nil},
 		},
-		Models:                         nil,
-		ModelOrder:                     nil,
-		ChannelModelLocks:              nil,
-		ChannelSearchDeciderModelLocks: nil,
-		SearchDeciderModel:             "",
-		MediaAnalysisModel:             "",
-		SystemPrompt:                   "",
+		Models:             nil,
+		ModelOrder:         nil,
+		ChannelModelLocks:  nil,
+		MediaAnalysisModel: "",
+		SystemPrompt:       "",
 	}
 }

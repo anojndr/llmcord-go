@@ -28,7 +28,7 @@ cp config-example.yaml config.yaml
 Edit `config.yaml`:
 
 - Required: `bot_token`, at least one `providers` entry, at least one `models` entry
-- Optional: `client_id` (startup invite URL log), `search_decider_model`, `media_analysis_model`, `fallback_model`, `database.connection_string`
+- Optional: `client_id` (startup invite URL log), `media_analysis_model`, `fallback_model`, `database.connection_string`
 
 Run:
 
@@ -74,13 +74,11 @@ Providers are declared with `base_url` (OpenAI-compatible). The provider name se
 
 | Setting | Purpose |
 | --- | --- |
-| `providers` | Keyed by name. OpenAI-compatible providers use `base_url` and `api: openai-chat-completions` or `api: openai-responses` (built-in `openai` defaults to `openai-responses`, others default to `openai-chat-completions`); names containing `gemini` use the native Gemini API (with `enable_grounding: true` for the Google Search tool). Per-provider `disable_search_decider: true` skips the search-decider model call for a provider's models (web search never runs for them); defaults to `false`. Per-provider `dont_send_system_prompt: true` skips prepending the global `system_prompt` to that provider's requests; defaults to `false`. |
+| `providers` | Keyed by name. OpenAI-compatible providers use `base_url` and `api: openai-chat-completions` or `api: openai-responses` (built-in `openai` defaults to `openai-responses`, others default to `openai-chat-completions`); names containing `gemini` use the native Gemini API (with `enable_grounding: true` for the Google Search tool). Per-provider `disable_search_decider: true` disables web search entirely for a provider's models (the `web_search` tool is not offered); defaults to `false`. Per-provider `dont_send_system_prompt: true` skips prepending the global `system_prompt` to that provider's requests; defaults to `false`. |
 | `models` | Ordered `<provider>/<model>` map. The first entry is the startup default. `:vision` is a local hint for image-capability heuristics. |
 | `channel_model_locks` | Map of channel IDs to configured models. `/model` is disabled in locked channels. |
-| `channel_search_decider_model_locks` | Map of channel IDs to configured search decider models. `/searchdecidermodel` is disabled in locked channels. |
-| `search_decider_model` | Model used to decide whether web search is needed. Defaults to the first configured model. |
 | `media_analysis_model` | Gemini model used to preprocess audio and video for non-Gemini replies; auto-selected when unset. |
-| `fallback_model` | Model to fall back to before returning an error (defaults to `9router/stable_model:vision` when configured in `models`). If the primary provider skipped the web-search decision (`disable_search_decider` or grounding), the fallback attempt runs its own search-decider decision. |
+| `fallback_model` | Model to fall back to before returning an error (defaults to `9router/stable_model:vision` when configured in `models`). The fallback attempt gets the `web_search` tool under the same conditions as the primary. |
 | `database.connection_string` | PostgreSQL connection string for persisted history (`postgres://` or `postgresql://`). |
 | `database.store_key` | Logical key selecting the persisted history row. |
 | `gist.api_key` | GitHub personal access token (with the `gist` scope) used by the "View response better on GitHub Gist" button. Get one at https://github.com/settings/tokens. Accepts a string or a YAML list, round-robin across multiple tokens. Publishing is disabled without a key. |
@@ -92,8 +90,7 @@ Providers are declared with `base_url` (OpenAI-compatible). The provider name se
 
 Model notes:
 
-- The search decider (`search_decider_model`) runs the exact same conversation pipeline as the main model: the reply chain is walked and augmented (video URLs, document extraction, media analysis, visual search, website/youtube/reddit content) using the decider model's own content options. The only difference is that the search decider prompt is always prepended to the latest user query in the decider's request. Set a provider's `disable_search_decider: true` to skip the decider call and web search for that provider's models (`perplexity` and `:online` models formerly skipped by model name; set the flag to keep that behavior).
-- OpenAI GPT-5 aliases (`openai/gpt-5.4-low`, `-none`, `-minimal`, `-medium`, `-high`, `-xhigh`, `-max`) control reasoning effort: `reasoning.effort` when the provider's `api` is `openai-responses`, `reasoning_effort` when it is `openai-chat-completions` (`-minimal` normalizes to `low`, and on gpt-5.1 `-xhigh`/`-max` normalize to `high`). Gemini aliases (`-minimal`–`-high`) control thought effort.
+- Web search is a native tool call: OpenAI-compatible models are offered a `web_search` function tool (works on both `openai-chat-completions` and `openai-responses` providers, with parallel tool calls supported). When the model calls the tool, the bot runs every requested query through the TinyFish → Exa → Tavily chain concurrently, appends the formatted results to the conversation, and streams a final answer without the tool (at most one search phase and two model round trips per reply). Search results also feed the `Show Sources` button. Set a provider's `disable_search_decider: true` to never offer the tool for that provider's models; Gemini providers keep using native grounding instead, and the tool requires at least one configured search API key.
 - `openai/...` models always send a stable `prompt_cache_key` (even with a custom `base_url`), `prompt_cache_options` (`ttl: "30m"`, `mode: "implicit"`), and use the Priority inference tier (`service_tier: "priority"` on Chat Completions). On the Chat Completions path the bot also places a `prompt_cache_breakpoint` at the end of the stable reply-chain prefix (after the last assistant turn, or on the first message in `explicit` mode) so the shared prefix stays cached on gpt-5.6+ instead of being invalidated by the changing tail; set `extra_body.prompt_cache_options.mode: "explicit"` to opt into breakpoint-only caching. The Responses API uses an `input`-level cache breakpoint with the same stable prefix. `prompt_cache_retention: 24h` is deprecated on gpt-5.6+ in favor of `prompt_cache_options`; it still works on earlier models via `extra_body`.
 - Gemini providers use the API's implicit context caching by default. Explicit context caching through the documented `cachedContents` API is opt-in with `extra_body.context_caching: "auto"`; this avoids cache-create requests on free-tier projects, where explicit cached-content storage can be unavailable. When enabled and the stable reply-chain prefix (every turn before the latest user message) meets the model's minimum cacheable token count, the bot creates a cache with the model + prefix and sends it via `cachedContent` on the generate request. The token count is an approximate pre-flight estimate; the API's model minimum is the effective floor. The cache is re-created on each request so it always starts at the same fixed prefix (cached content is a strict prefix of the prompt, so it can never be invalidated mid-conversation); TTL defaults to the API's one-hour value and can be set as an object, e.g. `context_caching: { ttl: 30m }`. Set `context_caching: "off"` to disable explicit caching explicitly. Backends without a cache service fall back to implicit caching, and a cache create that the API rejects (for example, unavailable free-tier storage or too-small content) also falls back to implicit caching with a warning. It never fails the request. Minimum token counts follow the per-model table from the docs (2048 for Gemini 2.5 models, 4096 for Gemini 3.5 Flash / 3.1 Pro / 3 Pro) plus the 1024-token floor the create API enforces for newer models like Gemini 3.6 Flash.
 - For gpt-5.6-family models, leading `system` messages are sent as `developer` messages, matching current OpenAI guidance for o-series and newer.
@@ -121,7 +118,6 @@ Generic website URL extraction runs Firecrawl Scrape first when `web_search.fire
 - Mention the bot in a guild channel, or write `at ai`
 - Reply to a message to continue the conversation
 - `/model`: switch the main reply model
-- `/searchdecidermodel`: switch the search-decider model
 - `/searchtype`: switch Exa Search mode (`instant`, `fast`, `auto`, `deep-lite`, `deep`, `deep-reasoning`; lowest to highest latency)
 - `/grounding`: toggle native Gemini grounding
 - `/createchannel <channelname>`: create a text channel in the category you are currently in (requires `Manage Channels`)

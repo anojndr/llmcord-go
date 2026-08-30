@@ -12,61 +12,44 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 
-	"github.com/bwmarrin/discordgo"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 const (
-	exaSearchToolName                = "web_search_exa"
-	searchQueryArgumentKey           = "query"
-	exaNumResultsKey                 = "numResults"
-	searchWarningText                = "Warning: web search unavailable"
-	searchSourcesSectionCapacity     = 2
-	searchSourcesUnavailableText     = "No sources available."
-	messageRoleUser                  = "user"
-	contentTypeAudioData             = "audio_data"
-	contentTypeDocument              = "document_data"
-	contentTypeFileData              = "file_data"
-	contentTypeImageURL              = "image_url"
-	contentTypeText                  = "text"
-	contentTypeVideoData             = "video_data"
-	contentFieldBytes                = "data"
-	contentFieldFilename             = "filename"
-	contentFieldMIMEType             = "mime_type"
-	mimeTypeDOCX                     = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-	mimeTypeOctetStream              = "application/octet-stream"
-	mimeTypePDF                      = "application/pdf"
-	mimeTypePPTX                     = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
-	mimeTypeJPEG                     = "image/jpeg"
-	mimeTypePNG                      = "image/png"
-	mimeTypeZIP                      = "application/zip"
-	mimeTypeWEBP                     = "image/webp"
-	searchDeciderDecisionInstruction = "Based on the conversation above, analyze the last user query " +
-		"and respond ONLY with your JSON decision. " +
-		"Do not answer the query itself, " +
-		"and do not include any conversational filler, explanation, " +
-		"introductory text, or markdown code fences. " +
-		"Your response must be a single valid JSON object."
-	searchAnswerTemplate = `Answer the user's query based on the web search results.
-
-User query:
-%s
-
-Web search results:
-%s`
+	exaSearchToolName            = "web_search_exa"
+	searchQueryArgumentKey       = "query"
+	exaNumResultsKey             = "numResults"
+	searchWarningText            = "Warning: web search unavailable"
+	searchSourcesSectionCapacity = 2
+	searchSourcesUnavailableText = "No sources available."
+	messageRoleUser              = "user"
+	contentTypeAudioData         = "audio_data"
+	contentTypeDocument          = "document_data"
+	contentTypeFileData          = "file_data"
+	contentTypeImageURL          = "image_url"
+	contentTypeText              = "text"
+	contentTypeVideoData         = "video_data"
+	contentFieldBytes            = "data"
+	contentFieldFilename         = "filename"
+	contentFieldMIMEType         = "mime_type"
+	mimeTypeDOCX                 = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+	mimeTypeOctetStream          = "application/octet-stream"
+	mimeTypePDF                  = "application/pdf"
+	mimeTypePPTX                 = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+	mimeTypeJPEG                 = "image/jpeg"
+	mimeTypePNG                  = "image/png"
+	mimeTypeZIP                  = "application/zip"
+	mimeTypeWEBP                 = "image/webp"
+	// webSearchToolMaxQueries caps the distinct queries executed per search
+	// phase, across all parallel tool calls.
+	webSearchToolMaxQueries = 5
 )
 
 var errExaSearchTool = errors.New("exa MCP search tool returned an error")
-
-func searchDeciderPrompt(now time.Time) string {
-	return searchtypes.SearchDeciderPrompt(now)
-}
 
 type chatCompletionStreamer interface {
 	StreamChatCompletion(
@@ -78,11 +61,6 @@ type chatCompletionStreamer interface {
 
 type webSearcher interface {
 	search(ctx context.Context, loadedConfig config, queries []string) ([]webSearchResult, error)
-}
-
-type searchDecision struct {
-	NeedsSearch bool     `json:"needs_search"`
-	Queries     []string `json:"queries"`
 }
 
 type searchMetadata = searchtypes.SearchMetadata
@@ -198,18 +176,18 @@ type tinyFishSearchResponse struct {
 }
 
 type tinyFishSearchResult struct {
-	Position     flexibleInt `json:"position"`
-	SiteName     string      `json:"site_name"`
-	Title        string      `json:"title"`
-	Snippet      string      `json:"snippet"`
-	URL          string      `json:"url"`
-	Date         *string     `json:"date"`
-	Publisher    *string     `json:"publisher"`
-	Authors      []string    `json:"authors"`
-	Venue        *string     `json:"venue"`
+	Position     flexibleInt  `json:"position"`
+	SiteName     string       `json:"site_name"`
+	Title        string       `json:"title"`
+	Snippet      string       `json:"snippet"`
+	URL          string       `json:"url"`
+	Date         *string      `json:"date"`
+	Publisher    *string      `json:"publisher"`
+	Authors      []string     `json:"authors"`
+	Venue        *string      `json:"venue"`
 	Year         *flexibleInt `json:"year"`
 	CitedByCount *flexibleInt `json:"cited_by_count"`
-	PDFURL       *string     `json:"pdf_url"`
+	PDFURL       *string      `json:"pdf_url"`
 }
 
 type tinyFishFetchRequest struct {
@@ -223,14 +201,14 @@ type tinyFishFetchResponse struct {
 }
 
 type tinyFishFetchResult struct {
-	URL          string           `json:"url"`
-	FinalURL     string           `json:"final_url"`
-	Title        *string          `json:"title"`
-	Description  *string          `json:"description"`
-	Language     *string          `json:"language"`
-	Format       string           `json:"format"`
-	Text         any              `json:"text"`
-	LatencyMs    *flexibleFloat64 `json:"latency_ms"`
+	URL         string           `json:"url"`
+	FinalURL    string           `json:"final_url"`
+	Title       *string          `json:"title"`
+	Description *string          `json:"description"`
+	Language    *string          `json:"language"`
+	Format      string           `json:"format"`
+	Text        any              `json:"text"`
+	LatencyMs   *flexibleFloat64 `json:"latency_ms"`
 }
 
 type tinyFishFetchError struct {
@@ -407,61 +385,129 @@ func (err exaStatusError) Unwrap() error {
 	return err.Err
 }
 
-func (instance *bot) maybeAugmentConversationWithWebSearch(
+// extractWebSearchQueries parses the queries requested through the
+// web_search tool calls. Calls to other tools and calls with malformed
+// arguments are ignored; valid queries are trimmed, deduplicated in order,
+// and capped at webSearchToolMaxQueries.
+func extractWebSearchQueries(toolCalls []providers.FunctionToolCall) []string {
+	seenQueries := make(map[string]struct{}, webSearchToolMaxQueries)
+	queries := make([]string, 0, webSearchToolMaxQueries)
+
+	for _, toolCall := range toolCalls {
+		if strings.TrimSpace(toolCall.Name) != providers.WebSearchToolName {
+			continue
+		}
+
+		var arguments struct {
+			Queries []string `json:"queries"`
+		}
+
+		err := json.Unmarshal([]byte(toolCall.Arguments), &arguments)
+		if err != nil {
+			logWarn("parse web search tool arguments", err, "arguments", toolCall.Arguments)
+
+			continue
+		}
+
+		for _, query := range arguments.Queries {
+			query = strings.TrimSpace(query)
+			if query == "" {
+				continue
+			}
+
+			if _, seen := seenQueries[query]; seen {
+				continue
+			}
+
+			seenQueries[query] = struct{}{}
+			queries = append(queries, query)
+
+			if len(queries) >= webSearchToolMaxQueries {
+				return queries
+			}
+		}
+	}
+
+	return queries
+}
+
+// webSearchToolEnabled reports whether the provider's models should be
+// offered the web_search tool: explicit opt-out, non-Gemini API, no native
+// grounding, and at least one configured search provider.
+func (instance *bot) webSearchToolEnabled(
+	loadedConfig config,
+	provider providerConfig,
+) bool {
+	return !provider.DisableWebSearch &&
+		provider.apiKind() == providerAPIKindOpenAI &&
+		!instance.currentGroundingEnabled(provider) &&
+		loadedConfig.WebSearch.hasWebSearchAPIKeys()
+}
+
+// runWebSearchQueries executes the routed TinyFish -> Exa -> Tavily search
+// for the given queries.
+func (instance *bot) runWebSearchQueries(
 	ctx context.Context,
 	loadedConfig config,
-	providerSlashModel string,
-	sourceMessage *discordgo.Message,
-	conversation []chatMessage,
-) ([]chatMessage, *searchMetadata, []string) {
-	instance.modelMu.Lock()
-	decidingSearch := instance.decidingSearch
-	instance.modelMu.Unlock()
-
-	if decidingSearch {
-		return conversation, nil, nil
-	}
-
-	decision, decisionWarnings, err := instance.decideWebSearch(
-		ctx,
-		loadedConfig,
-		providerSlashModel,
-		sourceMessage,
-		conversation,
-	)
-	if err != nil {
-		logWarn("decide web search", err)
-
-		return conversation, nil, append(decisionWarnings, searchWarningText)
-	}
-
-	if !decision.NeedsSearch {
-		return conversation, nil, decisionWarnings
-	}
-
+	queries []string,
+) ([]webSearchResult, error) {
 	searchConfig := loadedConfig
 	searchConfig.WebSearch.Exa.SearchType = instance.currentExaSearchType()
 
-	results, err := instance.webSearch.search(ctx, searchConfig, decision.Queries)
-	if err != nil {
-		logWarn("run web search", err, "queries", decision.Queries)
+	return instance.webSearch.search(ctx, searchConfig, queries)
+}
 
-		return conversation, nil, append(decisionWarnings, searchWarningText)
+// runWebSearchToolPhase executes every query requested through the
+// web_search tool calls and appends the formatted results to the request
+// messages. Appending to the already-built request messages (instead of
+// rebuilding the conversation) keeps the follow-up request a byte-identical
+// prefix extension, so the provider's prompt cache still matches. It
+// reports whether usable results were produced.
+func (instance *bot) runWebSearchToolPhase(
+	ctx context.Context,
+	loadedConfig config,
+	tracker *responseTracker,
+	requestMessages []chatMessage,
+	warnings []string,
+	toolCalls []providers.FunctionToolCall,
+) ([]chatMessage, []string, bool) {
+	queries := extractWebSearchQueries(toolCalls)
+	if len(queries) == 0 {
+		logWarn(
+			"web_search tool called without usable queries",
+			nil,
+			"tool_calls",
+			len(toolCalls),
+		)
+
+		return nil, warnings, false
 	}
 
-	augmentedConversation, err := appendWebSearchResultsToConversation(
-		conversation,
+	results, err := instance.runWebSearchQueries(ctx, loadedConfig, queries)
+	if err != nil {
+		logWarn("run web search", err, "queries", queries)
+
+		return nil, append(warnings, searchWarningText), false
+	}
+
+	augmentedMessages, err := appendWebSearchResultsToConversation(
+		requestMessages,
 		formatWebSearchResults(results),
 	)
 	if err != nil {
 		logWarn("append web search results to conversation", err)
 
-		return conversation, nil, append(decisionWarnings, searchWarningText)
+		return nil, append(warnings, searchWarningText), false
 	}
 
-	return augmentedConversation,
-		newSearchMetadata(decision.Queries, results, loadedConfig.WebSearch.maxURLs()),
-		decisionWarnings
+	if tracker != nil {
+		tracker.searchMetadata = mergeSearchMetadata(
+			tracker.searchMetadata,
+			newSearchMetadata(queries, results, loadedConfig.WebSearch.maxURLs()),
+		)
+	}
+
+	return augmentedMessages, warnings, true
 }
 
 func newSearchMetadata(queries []string, results []webSearchResult, maxURLs int) *searchMetadata {
@@ -544,10 +590,10 @@ func mergeSearchMetadata(left, right *searchMetadata) *searchMetadata {
 	return merged
 }
 
- // search implements the hardcoded TinyFish -> Exa -> Tavily chain.
- // TinyFish is skipped when no TinyFish API keys are configured; Exa is
- // always probed before Tavily even for Tavily-only deployments (intentional
- // per hardcoded spec — note the extra RTT for Tavily-only configs in README).
+// search implements the hardcoded TinyFish -> Exa -> Tavily chain.
+// TinyFish is skipped when no TinyFish API keys are configured; Exa is
+// always probed before Tavily even for Tavily-only deployments (intentional
+// per hardcoded spec — note the extra RTT for Tavily-only configs in README).
 func (client routedWebSearchClient) search(
 	ctx context.Context,
 	loadedConfig config,
@@ -591,326 +637,6 @@ func (client routedWebSearchClient) search(
 		exaName,
 		errors.Join(exaErr, tavilyErr),
 	)
-}
-
-func (instance *bot) decideWebSearch(
-	ctx context.Context,
-	loadedConfig config,
-	providerSlashModel string,
-	sourceMessage *discordgo.Message,
-	conversation []chatMessage,
-) (searchDecision, []string, error) {
-	if searchDeciderDisabledForModel(providerSlashModel, loadedConfig) {
-		return searchDecision{
-			NeedsSearch: false,
-			Queries:     nil,
-		}, nil, nil
-	}
-
-	searchDeciderModel := instance.currentSearchDeciderModelForConfig(loadedConfig)
-
-	searchDeciderMessages, err := instance.buildSearchDeciderConversation(
-		ctx,
-		loadedConfig,
-		providerSlashModel,
-		searchDeciderModel,
-		sourceMessage,
-		conversation,
-	)
-	if err != nil {
-		return searchDecision{}, nil, fmt.Errorf("prepare search decider conversation: %w", err)
-	}
-
-	searchDeciderMessages = prependSearchDeciderPrompt(
-		searchDeciderMessages,
-		searchDeciderPrompt(time.Now()),
-	)
-
-	searchDeciderMessages = appendSearchDeciderInstruction(searchDeciderMessages)
-
-	request, err := buildChatCompletionRequest(
-		loadedConfig,
-		searchDeciderModel,
-		searchDeciderMessages,
-		false,
-	)
-	if err != nil {
-		return searchDecision{}, nil, fmt.Errorf("build search decider request: %w", err)
-	}
-
-	providers.AssignOpenAIPromptCacheKeyWithScope(
-		&request,
-		sourceMessage,
-		instance.nodes,
-		loadedConfig.MaxMessages,
-		"search-decider",
-	)
-
-	searchContext, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	var warnings []string
-
-	responseText, err := collectChatCompletionText(searchContext, instance.chatCompletions, request)
-	if err != nil {
-		return searchDecision{}, warnings, fmt.Errorf("collect search decider response: %w", err)
-	}
-
-	decision, err := parseSearchDecision(responseText)
-	if err != nil {
-		return searchDecision{}, warnings, fmt.Errorf("parse search decider response %q: %w", responseText, err)
-	}
-
-	return decision, warnings, nil
-}
-
-func prependSearchDeciderPrompt(messages []chatMessage, prompt string) []chatMessage {
-	prompt = strings.TrimSpace(prompt)
-	if prompt == "" {
-		return messages
-	}
-
-	clonedMessages := append([]chatMessage(nil), messages...)
-	if len(clonedMessages) == 0 {
-		return []chatMessage{{
-			Role:    messageRoleUser,
-			Content: prompt,
-		}}
-	}
-
-	lastIdx := len(clonedMessages) - 1
-	if clonedMessages[lastIdx].Role != messageRoleUser {
-		return append(clonedMessages, chatMessage{
-			Role:    messageRoleUser,
-			Content: prompt,
-		})
-	}
-
-	headerText := prompt + "\n\nLatest user query:\n"
-
-	switch content := clonedMessages[lastIdx].Content.(type) {
-	case string:
-		if strings.TrimSpace(content) == "" {
-			clonedMessages[lastIdx].Content = prompt
-		} else {
-			clonedMessages[lastIdx].Content = headerText + content
-		}
-	case []contentPart:
-		if len(content) == 0 {
-			clonedMessages[lastIdx].Content = []contentPart{{
-				messageTypeKey: contentTypeText,
-				messageTextKey: prompt,
-			}}
-
-			break
-		}
-
-		clonedParts := make([]contentPart, 0, len(content)+1)
-		for _, p := range content {
-			clonedParts = append(clonedParts, cloneContentPart(p))
-		}
-
-		firstTextIdx := -1
-
-		for index, p := range clonedParts {
-			if typeVal, ok := p[messageTypeKey].(string); ok && typeVal == contentTypeText {
-				firstTextIdx = index
-
-				break
-			}
-		}
-
-		if firstTextIdx >= 0 {
-			existingText, _ := clonedParts[firstTextIdx][messageTextKey].(string)
-			clonedParts[firstTextIdx][messageTextKey] = headerText + existingText
-		} else {
-			clonedParts = append([]contentPart{{
-				messageTypeKey: contentTypeText,
-				messageTextKey: headerText,
-			}}, clonedParts...)
-		}
-
-		clonedMessages[lastIdx].Content = clonedParts
-	default:
-		return append(clonedMessages, chatMessage{
-			Role:    messageRoleUser,
-			Content: prompt,
-		})
-	}
-
-	return clonedMessages
-}
-
-func appendSearchDeciderInstruction(messages []chatMessage) []chatMessage {
-	if len(messages) == 0 {
-		return []chatMessage{{
-			Role:    messageRoleUser,
-			Content: searchDeciderDecisionInstruction,
-		}}
-	}
-
-	lastIdx := len(messages) - 1
-	if messages[lastIdx].Role != messageRoleUser {
-		return append(messages, chatMessage{
-			Role:    messageRoleUser,
-			Content: searchDeciderDecisionInstruction,
-		})
-	}
-
-	switch content := messages[lastIdx].Content.(type) {
-	case string:
-		messages[lastIdx].Content = content + "\n\n" + searchDeciderDecisionInstruction
-	case []contentPart:
-		if len(content) == 0 {
-			messages[lastIdx].Content = []contentPart{{
-				messageTypeKey: contentTypeText,
-				messageTextKey: searchDeciderDecisionInstruction,
-			}}
-
-			break
-		}
-
-		clonedParts := make([]contentPart, 0, len(content)+1)
-		for _, p := range content {
-			clonedParts = append(clonedParts, cloneContentPart(p))
-		}
-
-		lastTextIdx := -1
-
-		for index, p := range slices.Backward(clonedParts) {
-			if typeVal, ok := p[messageTypeKey].(string); ok && typeVal == contentTypeText {
-				lastTextIdx = index
-
-				break
-			}
-		}
-
-		if lastTextIdx >= 0 {
-			existingText, _ := clonedParts[lastTextIdx][messageTextKey].(string)
-			clonedParts[lastTextIdx][messageTextKey] = existingText + "\n\n" + searchDeciderDecisionInstruction
-		} else {
-			clonedParts = append(clonedParts, contentPart{
-				messageTypeKey: contentTypeText,
-				messageTextKey: searchDeciderDecisionInstruction,
-			})
-		}
-
-		messages[lastIdx].Content = clonedParts
-	default:
-		messages = append(messages, chatMessage{
-			Role:    messageRoleUser,
-			Content: searchDeciderDecisionInstruction,
-		})
-	}
-
-	return messages
-}
-
-func searchDeciderDisabledForModel(configuredModel string, loadedConfig config) bool {
-	providerName, _, err := splitConfiguredModel(strings.TrimSpace(configuredModel))
-	if err != nil {
-		return false
-	}
-
-	provider, ok := loadedConfig.Providers[providerName]
-
-	return ok && provider.DisableSearchDecider
-}
-
-// buildSearchDeciderConversation builds the search decider conversation
-// through the exact same code path as the main model: the reply chain is
-// walked and augmented with the same steps (video URLs, document extraction,
-// media analysis, visual search, website/youtube/reddit content) using the
-// search decider model's own content options. The only difference from the
-// main model is that the caller prepends the search decider prompt to the
-// latest user query afterwards. Web search augmentation is skipped while the
-// decision is in flight so the decider never re-decides (infinite recursion
-// guard).
-func (instance *bot) buildSearchDeciderConversation(
-	ctx context.Context,
-	loadedConfig config,
-	_ string,
-	searchDeciderModel string,
-	sourceMessage *discordgo.Message,
-	_ []chatMessage,
-) ([]chatMessage, error) {
-	searchDeciderMessages, warnings, err := instance.buildMessageConversation(
-		ctx,
-		loadedConfig,
-		sourceMessage,
-		searchDeciderModel,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("build search decider conversation: %w", err)
-	}
-
-	if len(searchDeciderMessages) == 0 {
-		fallbackMessage, fallbackWarnings := fallbackAttachmentDownloadConversation(
-			sourceMessage,
-			warnings,
-		)
-		if fallbackMessage != nil {
-			searchDeciderMessages = append(searchDeciderMessages, *fallbackMessage)
-			warnings = fallbackWarnings
-		}
-	}
-
-	instance.modelMu.Lock()
-	instance.decidingSearch = true
-	instance.modelMu.Unlock()
-
-	defer func() {
-		instance.modelMu.Lock()
-		instance.decidingSearch = false
-		instance.modelMu.Unlock()
-	}()
-
-	searchDeciderMessages, _, _, err = instance.augmentPreparedMessageResponse(
-		ctx,
-		loadedConfig,
-		sourceMessage,
-		searchDeciderModel,
-		searchDeciderMessages,
-		warnings,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("augment search decider conversation: %w", err)
-	}
-
-	return searchDeciderMessages, nil
-}
-
-// latestUserImageURLSet returns the set of image URLs in the latest user
-// message. It is used by Gemini media analysis to avoid re-analyzing images
-// already present in the conversation.
-func latestUserImageURLSet(conversation []chatMessage) (map[string]struct{}, error) {
-	index, err := latestUserMessageIndex(conversation)
-	if err != nil {
-		return nil, err
-	}
-
-	imageURLSet := make(map[string]struct{})
-
-	parts, ok := conversation[index].Content.([]contentPart)
-	if !ok {
-		return imageURLSet, nil
-	}
-
-	for _, part := range parts {
-		partType, _ := part["type"].(string)
-		if partType != contentTypeImageURL {
-			continue
-		}
-
-		imageURL, imageErr := contentPartImageURL(part)
-		if imageErr != nil {
-			return nil, imageErr
-		}
-
-		imageURLSet[imageURL] = struct{}{}
-	}
-
-	return imageURLSet, nil
 }
 
 func contentPartImageURL(part contentPart) (string, error) {
@@ -984,466 +710,6 @@ func collectChatCompletionText(
 	}
 
 	return responseText.String(), nil
-}
-
-func parseSearchDecision(responseText string) (searchDecision, error) {
-	trimmedResponse := trimCodeFence(responseText)
-
-	var decision searchDecision
-	if tryParseSearchDecisionCandidate(trimmedResponse, &decision) {
-		return validateSearchDecision(decision)
-	}
-
-	startIndex := strings.Index(trimmedResponse, "{")
-
-	if startIndex >= 0 {
-		candidate := trimmedResponse[startIndex:]
-		if tryParseSearchDecisionCandidate(candidate, &decision) {
-			return validateSearchDecision(decision)
-		}
-
-		if endIndex := strings.LastIndex(candidate, "}"); endIndex > 0 {
-			if tryParseSearchDecisionCandidate(candidate[:endIndex+1], &decision) {
-				return validateSearchDecision(decision)
-			}
-		}
-	}
-
-	if endIndex := strings.LastIndex(trimmedResponse, "}"); startIndex >= 0 && endIndex > startIndex {
-		trimmedResponse = trimmedResponse[startIndex : endIndex+1]
-		if tryParseSearchDecisionCandidate(trimmedResponse, &decision) {
-			return validateSearchDecision(decision)
-		}
-	}
-
-	err := json.Unmarshal([]byte(trimmedResponse), &decision)
-	if err != nil {
-		return searchDecision{}, fmt.Errorf("decode search decision JSON: %w", err)
-	}
-
-	return validateSearchDecision(decision)
-}
-
-func tryParseSearchDecisionCandidate(candidate string, decision *searchDecision) bool {
-	if tryUnmarshalSearchDecision(candidate, decision) {
-		return true
-	}
-
-	if tryRepairTruncatedSearchDecision(candidate, decision) {
-		return true
-	}
-
-	return false
-}
-
-func tryUnmarshalSearchDecision(text string, decision *searchDecision) bool {
-	err := json.Unmarshal([]byte(text), decision)
-	if err == nil {
-		return true
-	}
-
-	for charIndex := range text {
-		if text[charIndex] != '{' {
-			continue
-		}
-
-		var rawMap map[string]json.RawMessage
-
-		dec := json.NewDecoder(strings.NewReader(text[charIndex:]))
-
-		err = dec.Decode(&rawMap)
-		if err != nil {
-			continue
-		}
-
-		_, hasSnake := rawMap["needs_search"]
-
-		valCamel, hasCamel := rawMap["needsSearch"]
-		if !hasSnake && !hasCamel {
-			continue
-		}
-
-		if !hasSnake && hasCamel {
-			rawMap["needs_search"] = valCamel
-		}
-
-		jsonBytes, err := json.Marshal(rawMap)
-		if err != nil {
-			continue
-		}
-
-		var decodedDecision searchDecision
-
-		err = json.Unmarshal(jsonBytes, &decodedDecision)
-		if err != nil {
-			continue
-		}
-
-		*decision = decodedDecision
-
-		return true
-	}
-
-	return false
-}
-
-func isInJSONString(input string) bool {
-	inString := false
-	escaped := false
-
-	for index := 0; index < len(input); index++ {
-		character := input[index]
-		if escaped {
-			escaped = false
-
-			continue
-		}
-
-		if inString {
-			if character == '\\' {
-				escaped = true
-			} else if character == '"' {
-				inString = false
-			}
-
-			continue
-		}
-
-		if character == '"' {
-			inString = true
-		}
-	}
-
-	return inString
-}
-
-func countTrailingBackslashes(input string) int {
-	count := 0
-
-	for index := len(input) - 1; index >= 0; index-- {
-		if input[index] != '\\' {
-			break
-		}
-
-		count++
-	}
-
-	return count
-}
-
-func neededJSONClosings(input string) string {
-	inString := false
-	escaped := false
-	stack := make([]rune, 0, 4)
-
-	for index := 0; index < len(input); index++ {
-		character := input[index]
-		if escaped {
-			escaped = false
-
-			continue
-		}
-
-		if inString {
-			if character == '\\' {
-				escaped = true
-			} else if character == '"' {
-				inString = false
-			}
-
-			continue
-		}
-
-		if character == '"' {
-			inString = true
-		} else if character == '{' || character == '[' {
-			stack = append(stack, rune(character))
-		} else if character == '}' {
-			if len(stack) > 0 && stack[len(stack)-1] == '{' {
-				stack = stack[:len(stack)-1]
-			}
-		} else if character == ']' {
-			if len(stack) > 0 && stack[len(stack)-1] == '[' {
-				stack = stack[:len(stack)-1]
-			}
-		}
-	}
-
-	var builder strings.Builder
-
-	builder.Grow(len(stack))
-
-	for index := len(stack) - 1; index >= 0; index-- {
-		if stack[index] == '{' {
-			builder.WriteByte('}')
-		} else {
-			builder.WriteByte(']')
-		}
-	}
-
-	return builder.String()
-}
-
-func closeTruncatedJSONString(input string) []string {
-	if !isInJSONString(input) {
-		return []string{input}
-	}
-
-	trailingBackslashes := countTrailingBackslashes(input)
-
-	if trailingBackslashes%2 == 1 {
-		return []string{
-			input + "\\\"",
-			strings.TrimSuffix(input, "\\") + "\"",
-			input + "\"",
-		}
-	}
-
-	return []string{input + "\""}
-}
-
-func generateRepairCandidates(input string) []string {
-	input = strings.TrimSpace(input)
-	if input == "" {
-		return nil
-	}
-
-	seen := make(map[string]struct{})
-	candidates := make([]string, 0, 32)
-
-	addCandidate := func(candidate string) {
-		trimmedCandidate := strings.TrimSpace(candidate)
-		if trimmedCandidate == "" {
-			return
-		}
-
-		if _, ok := seen[trimmedCandidate]; ok {
-			return
-		}
-
-		seen[trimmedCandidate] = struct{}{}
-		candidates = append(candidates, trimmedCandidate)
-	}
-
-	bases := []string{input}
-
-	if isInJSONString(input) {
-		for _, closed := range closeTruncatedJSONString(input) {
-			if closed != input {
-				bases = append(bases, closed)
-			}
-		}
-	}
-
-	isInStr := isInJSONString(input)
-
-	expandedBases := make([]string, 0, len(bases)*2)
-	for _, base := range bases {
-		expandedBases = append(expandedBases, base)
-
-		trimmedBase := strings.TrimSpace(base)
-		trimmedBase = strings.TrimSuffix(trimmedBase, ",")
-		trimmedBase = strings.TrimSpace(trimmedBase)
-
-		if trimmedBase != base {
-			expandedBases = append(expandedBases, trimmedBase)
-		}
-	}
-
-	baseSet := make(map[string]struct{})
-	uniqBases := make([]string, 0, len(expandedBases))
-
-	for _, base := range expandedBases {
-		if _, ok := baseSet[base]; ok {
-			continue
-		}
-
-		baseSet[base] = struct{}{}
-		uniqBases = append(uniqBases, base)
-	}
-
-	for _, base := range uniqBases {
-		baseTrimmed := strings.TrimRight(base, " \t\n\r,")
-
-		for trim := range 3 {
-			trimmedBase := baseTrimmed
-
-			for range trim {
-				trimmedBase = strings.TrimSpace(trimmedBase)
-
-				if strings.HasSuffix(trimmedBase, "}") {
-					trimmedBase = strings.TrimSuffix(trimmedBase, "}")
-				} else if strings.HasSuffix(trimmedBase, "]") {
-					trimmedBase = strings.TrimSuffix(trimmedBase, "]")
-				} else {
-					break
-				}
-
-				trimmedBase = strings.TrimSpace(trimmedBase)
-				trimmedBase = strings.TrimSuffix(trimmedBase, ",")
-				trimmedBase = strings.TrimSpace(trimmedBase)
-			}
-
-			if isInJSONString(trimmedBase) {
-				if countTrailingBackslashes(trimmedBase)%2 == 1 {
-					trimmedBase = strings.TrimSuffix(trimmedBase, "\\")
-				}
-
-				trimmedBase += `"`
-			}
-
-			trimmedBase = strings.TrimRight(trimmedBase, " \t\n\r,")
-
-			needed := neededJSONClosings(trimmedBase)
-			if needed != "" {
-				addCandidate(trimmedBase + needed)
-
-				if len(needed) >= 1 {
-					addCandidate(trimmedBase + string(needed[0]))
-				}
-
-				if len(needed) >= 2 {
-					addCandidate(trimmedBase + needed[:2])
-				}
-			}
-		}
-	}
-
-	bruteSuffixes := []string{
-		"}",
-		"]",
-		"]}",
-		"}]",
-		"\"}",
-		"\"]}",
-		"\"]",
-		"\"",
-		"]}}",
-		"}}",
-		"]]",
-		"\",",
-		"\" ]}",
-	}
-
-	bruteSet := make(map[string]struct{})
-	uniqBrute := make([]string, 0, len(bruteSuffixes))
-
-	for _, suffix := range bruteSuffixes {
-		if _, ok := bruteSet[suffix]; ok {
-			continue
-		}
-
-		bruteSet[suffix] = struct{}{}
-		uniqBrute = append(uniqBrute, suffix)
-	}
-
-	for _, base := range uniqBases {
-		for _, suffix := range uniqBrute {
-			addCandidate(strings.TrimSpace(base) + suffix)
-
-			trimmedBase := strings.TrimRight(strings.TrimSpace(base), ", \t\n\r")
-
-			if isInJSONString(trimmedBase) {
-				if countTrailingBackslashes(trimmedBase)%2 == 1 {
-					trimmedBase = strings.TrimSuffix(trimmedBase, "\\")
-				}
-
-				trimmedBase += `"`
-			}
-
-			addCandidate(strings.TrimSpace(trimmedBase) + suffix)
-		}
-	}
-
-	addCandidate(input)
-
-	if isInStr {
-		addCandidate(input + `"`)
-
-		if !isInJSONString(input + `"`) {
-			needed := neededJSONClosings(input + `"`)
-			addCandidate(input + `"` + needed)
-		}
-	}
-
-	return candidates
-}
-
-func tryRepairTruncatedSearchDecision(input string, decision *searchDecision) bool {
-	candidates := generateRepairCandidates(input)
-
-	for _, candidate := range candidates {
-		var repairedDecision searchDecision
-		if tryUnmarshalSearchDecision(candidate, &repairedDecision) {
-			*decision = repairedDecision
-
-			return true
-		}
-
-		var directDecision searchDecision
-		if err := json.Unmarshal([]byte(candidate), &directDecision); err == nil {
-			if !strings.Contains(candidate, "needs_search") && !strings.Contains(candidate, "needsSearch") {
-				continue
-			}
-
-			*decision = directDecision
-
-			return true
-		}
-	}
-
-	return false
-}
-
-func validateSearchDecision(decision searchDecision) (searchDecision, error) {
-	if !decision.NeedsSearch {
-		decision.Queries = nil
-
-		return decision, nil
-	}
-
-	decision.Queries = normalizeSearchQueries(decision.Queries)
-	if len(decision.Queries) == 0 {
-		return searchDecision{}, fmt.Errorf("missing search queries: %w", os.ErrInvalid)
-	}
-
-	return decision, nil
-}
-
-func trimCodeFence(text string) string {
-	trimmedText := strings.TrimSpace(text)
-	trimmedText = strings.TrimPrefix(trimmedText, "```json")
-	trimmedText = strings.TrimPrefix(trimmedText, "```")
-	trimmedText = strings.TrimSuffix(trimmedText, "```")
-
-	return strings.TrimSpace(trimmedText)
-}
-
-func normalizeSearchQueries(queries []string) []string {
-	seenQueries := make(map[string]struct{}, len(queries))
-	normalizedQueries := make([]string, 0, len(queries))
-
-	for _, query := range queries {
-		trimmedQuery := strings.TrimSpace(query)
-		if trimmedQuery == "" {
-			continue
-		}
-
-		foldedQuery := strings.ToLower(trimmedQuery)
-		if _, ok := seenQueries[foldedQuery]; ok {
-			continue
-		}
-
-		seenQueries[foldedQuery] = struct{}{}
-
-		normalizedQueries = append(normalizedQueries, trimmedQuery)
-
-		if len(normalizedQueries) == maxSearchQueries {
-			break
-		}
-	}
-
-	return normalizedQueries
 }
 
 func formatSearchSourcesMessage(metadata *searchMetadata) string {
@@ -2473,70 +1739,6 @@ func formatExaSearchResultText(results []exaSearchResponseResult) string {
 	}
 
 	return strings.Join(formattedResults, "\n\n")
-}
-
-func searchDeciderImagePartSet(
-	conversation []chatMessage,
-	maxImageParts int,
-) (map[string]struct{}, []contentPart, error) {
-	imageURLSet, err := latestUserImageURLSet(conversation)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	return imageURLSet, make([]contentPart, 0, maxImageParts), nil
-}
-
-func appendSearchDeciderImageParts(
-	candidateImageParts []contentPart,
-	imageURLSet map[string]struct{},
-	imageParts []contentPart,
-	maxImageParts int,
-	errorContext string,
-) ([]contentPart, bool, error) {
-	for _, imagePart := range imageParts {
-		updatedParts, added, err := appendSearchDeciderImagePart(
-			candidateImageParts,
-			imageURLSet,
-			imagePart,
-		)
-		if err != nil {
-			return nil, false, fmt.Errorf("%s: %w", errorContext, err)
-		}
-
-		candidateImageParts = updatedParts
-
-		if !added {
-			continue
-		}
-
-		if len(candidateImageParts) == maxImageParts {
-			return candidateImageParts, true, nil
-		}
-	}
-
-	return candidateImageParts, false, nil
-}
-
-func appendSearchDeciderImagePart(
-	candidateImageParts []contentPart,
-	imageURLSet map[string]struct{},
-	imagePart contentPart,
-) ([]contentPart, bool, error) {
-	imageURL, err := contentPartImageURL(imagePart)
-	if err != nil {
-		return nil, false, err
-	}
-
-	if _, exists := imageURLSet[imageURL]; exists {
-		return candidateImageParts, false, nil
-	}
-
-	imageURLSet[imageURL] = struct{}{}
-
-	candidateImageParts = append(candidateImageParts, cloneContentPart(imagePart))
-
-	return candidateImageParts, true, nil
 }
 
 func formatExaSearchResultLines(result exaSearchResponseResult) []string {

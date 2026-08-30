@@ -50,11 +50,6 @@ type responseTracker struct {
 	progressActive        bool
 	responseVisible       bool
 	originalMessages      []chatMessage
-	// webSearchDecided records whether the primary preparation already ran
-	// the search-decider stage for its provider. When it did not (decider
-	// disabled or grounding enabled for the primary provider), the fallback
-	// attempt runs its own web-search decision.
-	webSearchDecided bool
 }
 
 const (
@@ -198,12 +193,28 @@ func (tracker *responseTracker) release(store *messageNodeStore, fullText string
 	}
 }
 
-func (instance *bot) runGenerationAttempt(
+// generatedPrefill carries text accumulated during a web_search tool round
+// into the follow-up stream, so thinking and partial answers produced before
+// the tool call are not lost from the final render.
+type generatedPrefill struct {
+	rawAnswer string
+	thinking  string
+}
+
+type generatedRoundResult struct {
+	rawAnswer string
+	thinking  string
+	metadata  *searchMetadata
+	toolCalls []providers.FunctionToolCall
+}
+
+func (instance *bot) runGenerationRound(
 	ctx context.Context,
 	request chatCompletionRequest,
 	tracker *responseTracker,
 	warnings []string,
-) (string, string, *searchMetadata, string, error) {
+	prefill generatedPrefill,
+) (generatedRoundResult, string, error) {
 	accumulator := newSegmentAccumulator(embedResponseMaxLength)
 	thinkingAccumulator := newSegmentAccumulator(embedResponseMaxLength)
 
@@ -220,6 +231,18 @@ func (instance *bot) runGenerationAttempt(
 		lastRenderTime:      &lastRenderTime,
 		rawAnswerText:       "",
 		renderedAnswerText:  "",
+		toolCalls:           nil,
+	}
+
+	if prefill.rawAnswer != "" {
+		streamState.rawAnswerText = prefill.rawAnswer
+		streamState.renderedAnswerText = providers.StreamingBridgeSourceAppendixVisibleText(prefill.rawAnswer)
+
+		_ = accumulator.appendText(streamState.renderedAnswerText)
+	}
+
+	if prefill.thinking != "" {
+		_ = thinkingAccumulator.appendText(prefill.thinking)
 	}
 
 	streamErr := instance.chatCompletions.StreamChatCompletion(
@@ -234,6 +257,54 @@ func (instance *bot) runGenerationAttempt(
 		finishReason = providers.OpenAIStreamErrorEventType
 	}
 
+	if streamErr == nil && len(streamState.toolCalls) > 0 {
+		// Tool round: hand off to the web search phase without finalizing
+		// the response render. The round's text is stripped of any bridge
+		// source appendix first — carried raw, it would sit mid-text after
+		// concatenation with the follow-up round and make the final
+		// finalize treat the real answer as appendix content.
+		roundAnswerText, parsedMetadata := providers.FinalizeBridgeSourceAppendixAnswer(
+			streamState.rawAnswerText,
+			tracker.searchMetadata,
+		)
+
+		if parsedMetadata != nil {
+			tracker.searchMetadata = searchtypes.MergeSearchMetadata(tracker.searchMetadata, parsedMetadata)
+		}
+
+		return generatedRoundResult{
+			rawAnswer: roundAnswerText,
+			thinking:  thinkingAccumulator.joined(),
+			metadata:  nil,
+			toolCalls: streamState.toolCalls,
+		}, finishReason, nil
+	}
+
+	return instance.finalizeGenerationRound(
+		ctx,
+		tracker,
+		warnings,
+		streamState,
+		&accumulator,
+		&thinkingAccumulator,
+		finishReason,
+		streamErr,
+	)
+}
+
+// finalizeGenerationRound finalizes a non-tool streaming round: it strips the
+// bridge source appendix, merges its metadata into the tracker, renders the
+// final embeds, and reports empty responses as errors.
+func (instance *bot) finalizeGenerationRound(
+	ctx context.Context,
+	tracker *responseTracker,
+	warnings []string,
+	streamState generatedStreamState,
+	accumulator *segmentAccumulator,
+	thinkingAccumulator *segmentAccumulator,
+	finishReason string,
+	streamErr error,
+) (generatedRoundResult, string, error) {
 	finalAnswerText := streamState.rawAnswerText
 	cleanedAnswerText, parsedSearchMetadata := providers.FinalizeBridgeSourceAppendixAnswer(
 		finalAnswerText,
@@ -244,7 +315,7 @@ func (instance *bot) runGenerationAttempt(
 		tracker.searchMetadata = searchtypes.MergeSearchMetadata(tracker.searchMetadata, parsedSearchMetadata)
 	}
 
-	finalAccumulator := accumulator
+	finalAccumulator := *accumulator
 
 	if cleanedAnswerText != finalAnswerText {
 		finalAccumulator = newSegmentAccumulator(embedResponseMaxLength)
@@ -270,10 +341,15 @@ func (instance *bot) runGenerationAttempt(
 		responseErr = errEmptyModelResponse
 	}
 
-	return cleanedAnswerText, thinkingAccumulator.joined(), parsedSearchMetadata, finishReason, responseErr
+	return generatedRoundResult{
+		rawAnswer: cleanedAnswerText,
+		thinking:  thinkingAccumulator.joined(),
+		metadata:  parsedSearchMetadata,
+		toolCalls: nil,
+	}, finishReason, responseErr
 }
 
-// runGenerationAttemptWithRetry wraps runGenerationAttempt with a bounded
+// runGenerationRoundWithRetry wraps runGenerationRound with a bounded
 // same-model retry for streams that end without delivering a finish reason:
 // the provider closed the stream mid-response, the partial text renders as an
 // incomplete message, and nothing else surfaces the failure. Each retry runs
@@ -282,17 +358,19 @@ func (instance *bot) runGenerationAttempt(
 // auxiliary PixelVault url replies are claimed once per response. Up to
 // prematureStreamRetryMaxAttempts streams are attempted in total; exhausted
 // retries keep the existing behavior of releasing the truncated reply.
-func (instance *bot) runGenerationAttemptWithRetry(
+func (instance *bot) runGenerationRoundWithRetry(
 	ctx context.Context,
 	request chatCompletionRequest,
 	tracker *responseTracker,
 	warnings []string,
-) (string, string, *searchMetadata, error) {
-	cleanedText, thinkingText, metadata, finishReason, attemptErr := instance.runGenerationAttempt(
+	prefill generatedPrefill,
+) (generatedRoundResult, error) {
+	round, finishReason, attemptErr := instance.runGenerationRound(
 		ctx,
 		request,
 		tracker,
 		warnings,
+		prefill,
 	)
 
 	for attempt := 2; attemptErr == nil && finishReason == "" && attempt <= prematureStreamRetryMaxAttempts; attempt++ {
@@ -307,14 +385,15 @@ func (instance *bot) runGenerationAttemptWithRetry(
 
 		sleepErr := sleepPrematureStreamRetry(ctx, prematureStreamRetryFixedDelay)
 		if sleepErr != nil {
-			return cleanedText, thinkingText, metadata, sleepErr
+			return round, sleepErr
 		}
 
-		cleanedText, thinkingText, metadata, finishReason, attemptErr = instance.runGenerationAttempt(
+		round, finishReason, attemptErr = instance.runGenerationRound(
 			ctx,
 			request,
 			tracker,
 			warnings,
+			prefill,
 		)
 	}
 
@@ -327,7 +406,81 @@ func (instance *bot) runGenerationAttemptWithRetry(
 		)
 	}
 
-	return cleanedText, thinkingText, metadata, attemptErr
+	return round, attemptErr
+}
+
+// generateResponseWithWebSearchTool streams the request; when the model
+// responds with web_search tool calls, it executes them through the routed
+// TinyFish -> Exa -> Tavily clients, appends the results to the request
+// messages, and streams a final answer. At most one search phase runs per
+// response: the follow-up stream is sent without tools.
+func (instance *bot) generateResponseWithWebSearchTool(
+	ctx context.Context,
+	loadedConfig config,
+	request chatCompletionRequest,
+	tracker *responseTracker,
+	warnings []string,
+) (string, string, error) {
+	var prefill generatedPrefill
+
+	for {
+		round, roundErr := instance.runGenerationRoundWithRetry(
+			ctx,
+			request,
+			tracker,
+			warnings,
+			prefill,
+		)
+		if roundErr != nil {
+			return round.rawAnswer, round.thinking, roundErr
+		}
+
+		if len(round.toolCalls) == 0 {
+			return round.rawAnswer, round.thinking, nil
+		}
+
+		if len(request.Tools) == 0 {
+			// The provider emitted tool calls although none were offered;
+			// there is nothing to execute, so surface the empty response.
+			logWarn(
+				"model emitted tool calls without offered tools",
+				nil,
+				"tool_calls",
+				len(round.toolCalls),
+			)
+
+			return round.rawAnswer, round.thinking, errEmptyModelResponse
+		}
+
+		// One search phase per response: the follow-up stream never offers
+		// the tool again.
+		request.Tools = nil
+
+		var searchWarnings []string
+
+		var augmentedMessages []chatMessage
+
+		var searched bool
+
+		augmentedMessages, searchWarnings, searched = instance.runWebSearchToolPhase(
+			ctx,
+			loadedConfig,
+			tracker,
+			request.Messages,
+			warnings,
+			round.toolCalls,
+		)
+		warnings = searchWarnings
+
+		if searched {
+			request.Messages = augmentedMessages
+		}
+
+		prefill = generatedPrefill{
+			rawAnswer: round.rawAnswer,
+			thinking:  round.thinking,
+		}
+	}
 }
 
 func sleepPrematureStreamRetry(ctx context.Context, delay time.Duration) error {
@@ -351,8 +504,9 @@ func (instance *bot) generateAndSendResponse(
 ) error {
 	tracker.modelName = strings.TrimSpace(request.ConfiguredModel)
 
-	cleanedText, thinkingText, _, responseErr := instance.runGenerationAttemptWithRetry(
+	cleanedText, thinkingText, responseErr := instance.generateResponseWithWebSearchTool(
 		ctx,
+		loadedConfig,
 		request,
 		tracker,
 		warnings,
@@ -368,63 +522,23 @@ func (instance *bot) generateAndSendResponse(
 	}
 
 	fallbackModel := strings.TrimSpace(loadedConfig.FallbackModel)
+
 	if fallbackModel != "" &&
 		fallbackModel != strings.TrimSpace(request.ConfiguredModel) &&
 		loadedConfig.hasModel(fallbackModel) {
-		fallbackRequest, fallbackSearchWarnings, buildErr := instance.buildFallbackRequest(
+		cleanedText, thinkingText, responseErr = instance.attemptFallbackResponse(
 			ctx,
 			loadedConfig,
-			fallbackModel,
 			request,
 			tracker,
+			warnings,
+			fallbackModel,
+			responseErr,
+			cleanedText,
+			thinkingText,
 		)
-		if buildErr == nil {
-			logWarn(
-				"chat completion failed; retrying with fallback model",
-				responseErr,
-				"configured_model",
-				request.ConfiguredModel,
-				"fallback_model",
-				fallbackModel,
-			)
-
-			tracker.modelName = fallbackModel
-			tracker.providerResponseID = ""
-			tracker.renderedSpecs = nil
-
-			fallbackWarnings := append(
-				appendFallbackWarning(warnings, fallbackModel),
-				fallbackSearchWarnings...,
-			)
-
-			fallbackCleanedText, fallbackThinkingText, _, fallbackErr := instance.runGenerationAttemptWithRetry(
-				ctx,
-				fallbackRequest,
-				tracker,
-				fallbackWarnings,
-			)
-			if fallbackErr == nil {
-				finalText := visibleResponseText(fallbackThinkingText, fallbackCleanedText)
-
-				tracker.release(instance.nodes, finalText, fallbackThinkingText)
-
-				instance.nodes.persistBestEffort()
-
-				return nil
-			}
-
-			responseErr = fallbackErr
-			cleanedText = fallbackCleanedText
-			thinkingText = fallbackThinkingText
-		} else {
-			logWarn(
-				"failed to build fallback request",
-				buildErr,
-				"configured_model",
-				request.ConfiguredModel,
-				"fallback_model",
-				fallbackModel,
-			)
+		if responseErr == nil {
+			return nil
 		}
 	}
 
@@ -451,6 +565,74 @@ func (instance *bot) generateAndSendResponse(
 	return responseErr
 }
 
+// attemptFallbackResponse retries a failed generation with the fallback
+// model. It returns the resulting error and text; a nil error means the
+// fallback reply rendered successfully.
+func (instance *bot) attemptFallbackResponse(
+	ctx context.Context,
+	loadedConfig config,
+	request chatCompletionRequest,
+	tracker *responseTracker,
+	warnings []string,
+	fallbackModel string,
+	primaryErr error,
+	primaryText string,
+	primaryThinking string,
+) (string, string, error) {
+	fallbackRequest, buildErr := instance.buildFallbackRequest(
+		loadedConfig,
+		fallbackModel,
+		request,
+		tracker,
+	)
+	if buildErr != nil {
+		logWarn(
+			"failed to build fallback request",
+			buildErr,
+			"configured_model",
+			request.ConfiguredModel,
+			"fallback_model",
+			fallbackModel,
+		)
+
+		return primaryText, primaryThinking, primaryErr
+	}
+
+	logWarn(
+		"chat completion failed; retrying with fallback model",
+		primaryErr,
+		"configured_model",
+		request.ConfiguredModel,
+		"fallback_model",
+		fallbackModel,
+	)
+
+	tracker.modelName = fallbackModel
+	tracker.providerResponseID = ""
+	tracker.renderedSpecs = nil
+
+	fallbackWarnings := appendFallbackWarning(warnings, fallbackModel)
+
+	cleanedText, thinkingText, fallbackErr := instance.generateResponseWithWebSearchTool(
+		ctx,
+		loadedConfig,
+		fallbackRequest,
+		tracker,
+		fallbackWarnings,
+	)
+	if fallbackErr == nil {
+		finalText := visibleResponseText(thinkingText, cleanedText)
+
+		tracker.release(instance.nodes, finalText, thinkingText)
+
+		instance.nodes.persistBestEffort()
+
+		return cleanedText, thinkingText, nil
+	}
+
+	return cleanedText, thinkingText, fallbackErr
+}
+
 type generatedStreamState struct {
 	request             chatCompletionRequest
 	warnings            []string
@@ -460,6 +642,7 @@ type generatedStreamState struct {
 	lastRenderTime      *time.Time
 	rawAnswerText       string
 	renderedAnswerText  string
+	toolCalls           []providers.FunctionToolCall
 }
 
 func (instance *bot) handleGeneratedStreamDelta(
@@ -480,6 +663,10 @@ func (instance *bot) handleGeneratedStreamDelta(
 		}
 
 		splitOccurred = answerSplitOccurred || splitOccurred
+	}
+
+	if len(delta.ToolCalls) > 0 {
+		state.toolCalls = append(state.toolCalls, delta.ToolCalls...)
 	}
 
 	if delta.FinishReason != "" {

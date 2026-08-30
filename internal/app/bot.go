@@ -46,9 +46,7 @@ type bot struct {
 	nodes                        *messageNodeStore
 	currentModel                 string
 	currentExaSearchTypeValue    string
-	currentSearchDeciderModel    string
 	currentGroundingEnabledValue *bool
-	decidingSearch               bool
 	modelMu                      sync.RWMutex
 	editMu                       sync.Mutex
 	nextEditAtByMessage          map[string]time.Time
@@ -148,7 +146,6 @@ func newBot(ctx context.Context, configPath string, loadedConfig config) (*bot, 
 
 	instance.currentModel = loadedConfig.firstModel()
 	instance.currentExaSearchTypeValue = defaultExaSearchType
-	instance.currentSearchDeciderModel = loadedConfig.SearchDeciderModel
 	instance.maintenanceChannels = make(map[string]struct{})
 	instance.onlineOutput = os.Stdout
 
@@ -384,7 +381,6 @@ func (instance *bot) syncCommands() error {
 	commands := make([]*discordgo.ApplicationCommand, 0, registeredCommandCount)
 	commands = append(commands, newModelCommand())
 	commands = append(commands, newSearchTypeCommand())
-	commands = append(commands, newSearchDeciderModelCommand())
 	commands = append(commands, newGroundingCommand())
 	commands = append(commands, newCreateChannelCommand())
 	commands = append(commands, newEditChannelNameCommand())
@@ -409,15 +405,6 @@ func newModelCommand() *discordgo.ApplicationCommand {
 		modelCommandDescription,
 		modelOptionName,
 		modelOptionDescription,
-	)
-}
-
-func newSearchDeciderModelCommand() *discordgo.ApplicationCommand {
-	return newConfiguredModelCommand(
-		searchDeciderModelCommandName,
-		searchDeciderModelCommandDescription,
-		searchDeciderModelOptionName,
-		searchDeciderModelOptionDescription,
 	)
 }
 
@@ -681,24 +668,6 @@ func (instance *bot) setCurrentExaSearchType(searchType string) {
 	}
 
 	instance.currentExaSearchTypeValue = normalizedSearchType
-}
-
-func (instance *bot) currentSearchDeciderModelForConfig(loadedConfig config) string {
-	instance.modelMu.Lock()
-	defer instance.modelMu.Unlock()
-
-	if instance.currentSearchDeciderModel == "" || !loadedConfig.hasModel(instance.currentSearchDeciderModel) {
-		instance.currentSearchDeciderModel = loadedConfig.SearchDeciderModel
-	}
-
-	return instance.currentSearchDeciderModel
-}
-
-func (instance *bot) setCurrentSearchDeciderModel(modelName string) {
-	instance.modelMu.Lock()
-	defer instance.modelMu.Unlock()
-
-	instance.currentSearchDeciderModel = modelName
 }
 
 func (instance *bot) currentGroundingEnabled(provider providerConfig) bool {

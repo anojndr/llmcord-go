@@ -39,6 +39,7 @@ const (
 	responsesOutputTypeImage                      = "image_generation_call"
 	responsesOutputTypeReasoning                  = "reasoning"
 	responsesReasoningSummaryTextType             = "summary_text"
+	responsesOutputTypeFunctionCall               = "function_call"
 	responsesStatusCompleted                      = "completed"
 )
 
@@ -56,6 +57,9 @@ type responsesOutputItem struct {
 	ID            string          `json:"id"`
 	Type          string          `json:"type"`
 	Status        string          `json:"status"`
+	CallID        string          `json:"call_id"`
+	Name          string          `json:"name"`
+	Arguments     string          `json:"arguments"`
 	Result        string          `json:"result"`
 	ResultURL     string          `json:"result_url"`
 	MIMEType      string          `json:"mime_type"`
@@ -87,6 +91,8 @@ type responsesStreamState struct {
 	seenOutputItemIDs    map[string]struct{}
 	seenOutputItemURLs   map[string]struct{}
 	seenReasoningItemIDs map[string]struct{}
+	seenToolCallIDs      map[string]struct{}
+	toolCalls            []FunctionToolCall
 	hasVisibleContent    bool
 }
 
@@ -231,6 +237,7 @@ func buildResponsesRequestBody(request ChatCompletionRequest) (map[string]any, e
 	requestBody["stream"] = true
 	requestBody["input"] = input
 	addOpenAIPromptCacheKey(requestBody, request)
+	addResponsesTools(requestBody, request)
 
 	extraBody := request.Provider.ExtraBody
 	if request.Provider.APIKind == ProviderAPIKindOpenAI &&
@@ -602,7 +609,8 @@ func handleResponsesStreamPayload(
 	if delta.Content == "" &&
 		delta.Thinking == "" &&
 		delta.FinishReason == "" &&
-		delta.ProviderResponseID == "" {
+		delta.ProviderResponseID == "" &&
+		len(delta.ToolCalls) == 0 {
 		return terminal, nil
 	}
 
@@ -619,8 +627,48 @@ func newResponsesStreamState() *responsesStreamState {
 		seenOutputItemIDs:    make(map[string]struct{}),
 		seenOutputItemURLs:   make(map[string]struct{}),
 		seenReasoningItemIDs: make(map[string]struct{}),
+		seenToolCallIDs:      make(map[string]struct{}),
+		toolCalls:            nil,
 		hasVisibleContent:    false,
 	}
+}
+
+// collectResponsesFunctionCall records a complete function_call output item.
+// Items arrive via response.output_item.done (and again inside the final
+// response.completed output), so they are deduplicated by call id.
+func collectResponsesFunctionCall(state *responsesStreamState, item responsesOutputItem) {
+	if state == nil {
+		return
+	}
+
+	callID := strings.TrimSpace(item.CallID)
+	if callID == "" {
+		callID = strings.TrimSpace(item.ID)
+	}
+
+	name := strings.TrimSpace(item.Name)
+	if callID == "" || name == "" {
+		return
+	}
+
+	if _, seen := state.seenToolCallIDs[callID]; seen {
+		return
+	}
+
+	state.seenToolCallIDs[callID] = struct{}{}
+	state.toolCalls = append(state.toolCalls, FunctionToolCall{
+		ID:        callID,
+		Name:      name,
+		Arguments: item.Arguments,
+	})
+}
+
+func responsesStateToolCalls(state *responsesStreamState) []FunctionToolCall {
+	if state == nil || len(state.toolCalls) == 0 {
+		return nil
+	}
+
+	return append([]FunctionToolCall(nil), state.toolCalls...)
 }
 
 func responsesStreamPayloadDelta(
@@ -663,6 +711,13 @@ func responsesStreamPayloadDelta(
 	case responsesStreamEventOutputDone:
 		delta := emptyDelta
 
+		if event.Item != nil &&
+			strings.EqualFold(strings.TrimSpace(event.Item.Type), responsesOutputTypeFunctionCall) {
+			collectResponsesFunctionCall(state, *event.Item)
+
+			return delta, false, nil
+		}
+
 		delta.Thinking = responsesOutputItemThinking(event.Item, state)
 		if delta.Thinking == "" {
 			delta.Content = responsesOutputItemText(event.Item, state, false)
@@ -700,6 +755,7 @@ func emptyStreamDelta() StreamDelta {
 		FinishReason:       "",
 		ProviderResponseID: "",
 		SearchMetadata:     nil,
+		ToolCalls:          nil,
 	}
 }
 
@@ -714,6 +770,7 @@ func responsesCompletedDelta(
 			FinishReason:       finishReasonStop,
 			ProviderResponseID: "",
 			SearchMetadata:     nil,
+			ToolCalls:          nil,
 		}, nil
 	}
 
@@ -724,6 +781,7 @@ func responsesCompletedDelta(
 				FinishReason:       "",
 				ProviderResponseID: "",
 				SearchMetadata:     nil,
+				ToolCalls:          nil,
 			}, openAIStreamEventError(
 				response.Error.Message,
 				response.Error.Type,
@@ -744,11 +802,23 @@ func responsesCompletedDelta(
 			FinishReason:       "",
 			ProviderResponseID: "",
 			SearchMetadata:     nil,
+			ToolCalls:          nil,
 		}, responsesStatusError(status, reason)
 	}
 
 	thinking := responsesOutputItemsThinking(response.Output, state)
 	content := responsesOutputItemsText(response.Output, state, true)
+
+	// Any function_call items in the final output that were not already
+	// collected from output_item.done events are gathered here, so callers
+	// see every tool call exactly once.
+	for index := range response.Output {
+		item := &response.Output[index]
+
+		if strings.EqualFold(strings.TrimSpace(item.Type), responsesOutputTypeFunctionCall) {
+			collectResponsesFunctionCall(state, *item)
+		}
+	}
 
 	return StreamDelta{
 		Thinking:           thinking,
@@ -756,6 +826,7 @@ func responsesCompletedDelta(
 		FinishReason:       finishReasonStop,
 		ProviderResponseID: strings.TrimSpace(response.ID),
 		SearchMetadata:     nil,
+		ToolCalls:          responsesStateToolCalls(state),
 	}, nil
 }
 

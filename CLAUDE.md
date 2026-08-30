@@ -27,7 +27,7 @@ internal/app          the bot: bot struct, messages, interactions, response, con
 internal/store        messageNode/messageNodeStore + Postgres persistence
 internal/providers    streaming provider clients (OpenAI-compatible + Responses, Gemini,
                       retries, caching, errors)
-internal/searchtypes  shared search metadata types, message-part keys, embedded prompt
+internal/searchtypes  shared search metadata types, message-part keys
 internal/support      tiny shared helpers (rune counts, MIME normalization)
 ```
 The dependency direction is strictly bottom-up: searchtypes ← support ← providers ← app ← cmd.
@@ -62,7 +62,7 @@ The bot's pipeline is: Discord message → conversation build → augmentation �
 ### Request pipeline
 
 - **Conversation**: `buildMessageConversation` (messages.go:591) → `buildConversation` (conversation.go) walks the reply chain via `messageNode`s in a `messageNodeStore` (store.go, LRU capped at `maxMessageNodes`). Nodes cache per-message parsed content (text, media parts, URL scan results). The chain builds source-message-first, so the **last** message in `[]chatMessage` is the newest user turn; code appends to the end. Node content is also persisted to PostgreSQL (`store_persistence.go`) with a 250 ms debounce when `database.connection_string` is set.
-- **Augmentation** (`augmentPreparedMessageResponse`, messages.go:327; helpers in augmentation.go): video URL fetching (tiktok/facebook/youtube/reddit/website clients), PDF text extraction, Gemini media analysis, web search (decided by a separate search-decider model call, `search.go`), visual search (`visual_search.go`), and per-provider "augmented prompt" handling (see `searchDeciderPrompt.txt`, an embedded prompt file).
+- **Augmentation** (`augmentPreparedMessageResponse`, messages.go:313; helpers in augmentation.go): video URL fetching (tiktok/facebook/youtube/reddit/website clients), PDF text extraction, Gemini media analysis, visual search (`visual_search.go`), and per-provider "augmented prompt" handling. Web search is NOT augmentation: the main model request carries a `web_search` function tool (both OpenAI API kinds), and the generation loop (`generateResponseWithWebSearchTool`, response.go) executes tool calls through the routed TinyFish → Exa → Tavily clients (`search.go`), appends results to the request messages, and streams a follow-up without tools.
 
 ### Streaming and providers
 

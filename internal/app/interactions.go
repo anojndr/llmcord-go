@@ -81,16 +81,6 @@ func (instance *bot) handleApplicationCommandInteraction(
 		}
 
 		return nil
-	case searchDeciderModelCommandName:
-		if interaction.Type == discordgo.InteractionApplicationCommand {
-			return instance.handleSearchDeciderModelCommand(session, interaction)
-		}
-
-		if interaction.Type == discordgo.InteractionApplicationCommandAutocomplete {
-			return instance.handleSearchDeciderModelAutocomplete(session, interaction)
-		}
-
-		return nil
 	case groundingCommandName:
 		return instance.handleGroundingCommand(session, interaction)
 	case createChannelCommandName:
@@ -837,46 +827,6 @@ func (instance *bot) handleModelCommand(
 	)
 }
 
-func (instance *bot) handleSearchDeciderModelCommand(
-	session *discordgo.Session,
-	interaction *discordgo.InteractionCreate,
-) error {
-	loadedConfig, err := loadConfig(instance.configPath)
-	if err != nil {
-		return fmt.Errorf("load config for search decider model command: %w", err)
-	}
-
-	channelIDs, err := instance.interactionChannelIDs(interaction)
-	if err != nil {
-		logWarn("resolve interaction channel ids", err, "channel_id", interaction.ChannelID)
-		channelIDs = []string{interaction.ChannelID}
-	}
-
-	if lockedModel, ok := loadedConfig.lockedSearchDeciderModelForChannelIDs(channelIDs); ok {
-		return respondInteractionText(
-			session,
-			interaction.Interaction,
-			fmt.Sprintf(
-				"This channel is locked to `%s`. `/searchdecidermodel` is disabled here.",
-				lockedModel,
-			),
-		)
-	}
-
-	return handleConfiguredModelCommand(
-		session,
-		interaction,
-		configuredModelCommandOptions{
-			currentModel:    instance.currentSearchDeciderModelForConfig(loadedConfig),
-			setCurrentModel: instance.setCurrentSearchDeciderModel,
-			loadedConfig:    loadedConfig,
-			currentLabel:    "Current search decider model",
-			switchedLabel:   "Search decider model switched to",
-			logMessage:      "search decider model switched",
-		},
-	)
-}
-
 type configuredModelCommandOptions struct {
 	currentModel    string
 	setCurrentModel func(string)
@@ -990,40 +940,6 @@ func (instance *bot) handleModelAutocomplete(
 		session,
 		interaction,
 		instance.currentModelForConfig(loadedConfig),
-		loadedConfig,
-	)
-}
-
-func (instance *bot) handleSearchDeciderModelAutocomplete(
-	session *discordgo.Session,
-	interaction *discordgo.InteractionCreate,
-) error {
-	loadedConfig, err := loadConfig(instance.configPath)
-	if err != nil {
-		return fmt.Errorf("load config for search decider autocomplete: %w", err)
-	}
-
-	channelIDs, err := instance.interactionChannelIDs(interaction)
-	if err != nil {
-		logWarn("resolve interaction channel ids", err, "channel_id", interaction.ChannelID)
-		channelIDs = []string{interaction.ChannelID}
-	}
-
-	if lockedModel, ok := loadedConfig.lockedSearchDeciderModelForChannelIDs(channelIDs); ok {
-		return respondInteractionChoices(
-			session,
-			interaction.Interaction,
-			lockedModelAutocompleteChoices(
-				lockedModel,
-				interactionOptionString(interaction.ApplicationCommandData().Options),
-			),
-		)
-	}
-
-	return handleConfiguredModelAutocomplete(
-		session,
-		interaction,
-		instance.currentSearchDeciderModelForConfig(loadedConfig),
 		loadedConfig,
 	)
 }

@@ -21,7 +21,6 @@ import (
 )
 
 const (
-	testSearchDeciderModel    = "openai/decider-model"
 	testAssistantNameReminder = "Understood. Your name is Jandron."
 	testEmptyAIMention        = "at ai"
 	testAIMentionQuery        = "at ai hello"
@@ -714,42 +713,6 @@ func newBlockedRedditClient(gate *concurrentFetchGate) *stubRedditContentClient 
 	})
 }
 
-func newNoSearchDecisionChatClient(
-	t *testing.T,
-	requiredFragments []string,
-) *stubChatCompletionClient {
-	t.Helper()
-
-	return newStubChatClient(func(
-		_ context.Context,
-		request chatCompletionRequest,
-		handle func(streamDelta) error,
-	) error {
-		t.Helper()
-
-		renderedMessages := make([]string, 0, len(request.Messages))
-		for _, message := range request.Messages {
-			renderedMessages = append(renderedMessages, messageContentText(message.Content))
-		}
-
-		renderedConversation := strings.Join(renderedMessages, "\n\n")
-
-		for _, fragment := range requiredFragments {
-			if !strings.Contains(renderedConversation, fragment) {
-				t.Fatalf("expected fragment %q in search decider request: %q", fragment, renderedConversation)
-			}
-		}
-
-		return handle(streamDelta{
-			Thinking:           "",
-			Content:            `{"needs_search":false,"queries":[]}`,
-			FinishReason:       finishReasonStop,
-			ProviderResponseID: "",
-			SearchMetadata:     nil,
-		})
-	})
-}
-
 func TestAugmentConversationWithVideoURLsFetchesProvidersConcurrentlyAndKeepsOrder(t *testing.T) {
 	t.Parallel()
 
@@ -760,7 +723,6 @@ func TestAugmentConversationWithVideoURLsFetchesProvidersConcurrentlyAndKeepsOrd
 	instance.facebook = newBlockedFacebookClient(gate)
 
 	loadedConfig := testMediaAnalysisConfig()
-	loadedConfig.SearchDeciderModel = testMediaAnalysisModel
 
 	conversation := []chatMessage{
 		{
@@ -794,7 +756,7 @@ func TestAugmentConversationWithVideoURLsFetchesProvidersConcurrentlyAndKeepsOrd
 	assertAugmentedVideoOrder(t, augmentedConversation)
 }
 
-func TestAugmentConversationFetchesIndependentContextBeforeWebSearchDecision(t *testing.T) {
+func TestAugmentConversationFetchesIndependentContextConcurrently(t *testing.T) {
 	t.Parallel()
 
 	gate := newConcurrentFetchGate(4)
@@ -806,18 +768,9 @@ func TestAugmentConversationFetchesIndependentContextBeforeWebSearchDecision(t *
 	instance.website = newBlockedWebsiteClient(gate)
 	instance.youtube = newBlockedYouTubeClient(gate)
 	instance.reddit = newBlockedRedditClient(gate)
-	instance.chatCompletions = newNoSearchDecisionChatClient(
-		t,
-		[]string{
-			visualSearchSectionName + ":",
-			websiteSectionName + ":",
-			youtubeSectionName + ":",
-			redditSectionName + ":",
-		},
-	)
 	instance.nodes = newMessageNodeStore(10)
 
-	fixture := newAugmentWebSearchDecisionFixture()
+	fixture := newAugmentConversationFixture()
 	loadedConfig := testMediaAnalysisConfig()
 	loadedConfig.MaxMessages = defaultMaxMessages
 
@@ -827,7 +780,6 @@ func TestAugmentConversationFetchesIndependentContextBeforeWebSearchDecision(t *
 	augmentedConversation, metadata, warnings, err := instance.augmentConversation(
 		ctx,
 		loadedConfig,
-		"openai/gpt-5",
 		fixture.sourceMessage,
 		fixture.conversation,
 		nil,
@@ -863,12 +815,12 @@ func TestAugmentConversationFetchesIndependentContextBeforeWebSearchDecision(t *
 	}
 }
 
-type augmentWebSearchDecisionFixture struct {
+type augmentConversationFixture struct {
 	sourceMessage *discordgo.Message
 	conversation  []chatMessage
 }
 
-func newAugmentWebSearchDecisionFixture() augmentWebSearchDecisionFixture {
+func newAugmentConversationFixture() augmentConversationFixture {
 	sourceMessage := newVisualSearchSourceMessage("source-message", "123")
 	sourceMessage.ChannelID = "channel-1"
 	sourceMessage.Mentions = []*discordgo.User{newDiscordUser("bot-user", false)}
@@ -891,7 +843,7 @@ func newAugmentWebSearchDecisionFixture() augmentWebSearchDecisionFixture {
 		},
 	}
 
-	return augmentWebSearchDecisionFixture{
+	return augmentConversationFixture{
 		sourceMessage: sourceMessage,
 		conversation:  conversation,
 	}
@@ -1689,10 +1641,6 @@ func newRespondToMessageAttachmentFailureChatClient(t *testing.T) *stubChatCompl
 	) error {
 		t.Helper()
 
-		if request.ConfiguredModel == testSearchDeciderModel {
-			return handle(newStreamDelta(`{"needs_search":false}`, ""))
-		}
-
 		if request.ConfiguredModel != "openai/main-model" {
 			t.Fatalf("unexpected configured model: %q", request.ConfiguredModel)
 		}
@@ -2296,18 +2244,9 @@ func newUnavailableGeminiMediaPreparationProgressError() error {
 func newRateLimitedRespondToMessageChatClient() *stubChatCompletionClient {
 	return newStubChatClient(func(
 		_ context.Context,
-		request chatCompletionRequest,
-		handle func(streamDelta) error,
+		_ chatCompletionRequest,
+		_ func(streamDelta) error,
 	) error {
-		if request.ConfiguredModel == testSearchDeciderModel {
-			err := handle(newStreamDelta(`{"needs_search":false}`, ""))
-			if err != nil {
-				return err
-			}
-
-			return handle(newStreamDelta("", finishReasonStop))
-		}
-
 		return providers.StatusError{
 			StatusCode: http.StatusTooManyRequests,
 			Message:    "rate limited",
@@ -2434,10 +2373,6 @@ func newRespondToMessageTypingChatClient(
 
 		if !probe.typingSent.Load() {
 			t.Fatal("expected typing indicator before chat completion")
-		}
-
-		if request.ConfiguredModel == testSearchDeciderModel {
-			return handle(newStreamDelta(`{"needs_search":false}`, ""))
 		}
 
 		if request.ConfiguredModel != "openai/main-model" {

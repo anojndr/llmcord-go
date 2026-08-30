@@ -95,61 +95,21 @@ func resolveDownloadedVideoAugmentation[T downloadedURLVideoContent](
 		return nil, nil, nil, err
 	}
 
-	searchDeciderNeedsAnalysis, err := request.instance.searchDeciderNeedsURLVideoAnalysis(
-		request.loadedConfig,
-	)
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf(
-			"check %s search decider support: %w",
-			request.label,
-			err,
-		)
-	}
-
 	mediaParts := downloadedVideoMediaParts(request.videoContents)
 
-	switch {
-	case replyModelAPIKind == providerAPIKindGemini && !searchDeciderNeedsAnalysis:
+	// Gemini replies watch the video media natively; every other provider
+	// needs a text analysis instead.
+	if replyModelAPIKind == providerAPIKindGemini {
 		return mediaParts, nil, request.warnings, nil
-	case replyModelAPIKind == providerAPIKindGemini && searchDeciderNeedsAnalysis:
-		analyses, analysisErr := downloadedVideoAnalysesWithGemini(
-			ctx,
-			request.instance,
-			request.loadedConfig,
-			request.videoContents,
-			request.label,
-		)
-		if analysisErr != nil {
-			return nil, nil, nil, analysisErr
-		}
-
-		return mediaParts, analyses, request.warnings, nil
-	default:
-		return resolveDownloadedVideoAnalysesForNonGeminiModel(ctx, request)
 	}
+
+	return resolveDownloadedVideoAnalysesForNonGeminiModel(ctx, request)
 }
 
 func resolveDownloadedVideoAnalysesForNonGeminiModel[T downloadedURLVideoContent](
 	ctx context.Context,
 	request downloadedVideoAugmentationRequest[T],
 ) ([]contentPart, []string, []string, error) {
-	searchDeciderNeedsAnalysis, err := request.instance.searchDeciderNeedsURLVideoAnalysis(
-		request.loadedConfig,
-	)
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf(
-			"check %s search decider support: %w",
-			request.label,
-			err,
-		)
-	}
-
-	if !searchDeciderNeedsAnalysis {
-		mediaParts := downloadedVideoMediaParts(request.videoContents)
-
-		return mediaParts, nil, request.warnings, nil
-	}
-
 	canUseMediaAnalysis, err := canUseGeminiMediaAnalysis(
 		request.loadedConfig,
 		request.providerSlashModel,
@@ -241,23 +201,6 @@ func downloadedVideoAnalysesWithGemini[T downloadedURLVideoContent](
 	}
 
 	return analyses, nil
-}
-
-func (instance *bot) searchDeciderNeedsURLVideoAnalysis(
-	loadedConfig config,
-) (bool, error) {
-	searchDeciderModel := instance.currentSearchDeciderModelForConfig(loadedConfig)
-
-	if searchDeciderDisabledForModel(searchDeciderModel, loadedConfig) {
-		return false, nil
-	}
-
-	apiKind, err := configuredModelAPIKind(loadedConfig, searchDeciderModel)
-	if err != nil {
-		return false, err
-	}
-
-	return apiKind != providerAPIKindGemini, nil
 }
 
 func mergeURLVideoWarnings(warnings []string, warningText string) []string {

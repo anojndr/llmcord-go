@@ -568,6 +568,7 @@ func TestGeminiCacheDisplayNameFallsBack(t *testing.T) {
 
 	if displayName := geminiCacheDisplayName(ChatCompletionRequest{
 		Provider: ProviderRequestConfig{
+			API:             "",
 			APIKind:         "",
 			BaseURL:         "",
 			APIKey:          "",
@@ -582,6 +583,7 @@ func TestGeminiCacheDisplayNameFallsBack(t *testing.T) {
 		ConfiguredModel: "",
 		SessionID:       "",
 		RequestID:       "",
+		Tools:           nil,
 		Messages:        nil,
 	}); displayName != "llmcord-go" {
 		t.Fatalf("unexpected fallback display name: %q", displayName)

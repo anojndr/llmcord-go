@@ -12,6 +12,7 @@ func TestBuildChatCompletionRequestBodySkipsCacheOptionsWithoutSessionID(t *test
 
 	request := ChatCompletionRequest{
 		Provider: ProviderRequestConfig{
+			API:             "",
 			APIKind:         ProviderAPIKindOpenAI,
 			BaseURL:         "https://example.com/v1",
 			APIKey:          "test-key",
@@ -29,6 +30,7 @@ func TestBuildChatCompletionRequestBodySkipsCacheOptionsWithoutSessionID(t *test
 			{Role: searchtypes.MessageRoleUser, Content: "hello"},
 		},
 		RequestID: "",
+		Tools:     nil,
 	}
 
 	requestBody := buildChatCompletionRequestBody(request)
@@ -56,6 +58,7 @@ func TestBuildChatCompletionRequestBodySkipsCacheBreakpointWithoutSessionID(t *t
 
 	request := ChatCompletionRequest{
 		Provider: ProviderRequestConfig{
+			API:             "",
 			APIKind:         ProviderAPIKindOpenAI,
 			BaseURL:         "https://example.com/v1",
 			APIKey:          "test-key",
@@ -74,6 +77,7 @@ func TestBuildChatCompletionRequestBodySkipsCacheBreakpointWithoutSessionID(t *t
 			{Role: searchtypes.MessageRoleUser, Content: "hello"},
 		},
 		RequestID: "",
+		Tools:     nil,
 	}
 
 	requestBody := buildChatCompletionRequestBody(request)
@@ -97,6 +101,7 @@ func TestBuildChatCompletionRequestBodySkipsCacheBreakpointForNonExplicitMode(t 
 
 	request := ChatCompletionRequest{
 		Provider: ProviderRequestConfig{
+			API:             "",
 			APIKind:         ProviderAPIKindOpenAI,
 			BaseURL:         "https://example.com/v1",
 			APIKey:          "test-key",
@@ -119,6 +124,7 @@ func TestBuildChatCompletionRequestBodySkipsCacheBreakpointForNonExplicitMode(t 
 			{Role: searchtypes.MessageRoleUser, Content: "hello"},
 		},
 		RequestID: "",
+		Tools:     nil,
 	}
 
 	requestBody := buildChatCompletionRequestBody(request)
@@ -142,6 +148,7 @@ func TestBuildChatCompletionRequestBodyAddsCacheOptionsForOpenAIProvider(t *test
 
 	request := ChatCompletionRequest{
 		Provider: ProviderRequestConfig{
+			API:             "",
 			APIKind:         ProviderAPIKindOpenAI,
 			BaseURL:         "https://example.com/v1",
 			APIKey:          "test-key",
@@ -160,6 +167,7 @@ func TestBuildChatCompletionRequestBodyAddsCacheOptionsForOpenAIProvider(t *test
 			{Role: searchtypes.MessageRoleUser, Content: "hello"},
 		},
 		RequestID: "",
+		Tools:     nil,
 	}
 
 	requestBody := buildChatCompletionRequestBody(request)
@@ -202,6 +210,7 @@ func TestBuildChatCompletionRequestBodyPlacesStablePrefixCacheBreakpoint(t *test
 
 	request := ChatCompletionRequest{
 		Provider: ProviderRequestConfig{
+			API:             "",
 			APIKind:         ProviderAPIKindOpenAI,
 			BaseURL:         "https://example.com/v1",
 			APIKey:          "test-key",
@@ -221,6 +230,7 @@ func TestBuildChatCompletionRequestBodyPlacesStablePrefixCacheBreakpoint(t *test
 			{Role: searchtypes.MessageRoleUser, Content: "hello"},
 		},
 		RequestID: "",
+		Tools:     nil,
 	}
 
 	requestBody := buildChatCompletionRequestBody(request)
@@ -254,6 +264,7 @@ func TestBuildChatCompletionRequestBodyExplicitModePlacesBreakpointOnFirstMessag
 
 	request := ChatCompletionRequest{
 		Provider: ProviderRequestConfig{
+			API:             "",
 			APIKind:         ProviderAPIKindOpenAI,
 			BaseURL:         "https://example.com/v1",
 			APIKey:          "test-key",
@@ -275,6 +286,7 @@ func TestBuildChatCompletionRequestBodyExplicitModePlacesBreakpointOnFirstMessag
 			{Role: searchtypes.MessageRoleUser, Content: "hello"},
 		},
 		RequestID: "",
+		Tools:     nil,
 	}
 
 	requestBody := buildChatCompletionRequestBody(request)
@@ -325,6 +337,7 @@ func TestBuildChatCompletionRequestBodySkipsCacheOptionsForOtherProviders(t *tes
 
 			request := ChatCompletionRequest{
 				Provider: ProviderRequestConfig{
+					API:             "",
 					APIKind:         ProviderAPIKindOpenAI,
 					BaseURL:         "https://example.com/v1",
 					APIKey:          "test-key",
@@ -339,6 +352,7 @@ func TestBuildChatCompletionRequestBodySkipsCacheOptionsForOtherProviders(t *tes
 				ConfiguredModel: testCase.configuredModel,
 				SessionID:       testOpenAIPromptCacheKey,
 				RequestID:       "",
+				Tools:           nil,
 				Messages: []ChatMessage{
 					{Role: searchtypes.MessageRoleUser, Content: "hello"},
 				},
@@ -370,6 +384,7 @@ func TestBuildChatCompletionRequestBodySkipsCacheOptionsForResponsesAPI(t *testi
 
 	request := ChatCompletionRequest{
 		Provider: ProviderRequestConfig{
+			API:             "",
 			APIKind:         ProviderAPIKindOpenAI,
 			BaseURL:         "https://example.com/v1",
 			APIKey:          "test-key",
@@ -384,6 +399,7 @@ func TestBuildChatCompletionRequestBodySkipsCacheOptionsForResponsesAPI(t *testi
 		ConfiguredModel: "openai/gpt-test",
 		SessionID:       testOpenAIPromptCacheKey,
 		RequestID:       "",
+		Tools:           nil,
 		Messages: []ChatMessage{
 			{Role: searchtypes.MessageRoleUser, Content: "hello"},
 		},
@@ -401,6 +417,7 @@ func TestBuildChatCompletionRequestBodyRewritesSystemRoleForGPT56(t *testing.T) 
 
 	request := ChatCompletionRequest{
 		Provider: ProviderRequestConfig{
+			API:             "",
 			APIKind:         ProviderAPIKindOpenAI,
 			BaseURL:         "https://example.com/v1",
 			APIKey:          "test-key",
@@ -419,6 +436,7 @@ func TestBuildChatCompletionRequestBodyRewritesSystemRoleForGPT56(t *testing.T) 
 			{Role: searchtypes.MessageRoleUser, Content: "hello"},
 		},
 		RequestID: "",
+		Tools:     nil,
 	}
 
 	requestBody := buildChatCompletionRequestBody(request)
@@ -442,6 +460,7 @@ func TestBuildChatCompletionRequestBodyKeepsSystemRoleForOlderModels(t *testing.
 
 	request := ChatCompletionRequest{
 		Provider: ProviderRequestConfig{
+			API:             "",
 			APIKind:         ProviderAPIKindOpenAI,
 			BaseURL:         "https://example.com/v1",
 			APIKey:          "test-key",
@@ -460,6 +479,7 @@ func TestBuildChatCompletionRequestBodyKeepsSystemRoleForOlderModels(t *testing.
 			{Role: searchtypes.MessageRoleUser, Content: "hello"},
 		},
 		RequestID: "",
+		Tools:     nil,
 	}
 
 	requestBody := buildChatCompletionRequestBody(request)
@@ -479,6 +499,7 @@ func TestBuildResponsesRequestBodyAddsCacheOptionsForOpenAIProvider(t *testing.T
 
 	request := ChatCompletionRequest{
 		Provider: ProviderRequestConfig{
+			API:             "",
 			APIKind:         ProviderAPIKindOpenAI,
 			BaseURL:         "https://example.com/v1",
 			APIKey:          "test-key",
@@ -497,6 +518,7 @@ func TestBuildResponsesRequestBodyAddsCacheOptionsForOpenAIProvider(t *testing.T
 			{Role: searchtypes.MessageRoleUser, Content: "hello"},
 		},
 		RequestID: "",
+		Tools:     nil,
 	}
 
 	requestBody, err := buildResponsesRequestBody(request)
@@ -528,6 +550,7 @@ func TestBuildResponsesRequestBodySkipsCacheOptionsForNonOpenAIModels(t *testing
 
 	request := ChatCompletionRequest{
 		Provider: ProviderRequestConfig{
+			API:             "",
 			APIKind:         ProviderAPIKindOpenAI,
 			BaseURL:         "https://example.com/v1",
 			APIKey:          "test-key",
@@ -549,6 +572,7 @@ func TestBuildResponsesRequestBodySkipsCacheOptionsForNonOpenAIModels(t *testing
 			{Role: searchtypes.MessageRoleUser, Content: "hello"},
 		},
 		RequestID: "",
+		Tools:     nil,
 	}
 
 	requestBody, err := buildResponsesRequestBody(request)
@@ -618,7 +642,7 @@ func TestOpenAIStreamPayloadDeltaContentFields(t *testing.T) {
 		]
 	}`)
 
-	delta, err := openAIStreamPayloadDelta(payload)
+	delta, err := openAIStreamPayloadDelta(payload, newChatCompletionsToolCallAccumulator())
 	if err != nil {
 		t.Fatalf("decode stream Payload: %v", err)
 	}

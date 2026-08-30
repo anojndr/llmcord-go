@@ -48,8 +48,10 @@ permissions:
 # `api` is only valid for OpenAI-compatible providers; Gemini providers
 # (name contains "gemini" or base_url with generativelanguage.googleapis.com)
 # must not set `api` (validation will fail).
-# Per-provider flags: disable_search_decider, dont_send_system_prompt,
-# auto_append_search_web, auto_append_short_answer, auto_append_prioritize_truth, enable_grounding (Gemini only).
+# Per-provider flags: disable_search_decider (skips web search entirely for
+#   this provider's models; the web_search tool is not offered),
+#   dont_send_system_prompt,
+#   auto_append_search_web, auto_append_short_answer, auto_append_prioritize_truth, enable_grounding (Gemini only).
 # Per-provider reasoning effort for OpenAI-compatible providers:
 #   reasoning_effort: none | minimal | low | medium | high | xhigh | max
 # Maps to reasoning.effort (api: openai-responses) or reasoning_effort
@@ -80,10 +82,6 @@ providers:
     # api_key:
     #   - key-1
     #   - key-2
-    api_key:
-    # enable_grounding: true
-    # Disable the web-search decider model call for this provider's models:
-    # disable_search_decider: true
     # Skip prepending the global `system_prompt` to requests for this
     # provider's models:
     # dont_send_system_prompt: true
@@ -178,9 +176,9 @@ providers:
     # To disable that default for this provider, uncomment:
     # extra_body:
     #   transforms: []
-    # `:online` models (e.g. openrouter/<vendor>/<model>:online) formerly
-    # skipped the web-search decider by name. To keep that behavior, uncomment
-    # (this applies to every openrouter model):
+    # `:online` models route through OpenRouter's web plugin. To disable
+    # bot-side web search for this provider, uncomment (this applies to
+    # every openrouter model):
     # disable_search_decider: true
 
   # -- Local providers (OpenAI-compatible, unauthenticated) --
@@ -240,21 +238,21 @@ models:
 channel_model_locks:
   # "123456789012345678": google/gemini-3.6-flash
 
-channel_search_decider_model_locks:
-  # "123456789012345678": google/gemini-3.6-flash
-
-search_decider_model: google/gemini-3.6-flash
 media_analysis_model: google/gemini-3.6-flash
 # Optional fallback before returning an error (defaults to 9router/stable_model:vision if present).
 # fallback_model: 9router/stable_model:vision
 
 # -----------------------------------------------------------------------------
-# Web search — order hardcoded: TinyFish -> Exa -> Tavily
+# Web search — the model calls a native `web_search` tool; requested queries
+# run through the hardcoded chain TinyFish -> Exa -> Tavily, tried in order
+# (TinyFish only when its api_key is set; Exa always, keyless via its MCP
+# endpoint; Tavily as final fallback — each falls back to the next on
+# failure). Configure at least one provider's api_key to enable it.
 # TinyFish uses Search + Fetch; Exa uses Search + Contents; Tavily is fallback.
 # Website extraction: Firecrawl Scrape -> TinyFish Fetch -> Exa Contents -> Tavily Extract
-# (first configured provider tried; no chain on Exa failure). TikTok/YouTube/
-# Facebook/Reddit use dedicated fetchers and never hit Firecrawl/TinyFish.
-# web_search.primary_provider was removed — remove if present from old configs.
+# TikTok/YouTube/Facebook/Reddit use dedicated fetchers and never hit
+# Firecrawl/TinyFish. web_search.primary_provider was removed — remove it
+# if present from old configs.
 # -----------------------------------------------------------------------------
 web_search:
   # Maximum URLs to request per search query (and in Show Sources).

@@ -84,7 +84,8 @@ func (c *xfixupCapture) recordUnexpected(m, p string) {
 func (c *xfixupCapture) snapshot() (deletes []string, sends []string, contents []string, unexpected []string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return append([]string(nil), c.deletes...), append([]string(nil), c.sends...), append([]string(nil), c.sendContents...), append([]string(nil), c.unexpected...)
+	return append([]string(nil), c.deletes...), append([]string(nil), c.sends...),
+		append([]string(nil), c.sendContents...), append([]string(nil), c.unexpected...)
 }
 
 func (c *xfixupCapture) allowedMentionsSnapshot() *capturedAllowedMentions {
@@ -168,7 +169,8 @@ func TestFixupXComContent(t *testing.T) {
 	tests := []struct {
 		in, want string
 	}{
-		{"https://x.com/ExtremeBlitz__/status/2093114939397349597?s=20 check this out", "https://fixupx.com/ExtremeBlitz__/status/2093114939397349597?s=20 check this out"},
+		{"https://x.com/ExtremeBlitz__/status/2093114939397349597?s=20 check this out",
+			"https://fixupx.com/ExtremeBlitz__/status/2093114939397349597?s=20 check this out"},
 		{"https://x.com/foo and https://x.com/bar", "https://fixupx.com/foo and https://fixupx.com/bar"},
 		{"http://x.com/foo", "http://fixupx.com/foo"},
 		{"https://www.x.com/foo", "https://www.fixupx.com/foo"},
@@ -191,7 +193,13 @@ func TestFixupXComContent(t *testing.T) {
 func TestShouldHandleXFixup(t *testing.T) {
 	botID := "1307756710072549439"
 	mk := func(content string, mentions []*discordgo.User, bot bool) *discordgo.Message {
-		m := &discordgo.Message{Content: content, Author: &discordgo.User{ID: "user1", Username: "Tester", Bot: bot}, Mentions: mentions, ChannelID: "channel-1", ID: "msg1"}
+		m := &discordgo.Message{
+			Content:   content,
+			Author:    &discordgo.User{ID: "user1", Username: "Tester", Bot: bot},
+			Mentions:  mentions,
+			ChannelID: "channel-1",
+			ID:        "msg1",
+		}
 		return m
 	}
 	if !shouldHandleXFixup(mk("https://x.com/foo check", nil, false), botID) {
@@ -260,7 +268,8 @@ func TestHandleMessageCreateXFixupDeletesAndResends(t *testing.T) {
 	if len(sends) != 1 {
 		t.Fatalf("expected 1 send, got %d", len(sends))
 	}
-	expectedContent := "ExtremeBlitz__ sent:\nhttps://fixupx.com/ExtremeBlitz__/status/2093114939397349597?s=20 check this out"
+	expectedContent := "ExtremeBlitz__ sent:\n" +
+		"https://fixupx.com/ExtremeBlitz__/status/2093114939397349597?s=20 check this out"
 	if len(contents) != 1 || contents[0] != expectedContent {
 		t.Fatalf("unexpected send content: got %q want %q", contents[0], expectedContent)
 	}
@@ -285,8 +294,10 @@ func TestHandleMessageCreateXFixupSkipsAtAI(t *testing.T) {
 	}
 	// For this test, we need to ensure the message would normally trigger LLM path but we only care xfixup not triggered.
 	// Since at ai is present, xfixup should skip and then LLM path would attempt but we have no stub,
-	// we just verify no delete/send happened for xfixup. However handleMessageCreate will try to load config and check permissions then attempt LLM.
-	// We can check that no xfixup delete occurred; but the capture will also see typing/message sends from LLM attempt if any.
+	// we just verify no delete/send happened for xfixup. However handleMessageCreate will try to load config and check
+	// permissions then attempt LLM.
+	// We can check that no xfixup delete occurred; but the capture will also see typing/message sends from LLM attempt if
+	// any.
 	// So we use direct shouldHandleXFixup test via handleXFixup instead of full handleMessageCreate to isolate.
 	if inst.handleXFixup(msg, "1307756710072549439") {
 		t.Fatal("handleXFixup should have returned false for at ai")
@@ -437,7 +448,8 @@ func TestHandleMessageCreateNilSessionDoesNotSwallowXCom(t *testing.T) {
 		t.Fatal("nil session must not be considered handled")
 	}
 	// Also verify via handleMessageCreate with nil session does not panic and does not delete
-	// (it will attempt to load config and check permissions, then handleXFixup returns false, then falls through to shouldIgnore/facebook path)
+	// (it will attempt to load config and check permissions, then handleXFixup returns false, then falls through to
+	// shouldIgnore/facebook path)
 	// We just ensure no delete occurred via capture (which remains empty because instance has no session)
 	deletes, sends, _, _ := cap.snapshot()
 	if len(deletes) != 0 || len(sends) != 0 {

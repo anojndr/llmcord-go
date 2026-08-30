@@ -146,11 +146,7 @@ func configuredGeminiMediaModel(loadedConfig config) (string, error) {
 		return strings.TrimSpace(loadedConfig.MediaAnalysisModel), nil
 	}
 
-	candidates := make([]string, 0, len(loadedConfig.ModelOrder)+1)
-	if strings.TrimSpace(loadedConfig.SearchDeciderModel) != "" {
-		candidates = append(candidates, loadedConfig.SearchDeciderModel)
-	}
-
+	candidates := make([]string, 0, len(loadedConfig.ModelOrder))
 	candidates = append(candidates, loadedConfig.ModelOrder...)
 
 	seenModels := make(map[string]struct{}, len(candidates))

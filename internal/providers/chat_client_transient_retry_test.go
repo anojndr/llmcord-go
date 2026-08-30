@@ -385,6 +385,7 @@ func openAIChatCompletionRetryTestRequest(baseURL string) ChatCompletionRequest 
 	return ChatCompletionRequest{
 		Provider: ProviderRequestConfig{
 			APIKind:         ProviderAPIKindOpenAI,
+			API:             "",
 			BaseURL:         baseURL,
 			APIKey:          "test-key",
 			APIKeys:         nil,
@@ -394,6 +395,7 @@ func openAIChatCompletionRetryTestRequest(baseURL string) ChatCompletionRequest 
 			ExtraQuery:      nil,
 			ExtraBody:       nil,
 		},
+		Tools:           nil,
 		Model:           "gpt-test",
 		ConfiguredModel: "",
 		SessionID:       "",
@@ -408,6 +410,7 @@ func openAIChatCompletionsRetryTestRequest(baseURL string) ChatCompletionRequest
 	return ChatCompletionRequest{
 		Provider: ProviderRequestConfig{
 			APIKind:         ProviderAPIKindOpenAI,
+			API:             "",
 			BaseURL:         baseURL,
 			APIKey:          "test-key",
 			APIKeys:         nil,
@@ -417,6 +420,7 @@ func openAIChatCompletionsRetryTestRequest(baseURL string) ChatCompletionRequest
 			ExtraQuery:      nil,
 			ExtraBody:       nil,
 		},
+		Tools:           nil,
 		Model:           "gpt-5",
 		ConfiguredModel: "openai/gpt-5",
 		SessionID:       "",

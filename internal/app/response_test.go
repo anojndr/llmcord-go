@@ -1323,22 +1323,7 @@ func TestGenerateAndSendResponseRetriesPrematureStreamOnFallbackModel(t *testing
 		return handle(newStreamDelta(prematureText, ""))
 	})
 
-	loadedConfig := config{
-		Providers: map[string]providerConfig{
-			"gemini-search": {
-				Name: "gemini-search",
-			},
-			"9router": {
-				Name:    "9router",
-				BaseURL: "http://localhost:20128/v1",
-			},
-		},
-		Models: map[string]map[string]any{
-			primaryModel:  nil,
-			fallbackModel: nil,
-		},
-		FallbackModel: fallbackModel,
-	}
+	loadedConfig := newFallbackPathTestConfig()
 
 	request := chatCompletionRequest{
 		ConfiguredModel: primaryModel,
@@ -1347,8 +1332,6 @@ func TestGenerateAndSendResponseRetriesPrematureStreamOnFallbackModel(t *testing
 		},
 	}
 	tracker := newResponseTracker(sourceMessage, request.ConfiguredModel)
-	// The fallback path would otherwise consult an unconfigured decider.
-	tracker.webSearchDecided = true
 
 	err := instance.generateAndSendResponse(
 		context.Background(),
@@ -2501,49 +2484,12 @@ func TestGenerateAndSendResponseFallsBackToStableModelOnFailure(t *testing.T) {
 		sourceMessage,
 	)
 
-	messageDescriptions := make([]string, 0, 2)
-	messageAuthors := make([]string, 0, 2)
-	messageWarnings := make([][]string, 0, 2)
-	session := newDirectMessageTestSession(t, channelID, botUserID, roundTripFunc(func(
-		request *http.Request,
-	) (*http.Response, error) {
-		t.Helper()
-
-		if (request.Method == http.MethodPost && request.URL.Path == "/api/v9/channels/"+channelID+"/messages") ||
-			(request.Method == http.MethodPatch && strings.HasPrefix(request.URL.Path, "/api/v9/channels/"+channelID+"/messages/")) {
-			body, _ := io.ReadAll(request.Body)
-
-			var payload struct {
-				Embeds []struct {
-					Description string `json:"description"`
-					Author      struct {
-						Name string `json:"name"`
-					} `json:"author"`
-					Fields []struct {
-						Name  string `json:"name"`
-						Value string `json:"value"`
-					} `json:"fields"`
-				} `json:"embeds"`
-			}
-
-			_ = json.Unmarshal(body, &payload)
-			if len(payload.Embeds) > 0 {
-				messageDescriptions = append(messageDescriptions, payload.Embeds[0].Description)
-				messageAuthors = append(messageAuthors, payload.Embeds[0].Author.Name)
-
-				fieldNames := make([]string, 0, len(payload.Embeds[0].Fields))
-				for _, field := range payload.Embeds[0].Fields {
-					fieldNames = append(fieldNames, field.Name)
-				}
-
-				messageWarnings = append(messageWarnings, fieldNames)
-			}
-
-			return newJSONResponse(t, request, assistantMessage), nil
-		}
-
-		return newNoContentResponse(request), nil
-	}))
+	capture, session := newEmbedCaptureSession(
+		t,
+		channelID,
+		botUserID,
+		assistantMessage,
+	)
 
 	var attemptedModels []string
 
@@ -2569,23 +2515,7 @@ func TestGenerateAndSendResponseFallsBackToStableModelOnFailure(t *testing.T) {
 		return errors.New("unknown model")
 	})
 
-	loadedConfig := config{
-		Providers: map[string]providerConfig{
-			"gemini-search": {
-				Name: "gemini-search",
-			},
-			"9router": {
-				Name:    "9router",
-				BaseURL: "http://localhost:20128/v1",
-			},
-		},
-		Models: map[string]map[string]any{
-			"gemini-search/gemini-3.7-flash-medium:vision": nil,
-			"9router/stable_model:vision":                  nil,
-		},
-		ModelOrder:    []string{"gemini-search/gemini-3.7-flash-medium:vision", "9router/stable_model:vision"},
-		FallbackModel: "9router/stable_model:vision",
-	}
+	loadedConfig := newFallbackPathTestConfig()
 
 	request := chatCompletionRequest{
 		ConfiguredModel: "gemini-search/gemini-3.7-flash-medium:vision",
@@ -2595,10 +2525,6 @@ func TestGenerateAndSendResponseFallsBackToStableModelOnFailure(t *testing.T) {
 		},
 	}
 	tracker := newResponseTracker(sourceMessage, request.ConfiguredModel)
-	// The primary pipeline would have run the search-decider stage for these
-	// non-disabled providers; mark it decided so the fallback path stays
-	// hermetic instead of consulting an unconfigured decider.
-	tracker.webSearchDecided = true
 
 	err := instance.generateAndSendResponse(
 		context.Background(),
@@ -2611,27 +2537,47 @@ func TestGenerateAndSendResponseFallsBackToStableModelOnFailure(t *testing.T) {
 		t.Fatalf("unexpected generateAndSendResponse error: %v", err)
 	}
 
+	assertFallbackAttemptOrder(t, attemptedModels)
+	assertEmbedCaptureFallback(t, capture, fallbackReplyText)
+}
+
+// assertFallbackAttemptOrder asserts the primary model was attempted once and
+// only the fallback model was retried afterwards.
+func assertFallbackAttemptOrder(t *testing.T, attemptedModels []string) {
+	t.Helper()
+
+	const (
+		primaryModel  = "gemini-search/gemini-3.7-flash-medium:vision"
+		fallbackModel = "9router/stable_model:vision"
+	)
+
 	if len(attemptedModels) != 2 {
 		t.Fatalf("expected 2 attempted models, got: %v", attemptedModels)
 	}
 
-	if attemptedModels[0] != "gemini-search/gemini-3.7-flash-medium:vision" ||
-		attemptedModels[1] != "9router/stable_model:vision" {
+	if attemptedModels[0] != primaryModel || attemptedModels[1] != fallbackModel {
 		t.Fatalf("unexpected attempted models order: %v", attemptedModels)
 	}
+}
 
-	if len(messageDescriptions) == 0 ||
-		!strings.Contains(messageDescriptions[len(messageDescriptions)-1], fallbackReplyText) {
-		t.Fatalf("unexpected message description: %v", messageDescriptions)
+// assertEmbedCaptureFallback asserts the final embed shows the fallback reply
+// with the fallback model author and the fallback warning field.
+func assertEmbedCaptureFallback(t *testing.T, capture *embedCapture, fallbackReplyText string) {
+	t.Helper()
+
+	if len(capture.descriptions) == 0 ||
+		!strings.Contains(capture.descriptions[len(capture.descriptions)-1], fallbackReplyText) {
+		t.Fatalf("unexpected message description: %v", capture.descriptions)
 	}
 
-	if len(messageAuthors) == 0 || messageAuthors[len(messageAuthors)-1] != "9router/stable_model:vision" {
-		t.Fatalf("unexpected message author: %v", messageAuthors)
+	if len(capture.authors) == 0 || capture.authors[len(capture.authors)-1] != "9router/stable_model:vision" {
+		t.Fatalf("unexpected message author: %v", capture.authors)
 	}
 
 	expectedWarning := "Warning: fallback to 9router/stable_model:vision"
-	if len(messageWarnings) == 0 || !slicesContainsString(messageWarnings[len(messageWarnings)-1], expectedWarning) {
-		t.Fatalf("expected fallback warning %q in final embed fields, got: %v", expectedWarning, messageWarnings)
+	if len(capture.warnings) == 0 ||
+		!slicesContainsString(capture.warnings[len(capture.warnings)-1], expectedWarning) {
+		t.Fatalf("expected fallback warning %q in final embed fields, got: %v", expectedWarning, capture.warnings)
 	}
 }
 
@@ -2653,37 +2599,12 @@ func TestGenerateAndSendResponseRendersFailureWhenFallbackModelAlsoFails(t *test
 		sourceMessage,
 	)
 
-	messageDescriptions := make([]string, 0, 2)
-	messageAuthors := make([]string, 0, 2)
-	session := newDirectMessageTestSession(t, channelID, botUserID, roundTripFunc(func(
-		request *http.Request,
-	) (*http.Response, error) {
-		t.Helper()
-
-		if (request.Method == http.MethodPost && request.URL.Path == "/api/v9/channels/"+channelID+"/messages") ||
-			(request.Method == http.MethodPatch && strings.HasPrefix(request.URL.Path, "/api/v9/channels/"+channelID+"/messages/")) {
-			body, _ := io.ReadAll(request.Body)
-
-			var payload struct {
-				Embeds []struct {
-					Description string `json:"description"`
-					Author      struct {
-						Name string `json:"name"`
-					} `json:"author"`
-				} `json:"embeds"`
-			}
-
-			_ = json.Unmarshal(body, &payload)
-			if len(payload.Embeds) > 0 {
-				messageDescriptions = append(messageDescriptions, payload.Embeds[0].Description)
-				messageAuthors = append(messageAuthors, payload.Embeds[0].Author.Name)
-			}
-
-			return newJSONResponse(t, request, assistantMessage), nil
-		}
-
-		return newNoContentResponse(request), nil
-	}))
+	capture, session := newEmbedCaptureSession(
+		t,
+		channelID,
+		botUserID,
+		assistantMessage,
+	)
 
 	var attemptedModels []string
 
@@ -2700,18 +2621,7 @@ func TestGenerateAndSendResponseRendersFailureWhenFallbackModelAlsoFails(t *test
 		return errors.New("model failure")
 	})
 
-	loadedConfig := config{
-		Providers: map[string]providerConfig{
-			"gemini-search": {Name: "gemini-search"},
-			"9router":       {Name: "9router", BaseURL: "http://localhost:20128/v1"},
-		},
-		Models: map[string]map[string]any{
-			"gemini-search/gemini-3.7-flash-medium:vision": nil,
-			"9router/stable_model:vision":                  nil,
-		},
-		ModelOrder:    []string{"gemini-search/gemini-3.7-flash-medium:vision", "9router/stable_model:vision"},
-		FallbackModel: "9router/stable_model:vision",
-	}
+	loadedConfig := newFallbackPathTestConfig()
 
 	request := chatCompletionRequest{
 		ConfiguredModel: "gemini-search/gemini-3.7-flash-medium:vision",
@@ -2721,10 +2631,6 @@ func TestGenerateAndSendResponseRendersFailureWhenFallbackModelAlsoFails(t *test
 		},
 	}
 	tracker := newResponseTracker(sourceMessage, request.ConfiguredModel)
-	// The primary pipeline would have run the search-decider stage for these
-	// non-disabled providers; mark it decided so the fallback path stays
-	// hermetic instead of consulting an unconfigured decider.
-	tracker.webSearchDecided = true
 
 	err := instance.generateAndSendResponse(
 		context.Background(),
@@ -2741,9 +2647,9 @@ func TestGenerateAndSendResponseRendersFailureWhenFallbackModelAlsoFails(t *test
 		t.Fatalf("expected 2 attempted models, got: %v", attemptedModels)
 	}
 
-	if len(messageDescriptions) == 0 ||
-		!strings.Contains(messageDescriptions[len(messageDescriptions)-1], "model failure") {
-		t.Fatalf("unexpected failure message description: %v", messageDescriptions)
+	if len(capture.descriptions) == 0 ||
+		!strings.Contains(capture.descriptions[len(capture.descriptions)-1], "model failure") {
+		t.Fatalf("unexpected failure message description: %v", capture.descriptions)
 	}
 }
 
@@ -2812,10 +2718,6 @@ func TestGenerateAndSendResponseDoesNotFallbackWhenPrimaryIsAlreadyFallbackModel
 		},
 	}
 	tracker := newResponseTracker(sourceMessage, request.ConfiguredModel)
-	// The primary pipeline would have run the search-decider stage for these
-	// non-disabled providers; mark it decided so the fallback path stays
-	// hermetic instead of consulting an unconfigured decider.
-	tracker.webSearchDecided = true
 
 	err := instance.generateAndSendResponse(
 		context.Background(),
@@ -2904,355 +2806,204 @@ func TestAppendFallbackWarning(t *testing.T) {
 	}
 }
 
-func newFallbackSearchDeciderTestConfig() config {
-	loadedConfig := new(config)
-	loadedConfig.Providers = map[string]providerConfig{
-		"openai":  {Name: "openai", BaseURL: "https://api.example.com/v1"},
-		"9router": {Name: "9router", BaseURL: "http://localhost:20128/v1"},
-	}
-	loadedConfig.Models = map[string]map[string]any{
-		"openai/main-model":      nil,
-		"9router/fallback-model": nil,
-		"openai/decider-model":   nil,
-	}
-	loadedConfig.ModelOrder = []string{
-		"openai/main-model",
-		"9router/fallback-model",
-		"openai/decider-model",
-	}
-	loadedConfig.FallbackModel = "9router/fallback-model"
-	loadedConfig.SearchDeciderModel = "openai/decider-model"
-	loadedConfig.WebSearch.MaxURLs = defaultWebSearchMaxURLs
-	loadedConfig.MaxMessages = defaultMaxMessages
-
-	return *loadedConfig
-}
-
-// TestRespondToMessageRunsSearchDeciderForFallbackWhenPrimaryDisabledIt
-// asserts the fallback attempt gets its own web-search decision: when the
-// primary provider skips the search-decider stage (disable_search_decider),
-// a failed primary request must retry through the search decider with the
-// fallback model and append the search results to the fallback conversation.
-func TestRespondToMessageRunsSearchDeciderForFallbackWhenPrimaryDisabledIt(t *testing.T) {
-	t.Parallel()
-
+// newFallbackPathTestConfig builds the two-provider fallback config shared
+// by the generateAndSendResponse fallback tests.
+func newFallbackPathTestConfig() config {
 	const (
-		botUserID = "bot-user"
-		channelID = "channel-1"
-		userID    = "user-1"
+		primaryModel  = "gemini-search/gemini-3.7-flash-medium:vision"
+		fallbackModel = "9router/stable_model:vision"
 	)
 
-	sourceMessage := newPromptMessage("user-message-1", channelID, userID, botUserID)
+	return config{
+		Providers: map[string]providerConfig{
+			"gemini-search": {Name: "gemini-search"},
+			"9router":       {Name: "9router", BaseURL: "http://localhost:20128/v1"},
+		},
+		Models: map[string]map[string]any{
+			primaryModel:  nil,
+			fallbackModel: nil,
+		},
+		FallbackModel: fallbackModel,
+	}
+}
+
+// embedCapture records the description, author name, and embed field names
+// of every message body sent or patched through the capture session.
+type embedCapture struct {
+	descriptions []string
+	authors      []string
+	warnings     [][]string
+}
+
+// newEmbedCaptureSession builds a DM session that records message embeds.
+func newEmbedCaptureSession(
+	t *testing.T,
+	channelID string,
+	botUserID string,
+	assistantMessage *discordgo.Message,
+) (*embedCapture, *discordgo.Session) {
+	t.Helper()
+
+	capture := new(embedCapture)
 
 	session := newDirectMessageTestSession(t, channelID, botUserID, roundTripFunc(func(
 		request *http.Request,
 	) (*http.Response, error) {
 		t.Helper()
 
-		switch {
-		case request.Method == http.MethodPost &&
-			request.URL.Path == "/api/v9/channels/"+channelID+"/typing":
-			return newNoContentResponse(request), nil
-		case request.Method == http.MethodPost &&
-			request.URL.Path == "/api/v9/channels/"+channelID+"/messages":
-			response := new(discordgo.Message)
-			response.ID = "response-message"
-			response.ChannelID = channelID
+		if (request.Method == http.MethodPost && request.URL.Path == "/api/v9/channels/"+channelID+"/messages") ||
+			(request.Method == http.MethodPatch && strings.HasPrefix(request.URL.Path, "/api/v9/channels/"+channelID+"/messages/")) {
+			body, _ := io.ReadAll(request.Body)
 
-			return newJSONResponse(t, request, response), nil
-		case request.Method == http.MethodPatch &&
-			request.URL.Path == "/api/v9/channels/"+channelID+"/messages/response-message":
-			return newJSONResponse(t, request, new(discordgo.Message)), nil
-		default:
-			return newNoContentResponse(request), nil
+			var payload struct {
+				Embeds []struct {
+					Description string `json:"description"`
+					Author      struct {
+						Name string `json:"name"`
+					} `json:"author"`
+					Fields []struct {
+						Name  string `json:"name"`
+						Value string `json:"value"`
+					} `json:"fields"`
+				} `json:"embeds"`
+			}
+
+			_ = json.Unmarshal(body, &payload)
+			if len(payload.Embeds) > 0 {
+				capture.descriptions = append(capture.descriptions, payload.Embeds[0].Description)
+				capture.authors = append(capture.authors, payload.Embeds[0].Author.Name)
+
+				fieldNames := make([]string, 0, len(payload.Embeds[0].Fields))
+				for _, field := range payload.Embeds[0].Fields {
+					fieldNames = append(fieldNames, field.Name)
+				}
+
+				capture.warnings = append(capture.warnings, fieldNames)
+			}
+
+			return newJSONResponse(t, request, assistantMessage), nil
 		}
+
+		return newNoContentResponse(request), nil
 	}))
 
-	var deciderRequests int
-	var fallbackRequestMessages []chatMessage
+	return capture, session
+}
 
-	openAI := newStubChatClient(func(
-		_ context.Context,
-		request chatCompletionRequest,
-		handle func(streamDelta) error,
-	) error {
-		switch request.ConfiguredModel {
-		case "openai/decider-model":
-			deciderRequests++
+// TestGenerateAndSendResponseExecutesWebSearchToolOnFallbackModel asserts the
+// fallback attempt gets the web_search tool and executes its tool calls: the
+// primary model fails, the fallback model emits a web_search tool call, the
+// routed search runs exactly once, and the fallback follow-up carries the
+// results and no tools.
+var (
+	errPrimaryModelOverload = errors.New("upstream primary model overloaded 503")
+	errUnknownModel         = errors.New("unknown model")
+)
 
-			return handle(newStreamDelta(`{"needs_search":true,"queries":["fallback query"]}`, ""))
-		case "9router/fallback-model":
-			fallbackRequestMessages = request.Messages
+func TestGenerateAndSendResponseExecutesWebSearchToolOnFallbackModel(t *testing.T) {
+	t.Parallel()
 
-			return handle(newStreamDelta("fallback answer", finishReasonStop))
-		default:
-			return errors.New("primary model failure")
-		}
-	})
+	const (
+		primaryModel  = "gemini-search/gemini-3.7-flash-medium:vision"
+		fallbackModel = "9router/stable_model:vision"
+	)
 
+	var attemptedModels []string
+
+	chatClient := newStubChatClient(fallbackToolRoundStream(t, &attemptedModels))
 	webSearch := newStubWebSearchClient(func(
 		_ context.Context,
 		_ config,
 		queries []string,
 	) ([]webSearchResult, error) {
-		return []webSearchResult{{Query: queries[0], Text: "Fallback search context"}}, nil
+		return []webSearchResult{{Query: queries[0], Text: testWebSearchResultText}}, nil
 	})
 
-	instance := newSearchTestBot(openAI, webSearch)
-	instance.session = session
-	instance.currentSearchDeciderModel = "openai/decider-model"
+	instance := newSearchToolTestBot(t, chatClient, webSearch)
 
-	loadedConfig := newFallbackSearchDeciderTestConfig()
-	primaryProvider := loadedConfig.Providers["openai"]
-	primaryProvider.DisableSearchDecider = true
-	loadedConfig.Providers["openai"] = primaryProvider
+	sourceMessage := newPromptMessage("user-message-1", testWebSearchChannelID, testWebSearchUserID, testWebSearchBotUserID)
+	request := chatCompletionRequest{
+		ConfiguredModel: primaryModel,
+		Model:           "gemini-3.7-flash-medium",
+		Messages: []chatMessage{
+			{Role: messageRoleUser, Content: "Hello"},
+		},
+	}
+	tracker := newResponseTracker(sourceMessage, request.ConfiguredModel)
 
-	err := instance.respondToMessage(
-		context.Background(),
-		loadedConfig,
-		sourceMessage,
-		"openai/main-model",
-	)
-	if err != nil {
-		t.Fatalf("respond to message: %v", err)
+	loadedConfig := newFallbackPathTestConfig()
+	loadedConfig.WebSearch.Tavily = tavilySearchConfig{
+		APIKey:  testWebSearchTavilyKey,
+		APIKeys: []string{testWebSearchTavilyKey},
 	}
 
-	if deciderRequests != 1 {
-		t.Fatalf("expected exactly 1 search decider request for the fallback attempt, got %d", deciderRequests)
+	err := instance.generateAndSendResponse(
+		context.Background(),
+		loadedConfig,
+		request,
+		tracker,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("generate and send response: %v", err)
 	}
 
 	if len(webSearch.calls) != 1 {
-		t.Fatalf("expected exactly 1 web search call for the fallback attempt, got %d", len(webSearch.calls))
+		t.Fatalf("expected exactly 1 fallback web search call, got %d", len(webSearch.calls))
 	}
 
-	var latestContent string
-
-	for index := len(fallbackRequestMessages) - 1; index >= 0; index-- {
-		if text, ok := fallbackRequestMessages[index].Content.(string); ok {
-			latestContent = text
-
-			break
-		}
+	if len(chatClient.requests) != 3 {
+		t.Fatalf("expected primary + fallback tool round + fallback follow-up, got %d requests", len(chatClient.requests))
 	}
 
-	if !strings.Contains(latestContent, "Fallback search context") {
-		t.Fatalf("expected search results in the fallback request, got: %q", latestContent)
+	followUpText := latestChatMessageText(chatClient.requests[2].Messages)
+	if !strings.Contains(followUpText, testWebSearchResultText) {
+		t.Fatalf("expected search results in the fallback follow-up request, got: %q", followUpText)
 	}
 }
 
-// TestRespondToMessageDoesNotReRunSearchDeciderForFallbackWhenPrimaryDecided
-// asserts the fallback attempt does not duplicate the primary preparation's
-// search-decider work: once the primary pipeline made the decision (here:
-// needs_search=false), the fallback retries reuse that conversation without
-// another decider call or web search.
-func TestRespondToMessageDoesNotReRunSearchDeciderForFallbackWhenPrimaryDecided(t *testing.T) {
-	t.Parallel()
+// fallbackToolRoundStream builds the stub stream: the primary model fails,
+// the fallback model emits one web_search tool call, and the tool-less
+// fallback follow-up (which must contain the search results) gets answered.
+func fallbackToolRoundStream(
+	t *testing.T,
+	attemptedModels *[]string,
+) func(context.Context, chatCompletionRequest, func(streamDelta) error) error {
+	t.Helper()
 
-	const (
-		botUserID = "bot-user"
-		channelID = "channel-1"
-		userID    = "user-1"
-	)
+	return func(_ context.Context, request chatCompletionRequest, handle func(streamDelta) error) error {
+		*attemptedModels = append(*attemptedModels, request.ConfiguredModel)
 
-	sourceMessage := newPromptMessage("user-message-1", channelID, userID, botUserID)
-
-	session := newDirectMessageTestSession(t, channelID, botUserID, roundTripFunc(func(
-		request *http.Request,
-	) (*http.Response, error) {
-		t.Helper()
-
-		switch {
-		case request.Method == http.MethodPost &&
-			request.URL.Path == "/api/v9/channels/"+channelID+"/typing":
-			return newNoContentResponse(request), nil
-		case request.Method == http.MethodPost &&
-			request.URL.Path == "/api/v9/channels/"+channelID+"/messages":
-			response := new(discordgo.Message)
-			response.ID = "response-message"
-			response.ChannelID = channelID
-
-			return newJSONResponse(t, request, response), nil
-		case request.Method == http.MethodPatch &&
-			request.URL.Path == "/api/v9/channels/"+channelID+"/messages/response-message":
-			return newJSONResponse(t, request, new(discordgo.Message)), nil
-		default:
-			return newNoContentResponse(request), nil
-		}
-	}))
-
-	var deciderRequests int
-	var fallbackRequested bool
-
-	openAI := newStubChatClient(func(
-		_ context.Context,
-		request chatCompletionRequest,
-		handle func(streamDelta) error,
-	) error {
 		switch request.ConfiguredModel {
-		case "openai/decider-model":
-			deciderRequests++
+		case "gemini-search/gemini-3.7-flash-medium:vision":
+			return errPrimaryModelOverload
+		case "9router/stable_model:vision":
+			if len(request.Tools) == 1 {
+				return handle(streamDelta{
+					ToolCalls: []providers.FunctionToolCall{{
+						ID:        "call_fb",
+						Name:      providers.WebSearchToolName,
+						Arguments: `{"queries": ["` + testWebSearchQueryOne + `"]}`,
+					}},
+					FinishReason: "tool_calls",
+				})
+			}
 
-			return handle(newStreamDelta(`{"needs_search":false}`, ""))
-		case "9router/fallback-model":
-			fallbackRequested = true
+			if len(request.Tools) != 0 {
+				t.Errorf("expected the fallback follow-up to carry no tools, got %#v", request.Tools)
+			}
 
-			return handle(newStreamDelta("fallback answer", finishReasonStop))
+			followUpText := latestChatMessageText(request.Messages)
+			if !strings.Contains(followUpText, testWebSearchResultText) {
+				t.Errorf(
+					"expected search results in the fallback follow-up request, got: %q",
+					followUpText,
+				)
+			}
+
+			return handle(newStreamDelta("Fallback answer after searching.", finishReasonStop))
 		default:
-			return errors.New("primary model failure")
+			return errUnknownModel
 		}
-	})
-
-	webSearch := newStubWebSearchClient(func(
-		_ context.Context,
-		_ config,
-		_ []string,
-	) ([]webSearchResult, error) {
-		t.Error("unexpected web search call during fallback")
-
-		return nil, nil
-	})
-
-	instance := newSearchTestBot(openAI, webSearch)
-	instance.session = session
-	instance.currentSearchDeciderModel = "openai/decider-model"
-
-	err := instance.respondToMessage(
-		context.Background(),
-		newFallbackSearchDeciderTestConfig(),
-		sourceMessage,
-		"openai/main-model",
-	)
-	if err != nil {
-		t.Fatalf("respond to message: %v", err)
-	}
-
-	if !fallbackRequested {
-		t.Fatal("expected the fallback model to be attempted")
-	}
-
-	if deciderRequests != 1 {
-		t.Fatalf(
-			"expected only the primary preparation to consult the search decider, got %d requests",
-			deciderRequests,
-		)
-	}
-}
-
-// TestBuildFallbackRequestSkipsWebSearchWhenFallbackProviderDisablesDecider
-// asserts a per-provider disable_search_decider on the fallback provider also
-// suppresses the fallback attempt's web-search decision.
-func TestBuildFallbackRequestSkipsWebSearchWhenFallbackProviderDisablesDecider(t *testing.T) {
-	t.Parallel()
-
-	openAI := newStubChatClient(func(
-		_ context.Context,
-		_ chatCompletionRequest,
-		_ func(streamDelta) error,
-	) error {
-		t.Fatal("unexpected search decider request for a disabled fallback provider")
-
-		return nil
-	})
-
-	webSearch := newStubWebSearchClient(func(
-		_ context.Context,
-		_ config,
-		_ []string,
-	) ([]webSearchResult, error) {
-		t.Fatal("unexpected web search call for a disabled fallback provider")
-
-		return nil, nil
-	})
-
-	instance := newSearchTestBot(openAI, webSearch)
-
-	sourceMessage := newPromptMessage("user-message-1", "channel-1", "user-1", "bot-user")
-	sourceMessage.Author = newDiscordUser("user-1", false)
-
-	tracker := newResponseTracker(sourceMessage, "openai/main-model")
-	tracker.originalMessages = []chatMessage{
-		{Role: messageRoleUser, Content: "<@bot-user>: latest ai news"},
-	}
-
-	loadedConfig := newFallbackSearchDeciderTestConfig()
-	fallbackProvider := loadedConfig.Providers["9router"]
-	fallbackProvider.DisableSearchDecider = true
-	loadedConfig.Providers["9router"] = fallbackProvider
-
-	fallbackRequest, warnings, err := instance.buildFallbackRequest(
-		context.Background(),
-		loadedConfig,
-		"9router/fallback-model",
-		chatCompletionRequest{ConfiguredModel: "openai/main-model"},
-		tracker,
-	)
-	if err != nil {
-		t.Fatalf("build fallback request: %v", err)
-	}
-
-	if len(warnings) != 0 {
-		t.Fatalf("unexpected warnings: %#v", warnings)
-	}
-
-	if fallbackRequest.ConfiguredModel != "9router/fallback-model" {
-		t.Fatalf("unexpected fallback model: %q", fallbackRequest.ConfiguredModel)
-	}
-}
-
-// TestBuildFallbackRequestPropagatesSearchDeciderFailureWarning asserts that
-// a failed web-search decision during the fallback attempt surfaces as a
-// warning instead of being silently dropped.
-func TestBuildFallbackRequestPropagatesSearchDeciderFailureWarning(t *testing.T) {
-	t.Parallel()
-
-	openAI := newStubChatClient(func(
-		_ context.Context,
-		request chatCompletionRequest,
-		handle func(streamDelta) error,
-	) error {
-		if request.ConfiguredModel == "openai/decider-model" {
-			return errors.New("decider unavailable")
-		}
-
-		return nil
-	})
-
-	webSearch := newStubWebSearchClient(func(
-		_ context.Context,
-		_ config,
-		_ []string,
-	) ([]webSearchResult, error) {
-		t.Fatal("unexpected web search call after decider failure")
-
-		return nil, nil
-	})
-
-	instance := newSearchTestBot(openAI, webSearch)
-
-	sourceMessage := newPromptMessage("user-message-1", "channel-1", "user-1", "bot-user")
-	setCachedUserNode(instance, sourceMessage, nil, "<@bot-user>: latest ai news")
-
-	tracker := newResponseTracker(sourceMessage, "openai/main-model")
-	tracker.originalMessages = []chatMessage{
-		{Role: messageRoleUser, Content: "<@bot-user>: latest ai news"},
-	}
-
-	fallbackRequest, warnings, err := instance.buildFallbackRequest(
-		context.Background(),
-		newFallbackSearchDeciderTestConfig(),
-		"9router/fallback-model",
-		chatCompletionRequest{ConfiguredModel: "openai/main-model"},
-		tracker,
-	)
-	if err != nil {
-		t.Fatalf("build fallback request: %v", err)
-	}
-
-	if len(warnings) != 1 || warnings[0] != searchWarningText {
-		t.Fatalf("expected %q warning, got %#v", searchWarningText, warnings)
-	}
-
-	if fallbackRequest.ConfiguredModel != "9router/fallback-model" {
-		t.Fatalf("unexpected fallback model: %q", fallbackRequest.ConfiguredModel)
 	}
 }
