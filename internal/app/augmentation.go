@@ -3,8 +3,14 @@ package app
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"slices"
 	"strings"
+)
+
+var (
+	searchWebRE   = regexp.MustCompile(`(?i)\bsearch(?:\s+the)?\s+web\b`)
+	shortAnswerRE = regexp.MustCompile(`(?i)\bshort\s+answer\b`)
 )
 
 const (
@@ -564,38 +570,53 @@ func setPromptSectionValue(prompt *augmentedUserPrompt, sectionName string, valu
 }
 
 func containsSearchWebPhrase(text string) bool {
-	lower := strings.ToLower(text)
-
-	return strings.Contains(lower, "search web") || strings.Contains(lower, "search the web")
+	return searchWebRE.MatchString(text)
 }
 
-func maybeAppendSearchWebToConversation(conversation []chatMessage) ([]chatMessage, error) {
+func containsShortAnswerPhrase(text string) bool {
+	return shortAnswerRE.MatchString(text)
+}
+
+// userQueryFromContent extracts the UserQuery from a chatMessage Content value.
+// Unknown content types return "" and delegate error surfacing to
+// appendContextToConversation (which validates content types and returns
+// "unsupported message content type").
+func userQueryFromContent(content any) string {
+	switch typedContent := content.(type) {
+	case string:
+		return parseAugmentedUserPrompt(typedContent).UserQuery
+	case []contentPart:
+		return parseAugmentedUserPrompt(contentPartsText(typedContent)).UserQuery
+	case nil:
+		return ""
+	default:
+		// Unknown content type - delegate to appendContextToConversation to surface
+		// the proper "unsupported message content type" error via the
+		// prepareMessageResponse / buildFallbackRequest error path.
+		return ""
+	}
+}
+
+// latestUserQuery returns the UserQuery of the latest user message in the
+// conversation. The bool is false if the conversation is empty or has no user
+// message.
+func latestUserQuery(conversation []chatMessage) (string, bool) {
 	if len(conversation) == 0 {
-		return conversation, nil
+		return "", false
 	}
 
 	index, err := latestUserMessageIndex(conversation)
 	if err != nil {
-		return conversation, nil
+		return "", false
 	}
 
-	var userQuery string
+	return userQueryFromContent(conversation[index].Content), true
+}
 
-	switch typedContent := conversation[index].Content.(type) {
-	case string:
-		prompt := parseAugmentedUserPrompt(typedContent)
-		userQuery = prompt.UserQuery
-	case []contentPart:
-		contentText := contentPartsText(typedContent)
-		prompt := parseAugmentedUserPrompt(contentText)
-		userQuery = prompt.UserQuery
-	case nil:
-		userQuery = ""
-	default:
-		// Unknown content type - delegate to appendContextToConversation to surface
-		// the proper \"unsupported message content type\" error via the
-		// prepareMessageResponse / buildFallbackRequest error path.
-		userQuery = ""
+func maybeAppendSearchWebToConversation(conversation []chatMessage) ([]chatMessage, error) {
+	userQuery, ok := latestUserQuery(conversation)
+	if !ok {
+		return conversation, nil
 	}
 
 	if containsSearchWebPhrase(userQuery) {
@@ -609,4 +630,98 @@ func maybeAppendSearchWebToConversation(conversation []chatMessage) ([]chatMessa
 
 		prompt.UserQuery = appendPromptUserQuery(prompt.UserQuery, "search the web")
 	})
+}
+
+func maybeAppendShortAnswerToConversation(conversation []chatMessage) ([]chatMessage, error) {
+	userQuery, ok := latestUserQuery(conversation)
+	if !ok {
+		return conversation, nil
+	}
+
+	if containsShortAnswerPhrase(userQuery) {
+		return conversation, nil
+	}
+
+	return appendContextToConversation(conversation, func(prompt *augmentedUserPrompt) {
+		if containsShortAnswerPhrase(prompt.UserQuery) {
+			return
+		}
+
+		prompt.UserQuery = appendPromptUserQuery(prompt.UserQuery, "short answer")
+	})
+}
+
+func maybeAppendSearchWebAndShortAnswerToConversation(conversation []chatMessage) ([]chatMessage, error) {
+	userQuery, ok := latestUserQuery(conversation)
+	if !ok {
+		return conversation, nil
+	}
+
+	hasSearch := containsSearchWebPhrase(userQuery)
+	hasShort := containsShortAnswerPhrase(userQuery)
+
+	if hasSearch && hasShort {
+		return conversation, nil
+	}
+
+	return appendContextToConversation(conversation, func(prompt *augmentedUserPrompt) {
+		hasSearchInner := containsSearchWebPhrase(prompt.UserQuery)
+		hasShortInner := containsShortAnswerPhrase(prompt.UserQuery)
+
+		if hasSearchInner && hasShortInner {
+			return
+		}
+
+		if !hasSearchInner && !hasShortInner {
+			// Combined suffix uses single newline between phrases to produce
+			// "User query:\n<query>\n\nsearch the web\nshort answer" matching
+			// spec example "latest news\n\nsearch the web\nshort answer".
+			// Single "\n" avoids an extra blank paragraph between the two
+			// suffixes while each individual append still uses "\n\n" paragraph
+			// separation via appendPromptUserQuery.
+			prompt.UserQuery = appendPromptUserQuery(prompt.UserQuery, "search the web\nshort answer")
+			return
+		}
+
+		if !hasSearchInner {
+			prompt.UserQuery = appendPromptUserQuery(prompt.UserQuery, "search the web")
+			return
+		}
+
+		if !hasShortInner {
+			prompt.UserQuery = appendPromptUserQuery(prompt.UserQuery, "short answer")
+			return
+		}
+	})
+}
+
+// applyAutoAppend applies per-provider auto-append suffixes. It consolidates
+// the branching used by both prepareMessageResponse and buildFallbackRequest
+// so the two request builders stay in sync.
+func applyAutoAppend(provider providerConfig, conversation []chatMessage) ([]chatMessage, error) {
+	switch {
+	case provider.AutoAppendSearchWeb && provider.AutoAppendShortAnswer:
+		appended, err := maybeAppendSearchWebAndShortAnswerToConversation(conversation)
+		if err != nil {
+			return nil, fmt.Errorf("append search web and short answer suffix: %w", err)
+		}
+
+		return appended, nil
+	case provider.AutoAppendSearchWeb:
+		appended, err := maybeAppendSearchWebToConversation(conversation)
+		if err != nil {
+			return nil, fmt.Errorf("append search web suffix: %w", err)
+		}
+
+		return appended, nil
+	case provider.AutoAppendShortAnswer:
+		appended, err := maybeAppendShortAnswerToConversation(conversation)
+		if err != nil {
+			return nil, fmt.Errorf("append short answer suffix: %w", err)
+		}
+
+		return appended, nil
+	default:
+		return conversation, nil
+	}
 }

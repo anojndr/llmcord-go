@@ -49,7 +49,7 @@ permissions:
 # (name contains "gemini" or base_url with generativelanguage.googleapis.com)
 # must not set `api` (validation will fail).
 # Per-provider flags: disable_search_decider, dont_send_system_prompt,
-# auto_append_search_web, enable_grounding (Gemini only).
+# auto_append_search_web, auto_append_short_answer, enable_grounding (Gemini only).
 # Per-provider reasoning effort for OpenAI-compatible providers:
 #   reasoning_effort: none | minimal | low | medium | high | xhigh | max
 # Maps to reasoning.effort (api: openai-responses) or reasoning_effort
@@ -89,6 +89,8 @@ providers:
     # dont_send_system_prompt: true
     # Automatically append "search the web" to user queries if not already present:
     # auto_append_search_web: true
+    # Automatically append "short answer" to user queries if not already present:
+    # auto_append_short_answer: true
     # Thought summaries are disabled by default. To turn them on:
     # extra_body:
     #   thinkingConfig:
@@ -133,6 +135,8 @@ providers:
     # reasoning_effort: medium
     # Automatically append "search the web" to user queries if not already present:
     # auto_append_search_web: true
+    # Automatically append "short answer" to user queries if not already present:
+    # auto_append_short_answer: true
     # Requests through the built-in `openai` provider default to `verbosity:
     # low` and derive a stable reply-chain `prompt_cache_key`, even if you
     # replace `base_url` with another OpenAI-compatible backend.
