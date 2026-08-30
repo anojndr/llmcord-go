@@ -31,6 +31,7 @@ func TestBuildGeminiGenerateContentRequestWithGrounding(t *testing.T) {
 		Messages: []providers.ChatMessage{
 			{Role: searchtypes.MessageRoleUser, Content: "What is the weather in Tokyo?"},
 		},
+		Tools: nil,
 	}
 
 	_, config, err := providers.BuildGeminiGenerateContentRequest(context.Background(), request, nil)
@@ -87,6 +88,7 @@ func TestBuildGeminiGenerateContentRequestWithoutGrounding(t *testing.T) {
 		Messages: []providers.ChatMessage{
 			{Role: searchtypes.MessageRoleUser, Content: "What is the weather in Tokyo?"},
 		},
+		Tools: nil,
 	}
 
 	_, config, err := providers.BuildGeminiGenerateContentRequest(context.Background(), request, nil)
@@ -136,15 +138,15 @@ func testGroundingConfig() config {
 		},
 		Providers: map[string]providerConfig{
 			"gemini": {
-				Name:                 "gemini",
-				BaseURL:              "",
-				APIKey:               "",
-				APIKeys:              nil,
-				EnableGrounding:      true,
-				DisableSearchDecider: false,
-				ExtraHeaders:         nil,
-				ExtraQuery:           nil,
-				ExtraBody:            nil,
+				Name:             "gemini",
+				BaseURL:          "",
+				APIKey:           "",
+				APIKeys:          nil,
+				EnableGrounding:  true,
+				DisableWebSearch: false,
+				ExtraHeaders:     nil,
+				ExtraQuery:       nil,
+				ExtraBody:        nil,
 			},
 		},
 		WebSearch: webSearchConfig{
@@ -187,16 +189,17 @@ func testGroundingConfig() config {
 		Models: map[string]map[string]any{
 			"gemini/gemini-3.6-flash": {},
 		},
-		ModelOrder:                     nil,
-		ChannelModelLocks:              nil,
-		ChannelSearchDeciderModelLocks: nil,
-		SearchDeciderModel:             "",
-		MediaAnalysisModel:             "",
-		SystemPrompt:                   "",
+		ModelOrder:         nil,
+		ChannelModelLocks:  nil,
+		MediaAnalysisModel: "",
+		SystemPrompt:       "",
 	}
 }
 
-func TestAugmentConversationSkipsSearchDeciderWhenGroundingEnabled(t *testing.T) {
+// TestAugmentConversationDoesNotRunWebSearch asserts the augmentation stage
+// never performs web search itself: search runs through the web_search tool
+// during generation instead.
+func TestAugmentConversationDoesNotRunWebSearch(t *testing.T) {
 	t.Parallel()
 
 	loadedConfig := testGroundingConfig()
@@ -208,7 +211,6 @@ func TestAugmentConversationSkipsSearchDeciderWhenGroundingEnabled(t *testing.T)
 	augmentedMessages, searchMetadata, _, err := instance.augmentConversation(
 		ctx,
 		loadedConfig,
-		"gemini/gemini-3.6-flash",
 		sourceMessage,
 		messages,
 		nil,
@@ -219,7 +221,7 @@ func TestAugmentConversationSkipsSearchDeciderWhenGroundingEnabled(t *testing.T)
 	}
 
 	if searchMetadata != nil {
-		t.Error("expected searchMetadata to be nil when grounding is enabled (skipping search decider)")
+		t.Error("expected searchMetadata to be nil without a search-augmentation stage")
 	}
 
 	if len(augmentedMessages) != len(messages) {

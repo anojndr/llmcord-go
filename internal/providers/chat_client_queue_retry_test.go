@@ -201,6 +201,7 @@ func chatCompletionRetryTestRequest(baseURL string) ChatCompletionRequest {
 	request := ChatCompletionRequest{
 		Provider: ProviderRequestConfig{
 			APIKind:         ProviderAPIKindOpenAI,
+			API:             "",
 			BaseURL:         baseURL,
 			APIKey:          "test-key",
 			APIKeys:         nil,
@@ -210,6 +211,7 @@ func chatCompletionRetryTestRequest(baseURL string) ChatCompletionRequest {
 			ExtraQuery:      nil,
 			ExtraBody:       nil,
 		},
+		Tools:           nil,
 		Model:           "stable_model:vision",
 		ConfiguredModel: "9router/stable_model:vision",
 		SessionID:       "",

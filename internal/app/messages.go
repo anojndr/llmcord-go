@@ -344,15 +344,14 @@ func (instance *bot) prepareMessageResponse(
 		requestMessages = prependSystemPrompt(messages, loadedConfig.SystemPrompt, time.Now())
 	}
 
-	request, err := buildChatCompletionRequest(
+	request, err := instance.buildPreparedChatCompletionRequest(
 		loadedConfig,
+		provider,
 		providerSlashModel,
 		requestMessages,
-		instance.currentGroundingEnabled(provider),
 	)
 	if err != nil {
-		return chatCompletionRequest{}, nil, nil,
-			fmt.Errorf("build chat completion request: %w", err)
+		return chatCompletionRequest{}, nil, nil, err
 	}
 
 	request.RequestID = strings.TrimSpace(message.ID)
@@ -364,23 +363,48 @@ func (instance *bot) prepareMessageResponse(
 	tracker := progress.handoff(request.ConfiguredModel, searchMetadata)
 	if tracker != nil {
 		tracker.originalMessages = unmutatedMessages
-		tracker.webSearchDecided = !provider.DisableSearchDecider &&
-			!instance.currentGroundingEnabled(provider)
 	}
 
 	return request, tracker, warnings, nil
 }
 
+// buildPreparedChatCompletionRequest assembles the outgoing request for a
+// prepared conversation and attaches the web_search tool when the provider's
+// models may search the web.
+func (instance *bot) buildPreparedChatCompletionRequest(
+	loadedConfig config,
+	provider providerConfig,
+	providerSlashModel string,
+	messages []chatMessage,
+) (chatCompletionRequest, error) {
+	request, err := buildChatCompletionRequest(
+		loadedConfig,
+		providerSlashModel,
+		messages,
+		instance.currentGroundingEnabled(provider),
+	)
+	if err != nil {
+		return chatCompletionRequest{}, fmt.Errorf("build chat completion request: %w", err)
+	}
+
+	if instance.webSearchToolEnabled(loadedConfig, provider) {
+		request.Tools = []providers.FunctionTool{
+			providers.WebSearchTool(webSearchToolMaxQueries),
+		}
+	}
+
+	return request, nil
+}
+
 func (instance *bot) buildFallbackRequest(
-	ctx context.Context,
 	loadedConfig config,
 	fallbackModel string,
 	request chatCompletionRequest,
 	tracker *responseTracker,
-) (chatCompletionRequest, []string, error) {
+) (chatCompletionRequest, error) {
 	fallbackProvider, err := configuredModelProvider(loadedConfig, fallbackModel)
 	if err != nil {
-		return chatCompletionRequest{}, nil, err
+		return chatCompletionRequest{}, err
 	}
 
 	messages := request.Messages
@@ -390,28 +414,10 @@ func (instance *bot) buildFallbackRequest(
 		messages = tracker.originalMessages
 	}
 
-	var searchWarnings []string
-	if tracker != nil &&
-		tracker.sourceMessage != nil &&
-		!tracker.webSearchDecided &&
-		!instance.currentGroundingEnabled(fallbackProvider) {
-		augmentedMessages, webSearchMetadata, warnings := instance.maybeAugmentConversationWithWebSearch(
-			ctx,
-			loadedConfig,
-			fallbackModel,
-			tracker.sourceMessage,
-			messages,
-		)
-
-		searchWarnings = warnings
-		messages = augmentedMessages
-		tracker.searchMetadata = mergeSearchMetadata(tracker.searchMetadata, webSearchMetadata)
-	}
-
 	if fallbackProvider.AutoAppendSearchWeb || fallbackProvider.AutoAppendShortAnswer || fallbackProvider.AutoAppendPrioritizeTruth {
 		appendedMessages, appendErr := applyAutoAppend(fallbackProvider, messages)
 		if appendErr != nil {
-			return chatCompletionRequest{}, nil, appendErr
+			return chatCompletionRequest{}, appendErr
 		}
 
 		messages = appendedMessages
@@ -428,7 +434,13 @@ func (instance *bot) buildFallbackRequest(
 		instance.currentGroundingEnabled(fallbackProvider),
 	)
 	if err != nil {
-		return chatCompletionRequest{}, nil, err
+		return chatCompletionRequest{}, err
+	}
+
+	if instance.webSearchToolEnabled(loadedConfig, fallbackProvider) {
+		fallbackRequest.Tools = []providers.FunctionTool{
+			providers.WebSearchTool(webSearchToolMaxQueries),
+		}
 	}
 
 	fallbackRequest.RequestID = request.RequestID
@@ -442,7 +454,7 @@ func (instance *bot) buildFallbackRequest(
 		)
 	}
 
-	return fallbackRequest, searchWarnings, nil
+	return fallbackRequest, nil
 }
 
 func fallbackAttachmentDownloadConversation(
@@ -520,7 +532,6 @@ func (instance *bot) augmentPreparedMessageResponse(
 	messages, searchMetadata, warnings, err := instance.augmentConversation(
 		ctx,
 		loadedConfig,
-		providerSlashModel,
 		message,
 		messages,
 		warnings,
@@ -851,17 +862,11 @@ func configuredModelProvider(
 func (instance *bot) augmentConversation(
 	ctx context.Context,
 	loadedConfig config,
-	providerSlashModel string,
 	sourceMessage *discordgo.Message,
 	messages []chatMessage,
 	warnings []string,
 	urlExtractionText string,
 ) ([]chatMessage, *searchMetadata, []string, error) {
-	provider, err := configuredModelProvider(loadedConfig, providerSlashModel)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-
 	stages := []preparedAugmentationStage{
 		{
 			name: "visual search",
@@ -914,22 +919,7 @@ func (instance *bot) augmentConversation(
 		return nil, nil, nil, err
 	}
 
-	if provider.DisableSearchDecider ||
-		instance.currentGroundingEnabled(provider) {
-		return augmentedMessages, searchMetadata, warnings, nil
-	}
-
-	augmentedMessages, webSearchMetadata, searchWarnings := instance.maybeAugmentConversationWithWebSearch(
-		ctx,
-		loadedConfig,
-		providerSlashModel,
-		sourceMessage,
-		augmentedMessages,
-	)
-
-	warnings = append(warnings, searchWarnings...)
-
-	return augmentedMessages, mergeSearchMetadata(searchMetadata, webSearchMetadata), warnings, nil
+	return augmentedMessages, searchMetadata, warnings, nil
 }
 
 func (instance *bot) sourceMessageURLExtractionText(
@@ -1120,33 +1110,16 @@ func buildChatCompletionRequest(
 	extraBody := mergeExtraBody(provider.ExtraBody, modelParameters)
 	extraBody = defaultProviderVerbosity(providerName, providerAPIKind, extraBody)
 
-	if providerAPIKind == providerAPIKindGemini {
-		resolvedModelName, normalizedExtraBody, normalizeErr := providers.NormalizeGeminiModelAlias(
-			modelName,
-			extraBody,
-		)
-		if normalizeErr != nil {
-			return chatCompletionRequest{}, fmt.Errorf(
-				"normalize gemini model alias %q: %w",
-				modelName,
-				normalizeErr,
-			)
-		}
-
-		modelName = resolvedModelName
-		extraBody = normalizedExtraBody
-	}
-
-	if providerAPIKind == providerAPIKindOpenAI {
-		if useResponsesAPI {
-			modelName, extraBody = providers.NormalizeOpenAIResponsesModelAlias(modelName, extraBody)
-			extraBody = providers.NormalizeOpenAIResponsesExtraBody(modelName, extraBody)
-		} else {
-			modelName, extraBody = providers.NormalizeOpenAIChatCompletionsModelAlias(modelName, extraBody)
-		}
-		if dedicatedEffort, ok := dedicatedReasoningEffort(provider, modelParameters); ok {
-			extraBody = providers.ApplyDedicatedReasoningEffort(extraBody, modelName, dedicatedEffort, useResponsesAPI)
-		}
+	modelName, extraBody, err = normalizeModelAliasForProvider(
+		provider,
+		providerAPIKind,
+		modelName,
+		extraBody,
+		modelParameters,
+		useResponsesAPI,
+	)
+	if err != nil {
+		return chatCompletionRequest{}, err
 	}
 
 	extraBody = defaultOpenRouterTransforms(provider, extraBody)
@@ -1169,5 +1142,48 @@ func buildChatCompletionRequest(
 		SessionID:       "",
 		RequestID:       "",
 		Messages:        messages,
+		Tools:           nil,
 	}, nil
+}
+
+// normalizeModelAliasForProvider resolves model alias suffixes and merges
+// per-model reasoning effort into the request extra body.
+func normalizeModelAliasForProvider(
+	provider providerConfig,
+	providerAPIKind providerAPIKind,
+	modelName string,
+	extraBody map[string]any,
+	modelParameters map[string]any,
+	useResponsesAPI bool,
+) (string, map[string]any, error) {
+	if providerAPIKind == providerAPIKindGemini {
+		resolvedModelName, normalizedExtraBody, normalizeErr := providers.NormalizeGeminiModelAlias(
+			modelName,
+			extraBody,
+		)
+		if normalizeErr != nil {
+			return "", nil, fmt.Errorf(
+				"normalize gemini model alias %q: %w",
+				modelName,
+				normalizeErr,
+			)
+		}
+
+		return resolvedModelName, normalizedExtraBody, nil
+	}
+
+	if providerAPIKind == providerAPIKindOpenAI {
+		if useResponsesAPI {
+			modelName, extraBody = providers.NormalizeOpenAIResponsesModelAlias(modelName, extraBody)
+			extraBody = providers.NormalizeOpenAIResponsesExtraBody(modelName, extraBody)
+		} else {
+			modelName, extraBody = providers.NormalizeOpenAIChatCompletionsModelAlias(modelName, extraBody)
+		}
+
+		if dedicatedEffort, ok := dedicatedReasoningEffort(provider, modelParameters); ok {
+			extraBody = providers.ApplyDedicatedReasoningEffort(extraBody, modelName, dedicatedEffort, useResponsesAPI)
+		}
+	}
+
+	return modelName, extraBody, nil
 }

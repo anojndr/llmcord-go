@@ -19,7 +19,6 @@ import (
 const (
 	testOpenAIBaseURL         = "https://api.example.com/v1"
 	testOfficialOpenAIBaseURL = "https://api.openai.com/v1"
-	testSearchDeciderModel2   = "openai/decider-model"
 )
 
 func TestAppendMediaAnalysesToConversationPreservesImages(t *testing.T) {
@@ -508,21 +507,21 @@ func TestBuildConversationSuppressesUnsupportedWarningForReplyTargetGeminiMedia(
 	}
 }
 
-func TestConfiguredGeminiMediaModelPrefersSearchDeciderModel(t *testing.T) {
+// TestConfiguredGeminiMediaModelAutoSelectsFirstGeminiInModelOrder covers the
+// auto-selection branch used when media_analysis_model is unset (the default).
+func TestConfiguredGeminiMediaModelAutoSelectsFirstGeminiInModelOrder(t *testing.T) {
 	t.Parallel()
 
-	loadedConfig := testMediaAnalysisFallbackConfig()
-	loadedConfig.Models["gemini/gemini-3-pro-preview"] = nil
-	loadedConfig.ModelOrder = append(loadedConfig.ModelOrder, "gemini/gemini-3-pro-preview")
-	loadedConfig.SearchDeciderModel = "gemini/gemini-3-pro-preview"
+	loadedConfig := testMediaAnalysisConfig()
+	loadedConfig.MediaAnalysisModel = ""
 
 	modelName, err := configuredGeminiMediaModel(loadedConfig)
 	if err != nil {
 		t.Fatalf("find configured gemini media model: %v", err)
 	}
 
-	if modelName != "gemini/gemini-3-pro-preview" {
-		t.Fatalf("unexpected gemini media model: %q", modelName)
+	if modelName != testMediaAnalysisModel {
+		t.Fatalf("unexpected auto-selected gemini media model: %q", modelName)
 	}
 }
 
@@ -553,26 +552,16 @@ func testMediaAnalysisConfig() config {
 		"gemini": *geminiProvider,
 	}
 	loadedConfig.Models = map[string]map[string]any{
-		"openai/gpt-5":          nil,
-		testSearchDeciderModel2: nil,
-		testMediaAnalysisModel:  nil,
+		"openai/gpt-5":         nil,
+		testMediaAnalysisModel: nil,
 	}
 	loadedConfig.ModelOrder = []string{
 		"openai/gpt-5",
 		testMediaAnalysisModel,
-		testSearchDeciderModel2,
 	}
-	loadedConfig.SearchDeciderModel = testSearchDeciderModel2
 	loadedConfig.MediaAnalysisModel = testMediaAnalysisModel
 
 	return *loadedConfig
-}
-
-func testMediaAnalysisFallbackConfig() config {
-	loadedConfig := testMediaAnalysisConfig()
-	loadedConfig.MediaAnalysisModel = ""
-
-	return loadedConfig
 }
 
 func expectedMediaAnalysisUserText(userQuery string, analyses []string) string {
@@ -642,6 +631,7 @@ func newGeminiMediaAnalysisChatClient(
 			FinishReason:       finishReasonStop,
 			ProviderResponseID: "",
 			SearchMetadata:     nil,
+			ToolCalls:          nil,
 		})
 		if err != nil {
 			return err
@@ -712,6 +702,7 @@ func newConcurrentGeminiMediaAnalysisChatClient(
 			FinishReason:       finishReasonStop,
 			ProviderResponseID: "",
 			SearchMetadata:     nil,
+			ToolCalls:          nil,
 		})
 	})
 
@@ -854,6 +845,7 @@ func TestAnalyzeMediaWithGeminiFallsBackToAudioCapableModel(t *testing.T) {
 			FinishReason:       finishReasonStop,
 			ProviderResponseID: "",
 			SearchMetadata:     nil,
+			ToolCalls:          nil,
 		})
 	})
 

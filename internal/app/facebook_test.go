@@ -994,18 +994,6 @@ func testFacebookVideoContent() facebookVideoContent {
 	}
 }
 
-func testFacebookConversationWithImage() []chatMessage {
-	return []chatMessage{
-		{
-			Role: messageRoleUser,
-			Content: []contentPart{
-				{"type": contentTypeText, "text": "<@123>: summarize " + testFacebookURL},
-				{"type": contentTypeImageURL, "image_url": map[string]string{"url": "data:image/png;base64,abc"}},
-			},
-		},
-	}
-}
-
 func TestExtractFacebookURLsNormalizesAndDeduplicates(t *testing.T) {
 	t.Parallel()
 
@@ -1457,129 +1445,6 @@ func TestFacebookClientFetchCompressFallbackOnFailure(t *testing.T) {
 	}
 }
 
-func TestMaybeAugmentConversationWithFacebookAppendsVideoPartsAndAnalysesForNonGeminiSearchDecider(t *testing.T) {
-	t.Parallel()
-
-	expectedAnalysis := []string{
-		"Video description per timestamp:\n\n0s to 10s: somebody waves",
-	}
-	chatClient, analysisCallCount := newGeminiVideoAnalysisChatClient(t, expectedAnalysis[0])
-
-	instance := newFacebookTestBot(
-		newStubFacebookContentClient(func(
-			_ context.Context,
-			rawURL string,
-		) (facebookVideoContent, error) {
-			if rawURL != testFacebookURL {
-				t.Fatalf("unexpected raw url: %q", rawURL)
-			}
-
-			return testFacebookVideoContent(), nil
-		}),
-		chatClient,
-	)
-
-	prepared, err := instance.prepareFacebookAugmentation(
-		context.Background(),
-		testMediaAnalysisConfig(),
-		testMediaAnalysisModel,
-		"<@123>: summarize "+testFacebookURL,
-	)
-	if err != nil {
-		t.Fatalf("augment conversation with facebook: %v", err)
-	}
-
-	augmentedConversation, err := applyPreparedConversationAugmentation(
-		testFacebookConversationWithImage(),
-		prepared,
-	)
-	if err != nil {
-		t.Fatalf("augment conversation with facebook: %v", err)
-	}
-
-	warnings := prepared.warnings
-
-	if len(warnings) != 0 {
-		t.Fatalf("unexpected warnings: %#v", warnings)
-	}
-
-	if *analysisCallCount != 1 {
-		t.Fatalf("unexpected gemini analysis call count: %d", *analysisCallCount)
-	}
-
-	expectedText := expectedMediaAnalysisUserText(
-		"<@123>: summarize "+testFacebookURL,
-		expectedAnalysis,
-	)
-
-	assertAugmentedVideoParts(t, augmentedConversation, expectedText)
-	assertSearchDeciderTextContent(
-		t,
-		augmentedConversation,
-		testMediaAnalysisConfig(),
-		"openai/decider-model",
-		expectedText,
-	)
-}
-
-func TestMaybeAugmentConversationWithFacebookSkipsAnalysesForGeminiSearchDecider(t *testing.T) {
-	t.Parallel()
-
-	chatClient := newStubChatClient(func(
-		_ context.Context,
-		_ chatCompletionRequest,
-		_ func(streamDelta) error,
-	) error {
-		t.Fatal("unexpected gemini analysis request")
-
-		return nil
-	})
-
-	loadedConfig := testMediaAnalysisConfig()
-	loadedConfig.SearchDeciderModel = testMediaAnalysisModel
-
-	instance := newFacebookTestBot(
-		newStubFacebookContentClient(func(
-			_ context.Context,
-			_ string,
-		) (facebookVideoContent, error) {
-			return testFacebookVideoContent(), nil
-		}),
-		chatClient,
-	)
-	instance.currentSearchDeciderModel = testMediaAnalysisModel
-
-	prepared, err := instance.prepareFacebookAugmentation(
-		context.Background(),
-		loadedConfig,
-		testMediaAnalysisModel,
-		"<@123>: summarize "+testFacebookURL,
-	)
-	if err != nil {
-		t.Fatalf("augment conversation with facebook: %v", err)
-	}
-
-	augmentedConversation, err := applyPreparedConversationAugmentation(
-		testFacebookConversationWithImage(),
-		prepared,
-	)
-	if err != nil {
-		t.Fatalf("augment conversation with facebook: %v", err)
-	}
-
-	warnings := prepared.warnings
-
-	if len(warnings) != 0 {
-		t.Fatalf("unexpected warnings: %#v", warnings)
-	}
-
-	assertAugmentedVideoParts(
-		t,
-		augmentedConversation,
-		"<@123>: summarize "+testFacebookURL,
-	)
-}
-
 func TestMaybeAugmentConversationWithFacebookPreprocessesForNonGeminiModels(t *testing.T) {
 	t.Parallel()
 
@@ -1608,6 +1473,7 @@ func TestMaybeAugmentConversationWithFacebookPreprocessesForNonGeminiModels(t *t
 			FinishReason:       finishReasonStop,
 			ProviderResponseID: "",
 			SearchMetadata:     nil,
+			ToolCalls:          nil,
 		})
 	})
 

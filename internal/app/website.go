@@ -179,7 +179,7 @@ func (instance *bot) prepareTinyFishWebsiteAugmentationBatch(
 	}
 	batchCount := (len(validNormalized) + 9) / 10
 	type batchFetchResult struct {
-		response tinyFishFetchResponse
+		response  tinyFishFetchResponse
 		batchURLs []string
 	}
 	batchResults := runTasksConcurrently(
@@ -347,25 +347,25 @@ func (instance *bot) prepareTinyFishWebsiteAugmentationBatch(
 	seenContent := make(map[string]struct{})
 	for _, normalized := range validNormalized {
 		lower := strings.ToLower(strings.TrimSpace(normalized))
-		pc, ok := fetchedPageMap[lower]
+		pageContent, ok := fetchedPageMap[lower]
 		if !ok {
 			// Try slash-insensitive lookup
 			trimmed := strings.TrimSuffix(lower, "/")
 			if trimmed != lower {
-				pc, ok = fetchedPageMap[trimmed]
+				pageContent, ok = fetchedPageMap[trimmed]
 			} else {
-				pc, ok = fetchedPageMap[lower+"/"]
+				pageContent, ok = fetchedPageMap[lower+"/"]
 			}
 			if !ok {
 				continue
 			}
 		}
-		urlKey := strings.ToLower(strings.TrimSpace(pc.URL))
+		urlKey := strings.ToLower(strings.TrimSpace(pageContent.URL))
 		if _, dup := seenContent[urlKey]; dup {
 			continue
 		}
 		seenContent[urlKey] = struct{}{}
-		orderedContents = append(orderedContents, pc)
+		orderedContents = append(orderedContents, pageContent)
 	}
 	if len(orderedContents) == 0 {
 		warnings := []string(nil)
@@ -1632,21 +1632,6 @@ func isPublicWebsiteIP(address netip.Addr) bool {
 	return true
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 func extractWebsiteURLs(text string) []string {
 	text = normalizedURLExtractionText(text)
 
@@ -1767,8 +1752,6 @@ func isFacebookHost(host string) bool {
 		strings.HasSuffix(normalizedHost, ".facebook.com") ||
 		strings.HasSuffix(normalizedHost, ".fb.watch")
 }
-
-
 
 // parseWebsiteHTML and its helpers (extractWebsiteTitle, extractWebsiteBodyText,
 // websiteContentCandidates, renderWebsiteText etc.) are retained for direct
@@ -2035,10 +2018,6 @@ func renderWebsiteText(root *html.Node) string {
 
 	return truncateRunes(strings.Join(segments, "\n"), maxWebsiteContentRunes)
 }
-
-
-
-
 
 func renderWebsiteNode(
 	node *html.Node,

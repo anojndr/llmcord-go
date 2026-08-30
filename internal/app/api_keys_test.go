@@ -152,15 +152,15 @@ func TestPrimaryAPIKey(t *testing.T) {
 		t.Parallel()
 
 		provider := providerConfig{
-			Name:                 "openai",
-			BaseURL:              "https://api.openai.com/v1",
-			APIKey:               t.Name() + "-p1",
-			APIKeys:              []string{t.Name() + "-p2", t.Name() + "-p3"},
-			EnableGrounding:      false,
-			DisableSearchDecider: false,
-			ExtraHeaders:         nil,
-			ExtraQuery:           nil,
-			ExtraBody:            nil,
+			Name:             "openai",
+			BaseURL:          "https://api.openai.com/v1",
+			APIKey:           t.Name() + "-p1",
+			APIKeys:          []string{t.Name() + "-p2", t.Name() + "-p3"},
+			EnableGrounding:  false,
+			DisableWebSearch: false,
+			ExtraHeaders:     nil,
+			ExtraQuery:       nil,
+			ExtraBody:        nil,
 		}
 
 		if key := provider.primaryAPIKey(); key != t.Name()+"-p1" {

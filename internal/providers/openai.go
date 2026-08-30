@@ -152,10 +152,11 @@ func (client openAIClient) streamChatCompletionAttempt(
 		return handle(delta)
 	}
 
-	doneSeen, err := consumeServerSentEvents(httpResponse.Body, func(payload []byte) error {
-		return handleStreamPayload(payload, wrappedHandle)
-	})
+	toolCalls := newChatCompletionsToolCallAccumulator()
 
+	doneSeen, err := consumeServerSentEvents(httpResponse.Body, func(payload []byte) error {
+		return handleStreamPayload(payload, wrappedHandle, toolCalls)
+	})
 	_ = httpResponse.Body.Close()
 
 	if err != nil {
@@ -215,6 +216,7 @@ func buildChatCompletionRequestBodyWithUsageOption(
 	requestBody["model"] = request.Model
 	requestBody["stream"] = true
 	addOpenAIPromptCacheKey(requestBody, request)
+	addOpenAITools(requestBody, request)
 
 	maps.Copy(requestBody, request.Provider.ExtraBody)
 
@@ -692,20 +694,27 @@ func appendServerSentEventLine(
 	return false, nil
 }
 
-func handleStreamPayload(payload []byte, handle func(StreamDelta) error) error {
-	delta, err := openAIStreamPayloadDelta(payload)
+func handleStreamPayload(
+	payload []byte,
+	handle func(StreamDelta) error,
+	toolCalls *chatCompletionsToolCallAccumulator,
+) error {
+	delta, err := openAIStreamPayloadDelta(payload, toolCalls)
 	if err != nil {
 		return err
 	}
 
 	if delta.Content != "" {
-		err = handle(StreamDelta{
+		contentDelta := StreamDelta{
 			Thinking:           "",
 			Content:            delta.Content,
 			FinishReason:       "",
 			ProviderResponseID: "",
 			SearchMetadata:     nil,
-		})
+			ToolCalls:          nil,
+		}
+
+		err = handle(contentDelta)
 		if err != nil {
 			return fmt.Errorf(handleStreamDeltaErrorFormat, err)
 		}
@@ -717,13 +726,16 @@ func handleStreamPayload(payload []byte, handle func(StreamDelta) error) error {
 			return err
 		}
 
-		err = handle(StreamDelta{
+		finishDelta := StreamDelta{
 			Thinking:           "",
 			Content:            "",
 			FinishReason:       delta.FinishReason,
 			ProviderResponseID: "",
 			SearchMetadata:     nil,
-		})
+			ToolCalls:          delta.ToolCalls,
+		}
+
+		err = handle(finishDelta)
 		if err != nil {
 			return fmt.Errorf(handleStreamDeltaErrorFormat, err)
 		}
@@ -732,9 +744,13 @@ func handleStreamPayload(payload []byte, handle func(StreamDelta) error) error {
 	return nil
 }
 
-func openAIStreamPayloadDelta(payload []byte) (StreamDelta, error) {
+func openAIStreamPayloadDelta(
+	payload []byte,
+	toolCalls *chatCompletionsToolCallAccumulator,
+) (StreamDelta, error) {
 	type streamChoiceDelta struct {
-		Content string `json:"content"`
+		Content   string                 `json:"content"`
+		ToolCalls []openAIStreamToolCall `json:"tool_calls,omitempty"`
 	}
 
 	type streamChoice struct {
@@ -757,44 +773,40 @@ func openAIStreamPayloadDelta(payload []byte) (StreamDelta, error) {
 
 	err := json.Unmarshal(payload, &envelope)
 	if err != nil {
-		return StreamDelta{
-			Thinking:           "",
-			Content:            "",
-			FinishReason:       "",
-			ProviderResponseID: "",
-			SearchMetadata:     nil,
-		}, fmt.Errorf("decode stream Payload: %w", err)
+		var emptyDelta StreamDelta
+
+		return emptyDelta, fmt.Errorf("decode stream Payload: %w", err)
 	}
 
 	if envelope.Error != nil {
-		return StreamDelta{
-				Thinking:           "",
-				Content:            "",
-				FinishReason:       "",
-				ProviderResponseID: "",
-				SearchMetadata:     nil,
-			}, openAIStreamEventError(
-				envelope.Error.Message,
-				envelope.Error.Type,
-				envelope.Error.Code,
-			)
+		var emptyDelta StreamDelta
+
+		return emptyDelta, openAIStreamEventError(
+			envelope.Error.Message,
+			envelope.Error.Type,
+			envelope.Error.Code,
+		)
 	}
 
-	delta := StreamDelta{
-		Thinking:           "",
-		Content:            "",
-		FinishReason:       "",
-		ProviderResponseID: "",
-		SearchMetadata:     nil,
-	}
+	var delta StreamDelta
 
 	if len(envelope.Choices) == 0 {
 		return delta, nil
 	}
 
-	delta.Content = envelope.Choices[0].Delta.Content
-	if envelope.Choices[0].FinishReason != nil {
-		delta.FinishReason = strings.TrimSpace(*envelope.Choices[0].FinishReason)
+	choice := envelope.Choices[0]
+	delta.Content = choice.Delta.Content
+
+	if len(choice.Delta.ToolCalls) > 0 && toolCalls != nil {
+		toolCalls.observe(choice.Delta.ToolCalls)
+	}
+
+	if choice.FinishReason != nil {
+		delta.FinishReason = strings.TrimSpace(*choice.FinishReason)
+
+		if toolCalls != nil {
+			delta.ToolCalls = toolCalls.finalize()
+		}
 	}
 
 	return delta, nil
@@ -889,21 +901,24 @@ func isASCIIDigit(char byte) bool {
 
 func openAIStreamFinishReasonError(finishReason string) error {
 	switch strings.ToLower(strings.TrimSpace(finishReason)) {
-	case "", finishReasonStop, "end_turn", finishReasonLength:
+	case "", finishReasonStop, "end_turn", finishReasonLength,
+		openAIStreamToolCallsFinishReason, openAIStreamFunctionCallFinishReason:
 		return nil
 	case openAIContentFilterFinishReason:
 		return fmt.Errorf("provider blocked the response (finish_reason=%s): %w", finishReason, os.ErrInvalid)
 	// OpenAIStreamErrorEventType is the "error" SSE event type.
-	case openAIStreamToolCallsFinishReason, openAIStreamFunctionCallFinishReason, OpenAIStreamErrorEventType:
+	case OpenAIStreamErrorEventType:
 		return fmt.Errorf("provider ended the stream with finish_reason=%s: %w", finishReason, os.ErrInvalid)
 	default:
 		return nil
 	}
 }
 
-const requestBodyBaseFields = 3
+const requestBodyBaseFields = 6
 
 const sseScannerInitialBuffer = 64 * 1024
 const sseScannerMaxBuffer = 1024 * 1024
+
 const finishReasonStop = "stop"
+
 const finishReasonLength = "length"

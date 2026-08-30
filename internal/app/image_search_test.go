@@ -270,8 +270,8 @@ func TestHandleInteractionCreateRespondsToShowImagesButtonFromParentMessage(t *t
 func TestImageSearchClientOpenverseAndWikimedia(t *testing.T) {
 	t.Parallel()
 
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.Contains(r.URL.Path, "/v1/images") {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if strings.Contains(request.URL.Path, "/v1/images") {
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{
 				"result_count": 2,
@@ -290,7 +290,7 @@ func TestImageSearchClientOpenverseAndWikimedia(t *testing.T) {
 			return
 		}
 
-		if strings.Contains(r.URL.Path, "api.php") {
+		if strings.Contains(request.URL.Path, "api.php") {
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{
 				"query": {
@@ -312,13 +312,13 @@ func TestImageSearchClientOpenverseAndWikimedia(t *testing.T) {
 			return
 		}
 
-		if strings.HasSuffix(r.URL.Path, ".jpg") {
+		if strings.HasSuffix(request.URL.Path, ".jpg") {
 			w.Header().Set("Content-Type", "image/jpeg")
 			_, _ = w.Write([]byte("fake-jpeg-bytes"))
 			return
 		}
 
-		http.NotFound(w, r)
+		http.NotFound(w, request)
 	})
 
 	server := httptest.NewServer(handler)

@@ -23,6 +23,7 @@ type ChatCompletionRequest struct {
 	SessionID       string
 	RequestID       string
 	Messages        []ChatMessage
+	Tools           []FunctionTool
 }
 
 // ProviderRequestConfig is the per-request provider identity and options.
@@ -46,6 +47,7 @@ type StreamDelta struct {
 	FinishReason       string
 	ProviderResponseID string
 	SearchMetadata     *searchtypes.SearchMetadata
+	ToolCalls          []FunctionToolCall
 }
 
 // ProviderAPIKind is the provider wire protocol family.

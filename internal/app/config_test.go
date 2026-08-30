@@ -51,10 +51,6 @@ models:
 		t.Fatalf("unexpected model order: %#v", loadedConfig.ModelOrder)
 	}
 
-	if loadedConfig.SearchDeciderModel != firstTestModel {
-		t.Fatalf("unexpected default search decider model: %q", loadedConfig.SearchDeciderModel)
-	}
-
 	if loadedConfig.MediaAnalysisModel != "" {
 		t.Fatalf("unexpected default media analysis model: %q", loadedConfig.MediaAnalysisModel)
 	}
@@ -366,37 +362,6 @@ models: {}
 	}
 }
 
-func TestLoadConfigUsesConfiguredSearchDeciderModel(t *testing.T) {
-	t.Parallel()
-
-	tempDir := t.TempDir()
-	configPath := filepath.Join(tempDir, "config.yaml")
-	configText := `
-bot_token: discord-token
-providers:
-  openai:
-    base_url: https://api.example.com/v1
-models:
-  openai/first-model:
-  openai/second-model:
-search_decider_model: openai/second-model
-`
-
-	err := os.WriteFile(configPath, []byte(configText), 0o600)
-	if err != nil {
-		t.Fatalf("write config file: %v", err)
-	}
-
-	loadedConfig, err := loadConfig(configPath)
-	if err != nil {
-		t.Fatalf("load config: %v", err)
-	}
-
-	if loadedConfig.SearchDeciderModel != secondTestModel {
-		t.Fatalf("unexpected search decider model: %q", loadedConfig.SearchDeciderModel)
-	}
-}
-
 func TestLoadConfigUsesConfiguredChannelModelLocks(t *testing.T) {
 	t.Parallel()
 
@@ -426,42 +391,6 @@ channel_model_locks:
 
 	if lockedModel, ok := loadedConfig.ChannelModelLocks["channel-1"]; !ok || lockedModel != secondTestModel {
 		t.Fatalf("unexpected channel model locks: %#v", loadedConfig.ChannelModelLocks)
-	}
-}
-
-func TestLoadConfigUsesConfiguredChannelSearchDeciderModelLocks(t *testing.T) {
-	t.Parallel()
-
-	tempDir := t.TempDir()
-	configPath := filepath.Join(tempDir, "config.yaml")
-	configText := `
-bot_token: discord-token
-providers:
-  openai:
-    base_url: https://api.example.com/v1
-models:
-  openai/first-model:
-  openai/second-model:
-channel_search_decider_model_locks:
-  channel-1: openai/second-model
-`
-
-	err := os.WriteFile(configPath, []byte(configText), 0o600)
-	if err != nil {
-		t.Fatalf("write config file: %v", err)
-	}
-
-	loadedConfig, err := loadConfig(configPath)
-	if err != nil {
-		t.Fatalf("load config: %v", err)
-	}
-
-	lockedModel, ok := loadedConfig.lockedSearchDeciderModelForChannelIDs([]string{"channel-1"})
-	if !ok || lockedModel != secondTestModel {
-		t.Fatalf(
-			"unexpected channel search decider model locks: %#v",
-			loadedConfig.ChannelSearchDeciderModelLocks,
-		)
 	}
 }
 
@@ -523,7 +452,7 @@ models:
 	}
 }
 
-func TestLoadConfigDisablesSearchDeciderPerProvider(t *testing.T) {
+func TestLoadConfigDisablesWebSearchPerProvider(t *testing.T) {
 	t.Parallel()
 
 	tempDir := t.TempDir()
@@ -551,11 +480,11 @@ models:
 		t.Fatalf("load config: %v", err)
 	}
 
-	if !loadedConfig.Providers["openai"].DisableSearchDecider {
+	if !loadedConfig.Providers["openai"].DisableWebSearch {
 		t.Fatal("expected disable_search_decider to be true for openai")
 	}
 
-	if loadedConfig.Providers["gemini"].DisableSearchDecider {
+	if loadedConfig.Providers["gemini"].DisableWebSearch {
 		t.Fatal("expected disable_search_decider to default to false for gemini")
 	}
 }
@@ -1105,6 +1034,72 @@ web_search:
 	}
 
 	if !strings.Contains(err.Error(), "web_search.primary_provider is removed") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestLoadConfigRejectsRemovedSearchDeciderModel asserts the removed
+// search_decider_model key fails validation with an actionable message
+// instead of being silently ignored.
+func TestLoadConfigRejectsRemovedSearchDeciderModel(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	configText := `
+bot_token: discord-token
+providers:
+  openai:
+    base_url: https://api.example.com/v1
+models:
+  openai/first-model:
+search_decider_model: openai/first-model
+`
+
+	err := os.WriteFile(configPath, []byte(configText), 0o600)
+	if err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	_, err = loadConfig(configPath)
+	if err == nil {
+		t.Fatal("expected removed search_decider_model to fail validation")
+	}
+
+	if !strings.Contains(err.Error(), "search_decider_model is removed") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestLoadConfigRejectsRemovedChannelSearchDeciderModelLocks asserts the
+// removed channel_search_decider_model_locks key fails validation.
+func TestLoadConfigRejectsRemovedChannelSearchDeciderModelLocks(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	configText := `
+bot_token: discord-token
+providers:
+  openai:
+    base_url: https://api.example.com/v1
+models:
+  openai/first-model:
+channel_search_decider_model_locks:
+  channel-1: openai/first-model
+`
+
+	err := os.WriteFile(configPath, []byte(configText), 0o600)
+	if err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	_, err = loadConfig(configPath)
+	if err == nil {
+		t.Fatal("expected removed channel_search_decider_model_locks to fail validation")
+	}
+
+	if !strings.Contains(err.Error(), "channel_search_decider_model_locks is removed") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

@@ -1283,13 +1283,13 @@ func TestWebsiteClientFetchUsesTinyFishWhenConfigured(t *testing.T) {
 		responseWriter.Header().Set("Content-Type", "application/json")
 		resp := map[string]any{
 			"results": []map[string]any{{
-				"url":        "https://example.com/article",
-				"final_url":  "https://example.com/article",
-				"title":      "Example Article",
+				"url":         "https://example.com/article",
+				"final_url":   "https://example.com/article",
+				"title":       "Example Article",
 				"description": "Example desc",
-				"language":   "en",
-				"format":     "markdown",
-				"text":       "# Example Article\n\nTinyFish extracted body.",
+				"language":    "en",
+				"format":      "markdown",
+				"text":        "# Example Article\n\nTinyFish extracted body.",
 			}},
 			"errors": []any{},
 		}

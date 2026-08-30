@@ -9,9 +9,9 @@ import (
 )
 
 var (
-	searchWebRE        = regexp.MustCompile(`(?i)\bsearch(?:\s+the)?\s+web\b`)
-	shortAnswerRE      = regexp.MustCompile(`(?i)\bshort\s+answer\b`)
-	prioritizeTruthRE  = regexp.MustCompile(`(?i)\bprioritize\s+truth\s+over\s+agreeableness\b`)
+	searchWebRE       = regexp.MustCompile(`(?i)\bsearch(?:\s+the)?\s+web\b`)
+	shortAnswerRE     = regexp.MustCompile(`(?i)\bshort\s+answer\b`)
+	prioritizeTruthRE = regexp.MustCompile(`(?i)\bprioritize\s+truth\s+over\s+agreeableness\b`)
 )
 
 const prioritizeTruthPhrase = "Prioritize truth over agreeableness — be direct, challenge flawed assumptions, and never offer unwarranted praise or validation."

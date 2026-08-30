@@ -128,6 +128,7 @@ func TestOpenAIClientStreamChatCompletion(t *testing.T) {
 	client := newOpenAIClient(server.Client())
 	request := ChatCompletionRequest{
 		Provider: ProviderRequestConfig{
+			API:             "",
 			APIKind:         ProviderAPIKindOpenAI,
 			BaseURL:         server.URL + "/v1",
 			APIKey:          "test-key",
@@ -148,6 +149,7 @@ func TestOpenAIClientStreamChatCompletion(t *testing.T) {
 		ConfiguredModel: "",
 		SessionID:       "",
 		RequestID:       "",
+		Tools:           nil,
 		Messages: []ChatMessage{
 			{Role: "user", Content: "hello"},
 		},
@@ -185,6 +187,7 @@ func TestBuildChatCompletionRequestBodyAddsPlaceholderForImageOnlyUserMessage(t 
 
 	request := ChatCompletionRequest{
 		Provider: ProviderRequestConfig{
+			API:             "",
 			APIKind:         ProviderAPIKindOpenAI,
 			BaseURL:         "https://example.com/v1",
 			APIKey:          "test-key",
@@ -199,6 +202,7 @@ func TestBuildChatCompletionRequestBodyAddsPlaceholderForImageOnlyUserMessage(t 
 		ConfiguredModel: "",
 		SessionID:       "",
 		RequestID:       "",
+		Tools:           nil,
 		Messages: []ChatMessage{{
 			Role: searchtypes.MessageRoleUser,
 			Content: []ContentPart{
@@ -238,6 +242,7 @@ func TestBuildChatCompletionRequestBodyAddsPlaceholderForDocumentOnlyUserMessage
 
 	request := ChatCompletionRequest{
 		Provider: ProviderRequestConfig{
+			API:             "",
 			APIKind:         ProviderAPIKindOpenAI,
 			BaseURL:         "https://example.com/v1",
 			APIKey:          "test-key",
@@ -252,6 +257,7 @@ func TestBuildChatCompletionRequestBodyAddsPlaceholderForDocumentOnlyUserMessage
 		ConfiguredModel: "",
 		SessionID:       "",
 		RequestID:       "",
+		Tools:           nil,
 		Messages: []ChatMessage{{
 			Role: searchtypes.MessageRoleUser,
 			Content: []ContentPart{
@@ -293,6 +299,7 @@ func TestBuildChatCompletionRequestBodyAddsPlaceholderForFileOnlyUserMessage(t *
 
 	request := ChatCompletionRequest{
 		Provider: ProviderRequestConfig{
+			API:             "",
 			APIKind:         ProviderAPIKindOpenAI,
 			BaseURL:         "https://example.com/v1",
 			APIKey:          "test-key",
@@ -307,6 +314,7 @@ func TestBuildChatCompletionRequestBodyAddsPlaceholderForFileOnlyUserMessage(t *
 		ConfiguredModel: "",
 		SessionID:       "",
 		RequestID:       "",
+		Tools:           nil,
 		Messages: []ChatMessage{{
 			Role: searchtypes.MessageRoleUser,
 			Content: []ContentPart{
@@ -347,6 +355,7 @@ func TestBuildChatCompletionRequestBodyIncludesPromptCacheKeyForOpenAIProvider(t
 
 	request := ChatCompletionRequest{
 		Provider: ProviderRequestConfig{
+			API:             "",
 			APIKind:         ProviderAPIKindOpenAI,
 			BaseURL:         testOpenAIBaseURL,
 			APIKey:          "test-key",
@@ -361,6 +370,7 @@ func TestBuildChatCompletionRequestBodyIncludesPromptCacheKeyForOpenAIProvider(t
 		ConfiguredModel: "openai/gpt-test",
 		SessionID:       testOpenAIPromptCacheKey,
 		RequestID:       "",
+		Tools:           nil,
 		Messages:        []ChatMessage{{Role: searchtypes.MessageRoleUser, Content: "hello"}},
 	}
 
@@ -376,6 +386,7 @@ func TestBuildChatCompletionRequestBodySkipsPromptCacheKeyForNonOpenAIProvider(t
 
 	request := ChatCompletionRequest{
 		Provider: ProviderRequestConfig{
+			API:             "",
 			APIKind:         ProviderAPIKindOpenAI,
 			BaseURL:         testOpenAIBaseURL,
 			APIKey:          "test-key",
@@ -390,6 +401,7 @@ func TestBuildChatCompletionRequestBodySkipsPromptCacheKeyForNonOpenAIProvider(t
 		ConfiguredModel: "compatible/gpt-test",
 		SessionID:       testOpenAIPromptCacheKey,
 		RequestID:       "",
+		Tools:           nil,
 		Messages:        []ChatMessage{{Role: searchtypes.MessageRoleUser, Content: "hello"}},
 	}
 
@@ -414,6 +426,7 @@ func TestOpenAIClientStreamChatCompletionReturnsStatusErrors(t *testing.T) {
 	client := newOpenAIClient(server.Client())
 	request := ChatCompletionRequest{
 		Provider: ProviderRequestConfig{
+			API:             "",
 			APIKind:         ProviderAPIKindOpenAI,
 			BaseURL:         server.URL,
 			APIKey:          "test-key",
@@ -428,6 +441,7 @@ func TestOpenAIClientStreamChatCompletionReturnsStatusErrors(t *testing.T) {
 		ConfiguredModel: "",
 		SessionID:       "",
 		RequestID:       "",
+		Tools:           nil,
 		Messages:        []ChatMessage{{Role: "user", Content: "hello"}},
 	}
 
@@ -464,6 +478,7 @@ func TestOpenAIClientStreamChatCompletionParsesJSONStatusErrors(t *testing.T) {
 	client := newOpenAIClient(server.Client())
 	request := ChatCompletionRequest{
 		Provider: ProviderRequestConfig{
+			API:             "",
 			APIKind:         ProviderAPIKindOpenAI,
 			BaseURL:         server.URL,
 			APIKey:          "test-key",
@@ -478,6 +493,7 @@ func TestOpenAIClientStreamChatCompletionParsesJSONStatusErrors(t *testing.T) {
 		ConfiguredModel: "",
 		SessionID:       "",
 		RequestID:       "",
+		Tools:           nil,
 		Messages:        []ChatMessage{{Role: "user", Content: "hello"}},
 	}
 
@@ -520,6 +536,7 @@ func TestOpenAIClientStreamChatCompletionReturnsStreamEventErrors(t *testing.T) 
 	client := newOpenAIClient(server.Client())
 	request := ChatCompletionRequest{
 		Provider: ProviderRequestConfig{
+			API:             "",
 			APIKind:         ProviderAPIKindOpenAI,
 			BaseURL:         server.URL,
 			APIKey:          "test-key",
@@ -534,6 +551,7 @@ func TestOpenAIClientStreamChatCompletionReturnsStreamEventErrors(t *testing.T) 
 		ConfiguredModel: "",
 		SessionID:       "",
 		RequestID:       "",
+		Tools:           nil,
 		Messages:        []ChatMessage{{Role: "user", Content: "hello"}},
 	}
 
@@ -570,6 +588,7 @@ func TestOpenAIClientStreamChatCompletionReturnsBlockedFinishReasonErrors(t *tes
 	client := newOpenAIClient(server.Client())
 	request := ChatCompletionRequest{
 		Provider: ProviderRequestConfig{
+			API:             "",
 			APIKind:         ProviderAPIKindOpenAI,
 			BaseURL:         server.URL,
 			APIKey:          "test-key",
@@ -584,6 +603,7 @@ func TestOpenAIClientStreamChatCompletionReturnsBlockedFinishReasonErrors(t *tes
 		ConfiguredModel: "",
 		SessionID:       "",
 		RequestID:       "",
+		Tools:           nil,
 		Messages:        []ChatMessage{{Role: "user", Content: "hello"}},
 	}
 
@@ -618,6 +638,7 @@ func TestOpenAIClientStreamChatCompletionReturnsErrorWithoutDoneMarker(t *testin
 	client := newOpenAIClient(server.Client())
 	request := ChatCompletionRequest{
 		Provider: ProviderRequestConfig{
+			API:             "",
 			APIKind:         ProviderAPIKindOpenAI,
 			BaseURL:         server.URL,
 			APIKey:          "test-key",
@@ -632,6 +653,7 @@ func TestOpenAIClientStreamChatCompletionReturnsErrorWithoutDoneMarker(t *testin
 		ConfiguredModel: "",
 		SessionID:       "",
 		RequestID:       "",
+		Tools:           nil,
 		Messages:        []ChatMessage{{Role: "user", Content: "hello"}},
 	}
 
@@ -669,6 +691,7 @@ func TestOpenAIClientStreamResponses(t *testing.T) {
 	client := newOpenAIClient(server.Client())
 	request := ChatCompletionRequest{
 		Provider: ProviderRequestConfig{
+			API:             "",
 			APIKind:         ProviderAPIKindOpenAI,
 			BaseURL:         server.URL + "/v1",
 			APIKey:          "test-key",
@@ -685,6 +708,7 @@ func TestOpenAIClientStreamResponses(t *testing.T) {
 		ConfiguredModel: "openai/gpt-5",
 		SessionID:       "",
 		RequestID:       testOpenAIClientRequestID,
+		Tools:           nil,
 		Messages: []ChatMessage{
 			{Role: searchtypes.MessageRoleSystem, Content: testOpenAIResponsesSystemPrompt},
 			{
@@ -786,6 +810,7 @@ func TestBuildOpenAIResponsesRequestBodyNormalizesReasoningConfig(t *testing.T) 
 
 	request := ChatCompletionRequest{
 		Provider: ProviderRequestConfig{
+			API:             "",
 			APIKind:         ProviderAPIKindOpenAI,
 			BaseURL:         testOpenAIBaseURL,
 			APIKey:          "test-key",
@@ -803,6 +828,7 @@ func TestBuildOpenAIResponsesRequestBodyNormalizesReasoningConfig(t *testing.T) 
 		ConfiguredModel: "openai/gpt-5.4",
 		SessionID:       "",
 		RequestID:       "",
+		Tools:           nil,
 		Messages: []ChatMessage{
 			{Role: searchtypes.MessageRoleUser, Content: "hello"},
 		},
@@ -844,6 +870,7 @@ func TestBuildOpenAIResponsesRequestBodyDefaultsReasoningSummary(t *testing.T) {
 
 	request := ChatCompletionRequest{
 		Provider: ProviderRequestConfig{
+			API:             "",
 			APIKind:         ProviderAPIKindOpenAI,
 			BaseURL:         testOpenAIBaseURL,
 			APIKey:          "test-key",
@@ -858,6 +885,7 @@ func TestBuildOpenAIResponsesRequestBodyDefaultsReasoningSummary(t *testing.T) {
 		ConfiguredModel: "openai/gpt-5.4",
 		SessionID:       "",
 		RequestID:       "",
+		Tools:           nil,
 		Messages: []ChatMessage{
 			{Role: searchtypes.MessageRoleUser, Content: "hello"},
 		},
@@ -883,6 +911,7 @@ func TestBuildOpenAIResponsesRequestBodyIncludesPromptCacheKeyForOpenAIProvider(
 
 	request := ChatCompletionRequest{
 		Provider: ProviderRequestConfig{
+			API:             "",
 			APIKind:         ProviderAPIKindOpenAI,
 			BaseURL:         testOpenAIBaseURL,
 			APIKey:          "test-key",
@@ -897,6 +926,7 @@ func TestBuildOpenAIResponsesRequestBodyIncludesPromptCacheKeyForOpenAIProvider(
 		ConfiguredModel: "openai/gpt-5",
 		SessionID:       testOpenAIPromptCacheKey,
 		RequestID:       "",
+		Tools:           nil,
 		Messages: []ChatMessage{
 			{Role: searchtypes.MessageRoleUser, Content: "hello"},
 		},
@@ -918,6 +948,7 @@ func newOpenAIClientRequestIDTestRequest(
 ) ChatCompletionRequest {
 	return ChatCompletionRequest{
 		Provider: ProviderRequestConfig{
+			API:             "",
 			APIKind:         ProviderAPIKindOpenAI,
 			BaseURL:         baseURL,
 			APIKey:          "",
@@ -932,6 +963,7 @@ func newOpenAIClientRequestIDTestRequest(
 		ConfiguredModel: configuredModel,
 		SessionID:       "",
 		RequestID:       testOpenAIClientRequestID,
+		Tools:           nil,
 		Messages:        nil,
 	}
 }
@@ -1142,6 +1174,7 @@ func TestOpenAIClientStreamChatCompletionSucceedsWithoutDoneIfChoicesSeen(t *tes
 	client := newOpenAIClient(server.Client())
 	request := ChatCompletionRequest{
 		Provider: ProviderRequestConfig{
+			API:             "",
 			APIKind:         ProviderAPIKindOpenAI,
 			BaseURL:         server.URL,
 			APIKey:          "test-key",
@@ -1156,6 +1189,7 @@ func TestOpenAIClientStreamChatCompletionSucceedsWithoutDoneIfChoicesSeen(t *tes
 		ConfiguredModel: "9router/unli_free",
 		SessionID:       "",
 		RequestID:       "",
+		Tools:           nil,
 		Messages:        nil,
 	}
 
@@ -1257,6 +1291,7 @@ func runOpenAIClientAuthorizationHeaderFor9RouterSubtest(t *testing.T, testCase 
 
 	request := ChatCompletionRequest{
 		Provider: ProviderRequestConfig{
+			API:             "",
 			APIKind:         ProviderAPIKindOpenAI,
 			BaseURL:         baseURL,
 			APIKey:          testCase.apiKey,
@@ -1271,6 +1306,7 @@ func runOpenAIClientAuthorizationHeaderFor9RouterSubtest(t *testing.T, testCase 
 		ConfiguredModel: testCase.configuredModel,
 		SessionID:       "",
 		RequestID:       "",
+		Tools:           nil,
 		Messages:        nil,
 	}
 
@@ -1312,6 +1348,7 @@ func TestOpenAIClientStreamChatCompletionDefaultsServiceTierToPriority(t *testin
 	client := newOpenAIClient(server.Client())
 	request := ChatCompletionRequest{
 		Provider: ProviderRequestConfig{
+			API:             "",
 			APIKind:         ProviderAPIKindOpenAI,
 			BaseURL:         server.URL,
 			APIKey:          "",
@@ -1326,6 +1363,7 @@ func TestOpenAIClientStreamChatCompletionDefaultsServiceTierToPriority(t *testin
 		ConfiguredModel: "",
 		SessionID:       "",
 		RequestID:       "",
+		Tools:           nil,
 		Messages:        nil,
 	}
 
@@ -1363,6 +1401,7 @@ func TestOpenAIClientStreamChatCompletionPreservesCustomServiceTier(t *testing.T
 	client := newOpenAIClient(server.Client())
 	request := ChatCompletionRequest{
 		Provider: ProviderRequestConfig{
+			API:             "",
 			APIKind:         ProviderAPIKindOpenAI,
 			BaseURL:         server.URL,
 			APIKey:          "",
@@ -1379,6 +1418,7 @@ func TestOpenAIClientStreamChatCompletionPreservesCustomServiceTier(t *testing.T
 		ConfiguredModel: "",
 		SessionID:       "",
 		RequestID:       "",
+		Tools:           nil,
 		Messages:        nil,
 	}
 
@@ -1452,6 +1492,7 @@ func TestBuildChatCompletionRequestBodyNormalizesImagesForOpenAICompatible(t *te
 
 	request := ChatCompletionRequest{
 		Provider: ProviderRequestConfig{
+			API:             "",
 			APIKind:         ProviderAPIKindOpenAI,
 			BaseURL:         "https://api.openrouter.ai/api/v1",
 			APIKey:          "test-key",
@@ -1466,6 +1507,7 @@ func TestBuildChatCompletionRequestBodyNormalizesImagesForOpenAICompatible(t *te
 		ConfiguredModel: "",
 		SessionID:       "",
 		RequestID:       "",
+		Tools:           nil,
 		Messages: []ChatMessage{
 			{
 				Role: searchtypes.MessageRoleUser,

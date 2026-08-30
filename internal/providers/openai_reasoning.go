@@ -15,8 +15,8 @@ const (
 	// OpenAIReasoningEffortMedium is a reasoning effort level.
 	OpenAIReasoningEffortMedium = "medium"
 	// OpenAIReasoningEffortHigh is a reasoning effort level.
-	OpenAIReasoningEffortHigh = "high"
-	openAIReasoningEffortXHigh  = "xhigh"
+	OpenAIReasoningEffortHigh  = "high"
+	openAIReasoningEffortXHigh = "xhigh"
 	// OpenAIReasoningEffortMax is a reasoning effort level.
 	OpenAIReasoningEffortMax = "max"
 	// OpenAIReasoningSummaryAuto uses automatic summaries.
@@ -49,26 +49,38 @@ func NormalizeOpenAIReasoningEffortForModel(model, effort string) string {
 	return normalizeOpenAIReasoningEffort(model, effort)
 }
 
-// ApplyDedicatedReasoningEffort applies a dedicated reasoning effort to extraBody for the correct API.
-func ApplyDedicatedReasoningEffort(extraBody map[string]any, model string, effort string, isResponsesAPI bool) map[string]any {
+// ApplyDedicatedReasoningEffort applies a dedicated reasoning effort to
+// extraBody for the correct API.
+func ApplyDedicatedReasoningEffort(
+	extraBody map[string]any,
+	model string,
+	effort string,
+	isResponsesAPI bool,
+) map[string]any {
 	trimmedEffort := strings.TrimSpace(effort)
 	if trimmedEffort == "" {
 		return extraBody
 	}
+
 	normalizedEffort := normalizeOpenAIReasoningEffort(model, trimmedEffort)
 	if normalizedEffort == "" {
 		return extraBody
 	}
+
 	normalizedExtraBody := maps.Clone(extraBody)
 	if normalizedExtraBody == nil {
 		normalizedExtraBody = make(map[string]any, 1)
 	}
+
 	if isResponsesAPI {
 		reasoningConfig := openAIReasoningConfigExtraBody(normalizedExtraBody)
+
 		reasoningConfig["effort"] = normalizedEffort
+
 		if _, hasSummary := reasoningConfig["summary"]; !hasSummary {
 			reasoningConfig["summary"] = OpenAIReasoningSummaryAuto
 		}
+
 		normalizedExtraBody["reasoning"] = reasoningConfig
 		delete(normalizedExtraBody, "reasoning_effort")
 		delete(normalizedExtraBody, "reasoning_summary")
@@ -77,6 +89,7 @@ func ApplyDedicatedReasoningEffort(extraBody map[string]any, model string, effor
 		delete(normalizedExtraBody, "reasoning")
 		delete(normalizedExtraBody, "reasoning_summary")
 	}
+
 	return normalizedExtraBody
 }
 

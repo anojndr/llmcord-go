@@ -73,6 +73,7 @@ func TestProviderUsesGeminiAPIKindForLegacyBaseURL(t *testing.T) {
 	t.Parallel()
 
 	provider := ProviderRequestConfig{
+		API:             "",
 		APIKind:         ProviderAPIKindGemini,
 		BaseURL:         "https://generativelanguage.googleapis.com/v1beta/openai",
 		APIKey:          "",
@@ -880,6 +881,7 @@ func newGeminiMediaUploadRequest() ChatCompletionRequest {
 		ConfiguredModel: "",
 		SessionID:       "",
 		RequestID:       "",
+		Tools:           nil,
 		Messages: []ChatMessage{
 			{
 				Role: searchtypes.MessageRoleUser,
@@ -970,6 +972,7 @@ func assertGeminiUploadedMediaParts(t *testing.T, contents []*genai.Content) {
 func newGeminiBuildTestRequest() ChatCompletionRequest {
 	return ChatCompletionRequest{
 		Provider: ProviderRequestConfig{
+			API:             "",
 			APIKind:         ProviderAPIKindGemini,
 			BaseURL:         "https://generativelanguage.googleapis.com/v1beta/openai",
 			APIKey:          "",
@@ -988,6 +991,7 @@ func newGeminiBuildTestRequest() ChatCompletionRequest {
 		ConfiguredModel: "",
 		SessionID:       "",
 		RequestID:       "",
+		Tools:           nil,
 		Messages: []ChatMessage{
 			{Role: "system", Content: "Be concise."},
 			{
@@ -1008,6 +1012,7 @@ func newGeminiBuildTestRequest() ChatCompletionRequest {
 func newSimpleGeminiStreamRequest() ChatCompletionRequest {
 	return ChatCompletionRequest{
 		Provider: ProviderRequestConfig{
+			API:             "",
 			APIKind:         ProviderAPIKindGemini,
 			BaseURL:         "",
 			APIKey:          "gemini-key",
@@ -1022,6 +1027,7 @@ func newSimpleGeminiStreamRequest() ChatCompletionRequest {
 		ConfiguredModel: "",
 		SessionID:       "",
 		RequestID:       "",
+		Tools:           nil,
 		Messages:        []ChatMessage{{Role: searchtypes.MessageRoleUser, Content: "hello"}},
 	}
 }
@@ -1865,6 +1871,7 @@ func TestGeminiClientRetries503DeadlineExpired(t *testing.T) {
 					Code:    http.StatusServiceUnavailable,
 					Message: "Deadline expired before operation could complete.",
 					Status:  "UNAVAILABLE",
+					Details: nil,
 				})
 
 				return
@@ -1931,6 +1938,7 @@ func TestGeminiClientRetriesWithKeyRotationOnTransientError(t *testing.T) {
 								Code:    http.StatusServiceUnavailable,
 								Message: "Deadline expired before operation could complete.",
 								Status:  "UNAVAILABLE",
+								Details: nil,
 							})
 
 							return
@@ -1989,6 +1997,7 @@ func TestGeminiClientExhausts503DeadlineExpiredRetries(t *testing.T) {
 				Code:    http.StatusServiceUnavailable,
 				Message: "Deadline expired before operation could complete.",
 				Status:  "UNAVAILABLE",
+				Details: nil,
 			})
 		}
 	})
@@ -2015,13 +2024,16 @@ func TestIsGeminiTransientError(t *testing.T) {
 	t.Parallel()
 
 	transientErrors := []error{
-		&genai.APIError{Code: 503, Message: "Deadline expired before operation could complete.", Status: "UNAVAILABLE"},
-		genai.APIError{Code: 503, Message: "The model is overloaded. Please try again later.", Status: "UNAVAILABLE"},
-		&genai.APIError{Code: 504, Message: "Deadline expired.", Status: "DEADLINE_EXCEEDED"},
-		&genai.APIError{Code: 429, Message: "Resource has been exhausted.", Status: "RESOURCE_EXHAUSTED"},
-		&genai.APIError{Code: 502, Message: "Bad gateway.", Status: "BAD_GATEWAY"},
-		&genai.APIError{Code: 500, Message: "Internal server error.", Status: "INTERNAL"},
-		fmt.Errorf("stream gemini content: %w", &genai.APIError{Code: 503, Message: "Deadline expired", Status: "UNAVAILABLE"}),
+		&genai.APIError{Code: 503, Message: "Deadline expired before operation could complete.", Status: "UNAVAILABLE",
+			Details: nil},
+		genai.APIError{Code: 503, Message: "The model is overloaded. Please try again later.", Status: "UNAVAILABLE",
+			Details: nil},
+		&genai.APIError{Code: 504, Message: "Deadline expired.", Status: "DEADLINE_EXCEEDED", Details: nil},
+		&genai.APIError{Code: 429, Message: "Resource has been exhausted.", Status: "RESOURCE_EXHAUSTED", Details: nil},
+		&genai.APIError{Code: 502, Message: "Bad gateway.", Status: "BAD_GATEWAY", Details: nil},
+		&genai.APIError{Code: 500, Message: "Internal server error.", Status: "INTERNAL", Details: nil},
+		fmt.Errorf("stream gemini content: %w", &genai.APIError{Code: 503, Message: "Deadline expired",
+			Status: "UNAVAILABLE", Details: nil}),
 	}
 
 	for _, err := range transientErrors {
@@ -2036,10 +2048,10 @@ func TestIsGeminiTransientError(t *testing.T) {
 
 	nonTransientErrors := []error{
 		nil,
-		&genai.APIError{Code: 400, Message: "Invalid argument", Status: "INVALID_ARGUMENT"},
-		&genai.APIError{Code: 401, Message: "API key not valid", Status: "UNAUTHENTICATED"},
-		&genai.APIError{Code: 403, Message: "Permission denied", Status: "PERMISSION_DENIED"},
-		&genai.APIError{Code: 404, Message: "Model not found", Status: "NOT_FOUND"},
+		&genai.APIError{Code: 400, Message: "Invalid argument", Status: "INVALID_ARGUMENT", Details: nil},
+		&genai.APIError{Code: 401, Message: "API key not valid", Status: "UNAUTHENTICATED", Details: nil},
+		&genai.APIError{Code: 403, Message: "Permission denied", Status: "PERMISSION_DENIED", Details: nil},
+		&genai.APIError{Code: 404, Message: "Model not found", Status: "NOT_FOUND", Details: nil},
 	}
 
 	for _, err := range nonTransientErrors {

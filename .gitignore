@@ -25,7 +25,6 @@
 !internal/**/*
 !internal/**/*.go
 !internal/**/*.txt
-!searchDeciderPrompt.txt
 # Keep repo-owned YAML files explicit; local runtime config stays ignored by default.
 
 # Keep runtime and deployment manifests explicit so local-only config files remain ignored.

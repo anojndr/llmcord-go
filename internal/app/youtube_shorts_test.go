@@ -67,18 +67,6 @@ func testYouTubeShortsVideoContent() youtubeShortsVideoContent {
 	}
 }
 
-func testYouTubeShortsConversationWithImage() []chatMessage {
-	return []chatMessage{
-		{
-			Role: messageRoleUser,
-			Content: []contentPart{
-				{"type": contentTypeText, "text": "<@123>: summarize " + testYouTubeShortsCanonicalURL},
-				{"type": contentTypeImageURL, "image_url": map[string]string{"url": "data:image/png;base64,abc"}},
-			},
-		},
-	}
-}
-
 func TestExtractYouTubeShortsURLsNormalizesAndDeduplicates(t *testing.T) {
 	t.Parallel()
 
@@ -518,33 +506,6 @@ func TestYouTubeShortsClientFetchFallsBackToLoaderWhenDirectProgressiveMP4Unavai
 	if result.MediaPart[contentFieldFilename] != "merged.mp4" {
 		t.Fatalf("unexpected filename: %#v", result.MediaPart[contentFieldFilename])
 	}
-}
-
-func TestMaybeAugmentConversationWithYouTubeShortsAppendsVideoPartsAndAnalysesForNonGeminiSearchDecider(t *testing.T) {
-	t.Parallel()
-
-	assertYouTubeShortsAugmentationForProvider(
-		t,
-		testMediaAnalysisModel,
-		testYouTubeShortsConversationWithImage(),
-		func(
-			t *testing.T,
-			augmentedConversation []chatMessage,
-			expectedText string,
-			_ int,
-		) {
-			t.Helper()
-
-			assertAugmentedVideoParts(t, augmentedConversation, expectedText)
-			assertSearchDeciderTextContent(
-				t,
-				augmentedConversation,
-				testMediaAnalysisConfig(),
-				"openai/decider-model",
-				expectedText,
-			)
-		},
-	)
 }
 
 func TestMaybeAugmentConversationWithYouTubeShortsPreprocessesForNonGeminiModels(t *testing.T) {
