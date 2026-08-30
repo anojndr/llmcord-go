@@ -321,7 +321,7 @@ func (instance *bot) prepareMessageResponse(
 
 	unmutatedMessages := append([]chatMessage(nil), messages...)
 
-	if provider.AutoAppendSearchWeb || provider.AutoAppendShortAnswer {
+	if provider.AutoAppendSearchWeb || provider.AutoAppendShortAnswer || provider.AutoAppendPrioritizeTruth {
 		appendedMessages, appendErr := applyAutoAppend(provider, messages)
 		if appendErr != nil {
 			return chatCompletionRequest{}, nil, nil, appendErr
@@ -399,7 +399,7 @@ func (instance *bot) buildFallbackRequest(
 		tracker.searchMetadata = mergeSearchMetadata(tracker.searchMetadata, webSearchMetadata)
 	}
 
-	if fallbackProvider.AutoAppendSearchWeb || fallbackProvider.AutoAppendShortAnswer {
+	if fallbackProvider.AutoAppendSearchWeb || fallbackProvider.AutoAppendShortAnswer || fallbackProvider.AutoAppendPrioritizeTruth {
 		appendedMessages, appendErr := applyAutoAppend(fallbackProvider, messages)
 		if appendErr != nil {
 			return chatCompletionRequest{}, nil, appendErr
