@@ -226,6 +226,7 @@ func TestHandleMessageCreateYouTubeShortsDeletesAndResendsWithAttachment(t *test
 	sourceMessage.ChannelID = facebookReplyTestChannelID
 	sourceMessage.GuildID = facebookReplyTestGuildID
 	sourceMessage.Author = newDiscordUser(facebookReplyTestUserID, false)
+	sourceMessage.Author.Username = "shorts-tester"
 	sourceMessage.Content = " https://youtube.com/shorts/cwpMq2pgr0U?si=YiQ0mgy87QsX43R8 check this out"
 
 	instance.handleMessageCreate(nil, &discordgo.MessageCreate{Message: sourceMessage})
@@ -240,7 +241,7 @@ func TestHandleMessageCreateYouTubeShortsDeletesAndResendsWithAttachment(t *test
 		t.Fatalf("message sends: got %d want 1", sends)
 	}
 
-	if sendContent != "check this out" {
+	if sendContent != "shorts-tester sent:\ncheck this out" {
 		t.Fatalf("unexpected reply content: %q", sendContent)
 	}
 
@@ -331,6 +332,7 @@ func TestReplyWithYouTubeShortsSendsDownloadLinkWhenUploadTooLarge(t *testing.T)
 	sourceMessage.ChannelID = facebookReplyTestChannelID
 	sourceMessage.GuildID = facebookReplyTestGuildID
 	sourceMessage.Author = newDiscordUser(facebookReplyTestUserID, false)
+	sourceMessage.Author.Username = "shorts-tester"
 	sourceMessage.Content = "look https://www.youtube.com/shorts/cwpMq2pgr0U?feature=share now"
 
 	instance.replyWithYouTubeShorts(context.Background(), sourceMessage)
@@ -345,7 +347,7 @@ func TestReplyWithYouTubeShortsSendsDownloadLinkWhenUploadTooLarge(t *testing.T)
 		t.Fatalf("message sends: got %d want 1", sends)
 	}
 
-	if want := "look now\nhttps://cdn.example.com/shorts.mp4"; sendContent != want {
+	if want := "shorts-tester sent:\nlook now\nhttps://cdn.example.com/shorts.mp4"; sendContent != want {
 		t.Fatalf("unexpected reply content: got %q want %q", sendContent, want)
 	}
 
@@ -503,8 +505,17 @@ func TestJoinYouTubeShortsReplyContentTruncatesToLimit(t *testing.T) {
 	t.Run("within limit unchanged", func(t *testing.T) {
 		t.Parallel()
 
-		got := joinYouTubeShortsReplyContent("check this out", []string{link})
-		if want := "check this out\n" + link; got != want {
+		got := joinYouTubeShortsReplyContent("tester", "check this out", []string{link})
+		if want := "tester sent:\ncheck this out\n" + link; got != want {
+			t.Fatalf("got %q want %q", got, want)
+		}
+	})
+
+	t.Run("url only keeps attribution", func(t *testing.T) {
+		t.Parallel()
+
+		got := joinYouTubeShortsReplyContent("tester", "", []string{link})
+		if want := "tester sent:\n" + link; got != want {
 			t.Fatalf("got %q want %q", got, want)
 		}
 	})
@@ -513,10 +524,14 @@ func TestJoinYouTubeShortsReplyContentTruncatesToLimit(t *testing.T) {
 		t.Parallel()
 
 		longText := strings.Repeat("word ", 1000)
-		got := joinYouTubeShortsReplyContent(longText, []string{link})
+		got := joinYouTubeShortsReplyContent("tester", longText, []string{link})
 
 		if len(got) > youtubeShortsMaxContentLength {
 			t.Fatalf("content exceeds limit: %d", len(got))
+		}
+
+		if !strings.HasPrefix(got, "tester sent:\n") {
+			t.Fatalf("attribution lost: %q", got)
 		}
 
 		if !strings.HasSuffix(got, link) {
@@ -532,9 +547,13 @@ func TestJoinYouTubeShortsReplyContentTruncatesToLimit(t *testing.T) {
 			links = append(links, "https://cdn.example.com/"+strings.Repeat("p", 300)+".mp4")
 		}
 
-		got := joinYouTubeShortsReplyContent("", links)
+		got := joinYouTubeShortsReplyContent("tester", "", links)
 		if len(got) != youtubeShortsMaxContentLength {
 			t.Fatalf("expected hard cut to limit: %d", len(got))
+		}
+
+		if !strings.HasPrefix(got, "tester sent:\n") {
+			t.Fatalf("attribution lost on hard cut: %q", got)
 		}
 	})
 }
