@@ -30,12 +30,37 @@ func newXFixupTestConfigPath(t *testing.T) string {
 	return configPath
 }
 
+type capturedAllowedMentions struct {
+	Parse []string `json:"parse"`
+	Users []string `json:"users"`
+}
+
+// sameUserIDSet compares two ID slices ignoring order; Discord treats the
+// allowed-mention users list as a set.
+func sameUserIDSet(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	counts := make(map[string]int, len(want))
+	for _, id := range want {
+		counts[id]++
+	}
+	for _, id := range got {
+		if counts[id] == 0 {
+			return false
+		}
+		counts[id]--
+	}
+	return true
+}
+
 type xfixupCapture struct {
-	mu           sync.Mutex
-	deletes    []string
-	sends        []string
-	sendContents []string
-	unexpected   []string
+	mu                  sync.Mutex
+	deletes             []string
+	sends               []string
+	sendContents        []string
+	sendAllowedMentions *capturedAllowedMentions
+	unexpected          []string
 }
 
 func (c *xfixupCapture) recordDelete(path string) {
@@ -43,11 +68,13 @@ func (c *xfixupCapture) recordDelete(path string) {
 	defer c.mu.Unlock()
 	c.deletes = append(c.deletes, path)
 }
-func (c *xfixupCapture) recordSend(content string, path string) {
+
+func (c *xfixupCapture) recordSend(content string, allowed *capturedAllowedMentions, path string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.sends = append(c.sends, path)
 	c.sendContents = append(c.sendContents, content)
+	c.sendAllowedMentions = allowed
 }
 func (c *xfixupCapture) recordUnexpected(m, p string) {
 	c.mu.Lock()
@@ -58,6 +85,18 @@ func (c *xfixupCapture) snapshot() (deletes []string, sends []string, contents [
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return append([]string(nil), c.deletes...), append([]string(nil), c.sends...), append([]string(nil), c.sendContents...), append([]string(nil), c.unexpected...)
+}
+
+func (c *xfixupCapture) allowedMentionsSnapshot() *capturedAllowedMentions {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.sendAllowedMentions == nil {
+		return nil
+	}
+	allowed := *c.sendAllowedMentions
+	allowed.Parse = append([]string(nil), allowed.Parse...)
+	allowed.Users = append([]string(nil), allowed.Users...)
+	return &allowed
 }
 
 func newXFixupCaptureTransport(c *xfixupCapture) roundTripFunc {
@@ -78,10 +117,11 @@ func newXFixupCaptureTransport(c *xfixupCapture) roundTripFunc {
 		case req.Method == http.MethodPost && strings.HasSuffix(req.URL.Path, "/messages"):
 			body, _ := io.ReadAll(req.Body)
 			var payload struct {
-				Content string `json:"content"`
+				Content         string                   `json:"content"`
+				AllowedMentions *capturedAllowedMentions `json:"allowed_mentions"`
 			}
 			_ = json.Unmarshal(body, &payload)
-			c.recordSend(payload.Content, req.URL.Path)
+			c.recordSend(payload.Content, payload.AllowedMentions, req.URL.Path)
 			// Return a discord message response
 			msg := &discordgo.Message{ID: "new-msg", ChannelID: "channel-1"}
 			b, _ := json.Marshal(msg)
@@ -402,5 +442,69 @@ func TestHandleMessageCreateNilSessionDoesNotSwallowXCom(t *testing.T) {
 	deletes, sends, _, _ := cap.snapshot()
 	if len(deletes) != 0 || len(sends) != 0 {
 		t.Fatalf("nil session should not have produced deletes/sends via capture, got %v %v", deletes, sends)
+	}
+}
+
+func TestResendAllowedMentionUsers(t *testing.T) {
+	if got := resendAllowedMentionUsers(nil); got != nil {
+		t.Fatalf("nil message: got %#v want nil", got)
+	}
+	if got := resendAllowedMentionUsers(&discordgo.Message{}); got != nil {
+		t.Fatalf("message without author/mentions: got %#v want nil", got)
+	}
+
+	author := &discordgo.User{ID: "user-1"}
+	mentioned := &discordgo.User{ID: "user-2"}
+	message := &discordgo.Message{
+		Author:   author,
+		Mentions: []*discordgo.User{author, mentioned},
+	}
+	got := resendAllowedMentionUsers(message)
+	want := []string{"user-1", "user-2"}
+	if !sameUserIDSet(got, want) {
+		t.Fatalf("unexpected allowed users: got %#v want %#v", got, want)
+	}
+}
+
+func TestHandleMessageCreateXFixupResendPingsMentionedUsers(t *testing.T) {
+	var cap xfixupCapture
+	sess := newXFixupSession(t, &cap)
+	inst := &bot{
+		configPath: newXFixupTestConfigPath(t),
+		session:    sess,
+		nodes:      newMessageNodeStore(10),
+	}
+	inst.httpClient = sess.Client
+
+	msg := &discordgo.Message{
+		ID:        "msg-mention",
+		ChannelID: "channel-1",
+		GuildID:   "guild-1",
+		Author:    &discordgo.User{ID: "user-999", Username: "ExtremeBlitz__", Bot: false},
+		Content:   "<@111222333444555666> https://x.com/ExtremeBlitz__/status/2093114939397349597",
+		Mentions:  []*discordgo.User{{ID: "111222333444555666", Username: "friend"}},
+	}
+	inst.handleMessageCreate(nil, &discordgo.MessageCreate{Message: msg})
+
+	deletes, sends, contents, unexpected := cap.snapshot()
+	if len(unexpected) != 0 {
+		t.Fatalf("unexpected requests: %v", unexpected)
+	}
+	if len(deletes) != 1 || len(sends) != 1 {
+		t.Fatalf("expected 1 delete and 1 send, got %v deletes and %v sends", deletes, sends)
+	}
+	if !strings.Contains(contents[0], "<@111222333444555666>") {
+		t.Fatalf("resent content should keep the mention, got %q", contents[0])
+	}
+	allowed := cap.allowedMentionsSnapshot()
+	if allowed == nil {
+		t.Fatal("expected allowed_mentions in send payload")
+	}
+	if len(allowed.Parse) != 0 {
+		t.Fatalf("expected empty parse list, got %#v", allowed.Parse)
+	}
+	wantUsers := []string{"user-999", "111222333444555666"}
+	if !sameUserIDSet(allowed.Users, wantUsers) {
+		t.Fatalf("unexpected allowed users: got %#v want %#v", allowed.Users, wantUsers)
 	}
 }

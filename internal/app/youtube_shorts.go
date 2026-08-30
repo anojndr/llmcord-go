@@ -750,6 +750,7 @@ func (instance *bot) replyWithYouTubeShorts(
 	send.Files = files
 	send.AllowedMentions = &discordgo.MessageAllowedMentions{
 		Parse: []discordgo.AllowedMentionType{},
+		Users: resendAllowedMentionUsers(message),
 	}
 
 	sentMessage, err := instance.session.ChannelMessageSendComplex(message.ChannelID, send)
