@@ -80,6 +80,7 @@ type responsesStreamResponse struct {
 type responsesStreamEvent struct {
 	Type     string                   `json:"type"`
 	Delta    string                   `json:"delta"`
+	ItemID   string                   `json:"item_id"`
 	Message  string                   `json:"message"`
 	Code     any                      `json:"code"`
 	Item     *responsesOutputItem     `json:"item"`
@@ -91,9 +92,16 @@ type responsesStreamState struct {
 	seenOutputItemIDs    map[string]struct{}
 	seenOutputItemURLs   map[string]struct{}
 	seenReasoningItemIDs map[string]struct{}
-	seenToolCallIDs      map[string]struct{}
-	toolCalls            []FunctionToolCall
-	hasVisibleContent    bool
+
+	// streamedReasoningSummaries accumulates, per reasoning item id, the
+	// summary text already delivered through reasoning summary delta events.
+	// response.output_item.done and response.completed restate that same
+	// text in full, so emission sites subtract it to keep thinking from
+	// being duplicated.
+	streamedReasoningSummaries map[string]string
+	seenToolCallIDs            map[string]struct{}
+	toolCalls                  []FunctionToolCall
+	hasVisibleContent          bool
 }
 
 // ProviderUsesResponsesAPI reports whether a provider uses the Responses API.
@@ -624,12 +632,13 @@ func handleResponsesStreamPayload(
 
 func newResponsesStreamState() *responsesStreamState {
 	return &responsesStreamState{
-		seenOutputItemIDs:    make(map[string]struct{}),
-		seenOutputItemURLs:   make(map[string]struct{}),
-		seenReasoningItemIDs: make(map[string]struct{}),
-		seenToolCallIDs:      make(map[string]struct{}),
-		toolCalls:            nil,
-		hasVisibleContent:    false,
+		seenOutputItemIDs:          make(map[string]struct{}),
+		seenOutputItemURLs:         make(map[string]struct{}),
+		seenReasoningItemIDs:       make(map[string]struct{}),
+		streamedReasoningSummaries: make(map[string]string),
+		seenToolCallIDs:            make(map[string]struct{}),
+		toolCalls:                  nil,
+		hasVisibleContent:          false,
 	}
 }
 
@@ -687,14 +696,26 @@ func responsesStreamPayloadDelta(
 	eventType := strings.TrimSpace(event.Type)
 
 	switch eventType {
-	case responsesStreamEventReasoningSummaryTextDelta,
-		responsesStreamEventReasoningTextDelta:
+	case responsesStreamEventReasoningSummaryTextDelta:
+		delta := emptyDelta
+		delta.Thinking = event.Delta
+
+		responsesRecordStreamedReasoningSummary(state, event.ItemID, event.Delta)
+
+		return delta, false, nil
+	case responsesStreamEventReasoningTextDelta:
 		delta := emptyDelta
 		delta.Thinking = event.Delta
 
 		return delta, false, nil
-	case responsesStreamEventReasoningSummaryPartDone,
-		responsesStreamEventReasoningTextDone:
+	case responsesStreamEventReasoningSummaryPartDone:
+		delta := emptyDelta
+		delta.Thinking = "\n\n"
+
+		responsesRecordStreamedReasoningSummary(state, event.ItemID, delta.Thinking)
+
+		return delta, false, nil
+	case responsesStreamEventReasoningTextDone:
 		delta := emptyDelta
 		delta.Thinking = "\n\n"
 
@@ -876,7 +897,82 @@ func responsesOutputItemThinking(
 
 	responsesMarkReasoningItemSeen(state, item)
 
-	return summaryText + "\n\n"
+	unstreamedText, wasStreamed := responsesUnstreamedReasoningSummary(
+		state,
+		item,
+		summaryText,
+	)
+	if wasStreamed && unstreamedText == "" {
+		return ""
+	}
+
+	return unstreamedText + "\n\n"
+}
+
+// responsesRecordStreamedReasoningSummary accumulates the summary text a
+// reasoning item has already delivered through its streaming events, keyed
+// by item id, so the later full-item emission can subtract it.
+func responsesRecordStreamedReasoningSummary(
+	state *responsesStreamState,
+	itemID string,
+	summaryText string,
+) {
+	if state == nil || summaryText == "" {
+		return
+	}
+
+	trimmedItemID := strings.TrimSpace(itemID)
+	if trimmedItemID == "" {
+		return
+	}
+
+	state.streamedReasoningSummaries[trimmedItemID] += summaryText
+}
+
+// responsesUnstreamedReasoningSummary removes the summary text that was
+// already streamed as reasoning summary deltas from a completed reasoning
+// item's full summary text. response.output_item.done and
+// response.completed restate the streamed text, so emitting it again would
+// duplicate the thinking block. When the full text extends the streamed
+// text, only the remainder is returned; divergent text is kept verbatim so
+// nothing is lost.
+func responsesUnstreamedReasoningSummary(
+	state *responsesStreamState,
+	item *responsesOutputItem,
+	summaryText string,
+) (string, bool) {
+	if state == nil || item == nil {
+		return summaryText, false
+	}
+
+	itemID := strings.TrimSpace(item.ID)
+	if itemID == "" {
+		return summaryText, false
+	}
+
+	streamedText, ok := state.streamedReasoningSummaries[itemID]
+	if !ok {
+		return summaryText, false
+	}
+
+	trimmedStreamed := strings.TrimSpace(streamedText)
+	if trimmedStreamed == "" {
+		return summaryText, false
+	}
+
+	trimmedSummary := strings.TrimSpace(summaryText)
+
+	if trimmedSummary == trimmedStreamed {
+		return "", true
+	}
+
+	if strings.HasPrefix(trimmedSummary, trimmedStreamed) {
+		return strings.TrimSpace(
+			strings.TrimPrefix(trimmedSummary, trimmedStreamed),
+		), true
+	}
+
+	return summaryText, false
 }
 
 func responsesReasoningSummaryText(item *responsesOutputItem) string {
