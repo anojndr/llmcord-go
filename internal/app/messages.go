@@ -81,13 +81,22 @@ func (instance *bot) handleMessageCreate(
 	}
 
 	facebookVideoReply := shouldReplyWithFacebookVideos(message, botUserID)
+	youtubeShortsReply := !facebookVideoReply && shouldReplyWithYouTubeShorts(message, botUserID)
 
-	if shouldIgnoreIncomingMessage(message, botUserID) && !facebookVideoReply {
+	if shouldIgnoreIncomingMessage(message, botUserID) && !facebookVideoReply && !youtubeShortsReply {
 		return
 	}
 
 	if facebookVideoReply {
 		instance.replyWithFacebookVideos(context.Background(), message)
+
+		instance.nodes.evictExcess()
+
+		return
+	}
+
+	if youtubeShortsReply {
+		instance.replyWithYouTubeShorts(context.Background(), message)
 
 		instance.nodes.evictExcess()
 

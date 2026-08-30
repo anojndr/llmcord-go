@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"strings"
+
+	"github.com/bwmarrin/discordgo"
 )
 
 type downloadedURLVideoContent interface {
@@ -318,4 +320,37 @@ func fetchDownloadedVideos[T downloadedURLVideoContent](
 	}
 
 	return videoContents, warnings
+}
+
+func (instance *bot) cacheDownloadedVideoReply(
+	sentMessage *discordgo.Message,
+	parentMessage *discordgo.Message,
+	mediaParts []contentPart,
+) {
+	if instance == nil || instance.nodes == nil || sentMessage == nil {
+		return
+	}
+
+	node := instance.nodes.getOrCreate(sentMessage.ID)
+	node.mu.Lock()
+
+	node.role = messageRoleAssistant
+	node.text = ""
+	node.thinkingText = ""
+	node.urlScanText = ""
+	node.gistURL = ""
+	node.providerResponseID = ""
+	node.providerResponseModel = ""
+	node.searchMetadata = nil
+	node.media = mediaParts
+	node.hasBadAttachments = false
+	node.attachmentDownloadFailed = false
+	node.fetchParentFailed = false
+	node.parentMessage = parentMessage
+	node.initialized = true
+
+	instance.nodes.cacheLockedNode(sentMessage.ID, node)
+	node.mu.Unlock()
+
+	instance.nodes.persistBestEffort()
 }
