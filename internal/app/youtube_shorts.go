@@ -1,10 +1,12 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"mime"
 	"net/http"
 	"net/url"
@@ -12,18 +14,23 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/bwmarrin/discordgo"
 )
 
 const (
-	defaultYouTubeShortsInfoURL   = "https://www.acethinker.ai/downloader/api/dlapinewv2.php"
-	defaultYouTubeShortsLoaderURL = "https://www.acethinker.ai/downloader/api/iframe_stuff/iframe_api_loader.php"
-	youtubeShortsDefaultFilename  = "youtube_shorts.mp4"
-	youtubeShortsDefaultMIMEType  = "video/mp4"
-	youtubeShortsFilenamePrefix   = "youtube_shorts_"
-	youtubeShortsNoCodec          = "none"
-	youtubeShortsWarningText      = "Warning: YouTube Shorts content unavailable"
-	youtubeQuality4K              = 2160
-	youtubeQuality8K              = 4320
+	defaultYouTubeShortsInfoURL      = "https://www.acethinker.ai/downloader/api/dlapinewv2.php"
+	defaultYouTubeShortsLoaderURL    = "https://www.acethinker.ai/downloader/api/iframe_stuff/iframe_api_loader.php"
+	youtubeShortsDefaultFilename     = "youtube_shorts.mp4"
+	youtubeShortsDefaultMIMEType     = "video/mp4"
+	youtubeShortsFilenamePrefix      = "youtube_shorts_"
+	youtubeShortsNoCodec             = "none"
+	youtubeShortsWarningText         = "Warning: YouTube Shorts content unavailable"
+	youtubeQuality4K                 = 2160
+	youtubeQuality8K                 = 4320
+	youtubeShortsMaxReplyAttachments = 10
+	youtubeShortsMaxUploadBytes      = 10 << 20
+	youtubeShortsMaxContentLength    = 2000
 )
 
 type youtubeShortsFetcher interface {
@@ -85,6 +92,10 @@ func (content youtubeShortsVideoContent) resolvedURL() string {
 
 func (content youtubeShortsVideoContent) mediaPart() contentPart {
 	return content.MediaPart
+}
+
+func (content youtubeShortsVideoContent) downloadURL() string {
+	return strings.TrimSpace(content.DownloadURL)
 }
 
 func newYouTubeShortsClient(httpClient *http.Client) youtubeShortsClient {
@@ -669,4 +680,213 @@ func doConfiguredGetRequest(
 	}
 
 	return responseBody, nil
+}
+
+func shouldReplyWithYouTubeShorts(message *discordgo.Message, botUserID string) bool {
+	if message == nil || message.Author == nil || message.Author.Bot {
+		return false
+	}
+
+	if messageMentionsBot(message, botUserID) {
+		return false
+	}
+
+	return len(extractYouTubeShortsURLs(message.Content)) > 0
+}
+
+func (instance *bot) replyWithYouTubeShorts(
+	ctx context.Context,
+	message *discordgo.Message,
+) {
+	if instance == nil || instance.session == nil || instance.youtubeShorts == nil || message == nil {
+		return
+	}
+
+	shortsURLs := extractYouTubeShortsURLs(message.Content)
+	if len(shortsURLs) == 0 {
+		return
+	}
+
+	stopTyping := instance.startTyping(ctx, message.ChannelID)
+	defer stopTyping()
+
+	videoContents, _ := fetchDownloadedVideos(
+		ctx,
+		shortsURLs,
+		instance.youtubeShorts.fetch,
+		"fetch youtube shorts reply",
+		youtubeShortsWarningText,
+	)
+	if len(videoContents) == 0 {
+		return
+	}
+
+	files, fallbackLinks, deliverableContents := youtubeShortsReplyAttachments(videoContents)
+	if len(files) == 0 && len(fallbackLinks) == 0 && len(deliverableContents) == 0 {
+		return
+	}
+
+	send := new(discordgo.MessageSend)
+	send.Content = joinYouTubeShortsReplyContent(removeYouTubeShortsURLs(message.Content), fallbackLinks)
+	send.Files = files
+	send.AllowedMentions = &discordgo.MessageAllowedMentions{
+		Parse: []discordgo.AllowedMentionType{},
+	}
+
+	sentMessage, err := instance.session.ChannelMessageSendComplex(message.ChannelID, send)
+	if err != nil {
+		logWarn(
+			"send youtube shorts reply",
+			err,
+			"channel_id",
+			message.ChannelID,
+			"message_id",
+			message.ID,
+		)
+
+		return
+	}
+
+	if err := instance.session.ChannelMessageDelete(message.ChannelID, message.ID); err != nil {
+		logWarn(
+			"delete youtube shorts message",
+			err,
+			"channel_id",
+			message.ChannelID,
+			"message_id",
+			message.ID,
+		)
+	}
+
+	slog.Info(
+		"youtube shorts reply sent",
+		"message_id",
+		message.ID,
+		"channel_id",
+		message.ChannelID,
+	)
+
+	instance.cacheDownloadedVideoReply(
+		sentMessage,
+		message,
+		downloadedVideoMediaParts(deliverableContents),
+	)
+}
+
+func youtubeShortsReplyAttachments(
+	videoContents []youtubeShortsVideoContent,
+) ([]*discordgo.File, []string, []youtubeShortsVideoContent) {
+	files := make([]*discordgo.File, 0, min(len(videoContents), youtubeShortsMaxReplyAttachments))
+	fallbackLinks := make([]string, 0)
+	deliverableContents := make([]youtubeShortsVideoContent, 0, len(videoContents))
+
+	for _, videoContent := range videoContents {
+		if len(files) >= youtubeShortsMaxReplyAttachments {
+			fallbackLink := videoContent.downloadURL()
+			if fallbackLink != "" {
+				fallbackLinks = append(fallbackLinks, fallbackLink)
+				deliverableContents = append(deliverableContents, videoContent)
+			} else {
+				logWarn(
+					"youtube shorts video exceeds attachment limit without download url",
+					os.ErrInvalid,
+					"url",
+					videoContent.resolvedURL(),
+				)
+			}
+
+			continue
+		}
+
+		file, fallbackLink := youtubeShortsMediaFile(videoContent)
+		if file != nil {
+			files = append(files, file)
+			deliverableContents = append(deliverableContents, videoContent)
+		}
+
+		if fallbackLink != "" {
+			fallbackLinks = append(fallbackLinks, fallbackLink)
+			deliverableContents = append(deliverableContents, videoContent)
+		}
+
+		if file == nil && fallbackLink == "" {
+			logWarn(
+				"youtube shorts video has no uploadable bytes or download url",
+				os.ErrInvalid,
+				"url",
+				videoContent.resolvedURL(),
+			)
+		}
+	}
+
+	return files, fallbackLinks, deliverableContents
+}
+
+func youtubeShortsMediaFile(videoContent youtubeShortsVideoContent) (*discordgo.File, string) {
+	part := videoContent.mediaPart()
+
+	videoBytes, ok := part[contentFieldBytes].([]byte)
+	if !ok || len(videoBytes) == 0 {
+		return nil, videoContent.downloadURL()
+	}
+
+	if int64(len(videoBytes)) > youtubeShortsMaxUploadBytes {
+		return nil, videoContent.downloadURL()
+	}
+
+	filename, _ := part[contentFieldFilename].(string)
+	if strings.TrimSpace(filename) == "" {
+		filename = youtubeShortsDefaultFilename
+	}
+
+	mimeType, _ := part[contentFieldMIMEType].(string)
+	if strings.TrimSpace(mimeType) == "" {
+		mimeType = youtubeShortsDefaultMIMEType
+	}
+
+	return &discordgo.File{
+		Name:        filename,
+		ContentType: mimeType,
+		Reader:      bytes.NewReader(videoBytes),
+	}, ""
+}
+
+func joinYouTubeShortsReplyContent(remainingText string, fallbackLinks []string) string {
+	parts := make([]string, 0, len(fallbackLinks)+1)
+	if remainingText != "" {
+		parts = append(parts, remainingText)
+	}
+
+	parts = append(parts, fallbackLinks...)
+
+	content := strings.Join(parts, "\n")
+	if len(content) <= youtubeShortsMaxContentLength {
+		return content
+	}
+
+	if len(fallbackLinks) > 0 {
+		linksContent := strings.Join(fallbackLinks, "\n")
+		allowed := youtubeShortsMaxContentLength - len(linksContent) - 1
+		if allowed > 0 && len(remainingText) > allowed {
+			return strings.TrimSpace(remainingText[:allowed]) + "\n" + linksContent
+		}
+	}
+
+	return content[:youtubeShortsMaxContentLength]
+}
+
+func removeYouTubeShortsURLs(content string) string {
+	remaining := youtubeURLRegexp.ReplaceAllStringFunc(content, func(match string) string {
+		if isYouTubeShortsURL(match) {
+			return " "
+		}
+
+		return match
+	})
+
+	for strings.Contains(remaining, "  ") {
+		remaining = strings.ReplaceAll(remaining, "  ", " ")
+	}
+
+	return strings.TrimSpace(remaining)
 }

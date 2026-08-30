@@ -1147,10 +1147,10 @@ func (instance *bot) replyWithFacebookVideos(
 		return
 	}
 
-	instance.cacheFacebookVideoReply(
+	instance.cacheDownloadedVideoReply(
 		sentMessage,
 		message,
-		downloadedFacebookMediaParts(deliverableContents),
+		downloadedVideoMediaParts(deliverableContents),
 	)
 }
 
@@ -1234,47 +1234,4 @@ func facebookVideoMediaFile(videoContent facebookVideoContent) (*discordgo.File,
 
 func (content facebookVideoContent) downloadURL() string {
 	return strings.TrimSpace(content.DownloadURL)
-}
-
-func downloadedFacebookMediaParts(videoContents []facebookVideoContent) []contentPart {
-	mediaParts := make([]contentPart, 0, len(videoContents))
-
-	for _, videoContent := range videoContents {
-		mediaParts = append(mediaParts, cloneContentPart(videoContent.mediaPart()))
-	}
-
-	return mediaParts
-}
-
-func (instance *bot) cacheFacebookVideoReply(
-	sentMessage *discordgo.Message,
-	parentMessage *discordgo.Message,
-	mediaParts []contentPart,
-) {
-	if instance == nil || instance.nodes == nil || sentMessage == nil {
-		return
-	}
-
-	node := instance.nodes.getOrCreate(sentMessage.ID)
-	node.mu.Lock()
-
-	node.role = messageRoleAssistant
-	node.text = ""
-	node.thinkingText = ""
-	node.urlScanText = ""
-	node.gistURL = ""
-	node.providerResponseID = ""
-	node.providerResponseModel = ""
-	node.searchMetadata = nil
-	node.media = mediaParts
-	node.hasBadAttachments = false
-	node.attachmentDownloadFailed = false
-	node.fetchParentFailed = false
-	node.parentMessage = parentMessage
-	node.initialized = true
-
-	instance.nodes.cacheLockedNode(sentMessage.ID, node)
-	node.mu.Unlock()
-
-	instance.nodes.persistBestEffort()
 }
