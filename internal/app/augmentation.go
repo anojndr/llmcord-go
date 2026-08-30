@@ -9,9 +9,12 @@ import (
 )
 
 var (
-	searchWebRE   = regexp.MustCompile(`(?i)\bsearch(?:\s+the)?\s+web\b`)
-	shortAnswerRE = regexp.MustCompile(`(?i)\bshort\s+answer\b`)
+	searchWebRE        = regexp.MustCompile(`(?i)\bsearch(?:\s+the)?\s+web\b`)
+	shortAnswerRE      = regexp.MustCompile(`(?i)\bshort\s+answer\b`)
+	prioritizeTruthRE  = regexp.MustCompile(`(?i)\bprioritize\s+truth\s+over\s+agreeableness\b`)
 )
+
+const prioritizeTruthPhrase = "Prioritize truth over agreeableness — be direct, challenge flawed assumptions, and never offer unwarranted praise or validation."
 
 const (
 	augmentedPromptPrefix        = "Answer the user's query based on "
@@ -577,6 +580,10 @@ func containsShortAnswerPhrase(text string) bool {
 	return shortAnswerRE.MatchString(text)
 }
 
+func containsPrioritizeTruthPhrase(text string) bool {
+	return prioritizeTruthRE.MatchString(text)
+}
+
 // userQueryFromContent extracts the UserQuery from a chatMessage Content value.
 // Unknown content types return "" and delegate error surfacing to
 // appendContextToConversation (which validates content types and returns
@@ -651,6 +658,25 @@ func maybeAppendShortAnswerToConversation(conversation []chatMessage) ([]chatMes
 	})
 }
 
+func maybeAppendPrioritizeTruthToConversation(conversation []chatMessage) ([]chatMessage, error) {
+	userQuery, ok := latestUserQuery(conversation)
+	if !ok {
+		return conversation, nil
+	}
+
+	if containsPrioritizeTruthPhrase(userQuery) {
+		return conversation, nil
+	}
+
+	return appendContextToConversation(conversation, func(prompt *augmentedUserPrompt) {
+		if containsPrioritizeTruthPhrase(prompt.UserQuery) {
+			return
+		}
+
+		prompt.UserQuery = appendPromptUserQuery(prompt.UserQuery, prioritizeTruthPhrase)
+	})
+}
+
 func maybeAppendSearchWebAndShortAnswerToConversation(conversation []chatMessage) ([]chatMessage, error) {
 	userQuery, ok := latestUserQuery(conversation)
 	if !ok {
@@ -697,31 +723,49 @@ func maybeAppendSearchWebAndShortAnswerToConversation(conversation []chatMessage
 
 // applyAutoAppend applies per-provider auto-append suffixes. It consolidates
 // the branching used by both prepareMessageResponse and buildFallbackRequest
-// so the two request builders stay in sync.
+// so the two request builders stay in sync. It supports any combination of
+// auto_append_search_web, auto_append_short_answer, and
+// auto_append_prioritize_truth, appending missing phrases together with a
+// single paragraph break before the first and single newlines between them
+// (e.g. "search the web\nshort answer\n<prior truth>") to match the spec.
 func applyAutoAppend(provider providerConfig, conversation []chatMessage) ([]chatMessage, error) {
-	switch {
-	case provider.AutoAppendSearchWeb && provider.AutoAppendShortAnswer:
-		appended, err := maybeAppendSearchWebAndShortAnswerToConversation(conversation)
-		if err != nil {
-			return nil, fmt.Errorf("append search web and short answer suffix: %w", err)
-		}
-
-		return appended, nil
-	case provider.AutoAppendSearchWeb:
-		appended, err := maybeAppendSearchWebToConversation(conversation)
-		if err != nil {
-			return nil, fmt.Errorf("append search web suffix: %w", err)
-		}
-
-		return appended, nil
-	case provider.AutoAppendShortAnswer:
-		appended, err := maybeAppendShortAnswerToConversation(conversation)
-		if err != nil {
-			return nil, fmt.Errorf("append short answer suffix: %w", err)
-		}
-
-		return appended, nil
-	default:
+	if !provider.AutoAppendSearchWeb && !provider.AutoAppendShortAnswer && !provider.AutoAppendPrioritizeTruth {
 		return conversation, nil
 	}
+
+	userQuery, ok := latestUserQuery(conversation)
+	if !ok {
+		return conversation, nil
+	}
+
+	hasSearch := !provider.AutoAppendSearchWeb || containsSearchWebPhrase(userQuery)
+	hasShort := !provider.AutoAppendShortAnswer || containsShortAnswerPhrase(userQuery)
+	hasTruth := !provider.AutoAppendPrioritizeTruth || containsPrioritizeTruthPhrase(userQuery)
+
+	if hasSearch && hasShort && hasTruth {
+		return conversation, nil
+	}
+
+	appended, err := appendContextToConversation(conversation, func(prompt *augmentedUserPrompt) {
+		var toAppend []string
+		if provider.AutoAppendSearchWeb && !containsSearchWebPhrase(prompt.UserQuery) {
+			toAppend = append(toAppend, "search the web")
+		}
+		if provider.AutoAppendShortAnswer && !containsShortAnswerPhrase(prompt.UserQuery) {
+			toAppend = append(toAppend, "short answer")
+		}
+		if provider.AutoAppendPrioritizeTruth && !containsPrioritizeTruthPhrase(prompt.UserQuery) {
+			toAppend = append(toAppend, prioritizeTruthPhrase)
+		}
+		if len(toAppend) == 0 {
+			return
+		}
+
+		prompt.UserQuery = appendPromptUserQuery(prompt.UserQuery, strings.Join(toAppend, "\n"))
+	})
+	if err != nil {
+		return nil, fmt.Errorf("append auto suffix: %w", err)
+	}
+
+	return appended, nil
 }
