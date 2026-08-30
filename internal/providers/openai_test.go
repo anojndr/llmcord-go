@@ -763,6 +763,174 @@ func TestOpenAIClientStreamResponses(t *testing.T) {
 	}
 }
 
+func TestOpenAIClientStreamResponsesSuppressesStreamedReasoningSummary(t *testing.T) {
+	t.Parallel()
+
+	scenarios := []struct {
+		name             string
+		events           []string
+		completedEvent   string
+		expectedThinking string
+	}{
+		{
+			name: "emits full summary without streamed deltas",
+			events: []string{
+				`{"type":"response.output_item.done","item":{"id":"rs_1",` +
+					`"type":"reasoning","summary":[{"type":"summary_text",` +
+					`"text":"Plan the search."}]}}`,
+			},
+			expectedThinking: "Plan the search.\n\n",
+		},
+		{
+			name: "suppresses output_item.done restating streamed summary",
+			events: []string{
+				`{"type":"response.reasoning_summary_text.delta",` +
+					`"item_id":"rs_1","delta":"Plan the search."}`,
+				`{"type":"response.reasoning_summary_part.done","item_id":"rs_1"}`,
+				`{"type":"response.output_item.done","item":{"id":"rs_1",` +
+					`"type":"reasoning","summary":[{"type":"summary_text",` +
+					`"text":"Plan the search."}]}}`,
+			},
+			expectedThinking: "Plan the search.\n\n",
+		},
+		{
+			name: "suppresses response.completed restating streamed summary",
+			events: []string{
+				`{"type":"response.reasoning_summary_text.delta",` +
+					`"item_id":"rs_1","delta":"Plan the search."}`,
+				`{"type":"response.reasoning_summary_part.done","item_id":"rs_1"}`,
+				`{"type":"response.completed","response":{"id":"` + testOpenAIResponsesResponseID +
+					`","status":"completed","output":[{"id":"rs_1","type":"reasoning",` +
+					`"summary":[{"type":"summary_text","text":"Plan the search."}]}]}}`,
+			},
+			expectedThinking: "Plan the search.\n\n",
+		},
+		{
+			name: "emits remainder of summary extending streamed text",
+			events: []string{
+				`{"type":"response.reasoning_summary_text.delta",` +
+					`"item_id":"rs_1","delta":"Part one."}`,
+				`{"type":"response.reasoning_summary_part.done","item_id":"rs_1"}`,
+				`{"type":"response.output_item.done","item":{"id":"rs_1",` +
+					`"type":"reasoning","summary":[{"type":"summary_text",` +
+					`"text":"Part one."},{"type":"summary_text","text":"Part two."}]}}`,
+			},
+			expectedThinking: "Part one.\n\nPart two.\n\n",
+		},
+		{
+			name: "keeps divergent summary text verbatim",
+			events: []string{
+				`{"type":"response.reasoning_summary_text.delta",` +
+					`"item_id":"rs_1","delta":"Inspecting..."}`,
+				`{"type":"response.reasoning_summary_part.done","item_id":"rs_1"}`,
+				`{"type":"response.output_item.done","item":{"id":"rs_1",` +
+					`"type":"reasoning","summary":[{"type":"summary_text",` +
+					`"text":"Need more steps"}]}}`,
+			},
+			expectedThinking: "Inspecting...\n\nNeed more steps\n\n",
+		},
+		{
+			name: "suppresses restatement of fully streamed multi-part summary",
+			events: []string{
+				`{"type":"response.reasoning_summary_text.delta",` +
+					`"item_id":"rs_1","delta":"Part one."}`,
+				`{"type":"response.reasoning_summary_part.done","item_id":"rs_1"}`,
+				`{"type":"response.reasoning_summary_text.delta",` +
+					`"item_id":"rs_1","summary_index":1,"delta":"Part two."}`,
+				`{"type":"response.reasoning_summary_part.done","item_id":"rs_1"}`,
+				`{"type":"response.output_item.done","item":{"id":"rs_1",` +
+					`"type":"reasoning","summary":[{"type":"summary_text",` +
+					`"text":"Part one."},{"type":"summary_text","text":"Part two."}]}}`,
+			},
+			expectedThinking: "Part one.\n\nPart two.\n\n",
+		},
+	}
+
+	for _, scenario := range scenarios {
+		t.Run(scenario.name, func(t *testing.T) {
+			t.Parallel()
+
+			server := newOpenAIResponsesReasoningStreamTestServer(
+				t,
+				scenario.events,
+				scenario.completedEvent,
+			)
+			defer server.Close()
+
+			client := newOpenAIClient(server.Client())
+			request := ChatCompletionRequest{
+				Provider: ProviderRequestConfig{
+					APIKind:         ProviderAPIKindOpenAI,
+					BaseURL:         server.URL + "/v1",
+					APIKey:          "test-key",
+					UseResponsesAPI: true,
+				},
+				Model:           "gpt-5",
+				ConfiguredModel: "openai/gpt-5",
+				Messages: []ChatMessage{
+					{Role: searchtypes.MessageRoleUser, Content: "hello"},
+				},
+			}
+
+			var joinedThinking strings.Builder
+
+			err := client.streamChatCompletion(context.Background(), request, func(delta StreamDelta) error {
+				joinedThinking.WriteString(delta.Thinking)
+
+				return nil
+			})
+			if err != nil {
+				t.Fatalf("stream responses completion: %v", err)
+			}
+
+			if joinedThinking.String() != scenario.expectedThinking {
+				t.Fatalf(
+					"unexpected streamed thinking: %q want %q",
+					joinedThinking.String(),
+					scenario.expectedThinking,
+				)
+			}
+		})
+	}
+}
+
+func newOpenAIResponsesReasoningStreamTestServer(
+	t *testing.T,
+	events []string,
+	completedEvent string,
+) *httptest.Server {
+	t.Helper()
+
+	return httptest.NewServer(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		request *http.Request,
+	) {
+		t.Helper()
+
+		responseWriter.Header().Set("Content-Type", "text/event-stream")
+
+		flusher, ok := responseWriter.(http.Flusher)
+		if !ok {
+			t.Fatal("expected response writer to support flushing")
+		}
+
+		for _, event := range events {
+			writeStreamChunk(t, responseWriter, "data: "+event+"\n\n")
+			flusher.Flush()
+		}
+
+		if completedEvent == "" {
+			completedEvent = openAIResponsesCompletedChunk()
+		}
+
+		writeStreamChunk(t, responseWriter, completedEvent)
+		flusher.Flush()
+
+		writeStreamChunk(t, responseWriter, "data: [DONE]\n\n")
+		flusher.Flush()
+	}))
+}
+
 func TestSetOpenAIClientRequestIDHeaderUsesOpenAIProviderOnly(t *testing.T) {
 	t.Parallel()
 
