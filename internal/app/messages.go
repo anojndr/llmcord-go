@@ -321,10 +321,10 @@ func (instance *bot) prepareMessageResponse(
 
 	unmutatedMessages := append([]chatMessage(nil), messages...)
 
-	if provider.AutoAppendSearchWeb {
-		appendedMessages, appendErr := maybeAppendSearchWebToConversation(messages)
+	if provider.AutoAppendSearchWeb || provider.AutoAppendShortAnswer {
+		appendedMessages, appendErr := applyAutoAppend(provider, messages)
 		if appendErr != nil {
-			return chatCompletionRequest{}, nil, nil, fmt.Errorf("append search web suffix: %w", appendErr)
+			return chatCompletionRequest{}, nil, nil, appendErr
 		}
 
 		messages = appendedMessages
@@ -399,10 +399,10 @@ func (instance *bot) buildFallbackRequest(
 		tracker.searchMetadata = mergeSearchMetadata(tracker.searchMetadata, webSearchMetadata)
 	}
 
-	if fallbackProvider.AutoAppendSearchWeb {
-		appendedMessages, appendErr := maybeAppendSearchWebToConversation(messages)
+	if fallbackProvider.AutoAppendSearchWeb || fallbackProvider.AutoAppendShortAnswer {
+		appendedMessages, appendErr := applyAutoAppend(fallbackProvider, messages)
 		if appendErr != nil {
-			return chatCompletionRequest{}, nil, fmt.Errorf("append search web suffix: %w", appendErr)
+			return chatCompletionRequest{}, nil, appendErr
 		}
 
 		messages = appendedMessages
