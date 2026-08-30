@@ -53,6 +53,44 @@ func attributionPrefix(displayName string) string {
 	return fmt.Sprintf("%s sent:\n", displayName)
 }
 
+// resendAllowedMentionUsers lists the user IDs that may be pinged when a
+// message is deleted and re-sent as the bot (x.com fixup, YouTube Shorts).
+// Discord suppresses mention notifications unless allowed_mentions names
+// them, so the original author and everyone mentioned in the original
+// message are forwarded; roles and @everyone stay suppressed by the empty
+// Parse list.
+func resendAllowedMentionUsers(message *discordgo.Message) []string {
+	if message == nil {
+		return nil
+	}
+
+	ids := make([]string, 0, len(message.Mentions)+1)
+	seen := make(map[string]struct{}, len(message.Mentions)+1)
+	addID := func(id string) {
+		if id == "" {
+			return
+		}
+		if _, exists := seen[id]; exists {
+			return
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+
+	if message.Author != nil {
+		addID(message.Author.ID)
+	}
+	for _, user := range message.Mentions {
+		if user != nil {
+			addID(user.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	return ids
+}
+
 func shouldHandleXFixup(message *discordgo.Message, botUserID string) bool {
 	if message == nil || message.Author == nil || message.Author.Bot {
 		return false
@@ -129,6 +167,7 @@ func (instance *bot) handleXFixup(message *discordgo.Message, botUserID string) 
 		Content: newContent,
 		AllowedMentions: &discordgo.MessageAllowedMentions{
 			Parse: []discordgo.AllowedMentionType{},
+			Users: resendAllowedMentionUsers(message),
 		},
 	}
 	if _, err := instance.session.ChannelMessageSendComplex(message.ChannelID, send); err != nil {

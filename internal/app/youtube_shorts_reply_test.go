@@ -36,14 +36,15 @@ func newYouTubeShortsReplyTestConfigPath(t *testing.T) string {
 }
 
 type youtubeShortsReplyCapture struct {
-	mu          sync.Mutex
-	deletes     []string
-	sends       int
-	sendContent string
-	filenames   []string
-	fileBodies  []string
-	typings     int
-	unexpected  []string
+	mu                  sync.Mutex
+	deletes             []string
+	sends               int
+	sendContent         string
+	sendAllowedMentions *capturedAllowedMentions
+	filenames           []string
+	fileBodies          []string
+	typings             int
+	unexpected          []string
 }
 
 func (capture *youtubeShortsReplyCapture) recordTyping() {
@@ -76,12 +77,14 @@ func (capture *youtubeShortsReplyCapture) recordSend(request *http.Request) {
 	contentType := request.Header.Get("Content-Type")
 	if strings.HasPrefix(contentType, "application/json") {
 		var payload struct {
-			Content string `json:"content"`
+			Content         string                   `json:"content"`
+			AllowedMentions *capturedAllowedMentions `json:"allowed_mentions"`
 		}
 
 		body, _ := io.ReadAll(request.Body)
 		_ = json.Unmarshal(body, &payload)
 		capture.sendContent = payload.Content
+		capture.sendAllowedMentions = payload.AllowedMentions
 
 		return
 	}
@@ -92,11 +95,13 @@ func (capture *youtubeShortsReplyCapture) recordSend(request *http.Request) {
 
 	if payloadValues := request.MultipartForm.Value["payload_json"]; len(payloadValues) == 1 {
 		var payload struct {
-			Content string `json:"content"`
+			Content         string                   `json:"content"`
+			AllowedMentions *capturedAllowedMentions `json:"allowed_mentions"`
 		}
 
 		if err := json.Unmarshal([]byte(payloadValues[0]), &payload); err == nil {
 			capture.sendContent = payload.Content
+			capture.sendAllowedMentions = payload.AllowedMentions
 		}
 	}
 
@@ -139,6 +144,21 @@ func (capture *youtubeShortsReplyCapture) snapshot() (
 		append([]string(nil), capture.fileBodies...),
 		capture.typings,
 		append([]string(nil), capture.unexpected...)
+}
+
+func (capture *youtubeShortsReplyCapture) allowedMentionsSnapshot() *capturedAllowedMentions {
+	capture.mu.Lock()
+	defer capture.mu.Unlock()
+
+	if capture.sendAllowedMentions == nil {
+		return nil
+	}
+
+	allowed := *capture.sendAllowedMentions
+	allowed.Parse = append([]string(nil), allowed.Parse...)
+	allowed.Users = append([]string(nil), allowed.Users...)
+
+	return &allowed
 }
 
 func newYouTubeShortsReplyCaptureTransport(capture *youtubeShortsReplyCapture) roundTripFunc {
@@ -262,6 +282,71 @@ func TestHandleMessageCreateYouTubeShortsDeletesAndResendsWithAttachment(t *test
 		"/channels/"+facebookReplyTestChannelID+"/messages/user-message-1",
 	) {
 		t.Fatalf("unexpected deletes: %#v", deletes)
+	}
+}
+
+func TestHandleMessageCreateYouTubeShortsResendPingsMentionedUsers(t *testing.T) {
+	t.Parallel()
+
+	var capture youtubeShortsReplyCapture
+
+	instance := newYouTubeShortsReplyTestBot(
+		t,
+		&capture,
+		newStubYouTubeShortsContentClient(func(
+			_ context.Context,
+			rawURL string,
+		) (youtubeShortsVideoContent, error) {
+			return newYouTubeShortsReplyVideoContent(rawURL), nil
+		}),
+	)
+
+	sourceMessage := new(discordgo.Message)
+	sourceMessage.ID = "user-message-mention"
+	sourceMessage.ChannelID = facebookReplyTestChannelID
+	sourceMessage.GuildID = facebookReplyTestGuildID
+	sourceMessage.Author = newDiscordUser(facebookReplyTestUserID, false)
+	sourceMessage.Author.Username = "shorts-tester"
+	sourceMessage.Content = " https://youtube.com/shorts/cwpMq2pgr0U?si=YiQ0mgy87QsX43R8 check this <@111222333444555666>"
+	sourceMessage.Mentions = []*discordgo.User{{ID: "111222333444555666", Username: "mentioned-friend"}}
+
+	instance.handleMessageCreate(nil, &discordgo.MessageCreate{Message: sourceMessage})
+
+	deletes, sends, sendContent, _, _, _, unexpected := capture.snapshot()
+
+	if len(unexpected) > 0 {
+		t.Fatalf("unexpected requests: %#v", unexpected)
+	}
+
+	if sends != 1 {
+		t.Fatalf("message sends: got %d want 1", sends)
+	}
+
+	if !strings.Contains(sendContent, "<@111222333444555666>") {
+		t.Fatalf("resent content should keep the mention: %q", sendContent)
+	}
+
+	if len(deletes) != 1 || !strings.HasSuffix(
+		deletes[0],
+		"/channels/"+facebookReplyTestChannelID+"/messages/user-message-mention",
+	) {
+		t.Fatalf("unexpected deletes: %#v", deletes)
+	}
+
+	allowed := capture.allowedMentionsSnapshot()
+
+	if allowed == nil {
+		t.Fatal("expected allowed_mentions in send payload")
+	}
+
+	if len(allowed.Parse) != 0 {
+		t.Fatalf("expected empty parse list: %#v", allowed.Parse)
+	}
+
+	wantUsers := []string{facebookReplyTestUserID, "111222333444555666"}
+
+	if !sameUserIDSet(allowed.Users, wantUsers) {
+		t.Fatalf("unexpected allowed users: got %#v want %#v", allowed.Users, wantUsers)
 	}
 }
 
