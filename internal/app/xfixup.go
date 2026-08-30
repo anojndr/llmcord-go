@@ -46,6 +46,13 @@ func xFixupDisplayName(message *discordgo.Message) string {
 	return "unknown"
 }
 
+// attributionPrefix renders the shared "<name> sent:" attribution used when a
+// feature deletes a user message and re-sends its content as the bot (x.com
+// fixup, YouTube Shorts).
+func attributionPrefix(displayName string) string {
+	return fmt.Sprintf("%s sent:\n", displayName)
+}
+
 func shouldHandleXFixup(message *discordgo.Message, botUserID string) bool {
 	if message == nil || message.Author == nil || message.Author.Bot {
 		return false
@@ -97,11 +104,11 @@ func (instance *bot) handleXFixup(message *discordgo.Message, botUserID string) 
 		return false
 	}
 	displayName := xFixupDisplayName(message)
-	newContent := fmt.Sprintf("%s sent:\n%s", displayName, fixedContent)
+	newContent := attributionPrefix(displayName) + fixedContent
 	// Discord content limit 2000; truncate if necessary.
 	if len(newContent) > 2000 {
 		// Reserve prefix length.
-		prefix := fmt.Sprintf("%s sent:\n", displayName)
+		prefix := attributionPrefix(displayName)
 		allowed := 2000 - len(prefix)
 		if allowed < 0 {
 			allowed = 0

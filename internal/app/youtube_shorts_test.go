@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -122,6 +123,158 @@ func TestExtractYouTubeShortsURLsIgnoresURLsInAugmentedPromptSections(t *testing
 	urls := extractYouTubeShortsURLs(text)
 	if len(urls) != 0 {
 		t.Fatalf("unexpected urls: %#v", urls)
+	}
+}
+
+func TestSelectYouTubeShortsDirectFormatSkipsResolverMedia(t *testing.T) {
+	t.Parallel()
+
+	formats := []aceThinkerYouTubeShortsItem{
+		{
+			URL:      "https://rr5---sn-vgqsrnsy.googlevideo.com/videoplayback?expire=1&ip=203.0.113.7&itag=18",
+			Filesize: 4096,
+			Quality:  "1080p",
+			ACodec:   "opus",
+			VCodec:   "av01.0.01M.08",
+			Ext:      "mp4",
+			Protocol: "https",
+		},
+		{
+			URL:      "https://example.com/downloads/portable.mp4",
+			Filesize: 2048,
+			Quality:  "360p",
+			ACodec:   "opus",
+			VCodec:   "av01.0.01M.08",
+			Ext:      "mp4",
+			Protocol: "https",
+		},
+	}
+
+	format, ok := selectYouTubeShortsDirectFormat(formats)
+	if !ok {
+		t.Fatal("expected portable direct format to be selected")
+	}
+
+	if format.URL != "https://example.com/downloads/portable.mp4" {
+		t.Fatalf("unexpected format: %#v", format)
+	}
+}
+
+func newResolverMediaYouTubeShortsTestServer(t *testing.T) (*httptest.Server, *youtubeShortsServerState) {
+	t.Helper()
+
+	state := new(youtubeShortsServerState)
+
+	var server *httptest.Server
+
+	server = httptest.NewServer(http.HandlerFunc(func(
+		writer http.ResponseWriter,
+		request *http.Request,
+	) {
+		switch request.URL.Path {
+		case "/info":
+			state.submittedURL = request.URL.Query().Get("url")
+			writeJSON(writer, aceThinkerYouTubeShortsInfoResponse{
+				ResData: aceThinkerYouTubeShortsInfo{
+					Title:   "Example Short",
+					Message: "success",
+					Formats: []aceThinkerYouTubeShortsItem{
+						{
+							URL:      "https://rr5---sn-vgqsrnsy.googlevideo.com/videoplayback?expire=1&ip=203.0.113.7&itag=18",
+							Filesize: 8192,
+							Quality:  "360p",
+							ACodec:   "opus",
+							VCodec:   "av01.0.01M.08",
+							Ext:      "mp4",
+							Protocol: "https",
+						},
+						{
+							URL:      server.URL + "/downloads/video-only.mp4",
+							Filesize: 4096,
+							Quality:  "720p",
+							ACodec:   "none",
+							VCodec:   "av01.0.01M.08",
+							Ext:      "mp4",
+							Protocol: "https",
+						},
+						{
+							URL:      server.URL + "/downloads/audio-only.m4a",
+							Filesize: 1024,
+							Quality:  "high",
+							ACodec:   "mp4a.40.2",
+							VCodec:   "none",
+							Ext:      "m4a",
+							Protocol: "https",
+						},
+					},
+				},
+			})
+		case "/loader":
+			state.loaderFormats = append(state.loaderFormats, request.URL.Query().Get("f"))
+			writeJSON(writer, aceThinkerYouTubeShortsLoaderResponse{
+				Success:     true,
+				ID:          "task-456",
+				Message:     "queued",
+				ProgressURL: server.URL + "/progress?id=task-456",
+			})
+		case "/progress":
+			state.progressCallsMu.Lock()
+			state.progressCalls++
+			state.progressCallsMu.Unlock()
+
+			if request.URL.Query().Get("id") != "task-456" {
+				t.Fatalf("unexpected progress id: %q", request.URL.Query().Get("id"))
+			}
+
+			writeJSON(writer, aceThinkerYouTubeShortsProgressResponse{
+				Success:     1,
+				Progress:    1000,
+				DownloadURL: server.URL + "/downloads/merged.mp4",
+				Message:     "finished",
+				Text:        "Finished",
+			})
+		case "/downloads/merged.mp4":
+			writer.Header().Set("Content-Type", "video/mp4")
+			writer.Header().Set("Content-Disposition", `attachment; filename="merged.mp4"`)
+			_, _ = writer.Write([]byte("merged-video"))
+		default:
+			t.Fatalf("unexpected path: %s", request.URL.Path)
+		}
+	}))
+
+	return server, state
+}
+
+func TestYouTubeShortsClientFetchFallsBackToLoaderWhenDirectURLIsResolverMedia(t *testing.T) {
+	t.Parallel()
+
+	server, state := newResolverMediaYouTubeShortsTestServer(t)
+	defer server.Close()
+
+	client := newTestYouTubeShortsClient(server)
+
+	result, err := client.fetch(
+		context.Background(),
+		testYouTubeShortsCanonicalURL,
+	)
+	if err != nil {
+		t.Fatalf("fetch youtube shorts content: %v", err)
+	}
+
+	if !slices.Equal(state.loaderFormats, []string{"720"}) {
+		t.Fatalf("unexpected loader formats: %#v", state.loaderFormats)
+	}
+
+	if result.DownloadURL != server.URL+"/downloads/merged.mp4" {
+		t.Fatalf("unexpected download url: %q", result.DownloadURL)
+	}
+
+	if string(mediaPartBytes(t, result.MediaPart)) != "merged-video" {
+		t.Fatalf("unexpected video bytes: %#v", result.MediaPart[contentFieldBytes])
+	}
+
+	if result.MediaPart[contentFieldFilename] != "merged.mp4" {
+		t.Fatalf("unexpected filename: %#v", result.MediaPart[contentFieldFilename])
 	}
 }
 

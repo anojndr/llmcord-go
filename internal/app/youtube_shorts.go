@@ -324,7 +324,8 @@ func selectYouTubeShortsDirectFormat(
 		if !youtubeShortsFormatHasAudio(format) ||
 			!youtubeShortsFormatHasVideo(format) ||
 			!strings.EqualFold(strings.TrimSpace(format.Ext), "mp4") ||
-			!youtubeShortsFormatUsesHTTP(format) {
+			!youtubeShortsFormatUsesHTTP(format) ||
+			youtubeShortsFormatIsResolverMedia(format) {
 			continue
 		}
 
@@ -338,6 +339,22 @@ func selectYouTubeShortsDirectFormat(
 	}
 
 	return bestFormat, bestRank >= 0
+}
+
+// youtubeShortsFormatIsResolverMedia reports whether the format URL points at
+// YouTube's media servers. AceThinker resolves those googlevideo URLs
+// server-side, so YouTube IP-locks them to the resolver's egress address and
+// they always return 403 when fetched from the bot; only the loader flow
+// yields portable download URLs.
+func youtubeShortsFormatIsResolverMedia(format aceThinkerYouTubeShortsItem) bool {
+	parsedURL, err := url.Parse(strings.TrimSpace(format.URL))
+	if err != nil {
+		return false
+	}
+
+	host := strings.ToLower(parsedURL.Hostname())
+
+	return host == "googlevideo.com" || strings.HasSuffix(host, ".googlevideo.com")
 }
 
 func selectYouTubeShortsLoaderFormat(formats []aceThinkerYouTubeShortsItem) (string, bool) {
@@ -726,8 +743,10 @@ func (instance *bot) replyWithYouTubeShorts(
 		return
 	}
 
+	displayName := xFixupDisplayName(message)
+
 	send := new(discordgo.MessageSend)
-	send.Content = joinYouTubeShortsReplyContent(removeYouTubeShortsURLs(message.Content), fallbackLinks)
+	send.Content = joinYouTubeShortsReplyContent(displayName, removeYouTubeShortsURLs(message.Content), fallbackLinks)
 	send.Files = files
 	send.AllowedMentions = &discordgo.MessageAllowedMentions{
 		Parse: []discordgo.AllowedMentionType{},
@@ -851,7 +870,9 @@ func youtubeShortsMediaFile(videoContent youtubeShortsVideoContent) (*discordgo.
 	}, ""
 }
 
-func joinYouTubeShortsReplyContent(remainingText string, fallbackLinks []string) string {
+func joinYouTubeShortsReplyContent(displayName, remainingText string, fallbackLinks []string) string {
+	prefix := attributionPrefix(displayName)
+
 	parts := make([]string, 0, len(fallbackLinks)+1)
 	if remainingText != "" {
 		parts = append(parts, remainingText)
@@ -859,16 +880,16 @@ func joinYouTubeShortsReplyContent(remainingText string, fallbackLinks []string)
 
 	parts = append(parts, fallbackLinks...)
 
-	content := strings.Join(parts, "\n")
+	content := prefix + strings.Join(parts, "\n")
 	if len(content) <= youtubeShortsMaxContentLength {
-		return content
+		return strings.TrimSpace(content)
 	}
 
 	if len(fallbackLinks) > 0 {
 		linksContent := strings.Join(fallbackLinks, "\n")
-		allowed := youtubeShortsMaxContentLength - len(linksContent) - 1
+		allowed := youtubeShortsMaxContentLength - len(prefix) - len(linksContent) - 1
 		if allowed > 0 && len(remainingText) > allowed {
-			return strings.TrimSpace(remainingText[:allowed]) + "\n" + linksContent
+			return strings.TrimSpace(prefix + strings.TrimSpace(remainingText[:allowed]) + "\n" + linksContent)
 		}
 	}
 

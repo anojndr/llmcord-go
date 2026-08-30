@@ -11,7 +11,7 @@ It turns Discord reply chains into a frontend for OpenAI-compatible chat-complet
 - Multimodal input: images, audio, video, PDFs, DOCX, PPTX, and generic file attachments
 - URL enrichment for TikTok, Facebook, YouTube, Reddit, and generic websites (Firecrawl Scrape when a Firecrawl key is set)
 - Automatic Facebook video downloads: any message containing a Facebook or fb.watch link (no bot mention needed) gets a reply with the MP4 attached; oversized videos are compressed to 8 MB first and fall back to the direct download link if compression fails
-- Automatic YouTube Shorts downloads: any message containing a YouTube Shorts link (no bot mention needed) is deleted and re-sent by the bot with the MP4 attached, preserving any surrounding text; oversized videos fall back to the direct download link (temporary resolver URL)
+- Automatic YouTube Shorts downloads: any message containing a YouTube Shorts link (no bot mention needed) is deleted and re-sent by the bot as "<username> sent:" with the MP4 attached, preserving any surrounding text; oversized videos fall back to the direct download link (temporary resolver URL)
 - Web-search augmentation (Exa by default), reverse-image lookup (`vsearch`), and native Gemini grounding
 - Hot-reloaded `config.yaml`, permissions, channel model locks, and PostgreSQL-backed history
 
