@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -115,26 +116,100 @@ type routedWebSearchClient struct {
 	tavily   webSearcher
 }
 
+// flexibleInt decodes JSON numbers that may be int or float.
+// TinyFish documents numeric fields as `number` and `latency_ms` as `number | null`
+// and has been observed returning floats like 12534.00762900128 for latency_ms.
+// Strict `int` fails with `json: cannot unmarshal number ... into Go struct field ... of type int`.
+type flexibleInt int
+
+func (fi *flexibleInt) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || string(trimmed) == "null" {
+		*fi = 0
+		return nil
+	}
+	var i int
+	if err := json.Unmarshal(trimmed, &i); err == nil {
+		*fi = flexibleInt(i)
+		return nil
+	}
+	var f float64
+	if err := json.Unmarshal(trimmed, &f); err == nil {
+		*fi = flexibleInt(int(f))
+		return nil
+	}
+	var s string
+	if err := json.Unmarshal(trimmed, &s); err == nil {
+		s = strings.TrimSpace(s)
+		if s == "" || s == "null" {
+			*fi = 0
+			return nil
+		}
+		if parsed, err := strconv.ParseFloat(s, 64); err == nil {
+			*fi = flexibleInt(int(parsed))
+			return nil
+		}
+	}
+	return fmt.Errorf("flexibleInt: cannot unmarshal %s", string(trimmed))
+}
+
+func (fi flexibleInt) MarshalJSON() ([]byte, error) {
+	return json.Marshal(int(fi))
+}
+
+// flexibleFloat64 decodes JSON numbers that may be int or float, handling `number | null`.
+type flexibleFloat64 float64
+
+func (ff *flexibleFloat64) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || string(trimmed) == "null" {
+		*ff = 0
+		return nil
+	}
+	var f float64
+	if err := json.Unmarshal(trimmed, &f); err == nil {
+		*ff = flexibleFloat64(f)
+		return nil
+	}
+	var s string
+	if err := json.Unmarshal(trimmed, &s); err == nil {
+		s = strings.TrimSpace(s)
+		if s == "" || s == "null" {
+			*ff = 0
+			return nil
+		}
+		if parsed, err := strconv.ParseFloat(s, 64); err == nil {
+			*ff = flexibleFloat64(parsed)
+			return nil
+		}
+	}
+	return fmt.Errorf("flexibleFloat64: cannot unmarshal %s", string(trimmed))
+}
+
+func (ff flexibleFloat64) MarshalJSON() ([]byte, error) {
+	return json.Marshal(float64(ff))
+}
+
 type tinyFishSearchResponse struct {
-	Query        string                   `json:"query"`
-	Results      []tinyFishSearchResult   `json:"results"`
-	TotalResults int                      `json:"total_results"`
-	Page         int                      `json:"page"`
+	Query        string                 `json:"query"`
+	Results      []tinyFishSearchResult `json:"results"`
+	TotalResults flexibleInt            `json:"total_results"`
+	Page         flexibleInt            `json:"page"`
 }
 
 type tinyFishSearchResult struct {
-	Position  int     `json:"position"`
-	SiteName  string  `json:"site_name"`
-	Title     string  `json:"title"`
-	Snippet   string  `json:"snippet"`
-	URL       string  `json:"url"`
-	Date      *string `json:"date"`
-	Publisher *string `json:"publisher"`
-	Authors   []string `json:"authors"`
-	Venue     *string `json:"venue"`
-	Year      *int    `json:"year"`
-	CitedByCount *int `json:"cited_by_count"`
-	PDFURL    *string `json:"pdf_url"`
+	Position     flexibleInt `json:"position"`
+	SiteName     string      `json:"site_name"`
+	Title        string      `json:"title"`
+	Snippet      string      `json:"snippet"`
+	URL          string      `json:"url"`
+	Date         *string     `json:"date"`
+	Publisher    *string     `json:"publisher"`
+	Authors      []string    `json:"authors"`
+	Venue        *string     `json:"venue"`
+	Year         *flexibleInt `json:"year"`
+	CitedByCount *flexibleInt `json:"cited_by_count"`
+	PDFURL       *string     `json:"pdf_url"`
 }
 
 type tinyFishFetchRequest struct {
@@ -148,14 +223,14 @@ type tinyFishFetchResponse struct {
 }
 
 type tinyFishFetchResult struct {
-	URL          string  `json:"url"`
-	FinalURL     string  `json:"final_url"`
-	Title        *string `json:"title"`
-	Description  *string `json:"description"`
-	Language     *string `json:"language"`
-	Format       string  `json:"format"`
-	Text         any     `json:"text"`
-	LatencyMs    *int    `json:"latency_ms"`
+	URL          string           `json:"url"`
+	FinalURL     string           `json:"final_url"`
+	Title        *string          `json:"title"`
+	Description  *string          `json:"description"`
+	Language     *string          `json:"language"`
+	Format       string           `json:"format"`
+	Text         any              `json:"text"`
+	LatencyMs    *flexibleFloat64 `json:"latency_ms"`
 }
 
 type tinyFishFetchError struct {
