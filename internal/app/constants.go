@@ -163,6 +163,8 @@ const (
 	openRouterMiddleOutTransform                  = "middle-out"
 	tikTokRenderPollInterval                      = 500 * time.Millisecond
 	tavilyExtractTimeoutSeconds                   = 10
+	youtubeShortsInfoRetryDelay                   = time.Second
+	youtubeShortsInfoRetryMaxAttempts             = 3
 	youtubeShortsLoaderPollInterval               = 500 * time.Millisecond
 	typingRefreshInterval                         = 8 * time.Second
 	discordClientTimeout                          = 20 * time.Second

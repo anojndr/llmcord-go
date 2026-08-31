@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -43,6 +44,7 @@ type youtubeShortsClient struct {
 	loaderURL          string
 	userAgent          string
 	loaderPollInterval time.Duration
+	infoRetryDelay     time.Duration
 }
 
 type youtubeShortsVideoContent struct {
@@ -52,6 +54,8 @@ type youtubeShortsVideoContent struct {
 }
 
 type aceThinkerYouTubeShortsInfoResponse struct {
+	Error   string                      `json:"error"`
+	Message string                      `json:"message"`
 	ResData aceThinkerYouTubeShortsInfo `json:"res_data"`
 }
 
@@ -101,6 +105,7 @@ func (content youtubeShortsVideoContent) downloadURL() string {
 func newYouTubeShortsClient(httpClient *http.Client) youtubeShortsClient {
 	return youtubeShortsClient{
 		httpClient:         httpClient,
+		infoRetryDelay:     youtubeShortsInfoRetryDelay,
 		infoURL:            defaultYouTubeShortsInfoURL,
 		loaderURL:          defaultYouTubeShortsLoaderURL,
 		userAgent:          youtubeUserAgent,
@@ -251,6 +256,13 @@ func normalizeYouTubeShortsURL(rawURL string) (string, error) {
 	return canonicalURL, nil
 }
 
+// errYouTubeShortsNoFormats marks an info response without formats. AceThinker
+// reports transient resolver failures ("all servers failed" upstream errors)
+// the same way it reports unavailable videos: a body without
+// res_data.formats. Only this condition is retried; transport failures
+// surface immediately.
+var errYouTubeShortsNoFormats = fmt.Errorf("youtube shorts info has no formats: %w", os.ErrInvalid)
+
 func (client youtubeShortsClient) fetchInfo(
 	ctx context.Context,
 	resolvedURL string,
@@ -260,27 +272,93 @@ func (client youtubeShortsClient) fetchInfo(
 		return aceThinkerYouTubeShortsInfo{}, err
 	}
 
+	retryDelay := client.infoRetryDelay
+	if retryDelay <= 0 {
+		retryDelay = youtubeShortsInfoRetryDelay
+	}
+
+	var lastErr error
+
+	for attempt := 1; attempt <= youtubeShortsInfoRetryMaxAttempts; attempt++ {
+		if attempt > 1 {
+			sleepErr := sleepYouTubeShortsInfoRetry(ctx, retryDelay)
+			if sleepErr != nil {
+				return aceThinkerYouTubeShortsInfo{}, sleepErr
+			}
+		}
+
+		info, err := client.fetchInfoAttempt(ctx, requestURL)
+		if err == nil {
+			return info, nil
+		}
+
+		if !errors.Is(err, errYouTubeShortsNoFormats) {
+			return aceThinkerYouTubeShortsInfo{}, err
+		}
+
+		lastErr = err
+	}
+
+	return aceThinkerYouTubeShortsInfo{}, lastErr
+}
+
+func (client youtubeShortsClient) fetchInfoAttempt(
+	ctx context.Context,
+	requestURL string,
+) (aceThinkerYouTubeShortsInfo, error) {
 	var response aceThinkerYouTubeShortsInfoResponse
 
-	err = client.fetchJSON(ctx, requestURL, &response)
+	err := client.fetchJSON(ctx, requestURL, &response)
 	if err != nil {
 		return aceThinkerYouTubeShortsInfo{}, err
 	}
 
 	if len(response.ResData.Formats) == 0 {
-		message := strings.TrimSpace(response.ResData.Message)
-		if message == "" {
-			message = "no downloadable formats"
-		}
-
 		return aceThinkerYouTubeShortsInfo{}, fmt.Errorf(
 			"resolve youtube shorts formats: %s: %w",
-			message,
-			os.ErrInvalid,
+			response.failureMessage(),
+			errYouTubeShortsNoFormats,
 		)
 	}
 
 	return response.ResData, nil
+}
+
+// failureMessage builds the error text for an info response without formats.
+// The resolver reports upstream failures in a top-level body
+// ({"error": ..., "message": ...}) while leaving res_data empty, so the
+// top-level fields win over res_data.message.
+func (response aceThinkerYouTubeShortsInfoResponse) failureMessage() string {
+	message := strings.TrimSpace(response.Error)
+	if detail := strings.TrimSpace(response.Message); detail != "" && detail != message {
+		if message == "" {
+			message = detail
+		} else {
+			message += ": " + detail
+		}
+	}
+
+	if message == "" {
+		message = strings.TrimSpace(response.ResData.Message)
+	}
+
+	if message == "" {
+		message = "no downloadable formats"
+	}
+
+	return message
+}
+
+func sleepYouTubeShortsInfoRetry(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return fmt.Errorf("wait for youtube shorts info retry: %w", ctx.Err())
+	case <-timer.C:
+		return nil
+	}
 }
 
 func buildYouTubeShortsRequestURL(baseURL, resolvedURL string) (string, error) {
