@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -420,6 +421,7 @@ func newTestYouTubeShortsClient(server *httptest.Server) youtubeShortsClient {
 		infoURL:            server.URL + "/info",
 		loaderURL:          server.URL + "/loader",
 		userAgent:          youtubeUserAgent,
+		infoRetryDelay:     time.Millisecond,
 		loaderPollInterval: time.Millisecond,
 	}
 }
@@ -505,6 +507,317 @@ func TestYouTubeShortsClientFetchFallsBackToLoaderWhenDirectProgressiveMP4Unavai
 
 	if result.MediaPart[contentFieldFilename] != "merged.mp4" {
 		t.Fatalf("unexpected filename: %#v", result.MediaPart[contentFieldFilename])
+	}
+}
+
+func TestYouTubeShortsClientFetchInfoRetriesResolverErrorBody(t *testing.T) {
+	t.Parallel()
+
+	var (
+		infoCallsMu sync.Mutex
+		infoCalls   int
+	)
+
+	server := httptest.NewServer(http.HandlerFunc(func(
+		writer http.ResponseWriter,
+		request *http.Request,
+	) {
+		if request.URL.Path != "/info" {
+			t.Fatalf("unexpected path: %s", request.URL.Path)
+		}
+
+		infoCallsMu.Lock()
+		infoCalls++
+		firstAttempt := infoCalls == 1
+		infoCallsMu.Unlock()
+
+		if firstAttempt {
+			writeJSON(writer, aceThinkerYouTubeShortsInfoResponse{
+				Error:   "All servers have been tried, but failed.",
+				Message: "Video not found.",
+			})
+
+			return
+		}
+
+		writeJSON(writer, aceThinkerYouTubeShortsInfoResponse{
+			ResData: aceThinkerYouTubeShortsInfo{
+				Title:   "Example Short",
+				Message: "success",
+				Formats: []aceThinkerYouTubeShortsItem{
+					{
+						URL:      "https://example.com/downloads/direct.mp4",
+						Filesize: 2048,
+						Quality:  "360p",
+						ACodec:   "opus",
+						VCodec:   "av01.0.01M.08",
+						Ext:      "mp4",
+						Protocol: "https",
+					},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	client := newTestYouTubeShortsClient(server)
+
+	info, err := client.fetchInfo(context.Background(), testYouTubeShortsCanonicalURL)
+	if err != nil {
+		t.Fatalf("fetch youtube shorts info after resolver error: %v", err)
+	}
+
+	if len(info.Formats) != 1 || info.Formats[0].URL != "https://example.com/downloads/direct.mp4" {
+		t.Fatalf("unexpected formats: %#v", info.Formats)
+	}
+
+	infoCallsMu.Lock()
+	defer infoCallsMu.Unlock()
+
+	if infoCalls != 2 {
+		t.Fatalf("info calls = %d, want 2 (resolver error then retry)", infoCalls)
+	}
+}
+
+func TestYouTubeShortsClientFetchInfoExhaustsRetriesAndSurfacesUpstreamError(t *testing.T) {
+	t.Parallel()
+
+	var (
+		infoCallsMu sync.Mutex
+		infoCalls   int
+	)
+
+	server := httptest.NewServer(http.HandlerFunc(func(
+		writer http.ResponseWriter,
+		request *http.Request,
+	) {
+		if request.URL.Path != "/info" {
+			t.Fatalf("unexpected path: %s", request.URL.Path)
+		}
+
+		infoCallsMu.Lock()
+		infoCalls++
+		infoCallsMu.Unlock()
+
+		writeJSON(writer, aceThinkerYouTubeShortsInfoResponse{
+			Error:   "All servers have been tried, but failed.",
+			Message: "Video not found.",
+		})
+	}))
+	defer server.Close()
+
+	client := newTestYouTubeShortsClient(server)
+
+	_, err := client.fetchInfo(context.Background(), testYouTubeShortsCanonicalURL)
+	if err == nil {
+		t.Fatal("fetch youtube shorts info: want error after exhausted retries")
+	}
+
+	if !strings.Contains(err.Error(), "All servers have been tried, but failed.") {
+		t.Fatalf("error missing upstream resolver message: %v", err)
+	}
+
+	infoCallsMu.Lock()
+	defer infoCallsMu.Unlock()
+
+	if infoCalls != youtubeShortsInfoRetryMaxAttempts {
+		t.Fatalf(
+			"info calls = %d, want %d (retry budget exhausted)",
+			infoCalls,
+			youtubeShortsInfoRetryMaxAttempts,
+		)
+	}
+}
+
+func TestYouTubeShortsClientFetchInfoDoesNotRetryTransportFailures(t *testing.T) {
+	t.Parallel()
+
+	var (
+		infoCallsMu sync.Mutex
+		infoCalls   int
+	)
+
+	server := httptest.NewServer(http.HandlerFunc(func(
+		writer http.ResponseWriter,
+		request *http.Request,
+	) {
+		infoCallsMu.Lock()
+		infoCalls++
+		infoCallsMu.Unlock()
+
+		http.Error(writer, "upstream exploded", http.StatusBadGateway)
+	}))
+	defer server.Close()
+
+	client := newTestYouTubeShortsClient(server)
+
+	_, err := client.fetchInfo(context.Background(), testYouTubeShortsCanonicalURL)
+	if err == nil {
+		t.Fatal("fetch youtube shorts info: want error for failed transport")
+	}
+
+	infoCallsMu.Lock()
+	defer infoCallsMu.Unlock()
+
+	if infoCalls != 1 {
+		t.Fatalf("info calls = %d, want 1 (transport failures are not retried)", infoCalls)
+	}
+}
+
+func TestYouTubeShortsClientFetchInfoFallsBackToResDataMessage(t *testing.T) {
+	t.Parallel()
+
+	var (
+		infoCallsMu sync.Mutex
+		infoCalls   int
+	)
+
+	server := httptest.NewServer(http.HandlerFunc(func(
+		writer http.ResponseWriter,
+		request *http.Request,
+	) {
+		infoCallsMu.Lock()
+		infoCalls++
+		infoCallsMu.Unlock()
+
+		writeJSON(writer, aceThinkerYouTubeShortsInfoResponse{
+			ResData: aceThinkerYouTubeShortsInfo{
+				Message: "resolver is warming up",
+			},
+		})
+	}))
+	defer server.Close()
+
+	client := newTestYouTubeShortsClient(server)
+
+	_, err := client.fetchInfo(context.Background(), testYouTubeShortsCanonicalURL)
+	if err == nil {
+		t.Fatal("fetch youtube shorts info: want error for body without formats")
+	}
+
+	if !strings.Contains(err.Error(), "resolver is warming up") {
+		t.Fatalf("error missing res_data message: %v", err)
+	}
+
+	infoCallsMu.Lock()
+	defer infoCallsMu.Unlock()
+
+	if infoCalls != youtubeShortsInfoRetryMaxAttempts {
+		t.Fatalf(
+			"info calls = %d, want %d (retry budget exhausted)",
+			infoCalls,
+			youtubeShortsInfoRetryMaxAttempts,
+		)
+	}
+}
+
+func TestYouTubeShortsClientFetchInfoDefaultsMessageForEmptyBody(t *testing.T) {
+	t.Parallel()
+
+	var (
+		infoCallsMu sync.Mutex
+		infoCalls   int
+	)
+
+	server := httptest.NewServer(http.HandlerFunc(func(
+		writer http.ResponseWriter,
+		request *http.Request,
+	) {
+		infoCallsMu.Lock()
+		infoCalls++
+		infoCallsMu.Unlock()
+
+		writeJSON(writer, aceThinkerYouTubeShortsInfoResponse{})
+	}))
+	defer server.Close()
+
+	client := newTestYouTubeShortsClient(server)
+
+	_, err := client.fetchInfo(context.Background(), testYouTubeShortsCanonicalURL)
+	if err == nil {
+		t.Fatal("fetch youtube shorts info: want error for empty body")
+	}
+
+	if !strings.Contains(err.Error(), "no downloadable formats") {
+		t.Fatalf("error missing default message: %v", err)
+	}
+
+	infoCallsMu.Lock()
+	defer infoCallsMu.Unlock()
+
+	if infoCalls != youtubeShortsInfoRetryMaxAttempts {
+		t.Fatalf(
+			"info calls = %d, want %d (retry budget exhausted)",
+			infoCalls,
+			youtubeShortsInfoRetryMaxAttempts,
+		)
+	}
+}
+
+func TestYouTubeShortsClientFetchInfoMakesSingleCallOnSuccess(t *testing.T) {
+	t.Parallel()
+
+	var (
+		infoCallsMu sync.Mutex
+		infoCalls   int
+	)
+
+	server := httptest.NewServer(http.HandlerFunc(func(
+		writer http.ResponseWriter,
+		request *http.Request,
+	) {
+		infoCallsMu.Lock()
+		infoCalls++
+		infoCallsMu.Unlock()
+
+		writeJSON(writer, aceThinkerYouTubeShortsInfoResponse{
+			ResData: aceThinkerYouTubeShortsInfo{
+				Title:   "Example Short",
+				Message: "success",
+				Formats: []aceThinkerYouTubeShortsItem{
+					{
+						URL:      "https://example.com/downloads/direct.mp4",
+						Filesize: 2048,
+						Quality:  "360p",
+						ACodec:   "opus",
+						VCodec:   "av01.0.01M.08",
+						Ext:      "mp4",
+						Protocol: "https",
+					},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	client := newTestYouTubeShortsClient(server)
+
+	info, err := client.fetchInfo(context.Background(), testYouTubeShortsCanonicalURL)
+	if err != nil {
+		t.Fatalf("fetch youtube shorts info: %v", err)
+	}
+
+	if len(info.Formats) != 1 {
+		t.Fatalf("unexpected formats: %#v", info.Formats)
+	}
+
+	infoCallsMu.Lock()
+	defer infoCallsMu.Unlock()
+
+	if infoCalls != 1 {
+		t.Fatalf("info calls = %d, want 1 (success on first attempt)", infoCalls)
+	}
+}
+
+func TestSleepYouTubeShortsInfoRetryContextCanceled(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := sleepYouTubeShortsInfoRetry(ctx, time.Hour)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("sleep retry error = %v, want context.Canceled", err)
 	}
 }
 
