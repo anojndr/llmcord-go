@@ -266,34 +266,34 @@ func loadConfig(filename string) (config, error) {
 		return config{}, fmt.Errorf("read config %q: %w", filename, err)
 	}
 
-	var rawLoadedConfig rawConfig
+	var rootNode yaml.Node
 
-	err = yaml.Unmarshal(configBytes, &rawLoadedConfig)
+	err = yaml.Unmarshal(configBytes, &rootNode)
 	if err != nil {
 		return config{}, fmt.Errorf("parse config %q: %w", filename, err)
 	}
 
-	return buildLoadedConfig(filename, configBytes, rawLoadedConfig)
+	var rawLoadedConfig rawConfig
+
+	err = rootNode.Decode(&rawLoadedConfig)
+	if err != nil {
+		return config{}, fmt.Errorf("parse config %q: %w", filename, err)
+	}
+
+	return buildLoadedConfig(filename, &rootNode, rawLoadedConfig)
 }
 
 func buildLoadedConfig(
 	filename string,
-	configBytes []byte,
+	rootNode *yaml.Node,
 	rawLoadedConfig rawConfig,
 ) (config, error) {
-	var rootNode yaml.Node
-
-	err := yaml.Unmarshal(configBytes, &rootNode)
-	if err != nil {
-		return config{}, fmt.Errorf("parse config node %q: %w", filename, err)
-	}
-
-	modelOrder, err := orderedMappingKeys(&rootNode, "models")
+	modelOrder, err := orderedMappingKeys(rootNode, "models")
 	if err != nil {
 		return config{}, fmt.Errorf("read model order from %q: %w", filename, err)
 	}
 
-	err = validateNoDeprecatedConfigSections(&rootNode)
+	err = validateNoDeprecatedConfigSections(rootNode)
 	if err != nil {
 		return config{}, fmt.Errorf("validate config %q: %w", filename, err)
 	}

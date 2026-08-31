@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -45,6 +46,9 @@ type bot struct {
 	website                      websiteFetcher
 	nodes                        *messageNodeStore
 	currentModel                 string
+	configCacheMu                sync.Mutex
+	configCache                  *config
+	configCacheStamp             configStamp
 	currentExaSearchTypeValue    string
 	currentGroundingEnabledValue *bool
 	modelMu                      sync.RWMutex
@@ -61,6 +65,8 @@ type bot struct {
 	onlineOutput                 io.Writer
 	awakeWatcher                 func(*discordgo.Session) bool
 	resetGatewayProbeStateFn     func()
+	channelCacheMu               sync.Mutex
+	channelCache                 map[string]channelCacheEntry
 }
 
 func newOptimizedHTTPTransport() *http.Transport {
@@ -88,25 +94,69 @@ func newOptimizedHTTPClient() *http.Client {
 	return client
 }
 
+type configStamp struct {
+	modTime time.Time
+	size    int64
+}
+
+// seedConfigCache stores the startup-loaded config so interaction and message
+// handlers skip re-reading the file per event; loadConfigCached still reloads
+// whenever the file's mtime or size changes on disk.
+func (instance *bot) seedConfigCache(loadedConfig config) {
+	info, err := os.Stat(filepath.Clean(instance.configPath))
+	if err != nil {
+		return
+	}
+
+	instance.configCacheMu.Lock()
+	defer instance.configCacheMu.Unlock()
+
+	instance.configCache = &loadedConfig
+	instance.configCacheStamp = configStamp{modTime: info.ModTime(), size: info.Size()}
+}
+
+func (instance *bot) loadConfigCached() (config, error) {
+	info, err := os.Stat(filepath.Clean(instance.configPath))
+	if err != nil {
+		return config{}, fmt.Errorf("read config %q: %w", instance.configPath, err)
+	}
+
+	stamp := configStamp{modTime: info.ModTime(), size: info.Size()}
+
+	instance.configCacheMu.Lock()
+	defer instance.configCacheMu.Unlock()
+
+	if instance.configCache != nil && instance.configCacheStamp == stamp {
+		return *instance.configCache, nil
+	}
+
+	loadedConfig, err := loadConfig(instance.configPath)
+	if err != nil {
+		return config{}, err
+	}
+
+	instance.configCache = &loadedConfig
+	instance.configCacheStamp = stamp
+
+	return loadedConfig, nil
+}
+
 func newBot(ctx context.Context, configPath string, loadedConfig config) (*bot, error) {
 	discordSession, err := discordgo.New("Bot " + loadedConfig.BotToken)
 	if err != nil {
 		return nil, fmt.Errorf("create discord session: %w", err)
 	}
 
-	if discordSession.Client == nil {
-		discordSession.Client = &http.Client{
-			Transport:     nil,
-			CheckRedirect: nil,
-			Jar:           nil,
-			Timeout:       discordClientTimeout,
-		}
+	discordSession.Client = &http.Client{
+		Transport: newOptimizedHTTPTransport(),
+		Timeout:   discordClientTimeout,
 	}
 
 	httpClient := newOptimizedHTTPClient()
 
 	instance := new(bot)
 	instance.configPath = configPath
+	instance.seedConfigCache(loadedConfig)
 	instance.session = discordSession
 	instance.httpClient = httpClient
 	instance.chatCompletions = providers.NewChatCompletionRouter(httpClient)
@@ -155,6 +205,7 @@ func newBot(ctx context.Context, configPath string, loadedConfig config) (*bot, 
 		discordgo.IntentsMessageContent
 	discordSession.AddHandler(recoverHandler(instance.handleReady))
 	discordSession.AddHandler(recoverHandler(instance.handleConnect))
+	discordSession.AddHandler(recoverHandler(instance.handleChannelUpdate))
 	discordSession.AddHandler(recoverHandler(instance.handleInteractionCreate))
 	discordSession.AddHandler(recoverHandler(instance.handleMessageCreate))
 
@@ -291,7 +342,7 @@ func (instance *bot) handleConnect(_ *discordgo.Session, _ *discordgo.Connect) {
 		return
 	}
 
-	loadedConfig, err := loadConfig(instance.configPath)
+	loadedConfig, err := instance.loadConfigCached()
 	if err != nil {
 		logWarn("load config for reconnect resync", err)
 

@@ -44,7 +44,7 @@ func (instance *bot) handleMessageCreate(
 		botUserID = instance.session.State.User.ID
 	}
 
-	loadedConfig, err := loadConfig(instance.configPath)
+	loadedConfig, err := instance.loadConfigCached()
 	if err != nil {
 		LogError(
 			"load config for incoming message",
