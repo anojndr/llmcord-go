@@ -503,12 +503,16 @@ func (instance *bot) runWebSearchToolPhase(
 
 		return nil, append(warnings, searchWarningText), false
 	}
-
 	if tracker != nil {
 		tracker.searchMetadata = mergeSearchMetadata(
 			tracker.searchMetadata,
 			newSearchMetadata(queries, results, loadedConfig.WebSearch.maxURLs()),
 		)
+		if tracker.sourceMessage != nil {
+			if persistErr := instance.persistAugmentedSourceMessage(ctx, tracker.sourceMessage, augmentedMessages); persistErr != nil {
+				logWarn("persist augmented source message after web search", persistErr)
+			}
+		}
 	}
 
 	return augmentedMessages, warnings, true

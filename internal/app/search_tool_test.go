@@ -204,6 +204,97 @@ func TestRespondToMessageExecutesWebSearchToolCalls(t *testing.T) {
 	}
 }
 
+func TestRespondToMessageRetainsWebSearchResultsInConversationHistory(t *testing.T) {
+	t.Parallel()
+
+	var requestTools [][]providers.FunctionTool
+
+	chatClient := newStubChatClient(func(
+		_ context.Context,
+		request chatCompletionRequest,
+		handle func(streamDelta) error,
+	) error {
+		requestTools = append(requestTools, request.Tools)
+
+		if len(requestTools) == 1 {
+			return handle(streamDelta{
+				ToolCalls:    parallelWebSearchToolCalls(),
+				FinishReason: "tool_calls",
+			})
+		}
+
+		return handle(newStreamDelta(testWebSearchToolAnswer, finishReasonStop))
+	})
+
+	webSearch := newStubWebSearchClient(func(
+		_ context.Context,
+		_ config,
+		queries []string,
+	) ([]webSearchResult, error) {
+		return []webSearchResult{
+			{Query: queries[0], Text: testWebSearchResultText},
+		}, nil
+	})
+
+	instance := newSearchToolTestBot(t, chatClient, webSearch)
+	sourceMessage := newWebSearchToolSourceMessage()
+
+	err := instance.respondToMessage(
+		context.Background(),
+		newWebSearchToolTestConfig(),
+		sourceMessage,
+		testWebSearchMainModel,
+	)
+	if err != nil {
+		t.Fatalf("respond to message: %v", err)
+	}
+
+	assistantMessage := new(discordgo.Message)
+	assistantMessage.ID = "response-message"
+	assistantMessage.ChannelID = testWebSearchChannelID
+	assistantMessage.Author = newDiscordUser(testWebSearchBotUserID, true)
+	assistantMessage.MessageReference = sourceMessage.Reference()
+	assistantMessage.Type = discordgo.MessageTypeReply
+
+	followUpMessage := new(discordgo.Message)
+	followUpMessage.ID = "follow-up-message"
+	followUpMessage.ChannelID = testWebSearchChannelID
+	followUpMessage.Author = newDiscordUser(testWebSearchUserID, false)
+	followUpMessage.MessageReference = assistantMessage.Reference()
+	followUpMessage.Type = discordgo.MessageTypeReply
+	followUpMessage.Content = "what did the search say?"
+
+	setCachedUserNode(
+		instance,
+		followUpMessage,
+		assistantMessage,
+		followUpMessage.Content,
+	)
+
+	history, _ := instance.buildConversation(
+		context.Background(),
+		followUpMessage,
+		messageContentOptions{
+			maxImages: defaultMaxImages,
+		},
+		defaultMaxMessages,
+		false,
+		false,
+	)
+
+	if len(history) != 3 {
+		t.Fatalf("expected 3 messages in history (user, assistant, follow-up), got %d", len(history))
+	}
+
+	initialUserTurnText := messageContentText(history[0].Content)
+	if !strings.Contains(initialUserTurnText, testWebSearchResultText) {
+		t.Fatalf("expected search results to be retained in conversation history, got: %q", initialUserTurnText)
+	}
+	if !strings.Contains(initialUserTurnText, webSearchSectionName) {
+		t.Fatalf("expected web search section heading in conversation history, got: %q", initialUserTurnText)
+	}
+}
+
 func TestRespondToMessageWebSearchFailureAnswersWithoutResults(t *testing.T) {
 	t.Parallel()
 
