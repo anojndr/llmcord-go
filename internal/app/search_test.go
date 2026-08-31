@@ -684,6 +684,148 @@ func TestRoutedWebSearchClientFallsBackToTavilyWhenMCPFails(t *testing.T) {
 	}
 }
 
+func TestTinyFishFetchBatchSendsPerURLTimeout(t *testing.T) {
+	t.Parallel()
+
+	var receivedRequest map[string]any
+	var capturedDeadline time.Time
+
+	server := httptest.NewServer(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		request *http.Request,
+	) {
+		if request.Method != http.MethodPost {
+			t.Fatalf("unexpected TinyFish method: %q", request.Method)
+		}
+		if request.Header.Get("X-API-Key") != "tf-test-key" {
+			t.Fatalf("unexpected TinyFish API key header: %q", request.Header.Get("X-API-Key"))
+		}
+		if err := json.NewDecoder(request.Body).Decode(&receivedRequest); err != nil {
+			t.Fatalf("decode TinyFish fetch request: %v", err)
+		}
+
+		responseWriter.Header().Set("Content-Type", "application/json")
+		response := map[string]any{
+			"results": []any{},
+			"errors":  []any{},
+		}
+		if err := json.NewEncoder(responseWriter).Encode(response); err != nil {
+			t.Fatalf("encode TinyFish response: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	baseClient := server.Client()
+	client := newTinyFishSearchClient(&http.Client{
+		Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			capturedDeadline, _ = request.Context().Deadline()
+			transport := baseClient.Transport
+			if transport == nil {
+				transport = http.DefaultTransport
+			}
+			return transport.RoundTrip(request)
+		}),
+	})
+	client.fetchEndpoint = server.URL
+
+	batchResponse, err := client.fetchTinyFishBatch(
+		t.Context(),
+		"tf-test-key",
+		[]string{"https://example.com/a", "https://example.com/b"},
+	)
+	if err != nil {
+		t.Fatalf("fetchTinyFishBatch returned error: %v", err)
+	}
+	if len(batchResponse.Results) != 0 || len(batchResponse.Errors) != 0 {
+		t.Fatalf("unexpected TinyFish fetch response: %#v", batchResponse)
+	}
+
+	rawURLs, ok := receivedRequest["urls"].([]any)
+	if !ok || len(rawURLs) != 2 {
+		t.Fatalf("unexpected TinyFish urls: %#v", receivedRequest["urls"])
+	}
+	if fmt.Sprint(receivedRequest["format"]) != "markdown" {
+		t.Fatalf("unexpected TinyFish format: %#v", receivedRequest["format"])
+	}
+	rawTimeout, ok := receivedRequest["per_url_timeout_ms"].(float64)
+	if !ok || int(rawTimeout) != tinyFishFetchPerURLTimeoutMS {
+		t.Fatalf("unexpected TinyFish per_url_timeout_ms: %#v", receivedRequest["per_url_timeout_ms"])
+	}
+
+	remaining := time.Until(capturedDeadline)
+	if remaining <= tinyFishSearchRequestTimeout || remaining > tinyFishFetchRequestTimeout {
+		t.Fatalf(
+			"unexpected fetch request deadline remaining: %s, want within (%s, %s]",
+			remaining,
+			tinyFishSearchRequestTimeout,
+			tinyFishFetchRequestTimeout,
+		)
+	}
+}
+
+func TestTinyFishSearchQuerySendsBoundedDeadline(t *testing.T) {
+	t.Parallel()
+
+	var capturedDeadline time.Time
+
+	server := httptest.NewServer(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		request *http.Request,
+	) {
+		if request.Method != http.MethodGet {
+			t.Fatalf("unexpected TinyFish search method: %q", request.Method)
+		}
+		if request.Header.Get("X-API-Key") != "tf-test-key" {
+			t.Fatalf("unexpected TinyFish search API key header: %q", request.Header.Get("X-API-Key"))
+		}
+		if request.URL.Query().Get("query") != "test query" {
+			t.Fatalf("unexpected TinyFish search query: %q", request.URL.Query().Get("query"))
+		}
+
+		responseWriter.Header().Set("Content-Type", "application/json")
+		response := map[string]any{
+			"query":         "test query",
+			"results":       []any{},
+			"total_results": 0,
+			"page":          0,
+		}
+		if err := json.NewEncoder(responseWriter).Encode(response); err != nil {
+			t.Fatalf("encode TinyFish search response: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	baseClient := server.Client()
+	client := newTinyFishSearchClient(&http.Client{
+		Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			capturedDeadline, _ = request.Context().Deadline()
+			transport := baseClient.Transport
+			if transport == nil {
+				transport = http.DefaultTransport
+			}
+			return transport.RoundTrip(request)
+		}),
+	})
+	client.searchEndpoint = server.URL
+
+	results, err := client.searchQuery(t.Context(), "tf-test-key", "test query")
+	if err != nil {
+		t.Fatalf("searchQuery returned error: %v", err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("unexpected TinyFish search results: %#v", results)
+	}
+
+	remaining := time.Until(capturedDeadline)
+	if remaining <= 0 || remaining > tinyFishSearchRequestTimeout {
+		t.Fatalf(
+			"unexpected search request deadline remaining: %s, want within (0, %s]",
+			remaining,
+			tinyFishSearchRequestTimeout,
+		)
+	}
+}
+
 func TestRoutedWebSearchClientHardcodedTinyFishExaTavilyChain(t *testing.T) {
 	t.Parallel()
 

@@ -1326,6 +1326,68 @@ func TestWebsiteClientFetchUsesTinyFishWhenConfigured(t *testing.T) {
 	}
 }
 
+func TestWebsiteClientFetchTinyFishBatchSendsRequestContract(t *testing.T) {
+	t.Parallel()
+
+	var receivedRequest map[string]any
+
+	tinyFishServer := httptest.NewServer(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		request *http.Request,
+	) {
+		if request.Method != http.MethodPost {
+			t.Fatalf("unexpected TinyFish method: %q", request.Method)
+		}
+		if request.Header.Get("X-API-Key") != "tf-test-key" {
+			t.Fatalf("unexpected TinyFish API key header: %q", request.Header.Get("X-API-Key"))
+		}
+		if err := json.NewDecoder(request.Body).Decode(&receivedRequest); err != nil {
+			t.Fatalf("decode TinyFish fetch request: %v", err)
+		}
+
+		responseWriter.Header().Set("Content-Type", "application/json")
+		resp := map[string]any{
+			"results": []any{},
+			"errors":  []any{},
+		}
+		if err := json.NewEncoder(responseWriter).Encode(resp); err != nil {
+			t.Fatalf("encode TinyFish response: %v", err)
+		}
+	}))
+	defer tinyFishServer.Close()
+
+	client := newWebsiteTestClientWithTinyFish(
+		tinyFishServer.Client(),
+		tinyFishServer.URL,
+		"",
+		"",
+	)
+
+	batchResponse, err := client.fetchTinyFishBatch(
+		t.Context(),
+		"tf-test-key",
+		[]string{"https://example.com/a", "https://example.com/b"},
+	)
+	if err != nil {
+		t.Fatalf("fetchTinyFishBatch returned error: %v", err)
+	}
+	if len(batchResponse.Results) != 0 || len(batchResponse.Errors) != 0 {
+		t.Fatalf("unexpected TinyFish fetch response: %#v", batchResponse)
+	}
+
+	rawURLs, ok := receivedRequest["urls"].([]any)
+	if !ok || len(rawURLs) != 2 {
+		t.Fatalf("unexpected TinyFish urls: %#v", receivedRequest["urls"])
+	}
+	if fmt.Sprint(receivedRequest["format"]) != "markdown" {
+		t.Fatalf("unexpected TinyFish format: %#v", receivedRequest["format"])
+	}
+	rawTimeout, ok := receivedRequest["per_url_timeout_ms"].(float64)
+	if !ok || int(rawTimeout) != tinyFishFetchPerURLTimeoutMS {
+		t.Fatalf("unexpected TinyFish per_url_timeout_ms: %#v", receivedRequest["per_url_timeout_ms"])
+	}
+}
+
 func TestWebsiteClientFetchFallsBackToTinyFishOnFirecrawlFailure(t *testing.T) {
 	t.Parallel()
 
@@ -1456,6 +1518,9 @@ func assertTinyFishFetchRequest(t *testing.T, request map[string]any, requestURL
 	}
 	if fmt.Sprint(request["format"]) != "markdown" {
 		t.Fatalf("unexpected TinyFish format: %#v", request["format"])
+	}
+	if rawTimeout, ok := request["per_url_timeout_ms"].(float64); !ok || int(rawTimeout) != tinyFishFetchPerURLTimeoutMS {
+		t.Fatalf("unexpected TinyFish per_url_timeout_ms: %#v", request["per_url_timeout_ms"])
 	}
 }
 
