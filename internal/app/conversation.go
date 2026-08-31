@@ -13,6 +13,7 @@ import (
 	"path"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 )
@@ -981,12 +982,36 @@ func (instance *bot) previousMessageInChannel(
 	return messages[0], true, nil
 }
 
+type channelCacheEntry struct {
+	channel *discordgo.Channel
+	expires time.Time
+}
+
+const channelCacheTTL = 10 * time.Minute
+
+// channelByID resolves a channel via the gateway cache first, then a short
+// TTL cache, and finally a REST fetch. Autocomplete and channel-context
+// resolution hit this on every keystroke; the caches keep repeated lookups
+// off the Discord REST API.
 func (instance *bot) channelByID(channelID string) (*discordgo.Channel, error) {
 	if instance.session.State != nil {
-		channel, err := instance.session.State.Channel(channelID)
-		if err == nil {
+		channel, stateErr := instance.session.State.Channel(channelID)
+		if stateErr == nil {
 			return channel, nil
 		}
+	}
+
+	now := time.Now()
+
+	instance.channelCacheMu.Lock()
+	if instance.channelCache == nil {
+		instance.channelCache = make(map[string]channelCacheEntry)
+	}
+	entry, cached := instance.channelCache[channelID]
+	instance.channelCacheMu.Unlock()
+
+	if cached && now.Before(entry.expires) {
+		return entry.channel, nil
 	}
 
 	channel, err := instance.session.Channel(channelID)
@@ -994,5 +1019,25 @@ func (instance *bot) channelByID(channelID string) (*discordgo.Channel, error) {
 		return nil, fmt.Errorf("fetch channel %s: %w", channelID, err)
 	}
 
+	instance.channelCacheMu.Lock()
+	instance.channelCache[channelID] = channelCacheEntry{channel: channel, expires: now.Add(channelCacheTTL)}
+	instance.channelCacheMu.Unlock()
+
 	return channel, nil
+}
+
+func (instance *bot) handleChannelUpdate(_ *discordgo.Session, update *discordgo.ChannelUpdate) {
+	if update == nil || update.Channel == nil {
+		return
+	}
+
+	instance.channelCacheMu.Lock()
+	defer instance.channelCacheMu.Unlock()
+
+	if _, cached := instance.channelCache[update.Channel.ID]; cached {
+		instance.channelCache[update.Channel.ID] = channelCacheEntry{
+			channel: update.Channel,
+			expires: time.Now().Add(channelCacheTTL),
+		}
+	}
 }

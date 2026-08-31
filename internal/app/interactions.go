@@ -794,7 +794,7 @@ func (instance *bot) handleModelCommand(
 	session *discordgo.Session,
 	interaction *discordgo.InteractionCreate,
 ) error {
-	loadedConfig, err := loadConfig(instance.configPath)
+	loadedConfig, err := instance.loadConfigCached()
 	if err != nil {
 		return fmt.Errorf("load config for model command: %w", err)
 	}
@@ -868,7 +868,7 @@ func (instance *bot) handleSearchTypeCommand(
 	session *discordgo.Session,
 	interaction *discordgo.InteractionCreate,
 ) error {
-	loadedConfig, err := loadConfig(instance.configPath)
+	loadedConfig, err := instance.loadConfigCached()
 	if err != nil {
 		return fmt.Errorf("load config for search type command: %w", err)
 	}
@@ -914,7 +914,7 @@ func (instance *bot) handleModelAutocomplete(
 	session *discordgo.Session,
 	interaction *discordgo.InteractionCreate,
 ) error {
-	loadedConfig, err := loadConfig(instance.configPath)
+	loadedConfig, err := instance.loadConfigCached()
 	if err != nil {
 		return fmt.Errorf("load config for autocomplete: %w", err)
 	}
@@ -1209,7 +1209,7 @@ func (instance *bot) handleGroundingCommand(
 		requestedEnabled = &val
 	}
 
-	loadedConfig, err := loadConfig(instance.configPath)
+	loadedConfig, err := instance.loadConfigCached()
 	if err != nil {
 		return fmt.Errorf("load config for grounding command: %w", err)
 	}
