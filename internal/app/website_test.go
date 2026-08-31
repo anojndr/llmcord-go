@@ -923,8 +923,8 @@ func TestWebsiteClientFetchSurfacesPersistentExaLivecrawlTimeout(t *testing.T) {
 		http.Error(responseWriter, "unexpected Tavily call", http.StatusInternalServerError)
 	}))
 	defer tavilyServer.Close()
-
 	loadedConfig := testWebsiteExaAndTavilyConfig()
+	loadedConfig.WebSearch.ExtractionOrder = []webExtractionProvider{webExtractionProviderExa}
 	client := newWebsiteTestClient(exaServer.Client(), exaServer.URL, tavilyServer.URL)
 
 	_, err := client.fetch(context.Background(), loadedConfig, testWebsiteArticleURL)
@@ -1507,6 +1507,151 @@ func TestWebsiteClientFetchSurfacesTinyFishError(t *testing.T) {
 	if !strings.Contains(err.Error(), "bot_blocked") {
 		t.Fatalf("unexpected error: %v", err)
 	}
+}
+func TestWebsiteClientFetchCustomExtractionOrder(t *testing.T) {
+	t.Parallel()
+
+	var (
+		firecrawlCalls int
+		tinyFishCalls  int
+		exaCalls       int
+		tavilyCalls    int
+	)
+
+	firecrawlServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		firecrawlCalls++
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"success": true,
+			"data": map[string]any{
+				"markdown": "# Firecrawl Body",
+				"metadata": map[string]any{"title": "Firecrawl Title"},
+			},
+		})
+	}))
+	defer firecrawlServer.Close()
+
+	tinyFishServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		tinyFishCalls++
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"results": []map[string]any{{
+				"url":   "https://example.com/article",
+				"title": "TinyFish Title",
+				"text":  "TinyFish Body",
+			}},
+			"errors": []any{},
+		})
+	}))
+	defer tinyFishServer.Close()
+
+	exaServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		exaCalls++
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"results": []map[string]any{{
+				"url":   "https://example.com/article",
+				"title": "Exa Title",
+				"text":  "Exa Body",
+			}},
+			"statuses": []map[string]any{{
+				"id":     "https://example.com/article",
+				"status": "success",
+			}},
+		})
+	}))
+	defer exaServer.Close()
+
+	tavilyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		tavilyCalls++
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"results": []map[string]any{{
+				"url":         "https://example.com/article",
+				"raw_content": "Tavily Body",
+			}},
+			"failed_results": []any{},
+		})
+	}))
+	defer tavilyServer.Close()
+
+	t.Run("tinyfish > firecrawl tries tinyfish first", func(t *testing.T) {
+		firecrawlCalls, tinyFishCalls, exaCalls, tavilyCalls = 0, 0, 0, 0
+
+		loadedConfig := testSearchConfig()
+		loadedConfig.WebSearch.ExtractionOrder = []webExtractionProvider{
+			webExtractionProviderTinyFish,
+			webExtractionProviderFirecrawl,
+		}
+		loadedConfig.WebSearch.Firecrawl = firecrawlSearchConfig{
+			APIKey:  "fc-key",
+			APIKeys: []string{"fc-key"},
+		}
+		loadedConfig.WebSearch.TinyFish = tinyFishSearchConfig{
+			APIKey:  "tf-key",
+			APIKeys: []string{"tf-key"},
+		}
+
+		client := websiteClient{
+			httpClient:              firecrawlServer.Client(),
+			firecrawlScrapeEndpoint: firecrawlServer.URL + "/v2/scrape",
+			tinyFishFetchEndpoint:   tinyFishServer.URL,
+			exaContentsEndpoint:     exaServer.URL,
+			tavilyExtractEndpoint:   tavilyServer.URL,
+			lookupIP:                testWebsiteLookupIP,
+			keys:                    newAPIKeyRotator(),
+		}
+
+		res, err := client.fetch(context.Background(), loadedConfig, "https://example.com/article")
+		if err != nil {
+			t.Fatalf("fetch failed: %v", err)
+		}
+		if res.Title != "TinyFish Title" {
+			t.Fatalf("unexpected title: %q", res.Title)
+		}
+		if tinyFishCalls != 1 || firecrawlCalls != 0 {
+			t.Fatalf("calls: tinyfish=%d, firecrawl=%d", tinyFishCalls, firecrawlCalls)
+		}
+	})
+
+	t.Run("tavily > exa tries tavily first", func(t *testing.T) {
+		firecrawlCalls, tinyFishCalls, exaCalls, tavilyCalls = 0, 0, 0, 0
+
+		loadedConfig := testSearchConfig()
+		loadedConfig.WebSearch.ExtractionOrder = []webExtractionProvider{
+			webExtractionProviderTavily,
+			webExtractionProviderExa,
+		}
+		loadedConfig.WebSearch.Exa = exaSearchConfig{
+			APIKey:  "exa-key",
+			APIKeys: []string{"exa-key"},
+		}
+		loadedConfig.WebSearch.Tavily = tavilySearchConfig{
+			APIKey:  "tavily-key",
+			APIKeys: []string{"tavily-key"},
+		}
+
+		client := websiteClient{
+			httpClient:              tavilyServer.Client(),
+			firecrawlScrapeEndpoint: firecrawlServer.URL + "/v2/scrape",
+			tinyFishFetchEndpoint:   tinyFishServer.URL,
+			exaContentsEndpoint:     exaServer.URL,
+			tavilyExtractEndpoint:   tavilyServer.URL,
+			lookupIP:                testWebsiteLookupIP,
+			keys:                    newAPIKeyRotator(),
+		}
+
+		res, err := client.fetch(context.Background(), loadedConfig, "https://example.com/article")
+		if err != nil {
+			t.Fatalf("fetch failed: %v", err)
+		}
+		if !strings.Contains(res.Content, "Tavily Body") {
+			t.Fatalf("unexpected content: %q", res.Content)
+		}
+		if tavilyCalls != 1 || exaCalls != 0 {
+			t.Fatalf("calls: tavily=%d, exa=%d", tavilyCalls, exaCalls)
+		}
+	})
 }
 
 func assertTinyFishFetchRequest(t *testing.T, request map[string]any, requestURL string) {

@@ -54,6 +54,12 @@ models:
 	if loadedConfig.MediaAnalysisModel != "" {
 		t.Fatalf("unexpected default media analysis model: %q", loadedConfig.MediaAnalysisModel)
 	}
+	if !slices.Equal(loadedConfig.WebSearch.Order, defaultWebSearchOrder) {
+		t.Fatalf("unexpected default web search order: %#v", loadedConfig.WebSearch.Order)
+	}
+	if !slices.Equal(loadedConfig.WebSearch.ExtractionOrder, defaultWebExtractionOrder) {
+		t.Fatalf("unexpected default web extraction order: %#v", loadedConfig.WebSearch.ExtractionOrder)
+	}
 
 	if loadedConfig.WebSearch.MaxURLs != defaultWebSearchMaxURLs {
 		t.Fatalf("unexpected default web search max URLs: %d", loadedConfig.WebSearch.MaxURLs)
@@ -1035,6 +1041,283 @@ web_search:
 
 	if !strings.Contains(err.Error(), "web_search.primary_provider is removed") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+func TestLoadConfigParsesWebSearchOrder(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		yaml      string
+		wantOrder []webSearchProvider
+		wantErr   bool
+	}{
+		{
+			name: "top level string with gt",
+			yaml: `
+bot_token: discord-token
+providers:
+  openai:
+    base_url: https://api.example.com/v1
+models:
+  openai/first-model:
+web_search_order:
+  tinyfish > exa > tavily
+`,
+			wantOrder: []webSearchProvider{webSearchProviderTinyFish, webSearchProviderExa, webSearchProviderTavily},
+		},
+		{
+			name: "top level string inline",
+			yaml: `
+bot_token: discord-token
+providers:
+  openai:
+    base_url: https://api.example.com/v1
+models:
+  openai/first-model:
+web_search_order: exa > tavily
+`,
+			wantOrder: []webSearchProvider{webSearchProviderExa, webSearchProviderTavily},
+		},
+		{
+			name: "nested web_search order",
+			yaml: `
+bot_token: discord-token
+providers:
+  openai:
+    base_url: https://api.example.com/v1
+models:
+  openai/first-model:
+web_search:
+  order: tavily > tinyfish > exa
+`,
+			wantOrder: []webSearchProvider{webSearchProviderTavily, webSearchProviderTinyFish, webSearchProviderExa},
+		},
+		{
+			name: "top level sequence list",
+			yaml: `
+bot_token: discord-token
+providers:
+  openai:
+    base_url: https://api.example.com/v1
+models:
+  openai/first-model:
+web_search_order:
+  - tinyfish
+  - exa
+  - tavily
+`,
+			wantOrder: []webSearchProvider{webSearchProviderTinyFish, webSearchProviderExa, webSearchProviderTavily},
+		},
+		{
+			name: "nested sequence list",
+			yaml: `
+bot_token: discord-token
+providers:
+  openai:
+    base_url: https://api.example.com/v1
+models:
+  openai/first-model:
+web_search:
+  order:
+    - exa
+    - tavily
+`,
+			wantOrder: []webSearchProvider{webSearchProviderExa, webSearchProviderTavily},
+		},
+		{
+			name: "invalid unknown provider",
+			yaml: `
+bot_token: discord-token
+providers:
+  openai:
+    base_url: https://api.example.com/v1
+models:
+  openai/first-model:
+web_search_order:
+  google > bing
+`,
+			wantErr: true,
+		},
+		{
+			name: "duplicate provider in order",
+			yaml: `
+bot_token: discord-token
+providers:
+  openai:
+    base_url: https://api.example.com/v1
+models:
+  openai/first-model:
+web_search_order:
+  tinyfish > tinyfish
+`,
+			wantErr: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			tempDir := t.TempDir()
+			configPath := filepath.Join(tempDir, "config.yaml")
+			if err := os.WriteFile(configPath, []byte(tc.yaml), 0o600); err != nil {
+				t.Fatalf("write config file: %v", err)
+			}
+
+			loadedConfig, err := loadConfig(configPath)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got nil")
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("load config: %v", err)
+			}
+
+			if !slices.Equal(loadedConfig.WebSearch.Order, tc.wantOrder) {
+				t.Fatalf("order = %#v, want %#v", loadedConfig.WebSearch.Order, tc.wantOrder)
+			}
+		})
+	}
+}
+func TestLoadConfigParsesWebExtractionOrder(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		yaml      string
+		wantOrder []webExtractionProvider
+		wantErr   bool
+	}{
+		{
+			name: "top level string with gt",
+			yaml: `
+bot_token: discord-token
+providers:
+  openai:
+    base_url: https://api.example.com/v1
+models:
+  openai/first-model:
+extraction_order:
+  firecrawl > tinyfish > exa > tavily
+`,
+			wantOrder: []webExtractionProvider{
+				webExtractionProviderFirecrawl,
+				webExtractionProviderTinyFish,
+				webExtractionProviderExa,
+				webExtractionProviderTavily,
+			},
+		},
+		{
+			name: "top level web_extraction_order alias",
+			yaml: `
+bot_token: discord-token
+providers:
+  openai:
+    base_url: https://api.example.com/v1
+models:
+  openai/first-model:
+web_extraction_order: tinyfish > exa
+`,
+			wantOrder: []webExtractionProvider{
+				webExtractionProviderTinyFish,
+				webExtractionProviderExa,
+			},
+		},
+		{
+			name: "nested web_search extraction_order",
+			yaml: `
+bot_token: discord-token
+providers:
+  openai:
+    base_url: https://api.example.com/v1
+models:
+  openai/first-model:
+web_search:
+  extraction_order: tavily > exa
+`,
+			wantOrder: []webExtractionProvider{
+				webExtractionProviderTavily,
+				webExtractionProviderExa,
+			},
+		},
+		{
+			name: "top level sequence list",
+			yaml: `
+bot_token: discord-token
+providers:
+  openai:
+    base_url: https://api.example.com/v1
+models:
+  openai/first-model:
+extraction_order:
+  - tinyfish
+  - firecrawl
+`,
+			wantOrder: []webExtractionProvider{
+				webExtractionProviderTinyFish,
+				webExtractionProviderFirecrawl,
+			},
+		},
+		{
+			name: "invalid unknown extraction provider",
+			yaml: `
+bot_token: discord-token
+providers:
+  openai:
+    base_url: https://api.example.com/v1
+models:
+  openai/first-model:
+extraction_order:
+  playwright > pupeteer
+`,
+			wantErr: true,
+		},
+		{
+			name: "duplicate extraction provider",
+			yaml: `
+bot_token: discord-token
+providers:
+  openai:
+    base_url: https://api.example.com/v1
+models:
+  openai/first-model:
+extraction_order:
+  firecrawl > firecrawl
+`,
+			wantErr: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			tempDir := t.TempDir()
+			configPath := filepath.Join(tempDir, "config.yaml")
+			if err := os.WriteFile(configPath, []byte(tc.yaml), 0o600); err != nil {
+				t.Fatalf("write config file: %v", err)
+			}
+
+			loadedConfig, err := loadConfig(configPath)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got nil")
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("load config: %v", err)
+			}
+
+			if !slices.Equal(loadedConfig.WebSearch.ExtractionOrder, tc.wantOrder) {
+				t.Fatalf("order = %#v, want %#v", loadedConfig.WebSearch.ExtractionOrder, tc.wantOrder)
+			}
+		})
 	}
 }
 
