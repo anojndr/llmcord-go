@@ -190,9 +190,13 @@ type tinyFishSearchResult struct {
 	PDFURL       *string      `json:"pdf_url"`
 }
 
+// ttl is intentionally omitted: omitting it lets Fetch serve any cached
+// entry, the fastest server-side path. per_url_timeout_ms bounds each URL's
+// server-side fetch+extract so one slow URL cannot stall the whole batch.
 type tinyFishFetchRequest struct {
-	URLs   []string `json:"urls"`
-	Format string   `json:"format"`
+	URLs            []string `json:"urls"`
+	Format          string   `json:"format"`
+	PerURLTimeoutMS int      `json:"per_url_timeout_ms,omitempty"`
 }
 
 type tinyFishFetchResponse struct {
@@ -1446,6 +1450,9 @@ func (client tinyFishSearchClient) searchQuery(
 	apiKey string,
 	query string,
 ) ([]tinyFishSearchResult, error) {
+	ctx, cancel := context.WithTimeout(ctx, tinyFishSearchRequestTimeout)
+	defer cancel()
+
 	queryValues := url.Values{}
 	queryValues.Set("query", query)
 
@@ -1568,9 +1575,13 @@ func (client tinyFishSearchClient) fetchTinyFishBatch(
 	if len(batch) == 0 {
 		return tinyFishFetchResponse{}, nil
 	}
+	ctx, cancel := context.WithTimeout(ctx, tinyFishFetchRequestTimeout)
+	defer cancel()
+
 	requestBody := tinyFishFetchRequest{
-		URLs:   batch,
-		Format: "markdown",
+		URLs:            batch,
+		Format:          "markdown",
+		PerURLTimeoutMS: tinyFishFetchPerURLTimeoutMS,
 	}
 	requestBytes, err := json.Marshal(requestBody)
 	if err != nil {

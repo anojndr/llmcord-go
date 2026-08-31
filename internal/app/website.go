@@ -1220,12 +1220,14 @@ func (client websiteClient) fetchWithTinyFishFetch(
 	requestURL string,
 	apiKey string,
 ) (websitePageContent, error) {
-	requestBody := map[string]any{
-		"urls":   []string{requestURL},
-		"format": "markdown",
-	}
+	ctx, cancel := context.WithTimeout(ctx, tinyFishFetchRequestTimeout)
+	defer cancel()
 
-	requestBytes, err := json.Marshal(requestBody)
+	requestBytes, err := json.Marshal(tinyFishFetchRequest{
+		URLs:            []string{requestURL},
+		Format:          "markdown",
+		PerURLTimeoutMS: tinyFishFetchPerURLTimeoutMS,
+	})
 	if err != nil {
 		return websitePageContent{}, fmt.Errorf("marshal TinyFish fetch request for %q: %w", requestURL, err)
 	}
@@ -1352,11 +1354,14 @@ func (client websiteClient) fetchTinyFishBatch(
 	if len(batch) == 0 {
 		return tinyFishFetchResponse{}, nil
 	}
-	requestBody := map[string]any{
-		"urls":   batch,
-		"format": "markdown",
-	}
-	requestBytes, err := json.Marshal(requestBody)
+	ctx, cancel := context.WithTimeout(ctx, tinyFishFetchRequestTimeout)
+	defer cancel()
+
+	requestBytes, err := json.Marshal(tinyFishFetchRequest{
+		URLs:            batch,
+		Format:          "markdown",
+		PerURLTimeoutMS: tinyFishFetchPerURLTimeoutMS,
+	})
 	if err != nil {
 		return tinyFishFetchResponse{}, fmt.Errorf("marshal TinyFish fetch request: %w", err)
 	}
