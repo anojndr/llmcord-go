@@ -594,53 +594,124 @@ func mergeSearchMetadata(left, right *searchMetadata) *searchMetadata {
 	return merged
 }
 
-// search implements the hardcoded TinyFish -> Exa -> Tavily chain.
-// TinyFish is skipped when no TinyFish API keys are configured; Exa is
-// always probed before Tavily even for Tavily-only deployments (intentional
-// per hardcoded spec — note the extra RTT for Tavily-only configs in README).
+type searchAttemptError struct {
+	providerName string
+	err          error
+}
+
+// search implements the configurable web search fallback chain specified in
+// loadedConfig.WebSearch.Order (default: TinyFish -> Exa -> Tavily).
+// Providers without configured API keys are skipped if they require keys
+// (TinyFish and Tavily); Exa can run keyless via MCP endpoint.
 func (client routedWebSearchClient) search(
 	ctx context.Context,
 	loadedConfig config,
 	queries []string,
 ) ([]webSearchResult, error) {
-	var tinyFishErr error
-	if len(loadedConfig.WebSearch.TinyFish.apiKeys()) > 0 {
-		results, err := client.tinyFish.search(ctx, loadedConfig, queries)
-		if err == nil {
-			return results, nil
+	order := loadedConfig.WebSearch.Order
+	if len(order) == 0 {
+		order = defaultWebSearchOrder
+	}
+
+	var failedAttempts []searchAttemptError
+
+	for _, provider := range order {
+		switch provider {
+		case webSearchProviderTinyFish:
+			if len(loadedConfig.WebSearch.TinyFish.apiKeys()) == 0 {
+				continue
+			}
+			if client.tinyFish == nil {
+				continue
+			}
+			results, err := client.tinyFish.search(ctx, loadedConfig, queries)
+			if err == nil {
+				return results, nil
+			}
+			logWarn("tinyfish search failed, trying fallback", err)
+			failedAttempts = append(failedAttempts, searchAttemptError{
+				providerName: "TinyFish Search",
+				err:          err,
+			})
+
+		case webSearchProviderExa:
+			if client.exa == nil {
+				continue
+			}
+			results, err := client.exa.search(ctx, loadedConfig, queries)
+			if err == nil {
+				return results, nil
+			}
+			exaName := "Exa MCP"
+			if loadedConfig.WebSearch.exaUsesAPI() {
+				exaName = "Exa Search API"
+			}
+			failedAttempts = append(failedAttempts, searchAttemptError{
+				providerName: exaName,
+				err:          err,
+			})
+
+		case webSearchProviderTavily:
+			if client.tavily == nil {
+				continue
+			}
+			results, err := client.tavily.search(ctx, loadedConfig, queries)
+			if err == nil {
+				return results, nil
+			}
+			failedAttempts = append(failedAttempts, searchAttemptError{
+				providerName: "Tavily",
+				err:          err,
+			})
 		}
-		tinyFishErr = err
-		logWarn("tinyfish search failed, trying fallback", err)
 	}
 
-	exaResults, exaErr := client.exa.search(ctx, loadedConfig, queries)
-	if exaErr == nil {
-		return exaResults, nil
+	if len(failedAttempts) == 0 {
+		return nil, fmt.Errorf("no web search providers configured: %w", os.ErrNotExist)
 	}
 
-	tavilyResults, tavilyErr := client.tavily.search(ctx, loadedConfig, queries)
-	if tavilyErr == nil {
-		return tavilyResults, nil
+	var joinedErrs []error
+	for _, attempt := range failedAttempts {
+		joinedErrs = append(joinedErrs, attempt.err)
 	}
+	joined := errors.Join(joinedErrs...)
 
-	exaName := "Exa MCP"
-	if loadedConfig.WebSearch.exaUsesAPI() {
-		exaName = "Exa Search API"
-	}
-
-	if tinyFishErr != nil {
+	switch len(failedAttempts) {
+	case 1:
 		return nil, fmt.Errorf(
-			"search with TinyFish Search failed, %s primary fallback failed, and Tavily fallback failed: %w",
-			exaName,
-			errors.Join(tinyFishErr, exaErr, tavilyErr),
+			"search with %s failed: %w",
+			failedAttempts[0].providerName,
+			joined,
 		)
-	}
+	case 2:
+		return nil, fmt.Errorf(
+			"search with %s failed, and %s fallback failed: %w",
+			failedAttempts[0].providerName,
+			failedAttempts[1].providerName,
+			joined,
+		)
+	case 3:
+		return nil, fmt.Errorf(
+			"search with %s failed, %s primary fallback failed, and %s fallback failed: %w",
+			failedAttempts[0].providerName,
+			failedAttempts[1].providerName,
+			failedAttempts[2].providerName,
+			joined,
+		)
+	default:
+		var parts []string
+		for index, attempt := range failedAttempts {
+			if index == 0 {
+				parts = append(parts, fmt.Sprintf("search with %s failed", attempt.providerName))
+			} else if index == len(failedAttempts)-1 {
+				parts = append(parts, fmt.Sprintf("and %s fallback failed", attempt.providerName))
+			} else {
+				parts = append(parts, fmt.Sprintf("%s fallback failed", attempt.providerName))
+			}
+		}
 
-	return nil, fmt.Errorf(
-		"search with %s failed, and Tavily fallback failed: %w",
-		exaName,
-		errors.Join(exaErr, tavilyErr),
-	)
+		return nil, fmt.Errorf("%s: %w", strings.Join(parts, ", "), joined)
+	}
 }
 
 func contentPartImageURL(part contentPart) (string, error) {

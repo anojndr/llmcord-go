@@ -959,6 +959,92 @@ func TestRoutedWebSearchClientHardcodedTinyFishExaTavilyChain(t *testing.T) {
 		})
 	}
 }
+func TestRoutedWebSearchClientCustomOrder(t *testing.T) {
+	t.Parallel()
+
+	tinyFishResult := []webSearchResult{{Query: "q", Text: "tinyfish result"}}
+	exaResult := []webSearchResult{{Query: "q", Text: "exa result"}}
+	tavilyResult := []webSearchResult{{Query: "q", Text: "tavily result"}}
+
+	t.Run("tavily > exa > tinyfish tries tavily first", func(t *testing.T) {
+		t.Parallel()
+
+		tinyFishClient := newStubWebSearchClient(func(_ context.Context, _ config, _ []string) ([]webSearchResult, error) {
+			return tinyFishResult, nil
+		})
+		exaClient := newStubWebSearchClient(func(_ context.Context, _ config, _ []string) ([]webSearchResult, error) {
+			return exaResult, nil
+		})
+		tavilyClient := newStubWebSearchClient(func(_ context.Context, _ config, _ []string) ([]webSearchResult, error) {
+			return tavilyResult, nil
+		})
+
+		loadedConfig := testSearchConfig()
+		loadedConfig.WebSearch.Order = []webSearchProvider{
+			webSearchProviderTavily,
+			webSearchProviderExa,
+			webSearchProviderTinyFish,
+		}
+		loadedConfig.WebSearch.TinyFish.APIKeys = []string{"tf-key"}
+		loadedConfig.WebSearch.Tavily.APIKeys = []string{"tvly-key"}
+
+		client := routedWebSearchClient{
+			tinyFish: tinyFishClient,
+			exa:      exaClient,
+			tavily:   tavilyClient,
+		}
+
+		results, err := client.search(context.Background(), loadedConfig, []string{"q"})
+		if err != nil {
+			t.Fatalf("search failed: %v", err)
+		}
+		if len(results) != 1 || results[0].Text != "tavily result" {
+			t.Fatalf("unexpected results: %#v", results)
+		}
+		if len(tavilyClient.calls) != 1 || len(exaClient.calls) != 0 || len(tinyFishClient.calls) != 0 {
+			t.Fatalf("calls: tavily=%d, exa=%d, tiny=%d", len(tavilyClient.calls), len(exaClient.calls), len(tinyFishClient.calls))
+		}
+	})
+
+	t.Run("exa > tinyfish ignores tavily", func(t *testing.T) {
+		t.Parallel()
+
+		tinyFishClient := newStubWebSearchClient(func(_ context.Context, _ config, _ []string) ([]webSearchResult, error) {
+			return tinyFishResult, nil
+		})
+		exaClient := newStubWebSearchClient(func(_ context.Context, _ config, _ []string) ([]webSearchResult, error) {
+			return nil, errors.New("exa error")
+		})
+		tavilyClient := newStubWebSearchClient(func(_ context.Context, _ config, _ []string) ([]webSearchResult, error) {
+			return tavilyResult, nil
+		})
+
+		loadedConfig := testSearchConfig()
+		loadedConfig.WebSearch.Order = []webSearchProvider{
+			webSearchProviderExa,
+			webSearchProviderTinyFish,
+		}
+		loadedConfig.WebSearch.TinyFish.APIKeys = []string{"tf-key"}
+		loadedConfig.WebSearch.Tavily.APIKeys = []string{"tvly-key"}
+
+		client := routedWebSearchClient{
+			tinyFish: tinyFishClient,
+			exa:      exaClient,
+			tavily:   tavilyClient,
+		}
+
+		results, err := client.search(context.Background(), loadedConfig, []string{"q"})
+		if err != nil {
+			t.Fatalf("search failed: %v", err)
+		}
+		if len(results) != 1 || results[0].Text != "tinyfish result" {
+			t.Fatalf("unexpected results: %#v", results)
+		}
+		if len(exaClient.calls) != 1 || len(tinyFishClient.calls) != 1 || len(tavilyClient.calls) != 0 {
+			t.Fatalf("calls: exa=%d, tiny=%d, tavily=%d", len(exaClient.calls), len(tinyFishClient.calls), len(tavilyClient.calls))
+		}
+	})
+}
 
 func TestRoutedWebSearchClientHardcodedErrorMessagesAndExaName(t *testing.T) {
 	t.Parallel()

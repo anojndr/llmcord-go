@@ -243,17 +243,27 @@ media_analysis_model: google/gemini-3.6-flash
 # fallback_model: 9router/stable_model:vision
 
 # -----------------------------------------------------------------------------
-# Web search — the model calls a native `web_search` tool; requested queries
-# run through the hardcoded chain TinyFish -> Exa -> Tavily, tried in order
-# (TinyFish only when its api_key is set; Exa always, keyless via its MCP
-# endpoint; Tavily as final fallback — each falls back to the next on
-# failure). Configure at least one provider's api_key to enable it.
+# Web search & Extraction — the model calls a native `web_search` tool; requested queries
+# run through the configurable fallback chain (default: TinyFish -> Exa -> Tavily),
+# tried in order. Configured via `web_search_order` or `web_search.order`:
+#   web_search_order:
+#     tinyfish > exa > tavily
+# Website extraction fallback order (default: Firecrawl -> TinyFish -> Exa -> Tavily)
+# is configured via `extraction_order` or `web_search.extraction_order`:
+#   extraction_order:
+#     firecrawl > tinyfish > exa > tavily
+# Configure at least one provider's api_key to enable it.
 # TinyFish uses Search + Fetch; Exa uses Search + Contents; Tavily is fallback.
-# Website extraction: Firecrawl Scrape -> TinyFish Fetch -> Exa Contents -> Tavily Extract
 # TikTok/YouTube/Facebook/Reddit use dedicated fetchers and never hit
 # Firecrawl/TinyFish. web_search.primary_provider was removed — remove it
 # if present from old configs.
 # -----------------------------------------------------------------------------
+web_search_order:
+  tinyfish > exa > tavily
+
+extraction_order:
+  firecrawl > tinyfish > exa > tavily
+
 web_search:
   # Maximum URLs to request per search query (and in Show Sources).
   max_urls: 5

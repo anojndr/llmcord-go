@@ -93,7 +93,13 @@ func (instance *bot) prepareWebsiteAugmentation(
 		return emptyPreparedConversationAugmentation(), nil
 	}
 
-	if len(loadedConfig.WebSearch.Firecrawl.apiKeys()) == 0 && len(loadedConfig.WebSearch.TinyFish.apiKeys()) > 0 {
+	extractionOrder := loadedConfig.WebSearch.ExtractionOrder
+	if len(extractionOrder) == 0 {
+		extractionOrder = defaultWebExtractionOrder
+	}
+
+	// If the first configured extraction provider in the order is TinyFish, use batch fetch
+	if len(extractionOrder) > 0 && extractionOrder[0] == webExtractionProviderTinyFish && len(loadedConfig.WebSearch.TinyFish.apiKeys()) > 0 {
 		switch wc := instance.website.(type) {
 		case websiteClient:
 			return instance.prepareTinyFishWebsiteAugmentationBatch(ctx, loadedConfig, websiteURLs, wc)
@@ -454,23 +460,41 @@ func (client websiteClient) fetch(
 	if err != nil {
 		return websitePageContent{}, fmt.Errorf("validate website url %q: %w", rawURL, err)
 	}
+	extractionOrder := loadedConfig.WebSearch.ExtractionOrder
+	if len(extractionOrder) == 0 {
+		extractionOrder = defaultWebExtractionOrder
+	}
 
-	if firecrawlAPIKeys := loadedConfig.WebSearch.Firecrawl.apiKeys(); len(firecrawlAPIKeys) > 0 {
-		firecrawlAPIKey := firstAPIKey(client.keys.rotate(firecrawlAPIKeys))
+	var attemptErrs []error
+	var attemptsCount int
 
-		pageContent, firecrawlErr := client.fetchWithFirecrawlScrape(
-			ctx,
-			normalizedURL,
-			firecrawlAPIKey,
-			loadedConfig.WebSearch.Firecrawl.maxMarkdownCharacters(),
-		)
-		if firecrawlErr == nil {
-			return pageContent, nil
-		}
+	for _, provider := range extractionOrder {
+		switch provider {
+		case webExtractionProviderFirecrawl:
+			firecrawlAPIKeys := loadedConfig.WebSearch.Firecrawl.apiKeys()
+			if len(firecrawlAPIKeys) == 0 {
+				continue
+			}
+			attemptsCount++
+			firecrawlAPIKey := firstAPIKey(client.keys.rotate(firecrawlAPIKeys))
+			pageContent, firecrawlErr := client.fetchWithFirecrawlScrape(
+				ctx,
+				normalizedURL,
+				firecrawlAPIKey,
+				loadedConfig.WebSearch.Firecrawl.maxMarkdownCharacters(),
+			)
+			if firecrawlErr == nil {
+				return pageContent, nil
+			}
+			attemptErrs = append(attemptErrs, firecrawlErr)
 
-		if tinyFishAPIKeys := loadedConfig.WebSearch.TinyFish.apiKeys(); len(tinyFishAPIKeys) > 0 {
+		case webExtractionProviderTinyFish:
+			tinyFishAPIKeys := loadedConfig.WebSearch.TinyFish.apiKeys()
+			if len(tinyFishAPIKeys) == 0 {
+				continue
+			}
+			attemptsCount++
 			tinyFishAPIKey := firstAPIKey(client.keys.rotate(tinyFishAPIKeys))
-
 			pageContent, tinyFishErr := client.fetchWithTinyFishFetch(
 				ctx,
 				normalizedURL,
@@ -479,64 +503,49 @@ func (client websiteClient) fetch(
 			if tinyFishErr == nil {
 				return pageContent, nil
 			}
+			attemptErrs = append(attemptErrs, tinyFishErr)
 
-			return websitePageContent{}, fmt.Errorf(
-				websiteFetchErrorFormat,
-				rawURL,
-				errors.Join(firecrawlErr, tinyFishErr),
+		case webExtractionProviderExa:
+			if !loadedConfig.WebSearch.exaUsesAPI() {
+				continue
+			}
+			attemptsCount++
+			exaAPIKey := firstAPIKey(client.keys.rotate(loadedConfig.WebSearch.Exa.apiKeys()))
+			pageContent, exaErr := client.fetchWithExaContents(
+				ctx,
+				normalizedURL,
+				exaAPIKey,
+				loadedConfig.WebSearch.Exa.livecrawlTimeoutMS(),
 			)
-		}
+			if exaErr == nil {
+				return pageContent, nil
+			}
+			attemptErrs = append(attemptErrs, exaErr)
 
-		return websitePageContent{}, fmt.Errorf(websiteFetchErrorFormat, rawURL, firecrawlErr)
+		case webExtractionProviderTavily:
+			tavilyAPIKeys := loadedConfig.WebSearch.Tavily.apiKeys()
+			if len(tavilyAPIKeys) == 0 {
+				continue
+			}
+			attemptsCount++
+			tavilyAPIKey := firstAPIKey(client.keys.rotate(tavilyAPIKeys))
+			pageContent, tavilyErr := client.fetchWithTavilyExtract(
+				ctx,
+				normalizedURL,
+				tavilyAPIKey,
+			)
+			if tavilyErr == nil {
+				return pageContent, nil
+			}
+			attemptErrs = append(attemptErrs, tavilyErr)
+		}
 	}
 
-	if tinyFishAPIKeys := loadedConfig.WebSearch.TinyFish.apiKeys(); len(tinyFishAPIKeys) > 0 {
-		tinyFishAPIKey := firstAPIKey(client.keys.rotate(tinyFishAPIKeys))
-
-		pageContent, tinyFishErr := client.fetchWithTinyFishFetch(
-			ctx,
-			normalizedURL,
-			tinyFishAPIKey,
-		)
-		if tinyFishErr == nil {
-			return pageContent, nil
-		}
-
-		return websitePageContent{}, fmt.Errorf(websiteFetchErrorFormat, rawURL, tinyFishErr)
+	if attemptsCount == 0 {
+		return websitePageContent{}, fmt.Errorf("no website fetch provider configured for %q: %w", rawURL, os.ErrNotExist)
 	}
 
-	if loadedConfig.WebSearch.exaUsesAPI() {
-		exaAPIKey := firstAPIKey(client.keys.rotate(loadedConfig.WebSearch.Exa.apiKeys()))
-
-		pageContent, exaErr := client.fetchWithExaContents(
-			ctx,
-			normalizedURL,
-			exaAPIKey,
-			loadedConfig.WebSearch.Exa.livecrawlTimeoutMS(),
-		)
-		if exaErr == nil {
-			return pageContent, nil
-		}
-
-		return websitePageContent{}, fmt.Errorf(websiteFetchErrorFormat, rawURL, exaErr)
-	}
-
-	if tavilyAPIKeys := loadedConfig.WebSearch.Tavily.apiKeys(); len(tavilyAPIKeys) > 0 {
-		tavilyAPIKey := firstAPIKey(client.keys.rotate(tavilyAPIKeys))
-
-		pageContent, tavilyErr := client.fetchWithTavilyExtract(
-			ctx,
-			normalizedURL,
-			tavilyAPIKey,
-		)
-		if tavilyErr == nil {
-			return pageContent, nil
-		}
-
-		return websitePageContent{}, fmt.Errorf(websiteFetchErrorFormat, rawURL, tavilyErr)
-	}
-
-	return websitePageContent{}, fmt.Errorf("no website fetch provider configured for %q: %w", rawURL, os.ErrNotExist)
+	return websitePageContent{}, fmt.Errorf(websiteFetchErrorFormat, rawURL, errors.Join(attemptErrs...))
 }
 
 type firecrawlScrapeResponse struct {

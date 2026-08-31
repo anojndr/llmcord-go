@@ -30,6 +30,200 @@ func (value *scalarString) UnmarshalYAML(node *yaml.Node) error {
 	return nil
 }
 
+type webSearchProvider string
+
+const (
+	webSearchProviderTinyFish webSearchProvider = "tinyfish"
+	webSearchProviderExa      webSearchProvider = "exa"
+	webSearchProviderTavily   webSearchProvider = "tavily"
+)
+
+var defaultWebSearchOrder = []webSearchProvider{
+	webSearchProviderTinyFish,
+	webSearchProviderExa,
+	webSearchProviderTavily,
+}
+
+type webSearchOrder string
+
+func (order *webSearchOrder) UnmarshalYAML(node *yaml.Node) error {
+	if node.Tag == "!!null" {
+		*order = ""
+
+		return nil
+	}
+
+	if node.Kind == yaml.ScalarNode {
+		*order = webSearchOrder(node.Value)
+
+		return nil
+	}
+
+	if node.Kind == yaml.SequenceNode {
+		items := make([]string, 0, len(node.Content))
+		for _, childNode := range node.Content {
+			if childNode.Kind != yaml.ScalarNode {
+				return fmt.Errorf("decode web search order item: %w", os.ErrInvalid)
+			}
+			items = append(items, childNode.Value)
+		}
+		*order = webSearchOrder(strings.Join(items, " > "))
+
+		return nil
+	}
+
+	return fmt.Errorf("decode web search order: %w", os.ErrInvalid)
+}
+
+func parseWebSearchOrder(orderStr string) ([]webSearchProvider, error) {
+	trimmed := strings.TrimSpace(orderStr)
+	if trimmed == "" {
+		return append([]webSearchProvider(nil), defaultWebSearchOrder...), nil
+	}
+
+	normalized := strings.ReplaceAll(trimmed, "->", ">")
+	normalized = strings.ReplaceAll(normalized, "→", ">")
+	normalized = strings.ReplaceAll(normalized, ",", ">")
+
+	var rawParts []string
+	if strings.Contains(normalized, ">") {
+		rawParts = strings.Split(normalized, ">")
+	} else {
+		rawParts = strings.Fields(normalized)
+	}
+
+	seen := make(map[webSearchProvider]bool)
+	order := make([]webSearchProvider, 0, len(rawParts))
+
+	for _, part := range rawParts {
+		clean := strings.ToLower(strings.TrimSpace(part))
+		if clean == "" {
+			continue
+		}
+		var provider webSearchProvider
+		switch clean {
+		case "tinyfish", "tiny_fish", "tf":
+			provider = webSearchProviderTinyFish
+		case "exa":
+			provider = webSearchProviderExa
+		case "tavily", "tvly":
+			provider = webSearchProviderTavily
+		default:
+			return nil, fmt.Errorf("unknown web search provider %q: %w", strings.TrimSpace(part), os.ErrInvalid)
+		}
+		if seen[provider] {
+			return nil, fmt.Errorf("duplicate web search provider %q in order: %w", strings.TrimSpace(part), os.ErrInvalid)
+		}
+		seen[provider] = true
+		order = append(order, provider)
+	}
+
+	if len(order) == 0 {
+		return nil, fmt.Errorf("web search order cannot be empty: %w", os.ErrInvalid)
+	}
+
+	return order, nil
+}
+
+type webExtractionProvider string
+
+const (
+	webExtractionProviderFirecrawl webExtractionProvider = "firecrawl"
+	webExtractionProviderTinyFish  webExtractionProvider = "tinyfish"
+	webExtractionProviderExa       webExtractionProvider = "exa"
+	webExtractionProviderTavily    webExtractionProvider = "tavily"
+)
+
+var defaultWebExtractionOrder = []webExtractionProvider{
+	webExtractionProviderFirecrawl,
+	webExtractionProviderTinyFish,
+	webExtractionProviderExa,
+	webExtractionProviderTavily,
+}
+
+type webExtractionOrder string
+
+func (order *webExtractionOrder) UnmarshalYAML(node *yaml.Node) error {
+	if node.Tag == "!!null" {
+		*order = ""
+
+		return nil
+	}
+
+	if node.Kind == yaml.ScalarNode {
+		*order = webExtractionOrder(node.Value)
+
+		return nil
+	}
+
+	if node.Kind == yaml.SequenceNode {
+		items := make([]string, 0, len(node.Content))
+		for _, childNode := range node.Content {
+			if childNode.Kind != yaml.ScalarNode {
+				return fmt.Errorf("decode web extraction order item: %w", os.ErrInvalid)
+			}
+			items = append(items, childNode.Value)
+		}
+		*order = webExtractionOrder(strings.Join(items, " > "))
+
+		return nil
+	}
+
+	return fmt.Errorf("decode web extraction order: %w", os.ErrInvalid)
+}
+
+func parseWebExtractionOrder(orderStr string) ([]webExtractionProvider, error) {
+	trimmed := strings.TrimSpace(orderStr)
+	if trimmed == "" {
+		return append([]webExtractionProvider(nil), defaultWebExtractionOrder...), nil
+	}
+
+	normalized := strings.ReplaceAll(trimmed, "->", ">")
+	normalized = strings.ReplaceAll(normalized, "→", ">")
+	normalized = strings.ReplaceAll(normalized, ",", ">")
+
+	var rawParts []string
+	if strings.Contains(normalized, ">") {
+		rawParts = strings.Split(normalized, ">")
+	} else {
+		rawParts = strings.Fields(normalized)
+	}
+
+	seen := make(map[webExtractionProvider]bool)
+	order := make([]webExtractionProvider, 0, len(rawParts))
+
+	for _, part := range rawParts {
+		clean := strings.ToLower(strings.TrimSpace(part))
+		if clean == "" {
+			continue
+		}
+		var provider webExtractionProvider
+		switch clean {
+		case "firecrawl", "fc":
+			provider = webExtractionProviderFirecrawl
+		case "tinyfish", "tiny_fish", "tf":
+			provider = webExtractionProviderTinyFish
+		case "exa":
+			provider = webExtractionProviderExa
+		case "tavily", "tvly":
+			provider = webExtractionProviderTavily
+		default:
+			return nil, fmt.Errorf("unknown web extraction provider %q: %w", strings.TrimSpace(part), os.ErrInvalid)
+		}
+		if seen[provider] {
+			return nil, fmt.Errorf("duplicate web extraction provider %q in order: %w", strings.TrimSpace(part), os.ErrInvalid)
+		}
+		seen[provider] = true
+		order = append(order, provider)
+	}
+
+	if len(order) == 0 {
+		return nil, fmt.Errorf("web extraction order cannot be empty: %w", os.ErrInvalid)
+	}
+
+	return order, nil
+}
+
 type idList []string
 
 func (list *idList) UnmarshalYAML(node *yaml.Node) error {
@@ -119,11 +313,13 @@ type rawVisualSearchConfig struct {
 }
 
 type rawWebSearchConfig struct {
-	MaxURLs   *int                     `yaml:"max_urls"`
-	Exa       rawExaSearchConfig       `yaml:"exa"`
-	Tavily    rawTavilySearchConfig    `yaml:"tavily"`
-	Firecrawl rawFirecrawlSearchConfig `yaml:"firecrawl"`
-	TinyFish  rawTinyFishSearchConfig  `yaml:"tinyfish"`
+	Order           webSearchOrder           `yaml:"order"`
+	ExtractionOrder webExtractionOrder       `yaml:"extraction_order"`
+	MaxURLs         *int                     `yaml:"max_urls"`
+	Exa             rawExaSearchConfig       `yaml:"exa"`
+	Tavily          rawTavilySearchConfig    `yaml:"tavily"`
+	Firecrawl       rawFirecrawlSearchConfig `yaml:"firecrawl"`
+	TinyFish        rawTinyFishSearchConfig  `yaml:"tinyfish"`
 }
 
 type rawDatabaseConfig struct {
@@ -189,13 +385,14 @@ type serpAPIVisualSearchConfig struct {
 type visualSearchConfig struct {
 	SerpAPI serpAPIVisualSearchConfig
 }
-
 type webSearchConfig struct {
-	MaxURLs   int
-	Exa       exaSearchConfig
-	Tavily    tavilySearchConfig
-	Firecrawl firecrawlSearchConfig
-	TinyFish  tinyFishSearchConfig
+	Order           []webSearchProvider
+	ExtractionOrder []webExtractionProvider
+	MaxURLs         int
+	Exa             exaSearchConfig
+	Tavily          tavilySearchConfig
+	Firecrawl       firecrawlSearchConfig
+	TinyFish        tinyFishSearchConfig
 }
 
 type databaseConfig struct {
@@ -229,6 +426,9 @@ type rawConfig struct {
 	Permissions        permissionsConfig            `yaml:"permissions"`
 	Providers          map[string]rawProviderConfig `yaml:"providers"`
 	WebSearch          rawWebSearchConfig           `yaml:"web_search"`
+	WebSearchOrder     webSearchOrder               `yaml:"web_search_order"`
+	ExtractionOrder    webExtractionOrder           `yaml:"extraction_order"`
+	WebExtractionOrder webExtractionOrder           `yaml:"web_extraction_order"`
 	VisualSearch       rawVisualSearchConfig        `yaml:"visual_search"`
 	Database           rawDatabaseConfig            `yaml:"database"`
 	Gist               rawGistConfig                `yaml:"gist"`
@@ -320,7 +520,7 @@ func buildLoadedConfig(
 		AllowDMs:      allowDMs,
 		Permissions:   rawLoadedConfig.Permissions,
 		Providers:     loadedProviders,
-		WebSearch:     normalizeWebSearchConfig(rawLoadedConfig.WebSearch),
+		WebSearch:     normalizeWebSearchConfig(rawLoadedConfig.WebSearch, rawLoadedConfig.WebSearchOrder, rawLoadedConfig.ExtractionOrder, rawLoadedConfig.WebExtractionOrder),
 		VisualSearch: visualSearchConfig{
 			SerpAPI: serpAPIVisualSearchConfig{
 				APIKey:  firstAPIKey(serpAPIVisualSearchKeys),
@@ -335,6 +535,29 @@ func buildLoadedConfig(
 		MediaAnalysisModel: mediaAnalysisModel,
 		FallbackModel:      fallbackModel,
 		SystemPrompt:       rawLoadedConfig.SystemPrompt,
+	}
+
+	rawOrderStr := string(rawLoadedConfig.WebSearch.Order)
+	if strings.TrimSpace(rawOrderStr) == "" {
+		rawOrderStr = string(rawLoadedConfig.WebSearchOrder)
+	}
+	if strings.TrimSpace(rawOrderStr) != "" {
+		if _, err := parseWebSearchOrder(rawOrderStr); err != nil {
+			return config{}, fmt.Errorf("parse web search order %q: %w", rawOrderStr, err)
+		}
+	}
+
+	rawExtractionOrderStr := string(rawLoadedConfig.WebSearch.ExtractionOrder)
+	if strings.TrimSpace(rawExtractionOrderStr) == "" {
+		rawExtractionOrderStr = string(rawLoadedConfig.ExtractionOrder)
+	}
+	if strings.TrimSpace(rawExtractionOrderStr) == "" {
+		rawExtractionOrderStr = string(rawLoadedConfig.WebExtractionOrder)
+	}
+	if strings.TrimSpace(rawExtractionOrderStr) != "" {
+		if _, err := parseWebExtractionOrder(rawExtractionOrderStr); err != nil {
+			return config{}, fmt.Errorf("parse extraction order %q: %w", rawExtractionOrderStr, err)
+		}
 	}
 
 	err = validateConfig(loadedConfig)
@@ -587,14 +810,37 @@ func normalizeGistConfig(rawLoadedConfig rawGistConfig) gistConfig {
 	}
 }
 
-func normalizeWebSearchConfig(rawLoadedConfig rawWebSearchConfig) webSearchConfig {
+func normalizeWebSearchConfig(
+	rawLoadedConfig rawWebSearchConfig,
+	topLevelOrder webSearchOrder,
+	topLevelExtractionOrder webExtractionOrder,
+	topLevelWebExtractionOrder webExtractionOrder,
+) webSearchConfig {
+	rawOrderStr := string(rawLoadedConfig.Order)
+	if strings.TrimSpace(rawOrderStr) == "" {
+		rawOrderStr = string(topLevelOrder)
+	}
+	order, _ := parseWebSearchOrder(rawOrderStr)
+
+	rawExtractionOrderStr := string(rawLoadedConfig.ExtractionOrder)
+	if strings.TrimSpace(rawExtractionOrderStr) == "" {
+		rawExtractionOrderStr = string(topLevelExtractionOrder)
+	}
+	if strings.TrimSpace(rawExtractionOrderStr) == "" {
+		rawExtractionOrderStr = string(topLevelWebExtractionOrder)
+	}
+	extractionOrder, _ := parseWebExtractionOrder(rawExtractionOrderStr)
+
 	exaAPIKeys := normalizeAPIKeys([]string(rawLoadedConfig.Exa.APIKey))
 	tavilyAPIKeys := normalizeAPIKeys([]string(rawLoadedConfig.Tavily.APIKey))
 	firecrawlAPIKeys := normalizeAPIKeys([]string(rawLoadedConfig.Firecrawl.APIKey))
 	tinyFishAPIKeys := normalizeAPIKeys([]string(rawLoadedConfig.TinyFish.APIKey))
 
 	return webSearchConfig{
-		MaxURLs: intValueOrDefault(rawLoadedConfig.MaxURLs, defaultWebSearchMaxURLs),
+		Order:           order,
+		ExtractionOrder: extractionOrder,
+		MaxURLs:         intValueOrDefault(rawLoadedConfig.MaxURLs, defaultWebSearchMaxURLs),
+
 		Exa: exaSearchConfig{
 			APIKey:             firstAPIKey(exaAPIKeys),
 			APIKeys:            exaAPIKeys,
@@ -772,6 +1018,14 @@ func modelReasoningEffortValue(modelParameters map[string]any) (string, bool) {
 }
 
 func validateWebSearchConfig(loadedConfig webSearchConfig) error {
+	if len(loadedConfig.Order) == 0 {
+		return fmt.Errorf("web_search_order must not be empty: %w", os.ErrInvalid)
+	}
+
+	if len(loadedConfig.ExtractionOrder) == 0 {
+		return fmt.Errorf("extraction_order must not be empty: %w", os.ErrInvalid)
+	}
+
 	if loadedConfig.MaxURLs <= 0 {
 		return fmt.Errorf("web_search.max_urls must be greater than zero: %w", os.ErrInvalid)
 	}
