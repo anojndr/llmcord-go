@@ -44,9 +44,9 @@ const (
 	mimeTypePNG                  = "image/png"
 	mimeTypeZIP                  = "application/zip"
 	mimeTypeWEBP                 = "image/webp"
-	// webSearchToolMaxQueries caps the distinct queries executed per search
-	// phase, across all parallel tool calls.
-	webSearchToolMaxQueries = 5
+	// webSearchToolMaxQueries specifies the default query cap when a limit is configured.
+	// In practice, web_search queries are unlimited (0).
+	webSearchToolMaxQueries = 0
 )
 
 var errExaSearchTool = errors.New("exa MCP search tool returned an error")
@@ -447,13 +447,14 @@ func (err exaStatusError) Unwrap() error {
 	return err.Err
 }
 
-// extractWebSearchQueries parses the queries requested through the
-// web_search tool calls. Calls to other tools and calls with malformed
-// arguments are ignored; valid queries are trimmed, deduplicated in order,
-// and capped at webSearchToolMaxQueries.
+// extractWebSearchQueries parses the search queries requested through the
+// web_search tool calls. It accepts both "search_queries" (the Parallel Search
+// schema) and "queries" (legacy schema) for backward compatibility. Calls to other
+// tools and calls with malformed arguments are ignored; valid queries are trimmed
+// and deduplicated in order.
 func extractWebSearchQueries(toolCalls []providers.FunctionToolCall) []string {
-	seenQueries := make(map[string]struct{}, webSearchToolMaxQueries)
-	queries := make([]string, 0, webSearchToolMaxQueries)
+	seenQueries := make(map[string]struct{})
+	var queries []string
 
 	for _, toolCall := range toolCalls {
 		if strings.TrimSpace(toolCall.Name) != providers.WebSearchToolName {
@@ -461,7 +462,9 @@ func extractWebSearchQueries(toolCalls []providers.FunctionToolCall) []string {
 		}
 
 		var arguments struct {
-			Queries []string `json:"queries"`
+			Objective     string   `json:"objective"`
+			SearchQueries []string `json:"search_queries"`
+			Queries       []string `json:"queries"`
 		}
 
 		err := json.Unmarshal([]byte(toolCall.Arguments), &arguments)
@@ -471,7 +474,12 @@ func extractWebSearchQueries(toolCalls []providers.FunctionToolCall) []string {
 			continue
 		}
 
-		for _, query := range arguments.Queries {
+		rawQueries := arguments.SearchQueries
+		if len(rawQueries) == 0 {
+			rawQueries = arguments.Queries
+		}
+
+		for _, query := range rawQueries {
 			query = strings.TrimSpace(query)
 			if query == "" {
 				continue
@@ -483,10 +491,6 @@ func extractWebSearchQueries(toolCalls []providers.FunctionToolCall) []string {
 
 			seenQueries[query] = struct{}{}
 			queries = append(queries, query)
-
-			if len(queries) >= webSearchToolMaxQueries {
-				return queries
-			}
 		}
 	}
 

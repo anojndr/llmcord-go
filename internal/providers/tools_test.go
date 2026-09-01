@@ -177,24 +177,60 @@ func TestWebSearchToolDefinition(t *testing.T) {
 	if !propertiesOK {
 		t.Fatalf("unexpected parameters properties: %#v", tool.Parameters["properties"])
 	}
+	objective, objectiveOK := properties["objective"].(map[string]any)
+	if !objectiveOK || objective["type"] != "string" {
+		t.Fatalf("unexpected objective property: %#v", properties["objective"])
+	}
 
-	queries, queriesOK := properties["queries"].(map[string]any)
+	queries, queriesOK := properties["search_queries"].(map[string]any)
 	if !queriesOK {
-		t.Fatalf("unexpected queries property: %#v", properties["queries"])
+		t.Fatalf("unexpected search_queries property: %#v", properties["search_queries"])
 	}
 
 	items, itemsOK := queries["items"].(map[string]any)
 	if !itemsOK || items["type"] != "string" {
-		t.Fatalf("unexpected queries items: %#v", queries["items"])
+		t.Fatalf("unexpected search_queries items: %#v", queries["items"])
+	}
+
+	if queries["minItems"] != 1 {
+		t.Fatalf("unexpected search_queries minItems: %#v", queries["minItems"])
 	}
 
 	if queries["maxItems"] != 3 {
-		t.Fatalf("unexpected queries maxItems: %#v", queries["maxItems"])
+		t.Fatalf("unexpected search_queries maxItems: %#v", queries["maxItems"])
 	}
 
 	required, requiredOK := tool.Parameters["required"].([]string)
-	if !requiredOK || len(required) != 1 || required[0] != "queries" {
+	if !requiredOK || len(required) != 2 || required[0] != "objective" || required[1] != "search_queries" {
 		t.Fatalf("unexpected required properties: %#v", tool.Parameters["required"])
+	}
+}
+
+func TestWebSearchToolDefinitionUnlimited(t *testing.T) {
+	t.Parallel()
+
+	tool := WebSearchTool(0)
+
+	if tool.Name != WebSearchToolName {
+		t.Fatalf("unexpected tool name: %q", tool.Name)
+	}
+
+	properties, propertiesOK := tool.Parameters["properties"].(map[string]any)
+	if !propertiesOK {
+		t.Fatalf("unexpected parameters properties: %#v", tool.Parameters["properties"])
+	}
+
+	queries, queriesOK := properties["search_queries"].(map[string]any)
+	if !queriesOK {
+		t.Fatalf("unexpected search_queries property: %#v", properties["search_queries"])
+	}
+
+	if _, hasMaxItems := queries["maxItems"]; hasMaxItems {
+		t.Fatalf("expected no maxItems for unlimited tool definition, got: %#v", queries["maxItems"])
+	}
+
+	if queries["minItems"] != 1 {
+		t.Fatalf("unexpected search_queries minItems: %#v", queries["minItems"])
 	}
 }
 
@@ -274,8 +310,8 @@ func TestOpenAIStreamChatCompletionAccumulatesToolCalls(t *testing.T) {
 		responseWriter.Header().Set("Content-Type", "text/event-stream")
 
 		// Parallel tool calls: fragments for the two calls interleave.
-		writeSSE(t, responseWriter, chatCompletionsToolCallChunk(0, "call_a", "web_search", `{"queries": ["fir`))
-		writeSSE(t, responseWriter, chatCompletionsToolCallChunk(1, "call_b", "web_search", `{"queries"`))
+		writeSSE(t, responseWriter, chatCompletionsToolCallChunk(0, "call_a", "web_search", `{"objective": "Find first", "search_queries": ["fir`))
+		writeSSE(t, responseWriter, chatCompletionsToolCallChunk(1, "call_b", "web_search", `{"objective": "Find second", "search_queries"`))
 		writeSSE(t, responseWriter, chatCompletionsToolCallChunk(0, "", "", `st"]}`))
 		writeSSE(t, responseWriter, chatCompletionsToolCallChunk(1, "", "", `: ["second"]}`))
 		writeSSE(t, responseWriter, chatCompletionsFinishChunk("tool_calls"))
@@ -296,18 +332,17 @@ func TestOpenAIStreamChatCompletionAccumulatesToolCalls(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stream chat completion: %v", err)
 	}
-
 	if len(toolCalls) != 2 {
 		t.Fatalf("unexpected tool calls: %#v", toolCalls)
 	}
 
 	if toolCalls[0].ID != "call_a" || toolCalls[0].Name != "web_search" ||
-		toolCalls[0].Arguments != `{"queries": ["first"]}` {
+		toolCalls[0].Arguments != `{"objective": "Find first", "search_queries": ["first"]}` {
 		t.Fatalf("unexpected first tool call: %#v", toolCalls[0])
 	}
 
 	if toolCalls[1].ID != "call_b" || toolCalls[1].Name != "web_search" ||
-		toolCalls[1].Arguments != `{"queries": ["second"]}` {
+		toolCalls[1].Arguments != `{"objective": "Find second", "search_queries": ["second"]}` {
 		t.Fatalf("unexpected second tool call: %#v", toolCalls[1])
 	}
 }
@@ -386,8 +421,8 @@ func TestBuildResponsesRequestBodyIncludesFlatTools(t *testing.T) {
 func TestResponsesStreamCollectsFunctionCalls(t *testing.T) {
 	t.Parallel()
 
-	firstCall := responsesFunctionCallItem("fc_1", "call_a", "completed", `{"queries": ["first"]}`)
-	secondCall := responsesFunctionCallItem("fc_2", "call_b", "completed", `{"queries": ["second"]}`)
+	firstCall := responsesFunctionCallItem("fc_1", "call_a", "completed", `{"objective": "Find first", "search_queries": ["first"]}`)
+	secondCall := responsesFunctionCallItem("fc_2", "call_b", "completed", `{"objective": "Find second", "search_queries": ["second"]}`)
 
 	server := newToolCallTestServer(t, func(responseWriter http.ResponseWriter, _ *http.Request) {
 		responseWriter.Header().Set("Content-Type", "text/event-stream")
@@ -448,12 +483,12 @@ func TestResponsesStreamCollectsFunctionCalls(t *testing.T) {
 	}
 
 	if toolCalls[0].ID != "call_a" || toolCalls[0].Name != "web_search" ||
-		toolCalls[0].Arguments != `{"queries": ["first"]}` {
+		toolCalls[0].Arguments != `{"objective": "Find first", "search_queries": ["first"]}` {
 		t.Fatalf("unexpected first tool call: %#v", toolCalls[0])
 	}
 
 	if toolCalls[1].ID != "call_b" || toolCalls[1].Name != "web_search" ||
-		toolCalls[1].Arguments != `{"queries": ["second"]}` {
+		toolCalls[1].Arguments != `{"objective": "Find second", "search_queries": ["second"]}` {
 		t.Fatalf("unexpected second tool call: %#v", toolCalls[1])
 	}
 }
