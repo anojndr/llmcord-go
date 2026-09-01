@@ -15,6 +15,7 @@ const (
 	defaultFirecrawlScrapeEndpoint    = "https://api.firecrawl.dev/v2/scrape"
 	defaultTinyFishSearchEndpoint     = "https://api.search.tinyfish.ai"
 	defaultTinyFishFetchEndpoint      = "https://api.fetch.tinyfish.ai"
+	defaultParallelSearchEndpoint         = "https://api.parallel.ai/v1/search"
 	defaultGithubGistEndpoint         = "https://api.github.com/gists"
 	defaultGistFilename               = "llmcord-go reply.md"
 	defaultStatusMessage              = "github.com/jakobdylanc/llmcord"
@@ -128,6 +129,7 @@ const (
 	tinyFishFetchPerURLTimeoutMS                  = 30000
 	tinyFishSearchRequestTimeout                  = 20 * time.Second
 	tinyFishFetchRequestTimeout                   = 60 * time.Second
+	parallelSearchRequestTimeout                  = 20 * time.Second
 	exaSearchTypeInstant                          = "instant"
 	exaSearchTypeFast                             = "fast"
 	exaSearchTypeAuto                             = "auto"

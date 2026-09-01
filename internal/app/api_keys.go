@@ -175,6 +175,10 @@ func (settings tinyFishSearchConfig) apiKeys() []string {
 	return providerAPIKeys(settings.APIKey, settings.APIKeys)
 }
 
+func (settings parallelSearchConfig) apiKeys() []string {
+	return providerAPIKeys(settings.APIKey, settings.APIKeys)
+}
+
 func (settings serpAPIVisualSearchConfig) apiKeys() []string {
 	return providerAPIKeys(settings.APIKey, settings.APIKeys)
 }

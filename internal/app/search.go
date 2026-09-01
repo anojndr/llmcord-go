@@ -81,6 +81,12 @@ type tavilySearchClient struct {
 	keys       *apiKeyRotator
 }
 
+type parallelSearchClient struct {
+	endpoint   string
+	httpClient *http.Client
+	keys       *apiKeyRotator
+}
+
 type tinyFishSearchClient struct {
 	searchEndpoint string
 	fetchEndpoint  string
@@ -92,6 +98,7 @@ type routedWebSearchClient struct {
 	tinyFish webSearcher
 	exa      webSearcher
 	tavily   webSearcher
+	parallel webSearcher
 }
 
 // flexibleInt decodes JSON numbers that may be int or float.
@@ -319,6 +326,48 @@ type exaStatusError struct {
 	Err        error
 }
 
+type parallelStatusError struct {
+	StatusCode int
+	Message    string
+	Err        error
+}
+
+type parallelSearchRequest struct {
+	Objective        string                  `json:"objective,omitempty"`
+	SearchQueries    []string                `json:"search_queries"`
+	Mode             string                  `json:"mode,omitempty"`
+	AdvancedSettings *parallelSearchSettings `json:"advanced_settings,omitempty"`
+}
+
+type parallelSearchSettings struct {
+	MaxResults int `json:"max_results,omitempty"`
+}
+
+type parallelSearchResponse struct {
+	SearchID string                       `json:"search_id"`
+	Results  []parallelSearchResponseItem `json:"results"`
+	Warnings []string                     `json:"warnings"`
+}
+
+type parallelSearchResponseItem struct {
+	URL         string   `json:"url"`
+	Title       string   `json:"title"`
+	PublishDate *string  `json:"publish_date"`
+	Excerpts    []string `json:"excerpts"`
+}
+
+func (err parallelStatusError) Error() string {
+	return err.Message
+}
+
+func (err parallelStatusError) Unwrap() error {
+	if err.Err == nil {
+		return os.ErrInvalid
+	}
+
+	return err.Err
+}
+
 func (err tinyFishStatusError) Error() string {
 	return err.Message
 }
@@ -348,6 +397,14 @@ func newTavilySearchClient(httpClient *http.Client) tavilySearchClient {
 	}
 }
 
+func newParallelSearchClient(httpClient *http.Client) parallelSearchClient {
+	return parallelSearchClient{
+		endpoint:   defaultParallelSearchEndpoint,
+		httpClient: httpClient,
+		keys:       newAPIKeyRotator(),
+	}
+}
+
 func newTinyFishSearchClient(httpClient *http.Client) tinyFishSearchClient {
 	return tinyFishSearchClient{
 		searchEndpoint: defaultTinyFishSearchEndpoint,
@@ -362,6 +419,7 @@ func newWebSearchClient(httpClient *http.Client) routedWebSearchClient {
 		tinyFish: newTinyFishSearchClient(httpClient),
 		exa:      newExaSearchClient(httpClient),
 		tavily:   newTavilySearchClient(httpClient),
+		parallel: newParallelSearchClient(httpClient),
 	}
 }
 
@@ -667,9 +725,21 @@ func (client routedWebSearchClient) search(
 				providerName: "Tavily",
 				err:          err,
 			})
+
+		case webSearchProviderParallel:
+			if client.parallel == nil {
+				continue
+			}
+			results, err := client.parallel.search(ctx, loadedConfig, queries)
+			if err == nil {
+				return results, nil
+			}
+			failedAttempts = append(failedAttempts, searchAttemptError{
+				providerName: "Parallel Search",
+				err:          err,
+			})
 		}
 	}
-
 	if len(failedAttempts) == 0 {
 		return nil, fmt.Errorf("no web search providers configured: %w", os.ErrNotExist)
 	}
@@ -1432,6 +1502,119 @@ func (client tavilySearchClient) searchQueryOnce(
 	}, nil
 }
 
+func (client parallelSearchClient) search(
+	ctx context.Context,
+	loadedConfig config,
+	queries []string,
+) ([]webSearchResult, error) {
+	parallelAPIKeys := loadedConfig.WebSearch.Parallel.apiKeys()
+	if len(parallelAPIKeys) == 0 {
+		return nil, fmt.Errorf("parallel search is not configured: %w", os.ErrNotExist)
+	}
+
+	maxURLs := loadedConfig.WebSearch.maxURLs()
+
+	return searchQueriesConcurrently(ctx, queries, func(
+		queryContext context.Context,
+		query string,
+	) (webSearchResult, error) {
+		apiKey := firstAPIKey(client.keys.rotate(parallelAPIKeys))
+
+		return client.searchQuery(queryContext, apiKey, query, maxURLs)
+	})
+}
+
+func (client parallelSearchClient) searchQuery(
+	ctx context.Context,
+	apiKey string,
+	query string,
+	maxURLs int,
+) (webSearchResult, error) {
+	return client.searchQueryOnce(ctx, query, apiKey, maxURLs)
+}
+
+func (client parallelSearchClient) searchQueryOnce(
+	ctx context.Context,
+	query string,
+	apiKey string,
+	maxURLs int,
+) (webSearchResult, error) {
+	ctx, cancel := context.WithTimeout(ctx, parallelSearchRequestTimeout)
+	defer cancel()
+
+	requestBody := parallelSearchRequest{
+		Objective:     query,
+		SearchQueries: []string{query},
+		Mode:          "fast",
+		AdvancedSettings: &parallelSearchSettings{
+			MaxResults: maxURLs,
+		},
+	}
+
+	requestBytes, err := json.Marshal(requestBody)
+	if err != nil {
+		return webSearchResult{}, fmt.Errorf("marshal Parallel search request for %q: %w", query, err)
+	}
+
+	httpRequest, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodPost,
+		client.endpoint,
+		bytes.NewReader(requestBytes),
+	)
+	if err != nil {
+		return webSearchResult{}, fmt.Errorf("create Parallel search request for %q: %w", query, err)
+	}
+
+	httpRequest.Header.Set("Accept", applicationJSONContentType)
+	httpRequest.Header.Set("x-api-key", strings.TrimSpace(apiKey))
+	httpRequest.Header.Set(contentTypeHeader, applicationJSONContentType)
+
+	httpResponse, err := client.httpClient.Do(httpRequest)
+	if err != nil {
+		return webSearchResult{}, fmt.Errorf("send Parallel search request for %q: %w", query, err)
+	}
+
+	defer func() {
+		_ = httpResponse.Body.Close()
+	}()
+
+	if httpResponse.StatusCode < http.StatusOK || httpResponse.StatusCode >= http.StatusMultipleChoices {
+		responseBody, readErr := io.ReadAll(httpResponse.Body)
+		if readErr != nil {
+			return webSearchResult{}, fmt.Errorf(
+				"read Parallel error response for %q after status %d: %w",
+				query,
+				httpResponse.StatusCode,
+				readErr,
+			)
+		}
+
+		return webSearchResult{}, parallelStatusError{
+			StatusCode: httpResponse.StatusCode,
+			Message: fmt.Sprintf(
+				"Parallel search request failed for %q with status %d: %s",
+				query,
+				httpResponse.StatusCode,
+				strings.TrimSpace(string(responseBody)),
+			),
+			Err: os.ErrInvalid,
+		}
+	}
+
+	var response parallelSearchResponse
+
+	err = json.NewDecoder(httpResponse.Body).Decode(&response)
+	if err != nil {
+		return webSearchResult{}, fmt.Errorf("decode Parallel search response for %q: %w", query, err)
+	}
+
+	return webSearchResult{
+		Query: query,
+		Text:  formatParallelSearchResultText(response.Results),
+	}, nil
+}
+
 func (client tinyFishSearchClient) search(
 	ctx context.Context,
 	loadedConfig config,
@@ -1800,6 +1983,41 @@ func formatTavilySearchResultText(results []tavilySearchResponseResult) string {
 		rawContent := formatSearchMultilineField("Raw Content", result.RawContent)
 		if rawContent != "" {
 			lines = append(lines, rawContent)
+		}
+
+		if len(lines) == 0 {
+			continue
+		}
+
+		formattedResults = append(formattedResults, strings.Join(lines, "\n"))
+	}
+
+	return strings.Join(formattedResults, "\n\n")
+}
+
+func formatParallelSearchResultText(results []parallelSearchResponseItem) string {
+	formattedResults := make([]string, 0, len(results))
+
+	for _, result := range results {
+		lines := make([]string, 0, 4)
+
+		title := strings.TrimSpace(result.Title)
+		if title != "" {
+			lines = append(lines, "Title: "+title)
+		}
+
+		url := strings.TrimSpace(result.URL)
+		if url != "" {
+			lines = append(lines, "URL: "+url)
+		}
+
+		if publishedDate := trimmedOptionalString(result.PublishDate); publishedDate != "" {
+			lines = append(lines, "Published Date: "+publishedDate)
+		}
+
+		excerpts := formatSearchListField("Excerpts", result.Excerpts)
+		if excerpts != "" {
+			lines = append(lines, excerpts)
 		}
 
 		if len(lines) == 0 {
