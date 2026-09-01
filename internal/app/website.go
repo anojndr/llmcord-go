@@ -133,28 +133,34 @@ func (instance *bot) prepareTinyFishWebsiteAugmentationBatch(
 	if len(apiKeys) == 0 {
 		return emptyPreparedConversationAugmentation(), nil
 	}
+
 	type validationResult struct {
 		raw        string
 		normalized string
 		err        error
 	}
+
 	validationResults := runTasksConcurrently(
 		ctx,
 		externalRequestConcurrency,
 		len(rawURLs),
 		func(taskCtx context.Context, index int) (validationResult, error) {
 			rawURL := rawURLs[index]
+
 			normalizedURL, err := normalizeWebsiteURL(rawURL)
 			if err != nil {
 				return validationResult{raw: rawURL, err: err}, nil
 			}
+
 			parsedURL, err := url.Parse(normalizedURL)
 			if err != nil {
 				return validationResult{raw: rawURL, err: fmt.Errorf("parse normalized website url %q: %w", normalizedURL, err)}, nil
 			}
+
 			if err := validateWebsiteRequestURL(taskCtx, parsedURL, wc.lookupWebsiteIP()); err != nil {
 				return validationResult{raw: rawURL, err: fmt.Errorf("validate website url %q: %w", rawURL, err)}, nil
 			}
+
 			return validationResult{raw: rawURL, normalized: normalizedURL}, nil
 		},
 	)
@@ -162,64 +168,83 @@ func (instance *bot) prepareTinyFishWebsiteAugmentationBatch(
 	rawForNormalized := make(map[string]string)
 	seenNormalized := make(map[string]struct{})
 	hasValidationFailure := false
+
 	for _, res := range validationResults {
 		if res.value.err != nil {
 			logWarn("fetch website content", res.value.err, "url", res.value.raw)
+
 			hasValidationFailure = true
+
 			continue
 		}
+
 		lowerNorm := strings.ToLower(strings.TrimSpace(res.value.normalized))
 		if _, seen := seenNormalized[lowerNorm]; seen {
 			continue
 		}
+
 		seenNormalized[lowerNorm] = struct{}{}
+
 		validNormalized = append(validNormalized, res.value.normalized)
 		rawForNormalized[res.value.normalized] = res.value.raw
 	}
+
 	if len(validNormalized) == 0 {
 		warnings := []string(nil)
 		if hasValidationFailure {
 			warnings = []string{websiteWarningText}
 		}
+
 		return warningPreparedConversationAugmentation(warnings), nil
 	}
+
 	batchCount := (len(validNormalized) + 9) / 10
+
 	type batchFetchResult struct {
 		response  tinyFishFetchResponse
 		batchURLs []string
 	}
+
 	batchResults := runTasksConcurrently(
 		ctx,
 		externalRequestConcurrency,
 		batchCount,
 		func(taskCtx context.Context, index int) (batchFetchResult, error) {
 			start := index * 10
+
 			end := start + 10
 			if end > len(validNormalized) {
 				end = len(validNormalized)
 			}
+
 			batch := validNormalized[start:end]
 			apiKey := firstAPIKey(wc.keys.rotate(apiKeys))
+
 			resp, err := wc.fetchTinyFishBatch(taskCtx, apiKey, batch)
 			if err != nil {
 				for _, u := range batch {
 					raw := rawForNormalized[u]
 					logWarn("fetch website content", err, "url", raw)
 				}
+
 				return batchFetchResult{}, err
 			}
+
 			return batchFetchResult{response: resp, batchURLs: batch}, nil
 		},
 	)
 	hasFetchFailure := hasValidationFailure
 	fetchedPageMap := make(map[string]websitePageContent)
+
 	for _, br := range batchResults {
 		if br.err != nil {
 			hasFetchFailure = true
 			continue
 		}
+
 		resp := br.value.response
 		errorMap := make(map[string]string)
+
 		for _, fe := range resp.Errors {
 			key := strings.ToLower(strings.TrimSpace(fe.URL))
 			if key != "" {
@@ -231,14 +256,17 @@ func (instance *bot) prepareTinyFishWebsiteAugmentationBatch(
 						if strings.EqualFold(batchURL, fe.URL) {
 							raw := rawForNormalized[batchURL]
 							logWarn("fetch website content", fmt.Errorf("TinyFish fetch reported an error for %q: %s: %w", fe.URL, fe.Error, os.ErrInvalid), "url", raw)
+
 							break
 						}
 					}
 				}
 			}
 		}
+
 		for _, result := range resp.Results {
 			rawText := tinyFishFetchResultText(result.Text)
+
 			rawText = strings.TrimSpace(rawText)
 			if rawText == "" {
 				if raw, ok := rawForNormalized[result.URL]; ok {
@@ -250,47 +278,62 @@ func (instance *bot) prepareTinyFishWebsiteAugmentationBatch(
 						if strings.EqualFold(batchURL, result.URL) || strings.EqualFold(batchURL, result.FinalURL) {
 							raw := rawForNormalized[batchURL]
 							logWarn("fetch website content", fmt.Errorf("TinyFish fetch returned empty content for %q: %w", result.URL, os.ErrInvalid), "url", raw)
+
 							break
 						}
 					}
 				}
+
 				hasFetchFailure = true
+
 				continue
 			}
+
 			isErrored := false
+
 			for _, candidateURL := range []string{result.URL, result.FinalURL} {
 				trimmed := strings.TrimSpace(candidateURL)
 				if trimmed == "" {
 					continue
 				}
+
 				lower := strings.ToLower(trimmed)
 				if _, exists := errorMap[lower]; exists {
 					isErrored = true
 					break
 				}
 			}
+
 			if isErrored {
 				hasFetchFailure = true
 				continue
 			}
+
 			title := ""
 			if result.Title != nil {
 				title = strings.TrimSpace(*result.Title)
 			}
+
 			description := ""
 			if result.Description != nil {
 				description = strings.TrimSpace(*result.Description)
 			}
+
 			resultURL := firstNonEmptyString(result.FinalURL, result.URL, "")
 			if strings.TrimSpace(resultURL) == "" {
 				continue
 			}
-			var pageContent websitePageContent
-			var err error
+
+			var (
+				pageContent websitePageContent
+				err         error
+			)
+
 			candidateTitle := title
 			if candidateTitle == "" {
 				candidateTitle = resultURL
 			}
+
 			pageContent, err = newWebsitePageContent(resultURL, candidateTitle, description, rawText)
 			if err != nil {
 				hasFetchFailure = true
@@ -298,9 +341,11 @@ func (instance *bot) prepareTinyFishWebsiteAugmentationBatch(
 			}
 			// Map via batch input URLs for canonicalization tolerance (slash-insensitive)
 			matchedInputLower := ""
+
 			for _, batchURL := range br.value.batchURLs {
 				trimBatch := strings.TrimSpace(batchURL)
 				trimResultURL := strings.TrimSpace(result.URL)
+
 				trimFinalURL := strings.TrimSpace(result.FinalURL)
 				if strings.EqualFold(trimBatch, trimResultURL) || strings.EqualFold(trimBatch, trimFinalURL) ||
 					strings.EqualFold(strings.TrimSuffix(trimBatch, "/"), strings.TrimSuffix(trimResultURL, "/")) ||
@@ -309,6 +354,7 @@ func (instance *bot) prepareTinyFishWebsiteAugmentationBatch(
 					break
 				}
 			}
+
 			if matchedInputLower != "" {
 				if _, already := fetchedPageMap[matchedInputLower]; !already {
 					fetchedPageMap[matchedInputLower] = pageContent
@@ -326,33 +372,41 @@ func (instance *bot) prepareTinyFishWebsiteAugmentationBatch(
 					}
 				}
 			}
+
 			for _, origURL := range []string{result.URL, result.FinalURL} {
 				trimmedOrig := strings.TrimSpace(origURL)
 				if trimmedOrig == "" {
 					continue
 				}
+
 				lowerOrig := strings.ToLower(trimmedOrig)
 				if _, already := fetchedPageMap[lowerOrig]; !already {
 					fetchedPageMap[lowerOrig] = pageContent
 				}
 			}
+
 			lowerResultURL := strings.ToLower(strings.TrimSpace(resultURL))
 			if _, already := fetchedPageMap[lowerResultURL]; !already {
 				fetchedPageMap[lowerResultURL] = pageContent
 			}
 		}
+
 		for key := range errorMap {
 			hasFetchFailure = true
 			_ = key
 		}
+
 		if len(resp.Results) == 0 && len(resp.Errors) > 0 {
 			hasFetchFailure = true
 		}
 	}
+
 	orderedContents := make([]websitePageContent, 0, len(validNormalized))
 	seenContent := make(map[string]struct{})
+
 	for _, normalized := range validNormalized {
 		lower := strings.ToLower(strings.TrimSpace(normalized))
+
 		pageContent, ok := fetchedPageMap[lower]
 		if !ok {
 			// Try slash-insensitive lookup
@@ -362,29 +416,38 @@ func (instance *bot) prepareTinyFishWebsiteAugmentationBatch(
 			} else {
 				pageContent, ok = fetchedPageMap[lower+"/"]
 			}
+
 			if !ok {
 				continue
 			}
 		}
+
 		urlKey := strings.ToLower(strings.TrimSpace(pageContent.URL))
 		if _, dup := seenContent[urlKey]; dup {
 			continue
 		}
+
 		seenContent[urlKey] = struct{}{}
+
 		orderedContents = append(orderedContents, pageContent)
 	}
+
 	if len(orderedContents) == 0 {
 		warnings := []string(nil)
 		if hasFetchFailure {
 			warnings = []string{websiteWarningText}
 		}
+
 		return warningPreparedConversationAugmentation(warnings), nil
 	}
+
 	formattedContent := formatWebsiteURLContent(orderedContents)
+
 	warnings := []string(nil)
 	if hasFetchFailure {
 		warnings = []string{websiteWarningText}
 	}
+
 	return newPreparedConversationAugmentation(
 		warnings,
 		nil,
@@ -460,13 +523,16 @@ func (client websiteClient) fetch(
 	if err != nil {
 		return websitePageContent{}, fmt.Errorf("validate website url %q: %w", rawURL, err)
 	}
+
 	extractionOrder := loadedConfig.WebSearch.ExtractionOrder
 	if len(extractionOrder) == 0 {
 		extractionOrder = defaultWebExtractionOrder
 	}
 
-	var attemptErrs []error
-	var attemptsCount int
+	var (
+		attemptErrs   []error
+		attemptsCount int
+	)
 
 	for _, provider := range extractionOrder {
 		switch provider {
@@ -475,8 +541,10 @@ func (client websiteClient) fetch(
 			if len(firecrawlAPIKeys) == 0 {
 				continue
 			}
+
 			attemptsCount++
 			firecrawlAPIKey := firstAPIKey(client.keys.rotate(firecrawlAPIKeys))
+
 			pageContent, firecrawlErr := client.fetchWithFirecrawlScrape(
 				ctx,
 				normalizedURL,
@@ -486,6 +554,7 @@ func (client websiteClient) fetch(
 			if firecrawlErr == nil {
 				return pageContent, nil
 			}
+
 			attemptErrs = append(attemptErrs, firecrawlErr)
 
 		case webExtractionProviderTinyFish:
@@ -493,8 +562,10 @@ func (client websiteClient) fetch(
 			if len(tinyFishAPIKeys) == 0 {
 				continue
 			}
+
 			attemptsCount++
 			tinyFishAPIKey := firstAPIKey(client.keys.rotate(tinyFishAPIKeys))
+
 			pageContent, tinyFishErr := client.fetchWithTinyFishFetch(
 				ctx,
 				normalizedURL,
@@ -503,14 +574,17 @@ func (client websiteClient) fetch(
 			if tinyFishErr == nil {
 				return pageContent, nil
 			}
+
 			attemptErrs = append(attemptErrs, tinyFishErr)
 
 		case webExtractionProviderExa:
 			if !loadedConfig.WebSearch.exaUsesAPI() {
 				continue
 			}
+
 			attemptsCount++
 			exaAPIKey := firstAPIKey(client.keys.rotate(loadedConfig.WebSearch.Exa.apiKeys()))
+
 			pageContent, exaErr := client.fetchWithExaContents(
 				ctx,
 				normalizedURL,
@@ -520,6 +594,7 @@ func (client websiteClient) fetch(
 			if exaErr == nil {
 				return pageContent, nil
 			}
+
 			attemptErrs = append(attemptErrs, exaErr)
 
 		case webExtractionProviderTavily:
@@ -527,8 +602,10 @@ func (client websiteClient) fetch(
 			if len(tavilyAPIKeys) == 0 {
 				continue
 			}
+
 			attemptsCount++
 			tavilyAPIKey := firstAPIKey(client.keys.rotate(tavilyAPIKeys))
+
 			pageContent, tavilyErr := client.fetchWithTavilyExtract(
 				ctx,
 				normalizedURL,
@@ -537,6 +614,7 @@ func (client websiteClient) fetch(
 			if tavilyErr == nil {
 				return pageContent, nil
 			}
+
 			attemptErrs = append(attemptErrs, tavilyErr)
 		}
 	}
@@ -1309,6 +1387,7 @@ func (client websiteClient) fetchWithTinyFishFetch(
 		if len(response.Errors) > 0 {
 			errorsText = response.Errors[0].Error
 		}
+
 		return websitePageContent{}, fmt.Errorf(
 			"TinyFish fetch response contained no result for %q: %s: %w",
 			requestURL,
@@ -1318,6 +1397,7 @@ func (client websiteClient) fetchWithTinyFishFetch(
 	}
 
 	var matchedResult *tinyFishFetchResult
+
 	for index := range response.Results {
 		result := &response.Results[index]
 		if strings.EqualFold(strings.TrimSpace(result.URL), requestURL) ||
@@ -1327,11 +1407,13 @@ func (client websiteClient) fetchWithTinyFishFetch(
 			break
 		}
 	}
+
 	if matchedResult == nil {
 		matchedResult = &response.Results[0]
 	}
 
 	text := tinyFishFetchResultText(matchedResult.Text)
+
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return websitePageContent{}, fmt.Errorf("TinyFish fetch returned empty content for %q: %w", requestURL, os.ErrInvalid)
@@ -1341,6 +1423,7 @@ func (client websiteClient) fetchWithTinyFishFetch(
 	if matchedResult.Title != nil {
 		title = strings.TrimSpace(*matchedResult.Title)
 	}
+
 	if title == "" {
 		title = firstNonEmptyString(matchedResult.URL, matchedResult.FinalURL, requestURL)
 	}
@@ -1363,6 +1446,7 @@ func (client websiteClient) fetchTinyFishBatch(
 	if len(batch) == 0 {
 		return tinyFishFetchResponse{}, nil
 	}
+
 	ctx, cancel := context.WithTimeout(ctx, tinyFishFetchRequestTimeout)
 	defer cancel()
 
@@ -1374,6 +1458,7 @@ func (client websiteClient) fetchTinyFishBatch(
 	if err != nil {
 		return tinyFishFetchResponse{}, fmt.Errorf("marshal TinyFish fetch request: %w", err)
 	}
+
 	httpRequest, err := http.NewRequestWithContext(
 		ctx,
 		http.MethodPost,
@@ -1383,19 +1468,24 @@ func (client websiteClient) fetchTinyFishBatch(
 	if err != nil {
 		return tinyFishFetchResponse{}, fmt.Errorf("create TinyFish fetch request: %w", err)
 	}
+
 	httpRequest.Header.Set("Accept", applicationJSONContentType)
 	httpRequest.Header.Set(contentTypeHeader, applicationJSONContentType)
 	httpRequest.Header.Set("X-API-Key", strings.TrimSpace(apiKey))
+
 	httpResponse, err := client.httpClient.Do(httpRequest)
 	if err != nil {
 		return tinyFishFetchResponse{}, fmt.Errorf("send TinyFish fetch request: %w", err)
 	}
+
 	defer func() { _ = httpResponse.Body.Close() }()
+
 	if httpResponse.StatusCode < http.StatusOK || httpResponse.StatusCode >= http.StatusMultipleChoices {
 		responseBody, readErr := io.ReadAll(httpResponse.Body)
 		if readErr != nil {
 			return tinyFishFetchResponse{}, fmt.Errorf("read TinyFish fetch error response after status %d: %w", httpResponse.StatusCode, readErr)
 		}
+
 		return tinyFishFetchResponse{}, tinyFishStatusError{
 			StatusCode: httpResponse.StatusCode,
 			Message: fmt.Sprintf(
@@ -1406,10 +1496,12 @@ func (client websiteClient) fetchTinyFishBatch(
 			Err: os.ErrInvalid,
 		}
 	}
+
 	var batchResponse tinyFishFetchResponse
 	if err := json.NewDecoder(httpResponse.Body).Decode(&batchResponse); err != nil {
 		return tinyFishFetchResponse{}, fmt.Errorf("decode TinyFish fetch response: %w", err)
 	}
+
 	return batchResponse, nil
 }
 

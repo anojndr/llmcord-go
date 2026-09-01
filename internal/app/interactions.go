@@ -182,6 +182,7 @@ func (instance *bot) handleShowImagesButton(
 	result, err := instance.imageSearch.search(ctx, query, 1, maxImagesLimit)
 	if err != nil {
 		logWarn("image search failed", err, "message_id", interaction.Message.ID, "query", query)
+
 		return editInteractionResponseText(
 			session,
 			interaction.Interaction,
@@ -203,6 +204,7 @@ func (instance *bot) handleShowImagesButton(
 	content := fmt.Sprintf("Top %d images for %q:", len(embeds), query)
 	webhookEdit := new(discordgo.WebhookEdit)
 	webhookEdit.Content = &content
+
 	webhookEdit.Embeds = &embeds
 	if len(files) > 0 {
 		webhookEdit.Files = files
@@ -353,6 +355,7 @@ func (instance *bot) showImagesPageResponse(messageID string, pageIndex int) (st
 	}
 
 	const imagesPerPage = maxImagesLimit
+
 	if pageIndex < 0 {
 		pageIndex = 0
 	}
@@ -428,6 +431,7 @@ func (instance *bot) imageSearchQueryForMessage(messageID string) string {
 		if instance != nil && instance.session != nil && instance.session.State != nil && instance.session.State.User != nil {
 			botUserID = instance.session.State.User.ID
 		}
+
 		parentText := trimBotMention(messageNode.parentMessage.Content, botUserID)
 		if strings.TrimSpace(parentText) != "" {
 			return strings.TrimSpace(parentText)
@@ -674,10 +678,12 @@ func formatImageSearchResultsContent(
 
 	for index, item := range items {
 		num := index + 1 + (pageIndex * maxImagesLimit)
+
 		title := strings.TrimSpace(item.Title)
 		if title == "" {
 			title = "Image"
 		}
+
 		landingURL := strings.TrimSpace(item.LandingURL)
 		imageURL := strings.TrimSpace(item.URL)
 		thumbURL := strings.TrimSpace(item.Thumbnail)
@@ -686,6 +692,7 @@ func formatImageSearchResultsContent(
 		if bestURL == "" {
 			bestURL = thumbURL
 		}
+
 		if bestURL == "" {
 			bestURL = landingURL
 		}

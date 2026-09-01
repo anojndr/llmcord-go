@@ -691,6 +691,7 @@ func (instance *bot) augmentConversationWithVideoURLs(
 	urlExtractionText string,
 ) ([]chatMessage, []string, error) {
 	var stages []preparedAugmentationStage
+
 	stages = append(stages, preparedAugmentationStage{
 		name: "tiktok",
 		prepare: func(taskContext context.Context) (preparedConversationAugmentation, error) {
@@ -1062,10 +1063,12 @@ func dedicatedReasoningEffort(provider providerConfig, modelParameters map[strin
 	if effort, ok := modelReasoningEffortValue(modelParameters); ok {
 		return effort, true
 	}
+
 	trimmed := strings.TrimSpace(provider.ReasoningEffort)
 	if trimmed != "" {
 		return strings.ToLower(trimmed), true
 	}
+
 	return "", false
 }
 

@@ -66,8 +66,10 @@ func (order *webSearchOrder) UnmarshalYAML(node *yaml.Node) error {
 			if childNode.Kind != yaml.ScalarNode {
 				return fmt.Errorf("decode web search order item: %w", os.ErrInvalid)
 			}
+
 			items = append(items, childNode.Value)
 		}
+
 		*order = webSearchOrder(strings.Join(items, " > "))
 
 		return nil
@@ -101,7 +103,9 @@ func parseWebSearchOrder(orderStr string) ([]webSearchProvider, error) {
 		if clean == "" {
 			continue
 		}
+
 		var provider webSearchProvider
+
 		switch clean {
 		case "tinyfish", "tiny_fish", "tf":
 			provider = webSearchProviderTinyFish
@@ -114,9 +118,11 @@ func parseWebSearchOrder(orderStr string) ([]webSearchProvider, error) {
 		default:
 			return nil, fmt.Errorf("unknown web search provider %q: %w", strings.TrimSpace(part), os.ErrInvalid)
 		}
+
 		if seen[provider] {
 			return nil, fmt.Errorf("duplicate web search provider %q in order: %w", strings.TrimSpace(part), os.ErrInvalid)
 		}
+
 		seen[provider] = true
 		order = append(order, provider)
 	}
@@ -165,8 +171,10 @@ func (order *webExtractionOrder) UnmarshalYAML(node *yaml.Node) error {
 			if childNode.Kind != yaml.ScalarNode {
 				return fmt.Errorf("decode web extraction order item: %w", os.ErrInvalid)
 			}
+
 			items = append(items, childNode.Value)
 		}
+
 		*order = webExtractionOrder(strings.Join(items, " > "))
 
 		return nil
@@ -200,7 +208,9 @@ func parseWebExtractionOrder(orderStr string) ([]webExtractionProvider, error) {
 		if clean == "" {
 			continue
 		}
+
 		var provider webExtractionProvider
+
 		switch clean {
 		case "firecrawl", "fc":
 			provider = webExtractionProviderFirecrawl
@@ -213,9 +223,11 @@ func parseWebExtractionOrder(orderStr string) ([]webExtractionProvider, error) {
 		default:
 			return nil, fmt.Errorf("unknown web extraction provider %q: %w", strings.TrimSpace(part), os.ErrInvalid)
 		}
+
 		if seen[provider] {
 			return nil, fmt.Errorf("duplicate web extraction provider %q in order: %w", strings.TrimSpace(part), os.ErrInvalid)
 		}
+
 		seen[provider] = true
 		order = append(order, provider)
 	}
@@ -555,6 +567,7 @@ func buildLoadedConfig(
 	if strings.TrimSpace(rawOrderStr) == "" {
 		rawOrderStr = string(rawLoadedConfig.WebSearchOrder)
 	}
+
 	if strings.TrimSpace(rawOrderStr) != "" {
 		if _, err := parseWebSearchOrder(rawOrderStr); err != nil {
 			return config{}, fmt.Errorf("parse web search order %q: %w", rawOrderStr, err)
@@ -565,9 +578,11 @@ func buildLoadedConfig(
 	if strings.TrimSpace(rawExtractionOrderStr) == "" {
 		rawExtractionOrderStr = string(rawLoadedConfig.ExtractionOrder)
 	}
+
 	if strings.TrimSpace(rawExtractionOrderStr) == "" {
 		rawExtractionOrderStr = string(rawLoadedConfig.WebExtractionOrder)
 	}
+
 	if strings.TrimSpace(rawExtractionOrderStr) != "" {
 		if _, err := parseWebExtractionOrder(rawExtractionOrderStr); err != nil {
 			return config{}, fmt.Errorf("parse extraction order %q: %w", rawExtractionOrderStr, err)
@@ -834,15 +849,18 @@ func normalizeWebSearchConfig(
 	if strings.TrimSpace(rawOrderStr) == "" {
 		rawOrderStr = string(topLevelOrder)
 	}
+
 	order, _ := parseWebSearchOrder(rawOrderStr)
 
 	rawExtractionOrderStr := string(rawLoadedConfig.ExtractionOrder)
 	if strings.TrimSpace(rawExtractionOrderStr) == "" {
 		rawExtractionOrderStr = string(topLevelExtractionOrder)
 	}
+
 	if strings.TrimSpace(rawExtractionOrderStr) == "" {
 		rawExtractionOrderStr = string(topLevelWebExtractionOrder)
 	}
+
 	extractionOrder, _ := parseWebExtractionOrder(rawExtractionOrderStr)
 
 	exaAPIKeys := normalizeAPIKeys([]string(rawLoadedConfig.Exa.APIKey))
@@ -993,6 +1011,7 @@ func validateConfiguredModels(loadedConfig config) error {
 			if provider.apiKind() != providerAPIKindOpenAI {
 				return fmt.Errorf("provider %q: reasoning_effort is only valid for OpenAI-compatible providers: %w", providerName, os.ErrInvalid)
 			}
+
 			if !providers.IsValidOpenAIReasoningEffort(provider.ReasoningEffort) {
 				return fmt.Errorf("provider %q: reasoning_effort %q is invalid: %w", providerName, provider.ReasoningEffort, os.ErrInvalid)
 			}
@@ -1003,6 +1022,7 @@ func validateConfiguredModels(loadedConfig config) error {
 			if provider.apiKind() != providerAPIKindOpenAI {
 				return fmt.Errorf("model %q: reasoning_effort is only valid for OpenAI-compatible providers: %w", modelName, os.ErrInvalid)
 			}
+
 			if !providers.IsValidOpenAIReasoningEffort(effort) {
 				return fmt.Errorf("model %q: reasoning_effort %q is invalid: %w", modelName, effort, os.ErrInvalid)
 			}
@@ -1016,24 +1036,30 @@ func modelReasoningEffortValue(modelParameters map[string]any) (string, bool) {
 	if len(modelParameters) == 0 {
 		return "", false
 	}
+
 	raw, ok := modelParameters["reasoning_effort"]
 	if !ok {
 		return "", false
 	}
+
 	if raw == nil {
 		return "", false
 	}
+
 	if effortStr, ok := raw.(string); ok {
 		trimmed := strings.TrimSpace(effortStr)
 		if trimmed == "" {
 			return "", false
 		}
+
 		return strings.ToLower(trimmed), true
 	}
+
 	trimmed := strings.TrimSpace(fmt.Sprint(raw))
 	if trimmed == "" {
 		return "", false
 	}
+
 	return strings.ToLower(trimmed), true
 }
 
@@ -1249,6 +1275,7 @@ func (provider providerConfig) validate(providerName string) error {
 		if strings.TrimSpace(provider.ReasoningEffort) != "" {
 			return fmt.Errorf("provider %q: reasoning_effort is only valid for OpenAI-compatible providers: %w", providerName, os.ErrInvalid)
 		}
+
 		return nil
 	}
 

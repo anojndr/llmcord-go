@@ -19,7 +19,7 @@ const (
 	defaultGithubGistEndpoint         = "https://api.github.com/gists"
 	defaultGistFilename               = "llmcord-go reply.md"
 	defaultStatusMessage              = "github.com/jakobdylanc/llmcord"
-	defaultMaxImages                  = 5
+	defaultMaxImages                  = 100
 	defaultMaxMessages                = 25
 	maxMessageNodes                   = 500
 	registeredCommandCount            = 7

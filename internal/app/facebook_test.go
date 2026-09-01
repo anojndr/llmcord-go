@@ -1326,6 +1326,7 @@ func TestFacebookClientFetchCompressesOversizedVideo(t *testing.T) {
 
 	oversizedVideo := make([]byte, facebookMaxUploadBytes+1024)
 	compressedVideo := []byte("compressed-8mb-video")
+
 	var uploadFileBytes []byte
 
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -1339,10 +1340,12 @@ func TestFacebookClientFetchCompressesOversizedVideo(t *testing.T) {
 			_, _ = writer.Write(oversizedVideo)
 		case "/rqjob":
 			var req autocompressorRQJobRequest
+
 			_ = json.NewDecoder(request.Body).Decode(&req)
 			if req.TargetSize != "8" || req.OutputFormat != "mp4" {
 				t.Errorf("unexpected rqjob request: %#v", req)
 			}
+
 			writer.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(writer).Encode(autocompressorRQJobResponse{
 				Allowed:     true,
@@ -1355,6 +1358,7 @@ func TestFacebookClientFetchCompressesOversizedVideo(t *testing.T) {
 			if err != nil {
 				t.Errorf("parse multipart upload form: %v", err)
 			}
+
 			file, _, err := request.FormFile("filetoupload")
 			if err != nil {
 				t.Errorf("get filetoupload: %v", err)
@@ -1362,13 +1366,16 @@ func TestFacebookClientFetchCompressesOversizedVideo(t *testing.T) {
 				uploadFileBytes, _ = io.ReadAll(file)
 				_ = file.Close()
 			}
+
 			writer.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(writer).Encode(autocompressorUploadResponse{
 				Error: false,
 			})
 		case "/job/job-12345/status":
 			writer.Header().Set("Content-Type", "application/json")
+
 			var resp autocompressorStatusResponse
+
 			resp.Status.Ended = true
 			resp.Status.Error = false
 			resp.Progress.Action = "Running final encoding pass"

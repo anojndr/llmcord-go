@@ -923,6 +923,7 @@ func TestWebsiteClientFetchSurfacesPersistentExaLivecrawlTimeout(t *testing.T) {
 		http.Error(responseWriter, "unexpected Tavily call", http.StatusInternalServerError)
 	}))
 	defer tavilyServer.Close()
+
 	loadedConfig := testWebsiteExaAndTavilyConfig()
 	loadedConfig.WebSearch.ExtractionOrder = []webExtractionProvider{webExtractionProviderExa}
 	client := newWebsiteTestClient(exaServer.Client(), exaServer.URL, tavilyServer.URL)
@@ -1271,16 +1272,20 @@ func TestWebsiteClientFetchUsesTinyFishWhenConfigured(t *testing.T) {
 		if request.Header.Get("X-API-Key") != "tf-test-key" {
 			t.Fatalf("unexpected TinyFish API key header: %q", request.Header.Get("X-API-Key"))
 		}
+
 		if request.Method != http.MethodPost {
 			t.Fatalf("unexpected TinyFish method: %q", request.Method)
 		}
+
 		var body map[string]any
 		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
 			t.Fatalf("decode TinyFish fetch request: %v", err)
 		}
+
 		assertTinyFishFetchRequest(t, body, "https://example.com/article")
 
 		responseWriter.Header().Set("Content-Type", "application/json")
+
 		resp := map[string]any{
 			"results": []map[string]any{{
 				"url":         "https://example.com/article",
@@ -1315,12 +1320,15 @@ func TestWebsiteClientFetchUsesTinyFishWhenConfigured(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fetch with TinyFish: %v", err)
 	}
+
 	if tinyFishCallCount != 1 {
 		t.Fatalf("unexpected TinyFish call count: %d", tinyFishCallCount)
 	}
+
 	if result.Title != "Example Article" {
 		t.Fatalf("unexpected title: %q", result.Title)
 	}
+
 	if !strings.Contains(result.Content, "TinyFish extracted body.") {
 		t.Fatalf("unexpected content: %q", result.Content)
 	}
@@ -1338,14 +1346,17 @@ func TestWebsiteClientFetchTinyFishBatchSendsRequestContract(t *testing.T) {
 		if request.Method != http.MethodPost {
 			t.Fatalf("unexpected TinyFish method: %q", request.Method)
 		}
+
 		if request.Header.Get("X-API-Key") != "tf-test-key" {
 			t.Fatalf("unexpected TinyFish API key header: %q", request.Header.Get("X-API-Key"))
 		}
+
 		if err := json.NewDecoder(request.Body).Decode(&receivedRequest); err != nil {
 			t.Fatalf("decode TinyFish fetch request: %v", err)
 		}
 
 		responseWriter.Header().Set("Content-Type", "application/json")
+
 		resp := map[string]any{
 			"results": []any{},
 			"errors":  []any{},
@@ -1371,6 +1382,7 @@ func TestWebsiteClientFetchTinyFishBatchSendsRequestContract(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fetchTinyFishBatch returned error: %v", err)
 	}
+
 	if len(batchResponse.Results) != 0 || len(batchResponse.Errors) != 0 {
 		t.Fatalf("unexpected TinyFish fetch response: %#v", batchResponse)
 	}
@@ -1379,9 +1391,11 @@ func TestWebsiteClientFetchTinyFishBatchSendsRequestContract(t *testing.T) {
 	if !ok || len(rawURLs) != 2 {
 		t.Fatalf("unexpected TinyFish urls: %#v", receivedRequest["urls"])
 	}
+
 	if fmt.Sprint(receivedRequest["format"]) != "markdown" {
 		t.Fatalf("unexpected TinyFish format: %#v", receivedRequest["format"])
 	}
+
 	rawTimeout, ok := receivedRequest["per_url_timeout_ms"].(float64)
 	if !ok || int(rawTimeout) != tinyFishFetchPerURLTimeoutMS {
 		t.Fatalf("unexpected TinyFish per_url_timeout_ms: %#v", receivedRequest["per_url_timeout_ms"])
@@ -1391,15 +1405,19 @@ func TestWebsiteClientFetchTinyFishBatchSendsRequestContract(t *testing.T) {
 func TestWebsiteClientFetchFallsBackToTinyFishOnFirecrawlFailure(t *testing.T) {
 	t.Parallel()
 
-	var firecrawlCalls int
-	var tinyFishCalls int
+	var (
+		firecrawlCalls int
+		tinyFishCalls  int
+	)
 
 	firecrawlServer := httptest.NewServer(http.HandlerFunc(func(
 		responseWriter http.ResponseWriter,
 		_ *http.Request,
 	) {
 		firecrawlCalls++
+
 		responseWriter.Header().Set("Content-Type", "application/json")
+
 		resp := map[string]any{
 			"success": false,
 			"error":   "Failed to load URL",
@@ -1413,12 +1431,15 @@ func TestWebsiteClientFetchFallsBackToTinyFishOnFirecrawlFailure(t *testing.T) {
 		request *http.Request,
 	) {
 		tinyFishCalls++
+
 		var body map[string]any
 		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
 			t.Fatalf("decode TinyFish fallback request: %v", err)
 		}
+
 		assertTinyFishFetchRequest(t, body, "https://example.com/article")
 		responseWriter.Header().Set("Content-Type", "application/json")
+
 		resp := map[string]any{
 			"results": []map[string]any{{
 				"url":       "https://example.com/article",
@@ -1455,15 +1476,19 @@ func TestWebsiteClientFetchFallsBackToTinyFishOnFirecrawlFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fallback to TinyFish failed: %v", err)
 	}
+
 	if firecrawlCalls != 1 {
 		t.Fatalf("unexpected Firecrawl calls: %d", firecrawlCalls)
 	}
+
 	if tinyFishCalls != 1 {
 		t.Fatalf("unexpected TinyFish fallback calls: %d", tinyFishCalls)
 	}
+
 	if result.Title != "Fallback Article" {
 		t.Fatalf("unexpected fallback title: %q", result.Title)
 	}
+
 	if !strings.Contains(result.Content, "Fallback body via TinyFish") {
 		t.Fatalf("unexpected fallback content: %q", result.Content)
 	}
@@ -1477,6 +1502,7 @@ func TestWebsiteClientFetchSurfacesTinyFishError(t *testing.T) {
 		_ *http.Request,
 	) {
 		responseWriter.Header().Set("Content-Type", "application/json")
+
 		resp := map[string]any{
 			"results": []any{},
 			"errors": []map[string]any{{
@@ -1504,6 +1530,7 @@ func TestWebsiteClientFetchSurfacesTinyFishError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected TinyFish per-URL error to surface")
 	}
+
 	if !strings.Contains(err.Error(), "bot_blocked") {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1520,6 +1547,7 @@ func TestWebsiteClientFetchCustomExtractionOrder(t *testing.T) {
 
 	firecrawlServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		firecrawlCalls++
+
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"success": true,
@@ -1533,6 +1561,7 @@ func TestWebsiteClientFetchCustomExtractionOrder(t *testing.T) {
 
 	tinyFishServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		tinyFishCalls++
+
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"results": []map[string]any{{
@@ -1547,6 +1576,7 @@ func TestWebsiteClientFetchCustomExtractionOrder(t *testing.T) {
 
 	exaServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		exaCalls++
+
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"results": []map[string]any{{
@@ -1564,6 +1594,7 @@ func TestWebsiteClientFetchCustomExtractionOrder(t *testing.T) {
 
 	tavilyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		tavilyCalls++
+
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"results": []map[string]any{{
@@ -1606,9 +1637,11 @@ func TestWebsiteClientFetchCustomExtractionOrder(t *testing.T) {
 		if err != nil {
 			t.Fatalf("fetch failed: %v", err)
 		}
+
 		if res.Title != "TinyFish Title" {
 			t.Fatalf("unexpected title: %q", res.Title)
 		}
+
 		if tinyFishCalls != 1 || firecrawlCalls != 0 {
 			t.Fatalf("calls: tinyfish=%d, firecrawl=%d", tinyFishCalls, firecrawlCalls)
 		}
@@ -1645,9 +1678,11 @@ func TestWebsiteClientFetchCustomExtractionOrder(t *testing.T) {
 		if err != nil {
 			t.Fatalf("fetch failed: %v", err)
 		}
+
 		if !strings.Contains(res.Content, "Tavily Body") {
 			t.Fatalf("unexpected content: %q", res.Content)
 		}
+
 		if tavilyCalls != 1 || exaCalls != 0 {
 			t.Fatalf("calls: tavily=%d, exa=%d", tavilyCalls, exaCalls)
 		}
@@ -1661,9 +1696,11 @@ func assertTinyFishFetchRequest(t *testing.T, request map[string]any, requestURL
 	if !ok || len(rawURLs) != 1 || rawURLs[0] != requestURL {
 		t.Fatalf("unexpected TinyFish urls: %#v", request["urls"])
 	}
+
 	if fmt.Sprint(request["format"]) != "markdown" {
 		t.Fatalf("unexpected TinyFish format: %#v", request["format"])
 	}
+
 	if rawTimeout, ok := request["per_url_timeout_ms"].(float64); !ok || int(rawTimeout) != tinyFishFetchPerURLTimeoutMS {
 		t.Fatalf("unexpected TinyFish per_url_timeout_ms: %#v", request["per_url_timeout_ms"])
 	}

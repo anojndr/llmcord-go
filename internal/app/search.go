@@ -113,16 +113,19 @@ func (fi *flexibleInt) UnmarshalJSON(data []byte) error {
 		*fi = 0
 		return nil
 	}
+
 	var i int
 	if err := json.Unmarshal(trimmed, &i); err == nil {
 		*fi = flexibleInt(i)
 		return nil
 	}
+
 	var f float64
 	if err := json.Unmarshal(trimmed, &f); err == nil {
 		*fi = flexibleInt(int(f))
 		return nil
 	}
+
 	var s string
 	if err := json.Unmarshal(trimmed, &s); err == nil {
 		s = strings.TrimSpace(s)
@@ -130,11 +133,13 @@ func (fi *flexibleInt) UnmarshalJSON(data []byte) error {
 			*fi = 0
 			return nil
 		}
+
 		if parsed, err := strconv.ParseFloat(s, 64); err == nil {
 			*fi = flexibleInt(int(parsed))
 			return nil
 		}
 	}
+
 	return fmt.Errorf("flexibleInt: cannot unmarshal %s", string(trimmed))
 }
 
@@ -151,11 +156,13 @@ func (ff *flexibleFloat64) UnmarshalJSON(data []byte) error {
 		*ff = 0
 		return nil
 	}
+
 	var f float64
 	if err := json.Unmarshal(trimmed, &f); err == nil {
 		*ff = flexibleFloat64(f)
 		return nil
 	}
+
 	var s string
 	if err := json.Unmarshal(trimmed, &s); err == nil {
 		s = strings.TrimSpace(s)
@@ -163,11 +170,13 @@ func (ff *flexibleFloat64) UnmarshalJSON(data []byte) error {
 			*ff = 0
 			return nil
 		}
+
 		if parsed, err := strconv.ParseFloat(s, 64); err == nil {
 			*ff = flexibleFloat64(parsed)
 			return nil
 		}
 	}
+
 	return fmt.Errorf("flexibleFloat64: cannot unmarshal %s", string(trimmed))
 }
 
@@ -454,6 +463,7 @@ func (err exaStatusError) Unwrap() error {
 // and deduplicated in order.
 func extractWebSearchQueries(toolCalls []providers.FunctionToolCall) []string {
 	seenQueries := make(map[string]struct{})
+
 	var queries []string
 
 	for _, toolCall := range toolCalls {
@@ -565,6 +575,7 @@ func (instance *bot) runWebSearchToolPhase(
 
 		return nil, append(warnings, searchWarningText), false
 	}
+
 	if tracker != nil {
 		tracker.searchMetadata = mergeSearchMetadata(
 			tracker.searchMetadata,
@@ -687,13 +698,16 @@ func (client routedWebSearchClient) search(
 			if len(loadedConfig.WebSearch.TinyFish.apiKeys()) == 0 {
 				continue
 			}
+
 			if client.tinyFish == nil {
 				continue
 			}
+
 			results, err := client.tinyFish.search(ctx, loadedConfig, queries)
 			if err == nil {
 				return results, nil
 			}
+
 			logWarn("tinyfish search failed, trying fallback", err)
 			failedAttempts = append(failedAttempts, searchAttemptError{
 				providerName: "TinyFish Search",
@@ -704,14 +718,17 @@ func (client routedWebSearchClient) search(
 			if client.exa == nil {
 				continue
 			}
+
 			results, err := client.exa.search(ctx, loadedConfig, queries)
 			if err == nil {
 				return results, nil
 			}
+
 			exaName := "Exa MCP"
 			if loadedConfig.WebSearch.exaUsesAPI() {
 				exaName = "Exa Search API"
 			}
+
 			failedAttempts = append(failedAttempts, searchAttemptError{
 				providerName: exaName,
 				err:          err,
@@ -721,10 +738,12 @@ func (client routedWebSearchClient) search(
 			if client.tavily == nil {
 				continue
 			}
+
 			results, err := client.tavily.search(ctx, loadedConfig, queries)
 			if err == nil {
 				return results, nil
 			}
+
 			failedAttempts = append(failedAttempts, searchAttemptError{
 				providerName: "Tavily",
 				err:          err,
@@ -734,16 +753,19 @@ func (client routedWebSearchClient) search(
 			if client.parallel == nil {
 				continue
 			}
+
 			results, err := client.parallel.search(ctx, loadedConfig, queries)
 			if err == nil {
 				return results, nil
 			}
+
 			failedAttempts = append(failedAttempts, searchAttemptError{
 				providerName: "Parallel Search",
 				err:          err,
 			})
 		}
 	}
+
 	if len(failedAttempts) == 0 {
 		return nil, fmt.Errorf("no web search providers configured: %w", os.ErrNotExist)
 	}
@@ -752,6 +774,7 @@ func (client routedWebSearchClient) search(
 	for _, attempt := range failedAttempts {
 		joinedErrs = append(joinedErrs, attempt.err)
 	}
+
 	joined := errors.Join(joinedErrs...)
 
 	switch len(failedAttempts) {
@@ -778,6 +801,7 @@ func (client routedWebSearchClient) search(
 		)
 	default:
 		var parts []string
+
 		for index, attempt := range failedAttempts {
 			if index == 0 {
 				parts = append(parts, fmt.Sprintf("search with %s failed", attempt.providerName))
@@ -1678,17 +1702,21 @@ func (client tinyFishSearchClient) searchSingleQuery(
 		} else {
 			for _, fetchResult := range fetchResponse.Results {
 				textStr := tinyFishFetchResultText(fetchResult.Text)
+
 				textStr = strings.TrimSpace(textStr)
 				if textStr == "" {
 					continue
 				}
+
 				for _, rawURL := range []string{fetchResult.URL, fetchResult.FinalURL} {
 					trimmed := strings.TrimSpace(rawURL)
 					if trimmed == "" {
 						continue
 					}
+
 					key := strings.ToLower(trimmed)
 					fetchedTextMap[key] = textStr
+
 					if fetchResult.Title != nil {
 						if title := strings.TrimSpace(*fetchResult.Title); title != "" {
 							fetchedTitleMap[key] = title
@@ -1794,31 +1822,44 @@ func (client tinyFishSearchClient) fetchContents(
 		batchCount,
 		func(taskCtx context.Context, index int) (tinyFishFetchResponse, error) {
 			start := index * 10
+
 			end := start + 10
 			if end > len(urls) {
 				end = len(urls)
 			}
+
 			batch := urls[start:end]
+
 			return client.fetchTinyFishBatch(taskCtx, apiKey, batch)
 		},
 	)
 
-	var mergedResults []tinyFishFetchResult
-	var mergedErrors []tinyFishFetchError
+	var (
+		mergedResults []tinyFishFetchResult
+		mergedErrors  []tinyFishFetchError
+	)
+
 	hasSuccess := false
+
 	var firstErr error
+
 	for _, result := range taskResults {
 		if result.err != nil {
 			if firstErr == nil {
 				firstErr = result.err
 			}
+
 			logWarn("tinyfish fetch batch failed", result.err)
+
 			continue
 		}
+
 		hasSuccess = true
+
 		mergedResults = append(mergedResults, result.value.Results...)
 		mergedErrors = append(mergedErrors, result.value.Errors...)
 	}
+
 	if !hasSuccess && firstErr != nil {
 		return tinyFishFetchResponse{}, firstErr
 	}
@@ -1837,6 +1878,7 @@ func (client tinyFishSearchClient) fetchTinyFishBatch(
 	if len(batch) == 0 {
 		return tinyFishFetchResponse{}, nil
 	}
+
 	ctx, cancel := context.WithTimeout(ctx, tinyFishFetchRequestTimeout)
 	defer cancel()
 
@@ -1845,10 +1887,12 @@ func (client tinyFishSearchClient) fetchTinyFishBatch(
 		Format:          "markdown",
 		PerURLTimeoutMS: tinyFishFetchPerURLTimeoutMS,
 	}
+
 	requestBytes, err := json.Marshal(requestBody)
 	if err != nil {
 		return tinyFishFetchResponse{}, fmt.Errorf("marshal TinyFish fetch request: %w", err)
 	}
+
 	httpRequest, err := http.NewRequestWithContext(
 		ctx,
 		http.MethodPost,
@@ -1858,6 +1902,7 @@ func (client tinyFishSearchClient) fetchTinyFishBatch(
 	if err != nil {
 		return tinyFishFetchResponse{}, fmt.Errorf("create TinyFish fetch request: %w", err)
 	}
+
 	httpRequest.Header.Set("Accept", applicationJSONContentType)
 	httpRequest.Header.Set(contentTypeHeader, applicationJSONContentType)
 	httpRequest.Header.Set("X-API-Key", strings.TrimSpace(apiKey))
@@ -1873,6 +1918,7 @@ func (client tinyFishSearchClient) fetchTinyFishBatch(
 		if readErr != nil {
 			return tinyFishFetchResponse{}, fmt.Errorf("read TinyFish fetch error response after status %d: %w", httpResponse.StatusCode, readErr)
 		}
+
 		return tinyFishFetchResponse{}, tinyFishStatusError{
 			StatusCode: httpResponse.StatusCode,
 			Message: fmt.Sprintf(
@@ -1883,10 +1929,12 @@ func (client tinyFishSearchClient) fetchTinyFishBatch(
 			Err: os.ErrInvalid,
 		}
 	}
+
 	var batchResponse tinyFishFetchResponse
 	if err := json.NewDecoder(httpResponse.Body).Decode(&batchResponse); err != nil {
 		return tinyFishFetchResponse{}, fmt.Errorf("decode TinyFish fetch response: %w", err)
 	}
+
 	return batchResponse, nil
 }
 
@@ -1928,6 +1976,7 @@ func formatTinyFishSearchResultText(
 				title = fetchedTitle
 			}
 		}
+
 		if title != "" {
 			lines = append(lines, "Title: "+title)
 		}

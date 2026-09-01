@@ -152,6 +152,7 @@ func TestRespondToMessageExecutesWebSearchToolCalls(t *testing.T) {
 		if len(request.Tools) == 0 {
 			t.Error("expected the follow-up request to keep the tool definitions")
 		}
+
 		return handle(newStreamDelta(testWebSearchToolAnswer, finishReasonStop))
 	})
 
@@ -415,6 +416,7 @@ func TestRespondToMessageRetainsWebSearchResultsInConversationHistory(t *testing
 	if !strings.Contains(initialUserTurnText, testWebSearchResultText) {
 		t.Fatalf("expected search results to be retained in conversation history, got: %q", initialUserTurnText)
 	}
+
 	if !strings.Contains(initialUserTurnText, webSearchSectionName) {
 		t.Fatalf("expected web search section heading in conversation history, got: %q", initialUserTurnText)
 	}

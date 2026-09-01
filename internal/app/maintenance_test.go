@@ -543,6 +543,7 @@ func newMaintenanceTestSession(
 			// Permission puts
 			if method == http.MethodPut && strings.HasPrefix(path, "/api/v9/channels/channel-123/permissions/") {
 				targetID := strings.TrimPrefix(path, "/api/v9/channels/channel-123/permissions/")
+
 				body, err := io.ReadAll(request.Body)
 				if err != nil {
 					t.Fatalf("read permission put body: %v", err)

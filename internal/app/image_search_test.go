@@ -23,6 +23,7 @@ func (s *stubImageSearchClient) search(ctx context.Context, query string, page i
 	if s.searchFn != nil {
 		return s.searchFn(ctx, query, page, pageSize)
 	}
+
 	return &imageSearchResult{
 		Query:      query,
 		Page:       page,
@@ -50,13 +51,16 @@ func (s *stubImageSearchClient) downloadImages(ctx context.Context, items []imag
 	if s.downloadFn != nil {
 		return s.downloadFn(ctx, items)
 	}
+
 	results := make([]imageSearchResultItem, len(items))
 	copy(results, items)
+
 	for i := range results {
 		results[i].Data = []byte("image-data-" + strconvItoa(i+1))
 		results[i].Filename = "image_" + strconvItoa(i+1) + ".jpg"
 		results[i].ContentType = "image/jpeg"
 	}
+
 	return results
 }
 
@@ -64,15 +68,19 @@ func strconvItoa(i int) string {
 	if i == 1 {
 		return "1"
 	}
+
 	if i == 2 {
 		return "2"
 	}
+
 	if i == 3 {
 		return "3"
 	}
+
 	if i == 4 {
 		return "4"
 	}
+
 	return "5"
 }
 
@@ -104,6 +112,7 @@ func TestHandleInteractionCreateRespondsToShowImagesButtonSendsImages(t *testing
 
 		if strings.Contains(request.URL.Path, "/webhooks/") && strings.Contains(request.URL.Path, "/messages/@original") {
 			webhookEdited = true
+
 			contentType := request.Header.Get("Content-Type")
 			if strings.HasPrefix(contentType, "multipart/form-data") {
 				// Parse multipart
@@ -116,11 +125,13 @@ func TestHandleInteractionCreateRespondsToShowImagesButtonSendsImages(t *testing
 							if parsed.Content != nil {
 								editedContent = *parsed.Content
 							}
+
 							if parsed.Embeds != nil {
 								editedEmbeds = *parsed.Embeds
 							}
 						}
 					}
+
 					if request.MultipartForm != nil && request.MultipartForm.File != nil {
 						for _, headers := range request.MultipartForm.File {
 							for _, fh := range headers {
@@ -128,6 +139,7 @@ func TestHandleInteractionCreateRespondsToShowImagesButtonSendsImages(t *testing
 								if openErr == nil {
 									data, _ := io.ReadAll(f)
 									_ = f.Close()
+
 									editedFiles = append(editedFiles, &discordgo.File{
 										Name:   fh.Filename,
 										Reader: bytes.NewReader(data),
@@ -139,11 +151,13 @@ func TestHandleInteractionCreateRespondsToShowImagesButtonSendsImages(t *testing
 				}
 			} else {
 				body, _ := io.ReadAll(request.Body)
+
 				var parsed discordgo.WebhookEdit
 				if jsonErr := json.Unmarshal(body, &parsed); jsonErr == nil {
 					if parsed.Content != nil {
 						editedContent = *parsed.Content
 					}
+
 					if parsed.Embeds != nil {
 						editedEmbeds = *parsed.Embeds
 					}
@@ -222,12 +236,15 @@ func TestHandleInteractionCreateRespondsToShowImagesButtonFromParentMessage(t *t
 
 		if strings.Contains(request.URL.Path, "/webhooks/") && strings.Contains(request.URL.Path, "/messages/@original") {
 			webhookEdited = true
+
 			contentType := request.Header.Get("Content-Type")
 			if strings.HasPrefix(contentType, "multipart/form-data") {
 				_ = request.ParseMultipartForm(10 * 1024 * 1024)
+
 				payloadJSON := request.FormValue("payload_json")
 				if payloadJSON != "" {
 					var parsed discordgo.WebhookEdit
+
 					_ = json.Unmarshal([]byte(payloadJSON), &parsed)
 					if parsed.Content != nil {
 						editedContent = *parsed.Content
@@ -287,6 +304,7 @@ func TestImageSearchClientOpenverseAndWikimedia(t *testing.T) {
 					}
 				]
 			}`))
+
 			return
 		}
 
@@ -309,12 +327,14 @@ func TestImageSearchClientOpenverseAndWikimedia(t *testing.T) {
 					}
 				}
 			}`))
+
 			return
 		}
 
 		if strings.HasSuffix(request.URL.Path, ".jpg") {
 			w.Header().Set("Content-Type", "image/jpeg")
 			_, _ = w.Write([]byte("fake-jpeg-bytes"))
+
 			return
 		}
 
@@ -330,6 +350,7 @@ func TestImageSearchClientOpenverseAndWikimedia(t *testing.T) {
 		openverseBaseURL: server.URL + "/v1/images",
 		wikimediaBaseURL: server.URL + "/api.php",
 	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 

@@ -14,7 +14,7 @@ bot_token:
 client_id:
 status_message:
 
-max_images: 5
+max_images: 100
 max_messages: 25
 
 allow_dms: true

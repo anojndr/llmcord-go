@@ -255,9 +255,11 @@ func (client facebookClient) downloadFacebookVideo(
 			)
 			if compressErr == nil && len(compressedBytes) > 0 {
 				videoBytes = compressedBytes
+
 				if compressedMIME != "" {
 					mimeType = compressedMIME
 				}
+
 				if compressedFilename != "" {
 					filename = compressedFilename
 				}
@@ -732,6 +734,7 @@ func (client facebookClient) compressVideo(
 	}
 
 	var rqResp autocompressorRQJobResponse
+
 	err = json.Unmarshal(respBytes, &rqResp)
 	if err != nil {
 		return nil, "", "", fmt.Errorf("decode autocompressor rqjob response: %w", err)
@@ -752,6 +755,7 @@ func (client facebookClient) compressVideo(
 	}
 
 	var bodyBuf bytes.Buffer
+
 	mpWriter := multipart.NewWriter(&bodyBuf)
 
 	_ = mpWriter.WriteField("source_url", "null")
@@ -857,6 +861,7 @@ func (client facebookClient) compressVideo(
 
 		statusBytes, err := io.ReadAll(statusResp.Body)
 		_ = statusResp.Body.Close()
+
 		if err != nil {
 			return nil, "", "", fmt.Errorf("read autocompressor status response: %w", err)
 		}
@@ -871,6 +876,7 @@ func (client facebookClient) compressVideo(
 		}
 
 		var statusData autocompressorStatusResponse
+
 		err = json.Unmarshal(statusBytes, &statusData)
 		if err != nil {
 			return nil, "", "", fmt.Errorf("decode autocompressor status response: %w", err)
@@ -933,6 +939,7 @@ func (client facebookClient) downloadCompressedVideo(
 
 	mimeType := normalizedFacebookMIMEType(dlResp.Header.Get("Content-Type"))
 	filename := originalFilename
+
 	contentDisposition := dlResp.Header.Get("Content-Disposition")
 	if strings.TrimSpace(contentDisposition) != "" {
 		_, params, err := mime.ParseMediaType(contentDisposition)
@@ -943,6 +950,7 @@ func (client facebookClient) downloadCompressedVideo(
 			}
 		}
 	}
+
 	if strings.TrimSpace(filename) == "" {
 		filename = facebookDefaultFilename
 	}

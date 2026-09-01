@@ -751,12 +751,15 @@ func applyAutoAppend(provider providerConfig, conversation []chatMessage) ([]cha
 		if provider.AutoAppendSearchWeb && !containsSearchWebPhrase(prompt.UserQuery) {
 			toAppend = append(toAppend, "search the web")
 		}
+
 		if provider.AutoAppendShortAnswer && !containsShortAnswerPhrase(prompt.UserQuery) {
 			toAppend = append(toAppend, "short answer")
 		}
+
 		if provider.AutoAppendPrioritizeTruth && !containsPrioritizeTruthPhrase(prompt.UserQuery) {
 			toAppend = append(toAppend, prioritizeTruthPhrase)
 		}
+
 		if len(toAppend) == 0 {
 			return
 		}

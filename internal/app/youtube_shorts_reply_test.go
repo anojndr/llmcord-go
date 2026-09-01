@@ -121,6 +121,7 @@ func (capture *youtubeShortsReplyCapture) recordSend(request *http.Request) {
 
 		body, _ := io.ReadAll(file)
 		_ = file.Close()
+
 		capture.fileBodies = append(capture.fileBodies, string(body))
 	}
 }

@@ -1,6 +1,6 @@
 package providers
 
-const webSearchToolDescription = "Search the web and return result titles, URLs, and excerpts."
+const webSearchToolDescription = "Search the web and return result titles, URLs, and excerpts. Always search the web if the user told you to, like 'search the web' or something similar."
 
 const webSearchObjectiveDescription = "Describe the search goal in a concise, standalone sentence. Name the key entity or topic."
 
@@ -70,6 +70,7 @@ func WebSearchTool(maxQueries int) FunctionTool {
 	if maxQueries > 0 {
 		queriesSchema[jsonSchemaMaxItemsKey] = maxQueries
 	}
+
 	return FunctionTool{
 		Name:        WebSearchToolName,
 		Description: webSearchToolDescription,
