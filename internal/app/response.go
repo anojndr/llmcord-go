@@ -134,14 +134,13 @@ func extractThinkingText(fullText string) string {
 	return strings.TrimSpace(thinkingOnly)
 }
 
-func visibleResponseSegments(thinkingText string, answerText string, maxLength int) []string {
-	displayText := visibleResponseText(thinkingText, answerText)
-	if displayText == "" {
+func visibleResponseSegments(answerText string, maxLength int) []string {
+	if answerText == "" {
 		return nil
 	}
 
 	accumulator := newSegmentAccumulator(maxLength)
-	_ = accumulator.appendText(displayText)
+	_ = accumulator.appendText(answerText)
 
 	return accumulator.renderSegments()
 }
@@ -695,9 +694,7 @@ func (instance *bot) handleGeneratedStreamDelta(
 	if delta.SearchMetadata != nil {
 		tracker.searchMetadata = searchtypes.MergeSearchMetadata(tracker.searchMetadata, delta.SearchMetadata)
 	}
-
 	segments := visibleResponseSegments(
-		state.thinkingAccumulator.joined(),
 		state.answerAccumulator.joined(),
 		embedResponseMaxLength,
 	)
