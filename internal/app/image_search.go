@@ -121,6 +121,7 @@ func (client *multiEngineImageSearchClient) search(
 	if page < 1 {
 		page = 1
 	}
+
 	if pageSize <= 0 || pageSize > maxImagesLimit {
 		pageSize = maxImagesLimit
 	}
@@ -131,6 +132,7 @@ func (client *multiEngineImageSearchClient) search(
 		if len(bingResult.Items) > maxImagesLimit {
 			bingResult.Items = bingResult.Items[:maxImagesLimit]
 		}
+
 		return bingResult, nil
 	}
 
@@ -140,6 +142,7 @@ func (client *multiEngineImageSearchClient) search(
 		if len(ovResult.Items) > maxImagesLimit {
 			ovResult.Items = ovResult.Items[:maxImagesLimit]
 		}
+
 		return ovResult, nil
 	}
 
@@ -149,15 +152,18 @@ func (client *multiEngineImageSearchClient) search(
 		if len(wmResult.Items) > maxImagesLimit {
 			wmResult.Items = wmResult.Items[:maxImagesLimit]
 		}
+
 		return wmResult, nil
 	}
 
 	if bingErr != nil {
 		return nil, bingErr
 	}
+
 	if ovErr != nil {
 		return nil, ovErr
 	}
+
 	if wmErr != nil {
 		return nil, wmErr
 	}
@@ -214,6 +220,7 @@ func (client *multiEngineImageSearchClient) searchBing(
 	}
 
 	htmlContent := string(bodyBytes)
+
 	matches := bingImageJSONAttrRegex.FindAllStringSubmatch(htmlContent, -1)
 	if len(matches) == 0 {
 		// Try fallback regex if class="iusc" format differs
@@ -222,12 +229,14 @@ func (client *multiEngineImageSearchClient) searchBing(
 	}
 
 	items := make([]imageSearchResultItem, 0, pageSize)
+
 	for _, m := range matches {
 		if len(m) < 2 {
 			continue
 		}
 
 		rawJSON := html.UnescapeString(m[1])
+
 		var entry struct {
 			MURL string `json:"murl"`
 			TURL string `json:"turl"`
@@ -259,6 +268,7 @@ func (client *multiEngineImageSearchClient) searchBing(
 		if rawTitle == "" {
 			rawTitle = strings.TrimSpace(entry.Desc)
 		}
+
 		if rawTitle == "" {
 			rawTitle = query
 		}
@@ -295,6 +305,7 @@ func cleanImageTitle(title string) string {
 	cleaned := bingImageTagRegex.ReplaceAllString(title, "")
 	cleaned = html.UnescapeString(cleaned)
 	cleaned = strings.Join(strings.Fields(cleaned), " ")
+
 	return strings.TrimSpace(cleaned)
 }
 
@@ -313,7 +324,9 @@ func (client *multiEngineImageSearchClient) searchOpenverse(
 	if baseURL == "" {
 		baseURL = openverseAPIBaseURL
 	}
+
 	reqURL := baseURL + "?" + params.Encode()
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create openverse request: %w", err)
@@ -348,11 +361,14 @@ func (client *multiEngineImageSearchClient) searchOpenverse(
 		if thumb == "" {
 			thumb = strings.TrimSpace(r.URL)
 		}
+
 		orig := strings.TrimSpace(r.URL)
+
 		landing := strings.TrimSpace(r.ForeignLandingURL)
 		if landing == "" {
 			landing = orig
 		}
+
 		title := strings.TrimSpace(r.Title)
 		if title == "" {
 			title = "Untitled Image"
@@ -410,7 +426,9 @@ func (client *multiEngineImageSearchClient) searchWikimedia(
 	if baseURL == "" {
 		baseURL = wikimediaAPIBaseURL
 	}
+
 	reqURL := baseURL + "?" + params.Encode()
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create wikimedia request: %w", err)
@@ -444,20 +462,25 @@ func (client *multiEngineImageSearchClient) searchWikimedia(
 		if len(p.ImageInfo) == 0 {
 			continue
 		}
+
 		info := p.ImageInfo[0]
+
 		mime := strings.ToLower(strings.TrimSpace(info.MIME))
 		if mime != "" && !strings.HasPrefix(mime, "image/") {
 			continue
 		}
 
 		thumb := strings.TrimSpace(info.ThumbURL)
+
 		orig := strings.TrimSpace(info.URL)
 		if thumb == "" {
 			thumb = orig
 		}
+
 		if orig == "" {
 			orig = thumb
 		}
+
 		landing := strings.TrimSpace(info.DescriptionURL)
 		if landing == "" {
 			landing = orig
@@ -466,6 +489,7 @@ func (client *multiEngineImageSearchClient) searchWikimedia(
 		title := strings.TrimSpace(p.Title)
 		title = strings.TrimPrefix(title, "File:")
 		title = strings.TrimPrefix(title, "file:")
+
 		title = strings.TrimSpace(title)
 		if title == "" {
 			title = "Wikimedia Commons Image"
@@ -521,12 +545,14 @@ func (client *multiEngineImageSearchClient) downloadImages(
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
+
 			item := &results[idx]
 
 			downloadURL := item.Thumbnail
 			if strings.TrimSpace(downloadURL) == "" {
 				downloadURL = item.URL
 			}
+
 			if strings.TrimSpace(downloadURL) == "" {
 				return
 			}
@@ -538,6 +564,7 @@ func (client *multiEngineImageSearchClient) downloadImages(
 			if err != nil {
 				return
 			}
+
 			req.Header.Set("User-Agent", defaultImageSearchUserAgent)
 			req.Header.Set("Accept", "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8")
 
@@ -549,6 +576,7 @@ func (client *multiEngineImageSearchClient) downloadImages(
 					if err2 == nil {
 						req2.Header.Set("User-Agent", defaultImageSearchUserAgent)
 						req2.Header.Set("Accept", "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8")
+
 						resp2, err3 := httpClient.Do(req2)
 						if err3 == nil {
 							resp = resp2
@@ -574,6 +602,7 @@ func (client *multiEngineImageSearchClient) downloadImages(
 			}
 
 			contentType := resp.Header.Get("Content-Type")
+
 			ext := imageExtensionFromContentType(contentType)
 			if ext == "" {
 				ext = strings.ToLower(path.Ext(downloadURL))
@@ -590,6 +619,7 @@ func (client *multiEngineImageSearchClient) downloadImages(
 	}
 
 	wg.Wait()
+
 	return results
 }
 
@@ -629,13 +659,16 @@ func buildImageEmbedsAndFiles(
 
 	for i, item := range items {
 		embed := new(discordgo.MessageEmbed)
+
 		title := strings.TrimSpace(item.Title)
 		if title == "" {
 			title = fmt.Sprintf("Image %d", i+1)
 		}
+
 		if len(title) > 250 {
 			title = title[:247] + "..."
 		}
+
 		embed.Title = title
 		if strings.TrimSpace(item.LandingURL) != "" {
 			embed.URL = item.LandingURL
@@ -670,6 +703,7 @@ func buildImageEmbedsAndFiles(
 			if imageURL == "" {
 				imageURL = strings.TrimSpace(item.URL)
 			}
+
 			if imageURL != "" {
 				embed.Image = &discordgo.MessageEmbedImage{
 					URL: imageURL,

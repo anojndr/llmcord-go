@@ -1007,6 +1007,7 @@ func (instance *bot) channelByID(channelID string) (*discordgo.Channel, error) {
 	if instance.channelCache == nil {
 		instance.channelCache = make(map[string]channelCacheEntry)
 	}
+
 	entry, cached := instance.channelCache[channelID]
 	instance.channelCacheMu.Unlock()
 
@@ -1034,8 +1035,8 @@ func (instance *bot) handleChannelUpdate(_ *discordgo.Session, update *discordgo
 	instance.channelCacheMu.Lock()
 	defer instance.channelCacheMu.Unlock()
 
-	if _, cached := instance.channelCache[update.Channel.ID]; cached {
-		instance.channelCache[update.Channel.ID] = channelCacheEntry{
+	if _, cached := instance.channelCache[update.ID]; cached {
+		instance.channelCache[update.ID] = channelCacheEntry{
 			channel: update.Channel,
 			expires: time.Now().Add(channelCacheTTL),
 		}

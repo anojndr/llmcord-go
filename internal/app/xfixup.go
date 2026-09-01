@@ -24,6 +24,7 @@ func fixupXComContent(content string) string {
 	content = xComSchemeRegexp.ReplaceAllString(content, "${1}${2}fixupx.com")
 	// Replace bare occurrences.
 	content = xComBareRegexp.ReplaceAllString(content, "${1}fixupx.com")
+
 	return content
 }
 
@@ -31,18 +32,23 @@ func xFixupDisplayName(message *discordgo.Message) string {
 	if message == nil || message.Author == nil {
 		return "unknown"
 	}
+
 	if message.Author.Username != "" {
 		return message.Author.Username
 	}
+
 	if message.Author.GlobalName != "" {
 		return message.Author.GlobalName
 	}
+
 	if message.Member != nil && strings.TrimSpace(message.Member.Nick) != "" {
 		return strings.TrimSpace(message.Member.Nick)
 	}
+
 	if strings.TrimSpace(message.Author.ID) != "" {
 		return message.Author.ID
 	}
+
 	return "unknown"
 }
 
@@ -70,9 +76,11 @@ func resendAllowedMentionUsers(message *discordgo.Message) []string {
 		if id == "" {
 			return
 		}
+
 		if _, exists := seen[id]; exists {
 			return
 		}
+
 		seen[id] = struct{}{}
 		ids = append(ids, id)
 	}
@@ -80,14 +88,17 @@ func resendAllowedMentionUsers(message *discordgo.Message) []string {
 	if message.Author != nil {
 		addID(message.Author.ID)
 	}
+
 	for _, user := range message.Mentions {
 		if user != nil {
 			addID(user.ID)
 		}
 	}
+
 	if len(ids) == 0 {
 		return nil
 	}
+
 	return ids
 }
 
@@ -95,6 +106,7 @@ func shouldHandleXFixup(message *discordgo.Message, botUserID string) bool {
 	if message == nil || message.Author == nil || message.Author.Bot {
 		return false
 	}
+
 	if strings.TrimSpace(message.Content) == "" {
 		return false
 	}
@@ -130,6 +142,7 @@ func shouldHandleXFixup(message *discordgo.Message, botUserID string) bool {
 	if fixed == message.Content {
 		return false
 	}
+
 	return true
 }
 
@@ -137,32 +150,40 @@ func (instance *bot) handleXFixup(message *discordgo.Message, botUserID string) 
 	if !shouldHandleXFixup(message, botUserID) {
 		return false
 	}
+
 	fixedContent := fixupXComContent(message.Content)
 	if fixedContent == message.Content {
 		return false
 	}
+
 	displayName := xFixupDisplayName(message)
 	newContent := attributionPrefix(displayName) + fixedContent
 	// Discord content limit 2000; truncate if necessary.
 	if len(newContent) > 2000 {
 		// Reserve prefix length.
 		prefix := attributionPrefix(displayName)
+
 		allowed := 2000 - len(prefix)
 		if allowed < 0 {
 			allowed = 0
 		}
+
 		if len(fixedContent) > allowed {
 			fixedContent = fixedContent[:allowed]
 		}
+
 		newContent = prefix + fixedContent
 	}
+
 	if instance == nil || instance.session == nil {
 		slog.Info("x.com fixup skipped: nil session", "message_id", message.ID, "channel_id", message.ChannelID)
 		return false
 	}
+
 	if err := instance.session.ChannelMessageDelete(message.ChannelID, message.ID); err != nil {
 		logWarn("delete x.com message", err, "channel_id", message.ChannelID, "message_id", message.ID)
 	}
+
 	send := &discordgo.MessageSend{
 		Content: newContent,
 		AllowedMentions: &discordgo.MessageAllowedMentions{
@@ -181,5 +202,6 @@ func (instance *bot) handleXFixup(message *discordgo.Message, botUserID string) 
 	} else {
 		slog.Info("x.com fixup applied", "message_id", message.ID, "channel_id", message.ChannelID, "author", displayName)
 	}
+
 	return true
 }

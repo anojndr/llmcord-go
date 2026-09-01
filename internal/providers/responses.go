@@ -586,6 +586,7 @@ func responsesUserPart(part ContentPart) (map[string]any, bool, error) {
 		}, true, nil
 	case searchtypes.ContentTypeImageURL:
 		imageURL := ""
+
 		switch typedImageURL := part["image_url"].(type) {
 		case map[string]string:
 			imageURL = typedImageURL["url"]
@@ -765,6 +766,7 @@ func responsesObserveFunctionCallItem(state *responsesStreamState, item *respons
 	if key == "" {
 		key = callID
 	}
+
 	if key == "" {
 		return
 	}

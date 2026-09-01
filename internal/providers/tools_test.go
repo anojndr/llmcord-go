@@ -177,6 +177,7 @@ func TestWebSearchToolDefinition(t *testing.T) {
 	if !propertiesOK {
 		t.Fatalf("unexpected parameters properties: %#v", tool.Parameters["properties"])
 	}
+
 	objective, objectiveOK := properties["objective"].(map[string]any)
 	if !objectiveOK || objective["type"] != "string" {
 		t.Fatalf("unexpected objective property: %#v", properties["objective"])
@@ -332,6 +333,7 @@ func TestOpenAIStreamChatCompletionAccumulatesToolCalls(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stream chat completion: %v", err)
 	}
+
 	if len(toolCalls) != 2 {
 		t.Fatalf("unexpected tool calls: %#v", toolCalls)
 	}

@@ -149,6 +149,7 @@ func TestChannelByIDUsesTTLCache(t *testing.T) {
 	if err != nil {
 		t.Fatalf("third channelByID: %v", err)
 	}
+
 	if requests.Load() != 2 {
 		t.Fatalf("expected 2 REST fetches after expiry, got %d", requests.Load())
 	}

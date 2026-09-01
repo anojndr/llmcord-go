@@ -54,9 +54,11 @@ models:
 	if loadedConfig.MediaAnalysisModel != "" {
 		t.Fatalf("unexpected default media analysis model: %q", loadedConfig.MediaAnalysisModel)
 	}
+
 	if !slices.Equal(loadedConfig.WebSearch.Order, defaultWebSearchOrder) {
 		t.Fatalf("unexpected default web search order: %#v", loadedConfig.WebSearch.Order)
 	}
+
 	if !slices.Equal(loadedConfig.WebSearch.ExtractionOrder, defaultWebExtractionOrder) {
 		t.Fatalf("unexpected default web extraction order: %#v", loadedConfig.WebSearch.ExtractionOrder)
 	}
@@ -1220,6 +1222,7 @@ web_search_order:
 			t.Parallel()
 
 			tempDir := t.TempDir()
+
 			configPath := filepath.Join(tempDir, "config.yaml")
 			if err := os.WriteFile(configPath, []byte(tc.yaml), 0o600); err != nil {
 				t.Fatalf("write config file: %v", err)
@@ -1230,6 +1233,7 @@ web_search_order:
 				if err == nil {
 					t.Fatalf("expected error, got nil")
 				}
+
 				return
 			}
 
@@ -1357,6 +1361,7 @@ extraction_order:
 			t.Parallel()
 
 			tempDir := t.TempDir()
+
 			configPath := filepath.Join(tempDir, "config.yaml")
 			if err := os.WriteFile(configPath, []byte(tc.yaml), 0o600); err != nil {
 				t.Fatalf("write config file: %v", err)
@@ -1367,6 +1372,7 @@ extraction_order:
 				if err == nil {
 					t.Fatalf("expected error, got nil")
 				}
+
 				return
 			}
 

@@ -694,6 +694,7 @@ func (instance *bot) handleGeneratedStreamDelta(
 	if delta.SearchMetadata != nil {
 		tracker.searchMetadata = searchtypes.MergeSearchMetadata(tracker.searchMetadata, delta.SearchMetadata)
 	}
+
 	segments := visibleResponseSegments(
 		state.answerAccumulator.joined(),
 		embedResponseMaxLength,

@@ -698,8 +698,10 @@ func TestRoutedWebSearchClientFallsBackToTavilyWhenMCPFails(t *testing.T) {
 func TestTinyFishFetchBatchSendsPerURLTimeout(t *testing.T) {
 	t.Parallel()
 
-	var receivedRequest map[string]any
-	var capturedDeadline time.Time
+	var (
+		receivedRequest  map[string]any
+		capturedDeadline time.Time
+	)
 
 	server := httptest.NewServer(http.HandlerFunc(func(
 		responseWriter http.ResponseWriter,
@@ -708,14 +710,17 @@ func TestTinyFishFetchBatchSendsPerURLTimeout(t *testing.T) {
 		if request.Method != http.MethodPost {
 			t.Fatalf("unexpected TinyFish method: %q", request.Method)
 		}
+
 		if request.Header.Get("X-API-Key") != "tf-test-key" {
 			t.Fatalf("unexpected TinyFish API key header: %q", request.Header.Get("X-API-Key"))
 		}
+
 		if err := json.NewDecoder(request.Body).Decode(&receivedRequest); err != nil {
 			t.Fatalf("decode TinyFish fetch request: %v", err)
 		}
 
 		responseWriter.Header().Set("Content-Type", "application/json")
+
 		response := map[string]any{
 			"results": []any{},
 			"errors":  []any{},
@@ -730,10 +735,12 @@ func TestTinyFishFetchBatchSendsPerURLTimeout(t *testing.T) {
 	client := newTinyFishSearchClient(&http.Client{
 		Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
 			capturedDeadline, _ = request.Context().Deadline()
+
 			transport := baseClient.Transport
 			if transport == nil {
 				transport = http.DefaultTransport
 			}
+
 			return transport.RoundTrip(request)
 		}),
 	})
@@ -747,6 +754,7 @@ func TestTinyFishFetchBatchSendsPerURLTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fetchTinyFishBatch returned error: %v", err)
 	}
+
 	if len(batchResponse.Results) != 0 || len(batchResponse.Errors) != 0 {
 		t.Fatalf("unexpected TinyFish fetch response: %#v", batchResponse)
 	}
@@ -755,9 +763,11 @@ func TestTinyFishFetchBatchSendsPerURLTimeout(t *testing.T) {
 	if !ok || len(rawURLs) != 2 {
 		t.Fatalf("unexpected TinyFish urls: %#v", receivedRequest["urls"])
 	}
+
 	if fmt.Sprint(receivedRequest["format"]) != "markdown" {
 		t.Fatalf("unexpected TinyFish format: %#v", receivedRequest["format"])
 	}
+
 	rawTimeout, ok := receivedRequest["per_url_timeout_ms"].(float64)
 	if !ok || int(rawTimeout) != tinyFishFetchPerURLTimeoutMS {
 		t.Fatalf("unexpected TinyFish per_url_timeout_ms: %#v", receivedRequest["per_url_timeout_ms"])
@@ -786,14 +796,17 @@ func TestTinyFishSearchQuerySendsBoundedDeadline(t *testing.T) {
 		if request.Method != http.MethodGet {
 			t.Fatalf("unexpected TinyFish search method: %q", request.Method)
 		}
+
 		if request.Header.Get("X-API-Key") != "tf-test-key" {
 			t.Fatalf("unexpected TinyFish search API key header: %q", request.Header.Get("X-API-Key"))
 		}
+
 		if request.URL.Query().Get("query") != "test query" {
 			t.Fatalf("unexpected TinyFish search query: %q", request.URL.Query().Get("query"))
 		}
 
 		responseWriter.Header().Set("Content-Type", "application/json")
+
 		response := map[string]any{
 			"query":         "test query",
 			"results":       []any{},
@@ -810,10 +823,12 @@ func TestTinyFishSearchQuerySendsBoundedDeadline(t *testing.T) {
 	client := newTinyFishSearchClient(&http.Client{
 		Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
 			capturedDeadline, _ = request.Context().Deadline()
+
 			transport := baseClient.Transport
 			if transport == nil {
 				transport = http.DefaultTransport
 			}
+
 			return transport.RoundTrip(request)
 		}),
 	})
@@ -823,6 +838,7 @@ func TestTinyFishSearchQuerySendsBoundedDeadline(t *testing.T) {
 	if err != nil {
 		t.Fatalf("searchQuery returned error: %v", err)
 	}
+
 	if len(results) != 0 {
 		t.Fatalf("unexpected TinyFish search results: %#v", results)
 	}
@@ -919,18 +935,21 @@ func TestRoutedWebSearchClientHardcodedTinyFishExaTavilyChain(t *testing.T) {
 				if tc.tinyFishSucceeds {
 					return tinyFishResult, nil
 				}
+
 				return nil, errSearchBackendUnavailable
 			})
 			exaClient := newStubWebSearchClient(func(_ context.Context, _ config, _ []string) ([]webSearchResult, error) {
 				if tc.exaSucceeds {
 					return exaResult, nil
 				}
+
 				return nil, errSearchBackendUnavailable
 			})
 			tavilyClient := newStubWebSearchClient(func(_ context.Context, _ config, _ []string) ([]webSearchResult, error) {
 				if tc.tavilySucceeds {
 					return tavilyResult, nil
 				}
+
 				return nil, errSearchBackendUnavailable
 			})
 
@@ -950,20 +969,25 @@ func TestRoutedWebSearchClientHardcodedTinyFishExaTavilyChain(t *testing.T) {
 			if tc.wantErr && err == nil {
 				t.Fatal("expected error, got nil")
 			}
+
 			if !tc.wantErr && err != nil {
 				t.Fatalf("search: %v", err)
 			}
+
 			if !tc.wantErr {
 				if len(results) != 1 || results[0].Text != tc.wantText {
 					t.Fatalf("unexpected results: %#v want %q", results, tc.wantText)
 				}
 			}
+
 			if len(tinyFishClient.calls) != tc.wantTinyCalls {
 				t.Fatalf("tinyfish calls %d want %d", len(tinyFishClient.calls), tc.wantTinyCalls)
 			}
+
 			if len(exaClient.calls) != tc.wantExaCalls {
 				t.Fatalf("exa calls %d want %d", len(exaClient.calls), tc.wantExaCalls)
 			}
+
 			if len(tavilyClient.calls) != tc.wantTavilyCalls {
 				t.Fatalf("tavily calls %d want %d", len(tavilyClient.calls), tc.wantTavilyCalls)
 			}
@@ -1009,9 +1033,11 @@ func TestRoutedWebSearchClientCustomOrder(t *testing.T) {
 		if err != nil {
 			t.Fatalf("search failed: %v", err)
 		}
+
 		if len(results) != 1 || results[0].Text != "tavily result" {
 			t.Fatalf("unexpected results: %#v", results)
 		}
+
 		if len(tavilyClient.calls) != 1 || len(exaClient.calls) != 0 || len(tinyFishClient.calls) != 0 {
 			t.Fatalf("calls: tavily=%d, exa=%d, tiny=%d", len(tavilyClient.calls), len(exaClient.calls), len(tinyFishClient.calls))
 		}
@@ -1048,9 +1074,11 @@ func TestRoutedWebSearchClientCustomOrder(t *testing.T) {
 		if err != nil {
 			t.Fatalf("search failed: %v", err)
 		}
+
 		if len(results) != 1 || results[0].Text != "tinyfish result" {
 			t.Fatalf("unexpected results: %#v", results)
 		}
+
 		if len(exaClient.calls) != 1 || len(tinyFishClient.calls) != 1 || len(tavilyClient.calls) != 0 {
 			t.Fatalf("calls: exa=%d, tiny=%d, tavily=%d", len(exaClient.calls), len(tinyFishClient.calls), len(tavilyClient.calls))
 		}
@@ -1084,9 +1112,11 @@ func TestRoutedWebSearchClientCustomOrder(t *testing.T) {
 		if err != nil {
 			t.Fatalf("search failed: %v", err)
 		}
+
 		if len(results) != 1 || results[0].Text != "parallel result" {
 			t.Fatalf("unexpected results: %#v", results)
 		}
+
 		if len(parallelClient.calls) != 1 || len(exaClient.calls) != 0 {
 			t.Fatalf("calls: parallel=%d, exa=%d", len(parallelClient.calls), len(exaClient.calls))
 		}
@@ -1126,6 +1156,7 @@ func TestRoutedWebSearchClientHardcodedErrorMessagesAndExaName(t *testing.T) {
 
 				loadedConfig := testSearchConfig()
 				loadedConfig.WebSearch.TinyFish.APIKey = "tf-key"
+
 				loadedConfig.WebSearch.TinyFish.APIKeys = []string{"tf-key"}
 				if len(tc.exaAPIKeys) > 0 {
 					loadedConfig.WebSearch.Exa.APIKey = tc.exaAPIKeys[0]
@@ -1133,20 +1164,25 @@ func TestRoutedWebSearchClientHardcodedErrorMessagesAndExaName(t *testing.T) {
 				}
 
 				client := routedWebSearchClient{tinyFish: tinyFishClient, exa: exaClient, tavily: tavilyClient}
+
 				_, err := client.search(context.Background(), loadedConfig, []string{"q"})
 				if err == nil {
 					t.Fatal("expected error")
 				}
+
 				msg := err.Error()
 				if !strings.Contains(msg, "TinyFish Search") {
 					t.Fatalf("error missing TinyFish Search: %q", msg)
 				}
+
 				if !strings.Contains(msg, tc.wantExa) {
 					t.Fatalf("error missing %q: %q", tc.wantExa, msg)
 				}
+
 				if !strings.Contains(msg, "Tavily") {
 					t.Fatalf("error missing Tavily: %q", msg)
 				}
+
 				if !errors.Is(err, errTinyFish) || !errors.Is(err, errExa) || !errors.Is(err, errTavily) {
 					t.Fatalf("expected joined errors, got %v", err)
 				}
@@ -1169,17 +1205,21 @@ func TestRoutedWebSearchClientHardcodedErrorMessagesAndExaName(t *testing.T) {
 		loadedConfig.WebSearch.Exa.APIKey = ""
 
 		client := routedWebSearchClient{exa: exaClient, tavily: tavilyClient}
+
 		_, err := client.search(context.Background(), loadedConfig, []string{"q"})
 		if err == nil {
 			t.Fatal("expected error")
 		}
+
 		msg := err.Error()
 		if strings.Contains(msg, "TinyFish") {
 			t.Fatalf("error should not contain TinyFish when not configured: %q", msg)
 		}
+
 		if !strings.Contains(msg, "Exa MCP") {
 			t.Fatalf("error missing Exa MCP: %q", msg)
 		}
+
 		if !strings.Contains(msg, "Tavily") {
 			t.Fatalf("error missing Tavily: %q", msg)
 		}
@@ -1266,6 +1306,7 @@ func TestParallelSearchClientSearchRotatesAPIKeysAcrossCalls(t *testing.T) {
 		request *http.Request,
 	) {
 		headerMu.Lock()
+
 		authHeaders = append(authHeaders, request.Header.Get("x-api-key"))
 		headerMu.Unlock()
 
@@ -1332,6 +1373,7 @@ func TestParallelSearchClientSearchSendsValidRequestAndFormatsResults(t *testing
 		if request.Header.Get("x-api-key") != "pal-test-key" {
 			t.Fatalf("unexpected x-api-key: %q", request.Header.Get("x-api-key"))
 		}
+
 		if request.Header.Get("Content-Type") != "application/json" {
 			t.Fatalf("unexpected Content-Type: %q", request.Header.Get("Content-Type"))
 		}
@@ -1346,6 +1388,7 @@ func TestParallelSearchClientSearchSendsValidRequestAndFormatsResults(t *testing
 		}
 
 		publishDate := "2026-09-01"
+
 		responseWriter.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(responseWriter).Encode(parallelSearchResponse{
 			SearchID: "search_abc",
@@ -1384,12 +1427,15 @@ func TestParallelSearchClientSearchSendsValidRequestAndFormatsResults(t *testing
 	if capturedRequest.Objective != "parallel ai" {
 		t.Fatalf("unexpected objective: %q", capturedRequest.Objective)
 	}
+
 	if len(capturedRequest.SearchQueries) != 1 || capturedRequest.SearchQueries[0] != "parallel ai" {
 		t.Fatalf("unexpected search queries: %#v", capturedRequest.SearchQueries)
 	}
+
 	if capturedRequest.Mode != "fast" {
 		t.Fatalf("unexpected mode: %q", capturedRequest.Mode)
 	}
+
 	if capturedRequest.AdvancedSettings == nil || capturedRequest.AdvancedSettings.MaxResults != 8 {
 		t.Fatalf("unexpected advanced settings: %#v", capturedRequest.AdvancedSettings)
 	}
@@ -1398,12 +1444,15 @@ func TestParallelSearchClientSearchSendsValidRequestAndFormatsResults(t *testing
 	if !strings.Contains(resultText, "Title: Parallel AI Web Systems") {
 		t.Fatalf("missing title in formatted text: %q", resultText)
 	}
+
 	if !strings.Contains(resultText, "URL: https://parallel.ai") {
 		t.Fatalf("missing URL in formatted text: %q", resultText)
 	}
+
 	if !strings.Contains(resultText, "Published Date: 2026-09-01") {
 		t.Fatalf("missing published date in formatted text: %q", resultText)
 	}
+
 	if !strings.Contains(resultText, "Excerpts:\n| Parallel brings AI web search to life.\n| Second excerpt line") {
 		t.Fatalf("missing excerpts in formatted text: %q", resultText)
 	}

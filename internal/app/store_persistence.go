@@ -10,8 +10,10 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/lib/pq"
@@ -24,6 +26,11 @@ const (
 	postgresJSONTextReplacement         = "\uFFFD"
 	postgresDataCorruptedSQLState       = "XX001"
 	postgresIndexCorruptedSQLState      = "XX002"
+)
+
+const (
+	messageNodeStorePersistSafeMaxBytes = 200 * 1024 * 1024
+	postgresJSONBSizeExceededSubstring  = "total size of jsonb object elements exceeds"
 )
 
 var errMessageNodeStorePersistenceDisabled = errors.New("message history persistence disabled")
@@ -235,7 +242,11 @@ func (backend *postgresMessageNodeStoreBackend) saveSnapshot(
 		snapshot.Version,
 		snapshotBytes,
 	)
-	if err != nil {
+	if err == nil {
+		return nil
+	}
+
+	if !isPostgresJSONBSizeExceededError(err) {
 		return fmt.Errorf(
 			"upsert message history into postgres table %q: %w",
 			messageNodeStoreTableName,
@@ -243,7 +254,50 @@ func (backend *postgresMessageNodeStoreBackend) saveSnapshot(
 		)
 	}
 
+	trimmedNodes := trimSnapshotToFit(snapshot.Nodes, messageNodeStorePersistSafeMaxBytes)
+
+	trimmedBytes, encodeErr := encodeMessageNodeSnapshotJSON(trimmedNodes)
+	if encodeErr != nil {
+		return fmt.Errorf(
+			"upsert message history into postgres table %q: %w",
+			messageNodeStoreTableName,
+			encodeErr,
+		)
+	}
+
+	_, retryErr := backend.database.ExecContext(
+		context.Background(),
+		messageNodeStoreUpsertSQL,
+		storeKey,
+		snapshot.Version,
+		trimmedBytes,
+	)
+	if retryErr != nil {
+		return fmt.Errorf(
+			"upsert message history into postgres table %q: %w",
+			messageNodeStoreTableName,
+			retryErr,
+		)
+	}
+
 	return nil
+}
+
+func isPostgresJSONBSizeExceededError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	if strings.Contains(err.Error(), postgresJSONBSizeExceededSubstring) {
+		return true
+	}
+
+	var pqErr *pq.Error
+	if errors.As(err, &pqErr) && strings.Contains(pqErr.Message, postgresJSONBSizeExceededSubstring) {
+		return true
+	}
+
+	return false
 }
 
 func newConfiguredMessageNodeStore(
@@ -301,16 +355,146 @@ func decodeMessageNodeSnapshotJSON(
 func encodeMessageNodeSnapshotJSON(
 	nodes map[string]messageNodeSnapshot,
 ) ([]byte, error) {
-	sanitizedPayload := sanitizeMessageNodeSnapshotPayload(messageNodeSnapshotPayload{
-		Nodes: nodes,
-	})
+	if nodes == nil {
+		nodes = make(map[string]messageNodeSnapshot)
+	}
+
+	sanitizedPayload := sanitizeMessageNodeSnapshotPayload(messageNodeSnapshotPayload{Nodes: nodes})
 
 	payloadBytes, err := json.Marshal(sanitizedPayload)
 	if err != nil {
 		return nil, fmt.Errorf("marshal message history snapshot payload: %w", err)
 	}
 
+	if len(payloadBytes) <= messageNodeStorePersistSafeMaxBytes {
+		return payloadBytes, nil
+	}
+
+	fittedNodes := trimSnapshotToFit(nodes, messageNodeStorePersistSafeMaxBytes)
+
+	sanitizedPayload = sanitizeMessageNodeSnapshotPayload(messageNodeSnapshotPayload{Nodes: fittedNodes})
+
+	payloadBytes, err = json.Marshal(sanitizedPayload)
+	if err != nil {
+		return nil, fmt.Errorf("marshal message history snapshot payload: %w", err)
+	}
+
+	if len(payloadBytes) > messageNodeStorePersistSafeMaxBytes {
+		return nil, fmt.Errorf("message history snapshot still exceeds %d bytes after trimming", messageNodeStorePersistSafeMaxBytes)
+	}
+
 	return payloadBytes, nil
+}
+
+func trimSnapshotToFit(nodes map[string]messageNodeSnapshot, maxBytes int) map[string]messageNodeSnapshot {
+	if nodes == nil {
+		return nil
+	}
+
+	if maxBytes <= 0 {
+		return maps.Clone(nodes)
+	}
+
+	current := maps.Clone(nodes)
+
+	for len(current) > 0 {
+		sanitizedPayload := sanitizeMessageNodeSnapshotPayload(messageNodeSnapshotPayload{Nodes: current})
+
+		payloadBytes, err := json.Marshal(sanitizedPayload)
+		if err != nil {
+			return current
+		}
+
+		if len(payloadBytes) <= maxBytes {
+			return current
+		}
+
+		if len(current) == 1 {
+			return truncateSingleHugeNodeToFit(current, maxBytes)
+		}
+
+		messageIDs := make([]string, 0, len(current))
+		for messageID := range current {
+			messageIDs = append(messageIDs, messageID)
+		}
+
+		slices.SortFunc(messageIDs, compareMessageIDs)
+		delete(current, messageIDs[0])
+	}
+
+	return current
+}
+
+func truncateStringToBytes(value string, maxBytes int) string {
+	if maxBytes <= 0 || len(value) <= maxBytes {
+		return value
+	}
+
+	truncated := value[:maxBytes]
+	for len(truncated) > 0 && !utf8.ValidString(truncated) {
+		truncated = truncated[:len(truncated)-1]
+	}
+
+	return truncated
+}
+
+func truncateSingleHugeNodeToFit(nodes map[string]messageNodeSnapshot, maxBytes int) map[string]messageNodeSnapshot {
+	if len(nodes) != 1 {
+		return nodes
+	}
+
+	for messageID, snapshot := range nodes {
+		snapshot.Text = truncateStringToBytes(snapshot.Text, 64*1024)
+		snapshot.ThinkingText = truncateStringToBytes(snapshot.ThinkingText, 64*1024)
+		snapshot.URLScanText = truncateStringToBytes(snapshot.URLScanText, 32*1024)
+		snapshot.GistURL = truncateStringToBytes(snapshot.GistURL, 4*1024)
+
+		truncatedMedia := make([]contentPartSnapshot, 0, len(snapshot.Media))
+		for _, part := range snapshot.Media {
+			part.Text = truncateStringToBytes(part.Text, 64*1024)
+
+			part.ImageURL = truncateStringToBytes(part.ImageURL, 512*1024)
+			if len(part.Data) > 256*1024 {
+				part.Data = part.Data[:256*1024]
+			}
+
+			truncatedMedia = append(truncatedMedia, part)
+		}
+
+		snapshot.Media = truncatedMedia
+
+		if snapshot.SearchMetadata != nil {
+			metadataCopy := *snapshot.SearchMetadata
+			for index := range metadataCopy.Results {
+				metadataCopy.Results[index].Text = truncateStringToBytes(metadataCopy.Results[index].Text, 32*1024)
+			}
+
+			snapshot.SearchMetadata = &metadataCopy
+		}
+
+		if snapshot.ParentMessage != nil {
+			parentCopy := *snapshot.ParentMessage
+			parentCopy.Content = truncateStringToBytes(parentCopy.Content, 16*1024)
+			snapshot.ParentMessage = &parentCopy
+		}
+
+		nodes[messageID] = snapshot
+
+		sanitizedPayload := sanitizeMessageNodeSnapshotPayload(messageNodeSnapshotPayload{Nodes: nodes})
+
+		payloadBytes, err := json.Marshal(sanitizedPayload)
+		if err == nil && len(payloadBytes) <= maxBytes {
+			return nodes
+		}
+
+		if len(payloadBytes) > maxBytes {
+			return make(map[string]messageNodeSnapshot)
+		}
+
+		return nodes
+	}
+
+	return nodes
 }
 
 func sanitizeMessageNodeSnapshotPayload(
@@ -630,8 +814,13 @@ func (store *messageNodeStore) persist() error {
 	defer store.saveMu.Unlock()
 
 	snapshot := store.snapshot()
+	fittedNodes := trimSnapshotToFit(snapshot.Nodes, messageNodeStorePersistSafeMaxBytes)
+	fittedSnapshot := messageNodeStoreSnapshot{
+		Version: snapshot.Version,
+		Nodes:   fittedNodes,
+	}
 
-	err := store.backend.saveSnapshot(store.storeKey, snapshot)
+	err := store.backend.saveSnapshot(store.storeKey, fittedSnapshot)
 	if err != nil {
 		return annotateMessageHistoryPersistenceError(
 			"persist message history",
@@ -640,7 +829,7 @@ func (store *messageNodeStore) persist() error {
 		)
 	}
 
-	store.setSnapshotCache(snapshot.Nodes)
+	store.setSnapshotCache(fittedNodes)
 
 	return nil
 }

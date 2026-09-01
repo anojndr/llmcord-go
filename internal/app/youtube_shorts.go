@@ -966,6 +966,7 @@ func joinYouTubeShortsReplyContent(displayName, remainingText string, fallbackLi
 
 	if len(fallbackLinks) > 0 {
 		linksContent := strings.Join(fallbackLinks, "\n")
+
 		allowed := youtubeShortsMaxContentLength - len(prefix) - len(linksContent) - 1
 		if allowed > 0 && len(remainingText) > allowed {
 			return strings.TrimSpace(prefix + strings.TrimSpace(remainingText[:allowed]) + "\n" + linksContent)
