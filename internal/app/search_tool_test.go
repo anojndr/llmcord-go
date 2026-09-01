@@ -95,12 +95,12 @@ func parallelWebSearchToolCalls() []providers.FunctionToolCall {
 		{
 			ID:        "call_1",
 			Name:      providers.WebSearchToolName,
-			Arguments: `{"queries": ["` + testWebSearchQueryOne + `"]}`,
+			Arguments: `{"objective": "Find first query results", "search_queries": ["` + testWebSearchQueryOne + `"]}`,
 		},
 		{
 			ID:        "call_2",
 			Name:      providers.WebSearchToolName,
-			Arguments: `{"queries": ["` + testWebSearchQueryTwo + `", "` + testWebSearchQueryOne + `"]}`,
+			Arguments: `{"objective": "Find second query results", "search_queries": ["` + testWebSearchQueryTwo + `", "` + testWebSearchQueryOne + `"]}`,
 		},
 	}
 }
@@ -320,7 +320,7 @@ func TestRespondToMessageWebSearchFailureAnswersWithoutResults(t *testing.T) {
 			ToolCalls: []providers.FunctionToolCall{{
 				ID:        "call_1",
 				Name:      providers.WebSearchToolName,
-				Arguments: `{"queries": ["` + testWebSearchQueryOne + `"]}`,
+				Arguments: `{"objective": "Find first query results", "search_queries": ["` + testWebSearchQueryOne + `"]}`,
 			}},
 			FinishReason: "tool_calls",
 		})
@@ -459,7 +459,15 @@ func TestExtractWebSearchQueries(t *testing.T) {
 		expected  []string
 	}{
 		{
-			name: "parses queries from parallel calls and dedupes",
+			name: "parses search_queries and objective from parallel calls and dedupes",
+			toolCalls: []providers.FunctionToolCall{
+				{ID: "a", Name: providers.WebSearchToolName, Arguments: `{"objective": "Find latest AI news", "search_queries": ["alpha", "beta"]}`},
+				{ID: "b", Name: providers.WebSearchToolName, Arguments: `{"objective": "Find latest AI news", "search_queries": ["beta", "gamma"]}`},
+			},
+			expected: []string{"alpha", "beta", "gamma"},
+		},
+		{
+			name: "supports legacy queries property for backward compatibility",
 			toolCalls: []providers.FunctionToolCall{
 				{ID: "a", Name: providers.WebSearchToolName, Arguments: `{"queries": ["alpha", "beta"]}`},
 				{ID: "b", Name: providers.WebSearchToolName, Arguments: `{"queries": ["beta", "gamma"]}`},
@@ -483,15 +491,15 @@ func TestExtractWebSearchQueries(t *testing.T) {
 			expected: []string{"spaced", "kept"},
 		},
 		{
-			name: "caps the number of queries",
+			name: "allows unlimited number of queries",
 			toolCalls: []providers.FunctionToolCall{
 				{
 					ID:        "a",
 					Name:      providers.WebSearchToolName,
-					Arguments: `{"queries": ["one", "two", "three", "four", "five", "six", "seven"]}`,
+					Arguments: `{"search_queries": ["one", "two", "three", "four", "five", "six", "seven"]}`,
 				},
 			},
-			expected: []string{"one", "two", "three", "four", "five"},
+			expected: []string{"one", "two", "three", "four", "five", "six", "seven"},
 		},
 		{
 			name:      "no tool calls",
@@ -555,7 +563,7 @@ func TestRunWebSearchToolPhaseMergesMetadataAndUsesConfiguredExaType(t *testing.
 		[]providers.FunctionToolCall{{
 			ID:        "call_1",
 			Name:      providers.WebSearchToolName,
-			Arguments: `{"queries": ["` + testWebSearchQueryOne + `"]}`,
+			Arguments: `{"objective": "Find first query results", "search_queries": ["` + testWebSearchQueryOne + `"]}`,
 		}},
 	)
 
@@ -616,7 +624,7 @@ func TestRunWebSearchToolPhaseWarnsOnSearchFailure(t *testing.T) {
 		[]providers.FunctionToolCall{{
 			ID:        "call_1",
 			Name:      providers.WebSearchToolName,
-			Arguments: `{"queries": ["` + testWebSearchQueryOne + `"]}`,
+			Arguments: `{"objective": "Find first query results", "search_queries": ["` + testWebSearchQueryOne + `"]}`,
 		}},
 	)
 

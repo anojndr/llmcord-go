@@ -1,17 +1,15 @@
 package providers
 
-const webSearchToolDescription = `Search the web for the given queries.
-Call this when the user's request would benefit from fresh, factual, or
-niche information that is not already contained in the conversation.
-Emit one call with every useful query, or multiple calls in parallel for
-distinct information needs.`
+const webSearchToolDescription = "Search the web and return result titles, URLs, and excerpts."
 
-const webSearchQueriesDescription = "Web search queries to run, each phrased like a search engine query."
+const webSearchObjectiveDescription = "Describe the search goal in a concise, standalone sentence. Name the key entity or topic."
+
+const webSearchQueriesDescription = "Provide keyword queries of 3-6 words each. Include the key entity or topic in every query. For multiple queries, vary names, synonyms, or angles. Do not use sentences, instructions, or site: operators."
 
 // WebSearchToolName is the function name the model calls to search the web.
 const WebSearchToolName = "web_search"
 
-const webSearchDefaultMaxQueries = 5
+const webSearchDefaultMinQueries = 1
 
 // JSON schema and tool wire constants shared by the tool builders below.
 const (
@@ -21,11 +19,13 @@ const (
 	jsonSchemaObjectValue    = "object"
 	jsonSchemaStringValue    = "string"
 	jsonSchemaItemsKey       = "items"
+	jsonSchemaMinItemsKey    = "minItems"
 	jsonSchemaMaxItemsKey    = "maxItems"
 	jsonSchemaDescriptionKey = "description"
 	jsonSchemaAdditionalKey  = "additionalProperties"
 
-	webSearchQueriesProperty = "queries"
+	webSearchObjectiveProperty    = "objective"
+	webSearchSearchQueriesProperty = "search_queries"
 
 	openAIFunctionToolType = "function"
 	openAIToolChoiceAuto   = "auto"
@@ -45,11 +45,17 @@ type FunctionToolCall struct {
 	Arguments string `json:"arguments"`
 }
 
-// WebSearchTool builds the web_search function tool definition with a query
-// count limit.
+// WebSearchTool builds the web_search function tool definition with an
+// optional query count limit. When maxQueries <= 0, the query count is unlimited.
 func WebSearchTool(maxQueries int) FunctionTool {
-	if maxQueries <= 0 {
-		maxQueries = webSearchDefaultMaxQueries
+	queriesSchema := map[string]any{
+		jsonSchemaTypeKey:        "array",
+		jsonSchemaDescriptionKey: webSearchQueriesDescription,
+		jsonSchemaItemsKey:       map[string]any{jsonSchemaTypeKey: jsonSchemaStringValue},
+		jsonSchemaMinItemsKey:    webSearchDefaultMinQueries,
+	}
+	if maxQueries > 0 {
+		queriesSchema[jsonSchemaMaxItemsKey] = maxQueries
 	}
 
 	return FunctionTool{
@@ -58,15 +64,16 @@ func WebSearchTool(maxQueries int) FunctionTool {
 		Parameters: map[string]any{
 			jsonSchemaTypeKey: jsonSchemaObjectValue,
 			jsonSchemaPropertiesKey: map[string]any{
-				webSearchQueriesProperty: map[string]any{
-					jsonSchemaTypeKey:        "array",
-					jsonSchemaDescriptionKey: webSearchQueriesDescription,
-					jsonSchemaItemsKey:       map[string]any{jsonSchemaTypeKey: jsonSchemaStringValue},
-					jsonSchemaMaxItemsKey:    maxQueries,
+				webSearchObjectiveProperty: map[string]any{
+					jsonSchemaTypeKey:        jsonSchemaStringValue,
+					jsonSchemaDescriptionKey: webSearchObjectiveDescription,
 				},
+				webSearchSearchQueriesProperty: queriesSchema,
 			},
-			jsonSchemaRequiredKey:   []string{webSearchQueriesProperty},
-			jsonSchemaAdditionalKey: false,
+			jsonSchemaRequiredKey: []string{
+				webSearchObjectiveProperty,
+				webSearchSearchQueriesProperty,
+			},
 		},
 	}
 }

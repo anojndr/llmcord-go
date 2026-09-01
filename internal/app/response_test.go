@@ -2983,7 +2983,7 @@ func fallbackToolRoundStream(
 					ToolCalls: []providers.FunctionToolCall{{
 						ID:        "call_fb",
 						Name:      providers.WebSearchToolName,
-						Arguments: `{"queries": ["` + testWebSearchQueryOne + `"]}`,
+						Arguments: `{"objective": "Find first query results", "search_queries": ["` + testWebSearchQueryOne + `"]}`,
 					}},
 					FinishReason: "tool_calls",
 				})
