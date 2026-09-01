@@ -412,8 +412,14 @@ func (instance *bot) runGenerationRoundWithRetry(
 // generateResponseWithWebSearchTool streams the request; when the model
 // responds with web_search tool calls, it executes them through the routed
 // TinyFish -> Exa -> Tavily clients, appends the results to the request
-// messages, and streams a final answer. At most one search phase runs per
-// response: the follow-up stream is sent without tools.
+// messages, and streams a final answer.
+//
+// Tool calling is never disabled: every round re-offers the tools with
+// tool_choice "auto" (and a byte-identical tool prefix, so the provider's
+// prompt cache keeps matching). The loop is bounded by
+// maxWebSearchToolRounds so a model that keeps calling tools without
+// answering cannot run away; hitting the cap surfaces the empty-response
+// error instead of silently refusing further tool calls.
 func (instance *bot) generateResponseWithWebSearchTool(
 	ctx context.Context,
 	loadedConfig config,
@@ -423,7 +429,7 @@ func (instance *bot) generateResponseWithWebSearchTool(
 ) (string, string, error) {
 	var prefill generatedPrefill
 
-	for {
+	for roundIndex := 0; ; roundIndex++ {
 		round, roundErr := instance.runGenerationRoundWithRetry(
 			ctx,
 			request,
@@ -452,9 +458,18 @@ func (instance *bot) generateResponseWithWebSearchTool(
 			return round.rawAnswer, round.thinking, errEmptyModelResponse
 		}
 
-		// One search phase per response: the follow-up stream never offers
-		// the tool again.
-		request.Tools = nil
+		if roundIndex >= maxWebSearchToolRounds {
+			logWarn(
+				"web_search tool round cap reached without a final answer",
+				nil,
+				"rounds",
+				roundIndex+1,
+				"max_rounds",
+				maxWebSearchToolRounds,
+			)
+
+			return round.rawAnswer, round.thinking, errEmptyModelResponse
+		}
 
 		var searchWarnings []string
 

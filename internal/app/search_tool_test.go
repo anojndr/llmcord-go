@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"slices"
 	"strings"
@@ -148,10 +149,9 @@ func TestRespondToMessageExecutesWebSearchToolCalls(t *testing.T) {
 			})
 		}
 
-		if len(request.Tools) != 0 {
-			t.Errorf("expected the follow-up request to carry no tools, got %#v", request.Tools)
+		if len(request.Tools) == 0 {
+			t.Error("expected the follow-up request to keep the tool definitions")
 		}
-
 		return handle(newStreamDelta(testWebSearchToolAnswer, finishReasonStop))
 	})
 
@@ -200,6 +200,131 @@ func TestRespondToMessageExecutesWebSearchToolCalls(t *testing.T) {
 		t.Fatalf(
 			"expected the first request to be sent without search results, got: %q",
 			firstText,
+		)
+	}
+}
+
+func TestRespondToMessageKeepsToolsOfferedAcrossConsecutiveToolRounds(t *testing.T) {
+	t.Parallel()
+
+	var roundRequests []chatCompletionRequest
+
+	chatClient := newStubChatClient(func(
+		_ context.Context,
+		request chatCompletionRequest,
+		handle func(streamDelta) error,
+	) error {
+		roundRequests = append(roundRequests, request)
+
+		// Tool calling is never disabled: every round keeps the tool
+		// definitions offered.
+		if len(request.Tools) == 0 {
+			t.Errorf("round %d carried no tools", len(roundRequests))
+		}
+
+		if len(roundRequests) <= 2 {
+			return handle(streamDelta{
+				ToolCalls: []providers.FunctionToolCall{{
+					ID:        "call_round_" + fmt.Sprint(len(roundRequests)),
+					Name:      providers.WebSearchToolName,
+					Arguments: `{"objective": "Find query results", "search_queries": ["` + testWebSearchQueryOne + `"]}`,
+				}},
+				FinishReason: "tool_calls",
+			})
+		}
+
+		return handle(newStreamDelta(testWebSearchToolAnswer, finishReasonStop))
+	})
+
+	webSearch := newStubWebSearchClient(func(
+		_ context.Context,
+		_ config,
+		queries []string,
+	) ([]webSearchResult, error) {
+		return []webSearchResult{
+			{Query: queries[0], Text: testWebSearchResultText},
+		}, nil
+	})
+
+	instance := newSearchToolTestBot(t, chatClient, webSearch)
+
+	respondWithWebSearchTool(t, instance, newWebSearchToolTestConfig())
+
+	if len(roundRequests) != 3 {
+		t.Fatalf("expected 3 generation rounds (2 tool rounds + final answer), got %d", len(roundRequests))
+	}
+
+	if len(webSearch.calls) != 2 {
+		t.Fatalf("expected 2 web search calls (one per tool round), got %d", len(webSearch.calls))
+	}
+}
+
+func TestRespondToMessageStopsAfterWebSearchToolRoundCap(t *testing.T) {
+	t.Parallel()
+
+	var roundRequests []chatCompletionRequest
+
+	chatClient := newStubChatClient(func(
+		_ context.Context,
+		request chatCompletionRequest,
+		handle func(streamDelta) error,
+	) error {
+		roundRequests = append(roundRequests, request)
+
+		// Even the runaway rounds keep the tools offered: tool calling is
+		// never disabled, the round cap only stops the loop.
+		if len(request.Tools) == 0 {
+			t.Errorf("round %d carried no tools", len(roundRequests))
+		}
+
+		return handle(streamDelta{
+			ToolCalls: []providers.FunctionToolCall{{
+				ID:        "call_loop_" + fmt.Sprint(len(roundRequests)),
+				Name:      providers.WebSearchToolName,
+				Arguments: `{"objective": "Find query results", "search_queries": ["` + testWebSearchQueryOne + `"]}`,
+			}},
+			FinishReason: "tool_calls",
+		})
+	})
+
+	webSearch := newStubWebSearchClient(func(
+		_ context.Context,
+		_ config,
+		queries []string,
+	) ([]webSearchResult, error) {
+		return []webSearchResult{
+			{Query: queries[0], Text: testWebSearchResultText},
+		}, nil
+	})
+
+	instance := newSearchToolTestBot(t, chatClient, webSearch)
+
+	err := instance.respondToMessage(
+		context.Background(),
+		newWebSearchToolTestConfig(),
+		newWebSearchToolSourceMessage(),
+		testWebSearchMainModel,
+	)
+	if !errors.Is(err, errEmptyModelResponse) {
+		t.Fatalf("expected the empty-response error after the tool round cap, got %v", err)
+	}
+
+	// maxWebSearchToolRounds tool rounds execute, then the loop surfaces the
+	// empty-response error instead of looping forever.
+	if len(roundRequests) != maxWebSearchToolRounds+1 {
+		t.Fatalf(
+			"expected %d generation rounds (cap %d tool rounds + cap round), got %d",
+			maxWebSearchToolRounds+1,
+			maxWebSearchToolRounds,
+			len(roundRequests),
+		)
+	}
+
+	if len(webSearch.calls) != maxWebSearchToolRounds {
+		t.Fatalf(
+			"expected %d web search calls, got %d",
+			maxWebSearchToolRounds,
+			len(webSearch.calls),
 		)
 	}
 }
@@ -300,30 +425,40 @@ func TestRespondToMessageWebSearchFailureAnswersWithoutResults(t *testing.T) {
 
 	var followUpHasResults bool
 
+	var requestCount int
+
 	chatClient := newStubChatClient(func(
 		_ context.Context,
 		request chatCompletionRequest,
 		handle func(streamDelta) error,
 	) error {
-		if len(request.Tools) == 0 {
-			for _, message := range request.Messages {
-				if text, ok := message.Content.(string); ok &&
-					strings.Contains(text, testWebSearchResultText) {
-					followUpHasResults = true
-				}
-			}
+		requestCount++
 
-			return handle(newStreamDelta(testWebSearchToolAnswer, finishReasonStop))
+		if requestCount == 1 {
+			return handle(streamDelta{
+				ToolCalls: []providers.FunctionToolCall{{
+					ID:        "call_1",
+					Name:      providers.WebSearchToolName,
+					Arguments: `{"objective": "Find first query results", "search_queries": ["` + testWebSearchQueryOne + `"]}`,
+				}},
+				FinishReason: "tool_calls",
+			})
 		}
 
-		return handle(streamDelta{
-			ToolCalls: []providers.FunctionToolCall{{
-				ID:        "call_1",
-				Name:      providers.WebSearchToolName,
-				Arguments: `{"objective": "Find first query results", "search_queries": ["` + testWebSearchQueryOne + `"]}`,
-			}},
-			FinishReason: "tool_calls",
-		})
+		// Tool calling is never disabled: the follow-up still carries the
+		// tools with tool_choice "auto".
+		if len(request.Tools) == 0 {
+			t.Error("expected the follow-up request to keep the tool definitions")
+		}
+
+		for _, message := range request.Messages {
+			if text, ok := message.Content.(string); ok &&
+				strings.Contains(text, testWebSearchResultText) {
+				followUpHasResults = true
+			}
+		}
+
+		return handle(newStreamDelta(testWebSearchToolAnswer, finishReasonStop))
 	})
 
 	webSearch := newStubWebSearchClient(func(
@@ -343,7 +478,7 @@ func TestRespondToMessageWebSearchFailureAnswersWithoutResults(t *testing.T) {
 	}
 
 	if len(chatClient.requests) != 2 {
-		t.Fatalf("expected a follow-up request without tools, got %d requests", len(chatClient.requests))
+		t.Fatalf("expected a follow-up request after the failed search, got %d requests", len(chatClient.requests))
 	}
 }
 

@@ -2963,8 +2963,9 @@ func TestGenerateAndSendResponseExecutesWebSearchToolOnFallbackModel(t *testing.
 }
 
 // fallbackToolRoundStream builds the stub stream: the primary model fails,
-// the fallback model emits one web_search tool call, and the tool-less
-// fallback follow-up (which must contain the search results) gets answered.
+// the fallback model emits one web_search tool call, and the fallback
+// follow-up (which keeps the tool definitions with tool_choice "auto" and
+// must contain the search results) gets answered.
 func fallbackToolRoundStream(
 	t *testing.T,
 	attemptedModels *[]string,
@@ -2978,30 +2979,34 @@ func fallbackToolRoundStream(
 		case "gemini-search/gemini-3.7-flash-medium:vision":
 			return errPrimaryModelOverload
 		case "9router/stable_model:vision":
-			if len(request.Tools) == 1 {
-				return handle(streamDelta{
-					ToolCalls: []providers.FunctionToolCall{{
-						ID:        "call_fb",
-						Name:      providers.WebSearchToolName,
-						Arguments: `{"objective": "Find first query results", "search_queries": ["` + testWebSearchQueryOne + `"]}`,
-					}},
-					FinishReason: "tool_calls",
-				})
+			// Tool calling is never disabled: both fallback rounds keep the
+			// tools offered with tool_choice "auto".
+			if len(request.Tools) == 0 {
+				t.Error("expected the fallback request to keep the tool definitions")
+
+				return errUnknownModel
 			}
 
-			if len(request.Tools) != 0 {
-				t.Errorf("expected the fallback follow-up to carry no tools, got %#v", request.Tools)
+			if strings.Contains(latestChatMessageText(request.Messages), testWebSearchResultText) {
+				followUpText := latestChatMessageText(request.Messages)
+				if !strings.Contains(followUpText, testWebSearchResultText) {
+					t.Errorf(
+						"expected search results in the fallback follow-up request, got: %q",
+						followUpText,
+					)
+				}
+
+				return handle(newStreamDelta("Fallback answer after searching.", finishReasonStop))
 			}
 
-			followUpText := latestChatMessageText(request.Messages)
-			if !strings.Contains(followUpText, testWebSearchResultText) {
-				t.Errorf(
-					"expected search results in the fallback follow-up request, got: %q",
-					followUpText,
-				)
-			}
-
-			return handle(newStreamDelta("Fallback answer after searching.", finishReasonStop))
+			return handle(streamDelta{
+				ToolCalls: []providers.FunctionToolCall{{
+					ID:        "call_fb",
+					Name:      providers.WebSearchToolName,
+					Arguments: `{"objective": "Find first query results", "search_queries": ["` + testWebSearchQueryOne + `"]}`,
+				}},
+				FinishReason: "tool_calls",
+			})
 		default:
 			return errUnknownModel
 		}

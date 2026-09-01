@@ -26,6 +26,9 @@ const (
 	responsesStreamEventError                     = "error"
 	responsesStreamEventFailed                    = "response.failed"
 	responsesStreamEventIncomplete                = "response.incomplete"
+	responsesStreamEventOutputItemAdded           = "response.output_item.added"
+	responsesStreamEventFunctionCallArgsDone      = "response.function_call_arguments.done"
+	responsesStreamEventFunctionCallArgsDelta     = "response.function_call_arguments.delta"
 	responsesStreamEventOutputDone                = "response.output_item.done"
 	responsesStreamEventOutputDelta               = "response.output_text.delta"
 	responsesStreamEventReasoningTextDone         = "response.reasoning_text.done"
@@ -101,7 +104,33 @@ type responsesStreamState struct {
 	streamedReasoningSummaries map[string]string
 	seenToolCallIDs            map[string]struct{}
 	toolCalls                  []FunctionToolCall
-	hasVisibleContent          bool
+	// inProgressToolCalls accumulates function_call arguments streamed via
+	// response.function_call_arguments.delta, keyed by output item id, so
+	// calls complete as soon as the item or arguments finish instead of
+	// waiting for response.completed.
+	inProgressToolCalls map[string]*responsesInProgressToolCall
+	inProgressOrder     []string
+	hasVisibleContent   bool
+}
+
+// responsesInProgressToolCall accumulates one function_call while its
+// arguments stream in.
+type responsesInProgressToolCall struct {
+	itemID    string
+	callID    string
+	name      string
+	arguments strings.Builder
+	completed bool
+}
+
+// argumentsString returns the accumulated argument fragments without
+// consuming them; the accumulator stays valid for later reads.
+func (call *responsesInProgressToolCall) argumentsString() string {
+	if call == nil {
+		return ""
+	}
+
+	return call.arguments.String()
 }
 
 // ProviderUsesResponsesAPI reports whether a provider uses the Responses API.
@@ -246,6 +275,7 @@ func buildResponsesRequestBody(request ChatCompletionRequest) (map[string]any, e
 	requestBody["input"] = input
 	addOpenAIPromptCacheKey(requestBody, request)
 	addResponsesTools(requestBody, request)
+	defaultOpenAIServiceTier(requestBody)
 
 	extraBody := request.Provider.ExtraBody
 	if request.Provider.APIKind == ProviderAPIKindOpenAI &&
@@ -638,13 +668,18 @@ func newResponsesStreamState() *responsesStreamState {
 		streamedReasoningSummaries: make(map[string]string),
 		seenToolCallIDs:            make(map[string]struct{}),
 		toolCalls:                  nil,
+		inProgressToolCalls:        make(map[string]*responsesInProgressToolCall),
+		inProgressOrder:            nil,
 		hasVisibleContent:          false,
 	}
 }
 
 // collectResponsesFunctionCall records a complete function_call output item.
-// Items arrive via response.output_item.done (and again inside the final
-// response.completed output), so they are deduplicated by call id.
+// Items arrive via response.output_item.done and
+// response.function_call_arguments.done (and again inside the final
+// response.completed output), so they are deduplicated by call id. Arguments
+// streamed through response.function_call_arguments.delta and not included in
+// the item are merged in from the in-progress accumulator.
 func collectResponsesFunctionCall(state *responsesStreamState, item responsesOutputItem) {
 	if state == nil {
 		return
@@ -660,6 +695,13 @@ func collectResponsesFunctionCall(state *responsesStreamState, item responsesOut
 		return
 	}
 
+	arguments := item.Arguments
+	if strings.TrimSpace(arguments) == "" {
+		if inProgress, seen := state.inProgressToolCallByID(callID, item.ID); seen {
+			arguments = inProgress.argumentsString()
+		}
+	}
+
 	if _, seen := state.seenToolCallIDs[callID]; seen {
 		return
 	}
@@ -668,8 +710,31 @@ func collectResponsesFunctionCall(state *responsesStreamState, item responsesOut
 	state.toolCalls = append(state.toolCalls, FunctionToolCall{
 		ID:        callID,
 		Name:      name,
-		Arguments: item.Arguments,
+		Arguments: arguments,
 	})
+}
+
+// inProgressToolCallByID locates the in-progress accumulator for a call, by
+// call id or output item id.
+func (state *responsesStreamState) inProgressToolCallByID(
+	callID string,
+	itemID string,
+) (*responsesInProgressToolCall, bool) {
+	if state == nil {
+		return nil, false
+	}
+
+	for _, id := range []string{strings.TrimSpace(callID), strings.TrimSpace(itemID)} {
+		if id == "" {
+			continue
+		}
+
+		if call, seen := state.inProgressToolCalls[id]; seen {
+			return call, true
+		}
+	}
+
+	return nil, false
 }
 
 func responsesStateToolCalls(state *responsesStreamState) []FunctionToolCall {
@@ -678,6 +743,106 @@ func responsesStateToolCalls(state *responsesStreamState) []FunctionToolCall {
 	}
 
 	return append([]FunctionToolCall(nil), state.toolCalls...)
+}
+
+// responsesObserveFunctionCallItem records a function_call output item when
+// it starts streaming (response.output_item.added), so its identity is known
+// before the arguments arrive.
+func responsesObserveFunctionCallItem(state *responsesStreamState, item *responsesOutputItem) {
+	if state == nil || item == nil {
+		return
+	}
+
+	if !strings.EqualFold(strings.TrimSpace(item.Type), responsesOutputTypeFunctionCall) {
+		return
+	}
+
+	itemID := strings.TrimSpace(item.ID)
+	callID := strings.TrimSpace(item.CallID)
+	name := strings.TrimSpace(item.Name)
+
+	key := itemID
+	if key == "" {
+		key = callID
+	}
+	if key == "" {
+		return
+	}
+
+	call, seen := state.inProgressToolCalls[key]
+	if !seen {
+		call = &responsesInProgressToolCall{
+			itemID: itemID,
+			callID: callID,
+		}
+
+		state.inProgressToolCalls[key] = call
+		state.inProgressOrder = append(state.inProgressOrder, key)
+	}
+
+	if callID != "" && call.callID == "" {
+		call.callID = callID
+	}
+
+	if name != "" {
+		call.name = name
+	}
+
+	if strings.TrimSpace(item.Arguments) != "" {
+		call.arguments.WriteString(item.Arguments)
+	}
+}
+
+// responsesAppendFunctionCallArguments merges one streamed argument fragment
+// (response.function_call_arguments.delta) into the in-progress call.
+func responsesAppendFunctionCallArguments(state *responsesStreamState, itemID string, delta string) {
+	if state == nil || delta == "" {
+		return
+	}
+
+	key := strings.TrimSpace(itemID)
+	if key == "" {
+		return
+	}
+
+	call, seen := state.inProgressToolCalls[key]
+	if !seen {
+		call = &responsesInProgressToolCall{itemID: key}
+
+		state.inProgressToolCalls[key] = call
+		state.inProgressOrder = append(state.inProgressOrder, key)
+	}
+
+	call.arguments.WriteString(delta)
+}
+
+// responsesCompleteFunctionCallArguments finalizes a streamed function call
+// (response.function_call_arguments.done): once the name is known, the call
+// is recorded exactly once via collectResponsesFunctionCall.
+func responsesCompleteFunctionCallArguments(state *responsesStreamState, itemID string) {
+	if state == nil {
+		return
+	}
+
+	key := strings.TrimSpace(itemID)
+	if key == "" {
+		return
+	}
+
+	call, seen := state.inProgressToolCalls[key]
+	if !seen || call.completed {
+		return
+	}
+
+	call.completed = true
+
+	collectResponsesFunctionCall(state, responsesOutputItem{
+		ID:        call.itemID,
+		Type:      responsesOutputTypeFunctionCall,
+		CallID:    call.callID,
+		Name:      call.name,
+		Arguments: call.argumentsString(),
+	})
 }
 
 func responsesStreamPayloadDelta(
@@ -745,6 +910,18 @@ func responsesStreamPayloadDelta(
 		}
 
 		return delta, false, nil
+	case responsesStreamEventOutputItemAdded:
+		responsesObserveFunctionCallItem(state, event.Item)
+
+		return emptyDelta, false, nil
+	case responsesStreamEventFunctionCallArgsDelta:
+		responsesAppendFunctionCallArguments(state, event.ItemID, event.Delta)
+
+		return emptyDelta, false, nil
+	case responsesStreamEventFunctionCallArgsDone:
+		responsesCompleteFunctionCallArguments(state, event.ItemID)
+
+		return emptyDelta, false, nil
 	case responsesStreamEventCompleted:
 		delta, completedErr := responsesCompletedDelta(
 			event.Response,

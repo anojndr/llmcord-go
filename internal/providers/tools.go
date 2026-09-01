@@ -24,18 +24,31 @@ const (
 	jsonSchemaDescriptionKey = "description"
 	jsonSchemaAdditionalKey  = "additionalProperties"
 
-	webSearchObjectiveProperty    = "objective"
+	webSearchObjectiveProperty     = "objective"
 	webSearchSearchQueriesProperty = "search_queries"
 
-	openAIFunctionToolType = "function"
-	openAIToolChoiceAuto   = "auto"
+	openAIFunctionToolType     = "function"
+	openAIToolChoiceAuto       = "auto"
+	openAIParallelToolCallsKey = "parallel_tool_calls"
 )
+
+// strictToolCalls returns a fresh pointer to true: every tool definition gets
+// its own Strict flag so no caller can mutate shared state.
+func strictToolCalls() *bool {
+	strict := true
+
+	return &strict
+}
 
 // FunctionTool is a function tool definition offered to the model.
 type FunctionTool struct {
 	Name        string         `json:"name"`
 	Description string         `json:"description,omitempty"`
 	Parameters  map[string]any `json:"parameters,omitempty"`
+	// Strict enables OpenAI Structured Outputs for the function call:
+	// arguments are constrained to the schema, which makes calls reliable
+	// and avoids best-effort retries. Nil keeps the API default.
+	Strict *bool `json:"strict,omitempty"`
 }
 
 // FunctionToolCall is a parsed tool call requested by the model.
@@ -57,10 +70,10 @@ func WebSearchTool(maxQueries int) FunctionTool {
 	if maxQueries > 0 {
 		queriesSchema[jsonSchemaMaxItemsKey] = maxQueries
 	}
-
 	return FunctionTool{
 		Name:        WebSearchToolName,
 		Description: webSearchToolDescription,
+		Strict:      strictToolCalls(),
 		Parameters: map[string]any{
 			jsonSchemaTypeKey: jsonSchemaObjectValue,
 			jsonSchemaPropertiesKey: map[string]any{
@@ -74,6 +87,7 @@ func WebSearchTool(maxQueries int) FunctionTool {
 				webSearchObjectiveProperty,
 				webSearchSearchQueriesProperty,
 			},
+			jsonSchemaAdditionalKey: false,
 		},
 	}
 }
@@ -101,13 +115,19 @@ func openAIToolDefinitions(tools []FunctionTool) []map[string]any {
 	definitions := make([]map[string]any, 0, len(tools))
 
 	for _, tool := range tools {
+		function := map[string]any{
+			"name":        tool.Name,
+			"description": tool.Description,
+			"parameters":  tool.Parameters,
+		}
+
+		if strictToolCall(tool) {
+			function["strict"] = true
+		}
+
 		definitions = append(definitions, map[string]any{
-			jsonSchemaTypeKey: openAIFunctionToolType,
-			openAIFunctionToolType: map[string]any{
-				"name":        tool.Name,
-				"description": tool.Description,
-				"parameters":  tool.Parameters,
-			},
+			jsonSchemaTypeKey:      openAIFunctionToolType,
+			openAIFunctionToolType: function,
 		})
 	}
 
@@ -124,15 +144,26 @@ func responsesToolDefinitions(tools []FunctionTool) []map[string]any {
 	definitions := make([]map[string]any, 0, len(tools))
 
 	for _, tool := range tools {
-		definitions = append(definitions, map[string]any{
+		definition := map[string]any{
 			jsonSchemaTypeKey: openAIFunctionToolType,
 			"name":            tool.Name,
 			"description":     tool.Description,
 			"parameters":      tool.Parameters,
-		})
+		}
+
+		if strictToolCall(tool) {
+			definition["strict"] = true
+		}
+
+		definitions = append(definitions, definition)
 	}
 
 	return definitions
+}
+
+// strictToolCall reports whether Structured Outputs is enabled for the tool.
+func strictToolCall(tool FunctionTool) bool {
+	return tool.Strict != nil && *tool.Strict
 }
 
 func addOpenAITools(requestBody map[string]any, request ChatCompletionRequest) {
@@ -142,6 +173,7 @@ func addOpenAITools(requestBody map[string]any, request ChatCompletionRequest) {
 
 	requestBody["tools"] = openAIToolDefinitions(request.Tools)
 	requestBody["tool_choice"] = openAIToolChoiceAuto
+	setParallelToolCalls(requestBody)
 }
 
 func addResponsesTools(requestBody map[string]any, request ChatCompletionRequest) {
@@ -151,6 +183,21 @@ func addResponsesTools(requestBody map[string]any, request ChatCompletionRequest
 
 	requestBody["tools"] = responsesToolDefinitions(request.Tools)
 	requestBody["tool_choice"] = openAIToolChoiceAuto
+	setParallelToolCalls(requestBody)
+}
+
+// setParallelToolCalls explicitly allows parallel tool calls so the model can
+// issue multiple independent calls in one turn (fewer round trips). User
+// overrides in ExtraBody still win because request builders copy ExtraBody
+// after this.
+func setParallelToolCalls(requestBody map[string]any) {
+	if requestBody == nil {
+		return
+	}
+
+	if _, exists := requestBody[openAIParallelToolCallsKey]; !exists {
+		requestBody[openAIParallelToolCallsKey] = true
+	}
 }
 
 // chatCompletionsToolCallAccumulator merges streamed tool_call fragments into
