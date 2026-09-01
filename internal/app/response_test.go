@@ -201,15 +201,15 @@ func TestBuildRenderSpecsMarksSettledAndStreamingSegments(t *testing.T) {
 	}
 }
 
-func TestVisibleResponseSegmentsPrefixesThinking(t *testing.T) {
+func TestVisibleResponseSegmentsOmitsThinking(t *testing.T) {
 	t.Parallel()
 
-	segments := visibleResponseSegments("Plan first.", "Final answer.", embedResponseMaxLength)
+	segments := visibleResponseSegments("Final answer.", embedResponseMaxLength)
 	if len(segments) != 1 {
 		t.Fatalf("unexpected segment count: %#v", segments)
 	}
 
-	expected := "**Thinking**\nPlan first.\n\n**Answer**\nFinal answer."
+	expected := "Final answer."
 	if segments[0] != expected {
 		t.Fatalf("unexpected visible response: %q", segments[0])
 	}
@@ -1550,7 +1550,7 @@ func TestGenerateAndSendResponseKeepsAssistantReplyInConversationHistory(t *test
 	)
 }
 
-func TestGenerateAndSendResponseShowsThinkingDuringStreamButNotFinalResponse(t *testing.T) {
+func TestGenerateAndSendResponseDoesNotStreamThinkingOnlyFinalAnswer(t *testing.T) {
 	t.Parallel()
 
 	const (
@@ -1610,8 +1610,12 @@ func TestGenerateAndSendResponseShowsThinkingDuringStreamButNotFinalResponse(t *
 		t.Fatalf("expected one streamed response send, got %d", len(messageDescriptions))
 	}
 
-	if !containsFold(messageDescriptions[0], thoughtText) {
-		t.Fatalf("expected streaming response to include thinking: %q", messageDescriptions[0])
+	if containsFold(messageDescriptions[0], thoughtText) {
+		t.Fatalf("expected streaming response to not include thinking: %q", messageDescriptions[0])
+	}
+
+	if !containsFold(messageDescriptions[0], answerText) {
+		t.Fatalf("expected streaming response to include answer: %q", messageDescriptions[0])
 	}
 
 	if len(patchDescriptions) != 1 {
@@ -1619,7 +1623,7 @@ func TestGenerateAndSendResponseShowsThinkingDuringStreamButNotFinalResponse(t *
 	}
 
 	if containsFold(patchDescriptions[0], thoughtText) {
-		t.Fatalf("expected final response to remove thinking: %q", patchDescriptions[len(patchDescriptions)-1])
+		t.Fatalf("expected final response to not include thinking: %q", patchDescriptions[len(patchDescriptions)-1])
 	}
 
 	if !containsFold(patchDescriptions[0], answerText) {
