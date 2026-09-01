@@ -245,9 +245,10 @@ media_analysis_model: google/gemini-3.6-flash
 # -----------------------------------------------------------------------------
 # Web search & Extraction — the model calls a native `web_search` tool; requested queries
 # run through the configurable fallback chain (default: TinyFish -> Exa -> Tavily),
-# tried in order. Configured via `web_search_order` or `web_search.order`:
+# tried in order. Configured via `web_search_order` or `web_search.order`
+# (supports `tinyfish`, `parallel`, `exa`, `tavily`):
 #   web_search_order:
-#     tinyfish > exa > tavily
+#     parallel > tinyfish > exa > tavily
 # Website extraction fallback order (default: Firecrawl -> TinyFish -> Exa -> Tavily)
 # is configured via `extraction_order` or `web_search.extraction_order`:
 #   extraction_order:
@@ -303,6 +304,15 @@ web_search:
     # api_key:
     #   - tvly-primary-key
     #   - tvly-backup-key
+    api_key:
+
+  # Parallel — fast, high-quality search with dense excerpts
+  parallel:
+    # Optional. When set, search can use the Parallel Search API.
+    # `api_key` accepts a YAML list; requests are round-robin across them.
+    # api_key:
+    #   - pal-primary-key
+    #   - pal-backup-key
     api_key:
 
   # Firecrawl — primary generic website extraction (markdown, JS-rendered)

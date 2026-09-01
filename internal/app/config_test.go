@@ -667,6 +667,48 @@ web_search:
 	}
 }
 
+func TestLoadConfigAllowsParallelWebSearchAPIKeyLists(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	configText := `
+bot_token: discord-token
+providers:
+  openai:
+    base_url: https://api.example.com/v1
+models:
+  openai/first-model:
+web_search:
+  parallel:
+    api_key:
+      - parallel-primary
+      - parallel-backup
+      - parallel-primary
+`
+
+	err := os.WriteFile(configPath, []byte(configText), 0o600)
+	if err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	loadedConfig, err := loadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	if loadedConfig.WebSearch.Parallel.APIKey != "parallel-primary" {
+		t.Fatalf("unexpected primary Parallel API key: %q", loadedConfig.WebSearch.Parallel.APIKey)
+	}
+
+	if !slices.Equal(
+		loadedConfig.WebSearch.Parallel.APIKeys,
+		[]string{"parallel-primary", "parallel-backup"},
+	) {
+		t.Fatalf("unexpected Parallel API keys: %#v", loadedConfig.WebSearch.Parallel.APIKeys)
+	}
+}
+
 func TestLoadConfigAllowsExaWebSearchAPIKeyLists(t *testing.T) {
 	t.Parallel()
 
@@ -1124,6 +1166,24 @@ web_search:
     - tavily
 `,
 			wantOrder: []webSearchProvider{webSearchProviderExa, webSearchProviderTavily},
+		},
+		{
+			name: "top level with parallel provider",
+			yaml: `
+bot_token: discord-token
+providers:
+  openai:
+    base_url: https://api.example.com/v1
+models:
+  openai/first-model:
+web_search_order: parallel > tinyfish > exa > tavily
+`,
+			wantOrder: []webSearchProvider{
+				webSearchProviderParallel,
+				webSearchProviderTinyFish,
+				webSearchProviderExa,
+				webSearchProviderTavily,
+			},
 		},
 		{
 			name: "invalid unknown provider",

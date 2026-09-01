@@ -36,6 +36,7 @@ const (
 	webSearchProviderTinyFish webSearchProvider = "tinyfish"
 	webSearchProviderExa      webSearchProvider = "exa"
 	webSearchProviderTavily   webSearchProvider = "tavily"
+	webSearchProviderParallel webSearchProvider = "parallel"
 )
 
 var defaultWebSearchOrder = []webSearchProvider{
@@ -108,6 +109,8 @@ func parseWebSearchOrder(orderStr string) ([]webSearchProvider, error) {
 			provider = webSearchProviderExa
 		case "tavily", "tvly":
 			provider = webSearchProviderTavily
+		case "parallel", "parallel_ai", "parallelai", "pal":
+			provider = webSearchProviderParallel
 		default:
 			return nil, fmt.Errorf("unknown web search provider %q: %w", strings.TrimSpace(part), os.ErrInvalid)
 		}
@@ -293,6 +296,10 @@ type rawTinyFishSearchConfig struct {
 	APIKey scalarStringList `yaml:"api_key"`
 }
 
+type rawParallelSearchConfig struct {
+	APIKey scalarStringList `yaml:"api_key"`
+}
+
 type rawFirecrawlSearchConfig struct {
 	APIKey                scalarStringList `yaml:"api_key"`
 	MaxMarkdownCharacters *int             `yaml:"max_markdown_characters"`
@@ -320,6 +327,7 @@ type rawWebSearchConfig struct {
 	Tavily          rawTavilySearchConfig    `yaml:"tavily"`
 	Firecrawl       rawFirecrawlSearchConfig `yaml:"firecrawl"`
 	TinyFish        rawTinyFishSearchConfig  `yaml:"tinyfish"`
+	Parallel        rawParallelSearchConfig  `yaml:"parallel"`
 }
 
 type rawDatabaseConfig struct {
@@ -363,6 +371,11 @@ type tinyFishSearchConfig struct {
 	APIKeys []string
 }
 
+type parallelSearchConfig struct {
+	APIKey  string
+	APIKeys []string
+}
+
 type exaSearchConfig struct {
 	APIKey             string
 	APIKeys            []string
@@ -393,6 +406,7 @@ type webSearchConfig struct {
 	Tavily          tavilySearchConfig
 	Firecrawl       firecrawlSearchConfig
 	TinyFish        tinyFishSearchConfig
+	Parallel        parallelSearchConfig
 }
 
 type databaseConfig struct {
@@ -835,6 +849,7 @@ func normalizeWebSearchConfig(
 	tavilyAPIKeys := normalizeAPIKeys([]string(rawLoadedConfig.Tavily.APIKey))
 	firecrawlAPIKeys := normalizeAPIKeys([]string(rawLoadedConfig.Firecrawl.APIKey))
 	tinyFishAPIKeys := normalizeAPIKeys([]string(rawLoadedConfig.TinyFish.APIKey))
+	parallelAPIKeys := normalizeAPIKeys([]string(rawLoadedConfig.Parallel.APIKey))
 
 	return webSearchConfig{
 		Order:           order,
@@ -864,6 +879,10 @@ func normalizeWebSearchConfig(
 			APIKey:  firstAPIKey(tinyFishAPIKeys),
 			APIKeys: tinyFishAPIKeys,
 		},
+		Parallel: parallelSearchConfig{
+			APIKey:  firstAPIKey(parallelAPIKeys),
+			APIKeys: parallelAPIKeys,
+		},
 	}
 }
 
@@ -884,7 +903,8 @@ func (loadedConfig webSearchConfig) exaUsesAPI() bool {
 func (loadedConfig webSearchConfig) hasWebSearchAPIKeys() bool {
 	return len(loadedConfig.TinyFish.apiKeys()) > 0 ||
 		len(loadedConfig.Exa.apiKeys()) > 0 ||
-		len(loadedConfig.Tavily.apiKeys()) > 0
+		len(loadedConfig.Tavily.apiKeys()) > 0 ||
+		len(loadedConfig.Parallel.apiKeys()) > 0
 }
 
 func (settings exaSearchConfig) textMaxCharacters() int {

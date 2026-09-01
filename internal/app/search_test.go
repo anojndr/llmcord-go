@@ -51,6 +51,17 @@ func testTavilySearchConfig() config {
 	return loadedConfig
 }
 
+func testParallelSearchConfig() config {
+	loadedConfig := testSearchConfig()
+	loadedConfig.WebSearch.MaxURLs = testWebSearchMaxURLs
+	loadedConfig.WebSearch.Parallel = parallelSearchConfig{
+		APIKey:  "parallel-test-key",
+		APIKeys: []string{"parallel-test-key"},
+	}
+
+	return loadedConfig
+}
+
 func TestSearchQueriesConcurrentlyLimitsFanoutAndCancelsQueuedQueries(t *testing.T) {
 	t.Parallel()
 
@@ -1044,6 +1055,42 @@ func TestRoutedWebSearchClientCustomOrder(t *testing.T) {
 			t.Fatalf("calls: exa=%d, tiny=%d, tavily=%d", len(exaClient.calls), len(tinyFishClient.calls), len(tavilyClient.calls))
 		}
 	})
+
+	t.Run("parallel > exa tries parallel first", func(t *testing.T) {
+		t.Parallel()
+
+		parallelResult := []webSearchResult{{Query: "q", Text: "parallel result"}}
+		parallelClient := newStubWebSearchClient(func(_ context.Context, _ config, _ []string) ([]webSearchResult, error) {
+			return parallelResult, nil
+		})
+		exaClient := newStubWebSearchClient(func(_ context.Context, _ config, _ []string) ([]webSearchResult, error) {
+			return exaResult, nil
+		})
+
+		loadedConfig := testSearchConfig()
+		loadedConfig.WebSearch.Order = []webSearchProvider{
+			webSearchProviderParallel,
+			webSearchProviderExa,
+		}
+		loadedConfig.WebSearch.Parallel.APIKeys = []string{"pal-key"}
+		loadedConfig.WebSearch.Exa.APIKeys = []string{"exa-key"}
+
+		client := routedWebSearchClient{
+			parallel: parallelClient,
+			exa:      exaClient,
+		}
+
+		results, err := client.search(context.Background(), loadedConfig, []string{"q"})
+		if err != nil {
+			t.Fatalf("search failed: %v", err)
+		}
+		if len(results) != 1 || results[0].Text != "parallel result" {
+			t.Fatalf("unexpected results: %#v", results)
+		}
+		if len(parallelClient.calls) != 1 || len(exaClient.calls) != 0 {
+			t.Fatalf("calls: parallel=%d, exa=%d", len(parallelClient.calls), len(exaClient.calls))
+		}
+	})
 }
 
 func TestRoutedWebSearchClientHardcodedErrorMessagesAndExaName(t *testing.T) {
@@ -1203,6 +1250,167 @@ func TestTavilySearchClientSearchRotatesAPIKeysAcrossCalls(t *testing.T) {
 		if authHeaders[index] != expected {
 			t.Fatalf("search %d: expected Authorization header %q, got %q", index, expected, authHeaders[index])
 		}
+	}
+}
+
+func TestParallelSearchClientSearchRotatesAPIKeysAcrossCalls(t *testing.T) {
+	t.Parallel()
+
+	var (
+		authHeaders []string
+		headerMu    sync.Mutex
+	)
+
+	httpServer := httptest.NewServer(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		request *http.Request,
+	) {
+		headerMu.Lock()
+		authHeaders = append(authHeaders, request.Header.Get("x-api-key"))
+		headerMu.Unlock()
+
+		responseWriter.Header().Set("Content-Type", "application/json")
+
+		err := json.NewEncoder(responseWriter).Encode(parallelSearchResponse{
+			SearchID: "search_123",
+			Results: []parallelSearchResponseItem{
+				{
+					Title:       "Example Title",
+					URL:         "https://example.com/item",
+					PublishDate: nil,
+					Excerpts:    []string{"Excerpt 1", "Excerpt 2"},
+				},
+			},
+		})
+		if err != nil {
+			t.Errorf("encode Parallel response: %v", err)
+		}
+	}))
+	defer httpServer.Close()
+
+	client := parallelSearchClient{
+		endpoint:   httpServer.URL,
+		httpClient: httpServer.Client(),
+		keys:       newAPIKeyRotator(),
+	}
+
+	loadedConfig := testParallelSearchConfig()
+	loadedConfig.WebSearch.Parallel.APIKey = "pal-key-1"
+	loadedConfig.WebSearch.Parallel.APIKeys = []string{
+		"pal-key-1",
+		"pal-key-2",
+		"pal-key-3",
+	}
+
+	for range 3 {
+		_, err := client.search(context.Background(), loadedConfig, []string{"latest ai news"})
+		if err != nil {
+			t.Fatalf("search: %v", err)
+		}
+	}
+
+	headerMu.Lock()
+	defer headerMu.Unlock()
+
+	expectedHeaders := []string{"pal-key-1", "pal-key-2", "pal-key-3"}
+	for index, expected := range expectedHeaders {
+		if authHeaders[index] != expected {
+			t.Fatalf("search %d: expected x-api-key header %q, got %q", index, expected, authHeaders[index])
+		}
+	}
+}
+
+func TestParallelSearchClientSearchSendsValidRequestAndFormatsResults(t *testing.T) {
+	t.Parallel()
+
+	var capturedRequest parallelSearchRequest
+
+	httpServer := httptest.NewServer(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		request *http.Request,
+	) {
+		if request.Header.Get("x-api-key") != "pal-test-key" {
+			t.Fatalf("unexpected x-api-key: %q", request.Header.Get("x-api-key"))
+		}
+		if request.Header.Get("Content-Type") != "application/json" {
+			t.Fatalf("unexpected Content-Type: %q", request.Header.Get("Content-Type"))
+		}
+
+		body, err := io.ReadAll(request.Body)
+		if err != nil {
+			t.Fatalf("read request body: %v", err)
+		}
+
+		if err := json.Unmarshal(body, &capturedRequest); err != nil {
+			t.Fatalf("unmarshal request body: %v", err)
+		}
+
+		publishDate := "2026-09-01"
+		responseWriter.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(responseWriter).Encode(parallelSearchResponse{
+			SearchID: "search_abc",
+			Results: []parallelSearchResponseItem{
+				{
+					Title:       "Parallel AI Web Systems",
+					URL:         "https://parallel.ai",
+					PublishDate: &publishDate,
+					Excerpts:    []string{"Parallel brings AI web search to life.", "Second excerpt line"},
+				},
+			},
+		})
+	}))
+	defer httpServer.Close()
+
+	client := parallelSearchClient{
+		endpoint:   httpServer.URL,
+		httpClient: httpServer.Client(),
+		keys:       newAPIKeyRotator(),
+	}
+
+	loadedConfig := testParallelSearchConfig()
+	loadedConfig.WebSearch.MaxURLs = 8
+	loadedConfig.WebSearch.Parallel.APIKey = "pal-test-key"
+	loadedConfig.WebSearch.Parallel.APIKeys = []string{"pal-test-key"}
+
+	results, err := client.search(context.Background(), loadedConfig, []string{"parallel ai"})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+
+	if capturedRequest.Objective != "parallel ai" {
+		t.Fatalf("unexpected objective: %q", capturedRequest.Objective)
+	}
+	if len(capturedRequest.SearchQueries) != 1 || capturedRequest.SearchQueries[0] != "parallel ai" {
+		t.Fatalf("unexpected search queries: %#v", capturedRequest.SearchQueries)
+	}
+	if capturedRequest.Mode != "fast" {
+		t.Fatalf("unexpected mode: %q", capturedRequest.Mode)
+	}
+	if capturedRequest.AdvancedSettings == nil || capturedRequest.AdvancedSettings.MaxResults != 8 {
+		t.Fatalf("unexpected advanced settings: %#v", capturedRequest.AdvancedSettings)
+	}
+
+	resultText := results[0].Text
+	if !strings.Contains(resultText, "Title: Parallel AI Web Systems") {
+		t.Fatalf("missing title in formatted text: %q", resultText)
+	}
+	if !strings.Contains(resultText, "URL: https://parallel.ai") {
+		t.Fatalf("missing URL in formatted text: %q", resultText)
+	}
+	if !strings.Contains(resultText, "Published Date: 2026-09-01") {
+		t.Fatalf("missing published date in formatted text: %q", resultText)
+	}
+	if !strings.Contains(resultText, "Excerpts:\n| Parallel brings AI web search to life.\n| Second excerpt line") {
+		t.Fatalf("missing excerpts in formatted text: %q", resultText)
+	}
+
+	sources := extractSearchSources(resultText)
+	if len(sources) != 1 || sources[0].Title != "Parallel AI Web Systems" || sources[0].URL != "https://parallel.ai" {
+		t.Fatalf("unexpected extracted sources: %#v", sources)
 	}
 }
 
