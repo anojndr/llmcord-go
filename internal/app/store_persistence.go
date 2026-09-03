@@ -31,6 +31,15 @@ const (
 const (
 	messageNodeStorePersistSafeMaxBytes = 200 * 1024 * 1024
 	postgresJSONBSizeExceededSubstring  = "total size of jsonb object elements exceeds"
+	trimSnapshotBinarySearchDivisor     = 2
+)
+
+const (
+	postgresMessageNodeStoreMaxOpenConns     = 4
+	postgresMessageNodeStoreMaxIdleConns     = 4
+	postgresMessageNodeStoreConnMaxLifetime  = 5 * time.Minute
+	postgresMessageNodeStoreConnMaxIdleTime  = 1 * time.Minute
+	postgresMessageNodeStoreStatementTimeout = 30 * time.Second
 )
 
 var errMessageNodeStorePersistenceDisabled = errors.New("message history persistence disabled")
@@ -58,65 +67,65 @@ type messageNodeSnapshotPayload struct {
 }
 
 type messageNodeSnapshot struct {
-	Role                     string                  `json:"role"`
-	Text                     string                  `json:"text"`
-	ThinkingText             string                  `json:"thinking_text"`
-	URLScanText              string                  `json:"url_scan_text"`
-	GistURL                  string                  `json:"gist_url"`
-	ProviderResponseID       string                  `json:"provider_response_id"`
-	ProviderResponseModel    string                  `json:"provider_response_model"`
-	Media                    []contentPartSnapshot   `json:"media"`
-	SearchMetadata           *searchMetadata         `json:"search_metadata"`
-	HasBadAttachments        bool                    `json:"has_bad_attachments"`
-	AttachmentDownloadFailed bool                    `json:"attachment_download_failed"`
-	FetchParentFailed        bool                    `json:"fetch_parent_failed"`
-	ParentMessage            *discordMessageSnapshot `json:"parent_message"`
-	Initialized              bool                    `json:"initialized"`
+	Role                     string                  `json:"role,omitempty"`
+	Text                     string                  `json:"text,omitempty"`
+	ThinkingText             string                  `json:"thinking_text,omitempty"`
+	URLScanText              string                  `json:"url_scan_text,omitempty"`
+	GistURL                  string                  `json:"gist_url,omitempty"`
+	ProviderResponseID       string                  `json:"provider_response_id,omitempty"`
+	ProviderResponseModel    string                  `json:"provider_response_model,omitempty"`
+	Media                    []contentPartSnapshot   `json:"media,omitempty"`
+	SearchMetadata           *searchMetadata         `json:"search_metadata,omitempty"`
+	HasBadAttachments        bool                    `json:"has_bad_attachments,omitempty"`
+	AttachmentDownloadFailed bool                    `json:"attachment_download_failed,omitempty"`
+	FetchParentFailed        bool                    `json:"fetch_parent_failed,omitempty"`
+	ParentMessage            *discordMessageSnapshot `json:"parent_message,omitempty"`
+	Initialized              bool                    `json:"initialized,omitempty"`
 }
 
 type contentPartSnapshot struct {
-	Type     string `json:"type"`
-	Text     string `json:"text"`
-	ImageURL string `json:"image_url"`
-	Data     []byte `json:"data"`
-	MIMEType string `json:"mime_type"`
-	Filename string `json:"filename"`
+	Type     string `json:"type,omitempty"`
+	Text     string `json:"text,omitempty"`
+	ImageURL string `json:"image_url,omitempty"`
+	Data     []byte `json:"data,omitempty"`
+	MIMEType string `json:"mime_type,omitempty"`
+	Filename string `json:"filename,omitempty"`
 }
 
 type discordMessageSnapshot struct {
-	ID               string                           `json:"id"`
-	ChannelID        string                           `json:"channel_id"`
-	GuildID          string                           `json:"guild_id"`
-	Type             int                              `json:"type"`
-	Content          string                           `json:"content"`
-	Author           *discordUserSnapshot             `json:"author"`
-	MentionUserIDs   []string                         `json:"mention_user_ids"`
-	Attachments      []discordAttachmentSnapshot      `json:"attachments"`
-	Embeds           []discordEmbedSnapshot           `json:"embeds"`
-	MessageReference *discordMessageReferenceSnapshot `json:"message_reference"`
+	ID               string                           `json:"id,omitempty"`
+	ChannelID        string                           `json:"channel_id,omitempty"`
+	GuildID          string                           `json:"guild_id,omitempty"`
+	Type             int                              `json:"type,omitempty"`
+	Content          string                           `json:"content,omitempty"`
+	Author           *discordUserSnapshot             `json:"author,omitempty"`
+	MentionUserIDs   []string                         `json:"mention_user_ids,omitempty"`
+	Attachments      []discordAttachmentSnapshot      `json:"attachments,omitempty"`
+	Embeds           []discordEmbedSnapshot           `json:"embeds,omitempty"`
+	MessageReference *discordMessageReferenceSnapshot `json:"message_reference,omitempty"`
 }
 
 type discordUserSnapshot struct {
-	ID  string `json:"id"`
-	Bot bool   `json:"bot"`
+	ID  string `json:"id,omitempty"`
+	Bot bool   `json:"bot,omitempty"`
 }
 
 type discordAttachmentSnapshot struct {
-	Filename    string `json:"filename"`
-	ContentType string `json:"content_type"`
-	URL         string `json:"url"`
+	Filename    string `json:"filename,omitempty"`
+	ContentType string `json:"content_type,omitempty"`
+	URL         string `json:"url,omitempty"`
 }
 
 type discordEmbedSnapshot struct {
-	Title       string `json:"title"`
-	Description string `json:"description"`
-	FooterText  string `json:"footer_text"`
+	Title       string `json:"title,omitempty"`
+	Description string `json:"description,omitempty"`
+	FooterText  string `json:"footer_text,omitempty"`
 }
 
 type discordMessageReferenceSnapshot struct {
-	MessageID string `json:"message_id"`
-	ChannelID string `json:"channel_id"`
-	GuildID   string `json:"guild_id"`
+	MessageID string `json:"message_id,omitempty"`
+	ChannelID string `json:"channel_id,omitempty"`
+	GuildID   string `json:"guild_id,omitempty"`
 }
 
 type messageNodeStoreBackend interface {
@@ -147,6 +156,8 @@ func newPostgresMessageNodeStoreBackend(
 		return nil, fmt.Errorf("open postgres message history database: %w", err)
 	}
 
+	configurePostgresMessageNodeStorePool(database)
+
 	err = database.PingContext(ctx)
 	if err != nil {
 		_ = database.Close()
@@ -167,6 +178,17 @@ func newPostgresMessageNodeStoreBackend(
 	return backend, nil
 }
 
+func configurePostgresMessageNodeStorePool(database *sql.DB) {
+	if database == nil {
+		return
+	}
+
+	database.SetMaxOpenConns(postgresMessageNodeStoreMaxOpenConns)
+	database.SetMaxIdleConns(postgresMessageNodeStoreMaxIdleConns)
+	database.SetConnMaxLifetime(postgresMessageNodeStoreConnMaxLifetime)
+	database.SetConnMaxIdleTime(postgresMessageNodeStoreConnMaxIdleTime)
+}
+
 func ensureMessageNodeStoreTable(ctx context.Context, database *sql.DB) error {
 	_, err := database.ExecContext(ctx, messageNodeStoreCreateTableSQL)
 	if err != nil {
@@ -184,8 +206,11 @@ func (backend *postgresMessageNodeStoreBackend) loadSnapshot(
 
 	var snapshotBytes []byte
 
+	loadCtx, cancelLoad := context.WithTimeout(context.Background(), postgresMessageNodeStoreStatementTimeout)
+	defer cancelLoad()
+
 	err := backend.database.QueryRowContext(
-		context.Background(),
+		loadCtx,
 		messageNodeStoreSelectSQL,
 		storeKey,
 	).Scan(
@@ -235,8 +260,11 @@ func (backend *postgresMessageNodeStoreBackend) saveSnapshot(
 		return fmt.Errorf("encode message history snapshot JSON: %w", err)
 	}
 
+	saveCtx, cancelSave := context.WithTimeout(context.Background(), postgresMessageNodeStoreStatementTimeout)
+	defer cancelSave()
+
 	_, err = backend.database.ExecContext(
-		context.Background(),
+		saveCtx,
 		messageNodeStoreUpsertSQL,
 		storeKey,
 		snapshot.Version,
@@ -265,8 +293,11 @@ func (backend *postgresMessageNodeStoreBackend) saveSnapshot(
 		)
 	}
 
+	retryCtx, cancelRetry := context.WithTimeout(context.Background(), postgresMessageNodeStoreStatementTimeout)
+	defer cancelRetry()
+
 	_, retryErr := backend.database.ExecContext(
-		context.Background(),
+		retryCtx,
 		messageNodeStoreUpsertSQL,
 		storeKey,
 		snapshot.Version,
@@ -395,34 +426,82 @@ func trimSnapshotToFit(nodes map[string]messageNodeSnapshot, maxBytes int) map[s
 		return maps.Clone(nodes)
 	}
 
-	current := maps.Clone(nodes)
-
-	for len(current) > 0 {
-		sanitizedPayload := sanitizeMessageNodeSnapshotPayload(messageNodeSnapshotPayload{Nodes: current})
-
-		payloadBytes, err := json.Marshal(sanitizedPayload)
-		if err != nil {
-			return current
-		}
-
-		if len(payloadBytes) <= maxBytes {
-			return current
-		}
-
-		if len(current) == 1 {
-			return truncateSingleHugeNodeToFit(current, maxBytes)
-		}
-
-		messageIDs := make([]string, 0, len(current))
-		for messageID := range current {
-			messageIDs = append(messageIDs, messageID)
-		}
-
-		slices.SortFunc(messageIDs, compareMessageIDs)
-		delete(current, messageIDs[0])
+	if len(nodes) == 0 {
+		return maps.Clone(nodes)
 	}
 
-	return current
+	if marshaledSizeFits(nodes, maxBytes) {
+		return maps.Clone(nodes)
+	}
+
+	if len(nodes) == 1 {
+		return truncateSingleHugeNodeToFit(maps.Clone(nodes), maxBytes)
+	}
+
+	messageIDs := make([]string, 0, len(nodes))
+	for messageID := range nodes {
+		messageIDs = append(messageIDs, messageID)
+	}
+
+	slices.SortFunc(messageIDs, compareMessageIDs)
+
+	// Dropping an oldest-prefix only shrinks the JSON payload, so the fit is
+	// monotonic in the drop count. Binary-search the smallest prefix drop that
+	// fits instead of re-marshaling after every single eviction.
+	low, high := 1, len(messageIDs)
+	best := len(messageIDs)
+
+	for low <= high {
+		mid := (low + high) / trimSnapshotBinarySearchDivisor
+		kept := make(map[string]messageNodeSnapshot, len(nodes)-mid)
+
+		for _, messageID := range messageIDs[mid:] {
+			kept[messageID] = nodes[messageID]
+		}
+
+		if len(kept) == 1 {
+			truncated := truncateSingleHugeNodeToFit(kept, maxBytes)
+			if marshaledSizeFits(truncated, maxBytes) {
+				return truncated
+			}
+
+			low = mid + 1
+
+			continue
+		}
+
+		if marshaledSizeFits(kept, maxBytes) {
+			best = mid
+			high = mid - 1
+		} else {
+			low = mid + 1
+		}
+	}
+
+	if best >= len(messageIDs) {
+		// Only the newest node could fit; truncate it to the byte budget.
+		kept := map[string]messageNodeSnapshot{messageIDs[len(messageIDs)-1]: nodes[messageIDs[len(messageIDs)-1]]}
+
+		return truncateSingleHugeNodeToFit(kept, maxBytes)
+	}
+
+	kept := make(map[string]messageNodeSnapshot, len(nodes)-best)
+	for _, messageID := range messageIDs[best:] {
+		kept[messageID] = nodes[messageID]
+	}
+
+	return kept
+}
+
+func marshaledSizeFits(nodes map[string]messageNodeSnapshot, maxBytes int) bool {
+	sanitizedPayload := sanitizeMessageNodeSnapshotPayload(messageNodeSnapshotPayload{Nodes: nodes})
+
+	payloadBytes, err := json.Marshal(sanitizedPayload)
+	if err != nil {
+		return true
+	}
+
+	return len(payloadBytes) <= maxBytes
 }
 
 func truncateStringToBytes(value string, maxBytes int) string {
@@ -707,6 +786,10 @@ func sanitizePostgresJSONStrings(values []string) []string {
 }
 
 func sanitizePostgresJSONString(value string) string {
+	if strings.IndexByte(value, 0) == -1 && utf8.ValidString(value) {
+		return value
+	}
+
 	sanitizedValue := strings.ToValidUTF8(value, postgresJSONTextReplacement)
 
 	return strings.ReplaceAll(
@@ -791,6 +874,8 @@ func (store *messageNodeStore) persistBestEffort() {
 		return
 	}
 
+	store.dirty.Store(true)
+
 	store.saveWorkerMu.Lock()
 	saveRequests := store.saveRequests
 	store.saveWorkerMu.Unlock()
@@ -806,22 +891,23 @@ func (store *messageNodeStore) persistBestEffort() {
 }
 
 func (store *messageNodeStore) persist() error {
-	if strings.TrimSpace(store.storeKey) == "" {
+	if strings.TrimSpace(store.storeKey) == "" || store.backend == nil {
 		return nil
 	}
 
 	store.saveMu.Lock()
 	defer store.saveMu.Unlock()
 
-	snapshot := store.snapshot()
-	fittedNodes := trimSnapshotToFit(snapshot.Nodes, messageNodeStorePersistSafeMaxBytes)
-	fittedSnapshot := messageNodeStoreSnapshot{
-		Version: snapshot.Version,
-		Nodes:   fittedNodes,
+	if !store.dirty.Swap(false) {
+		return nil
 	}
 
-	err := store.backend.saveSnapshot(store.storeKey, fittedSnapshot)
+	snapshot := store.snapshot()
+
+	err := store.backend.saveSnapshot(store.storeKey, snapshot)
 	if err != nil {
+		store.dirty.Store(true)
+
 		return annotateMessageHistoryPersistenceError(
 			"persist message history",
 			store.storeKey,
@@ -829,7 +915,13 @@ func (store *messageNodeStore) persist() error {
 		)
 	}
 
-	store.setSnapshotCache(fittedNodes)
+	if store.dirty.Load() {
+		// Mutated during the write: the cache already holds fresher entries
+		// than this snapshot, so leave them and stay dirty for the next flush.
+		return nil
+	}
+
+	store.setSnapshotCache(snapshot.Nodes)
 
 	return nil
 }
@@ -889,6 +981,7 @@ func (store *messageNodeStore) cacheLockedNodeLocked(messageID string, node *mes
 	store.snapshotMu.Lock()
 	store.snapshotCache[trimmedMessageID] = snapshot
 	store.snapshotMu.Unlock()
+	store.dirty.Store(true)
 }
 
 func (store *messageNodeStore) deleteCachedSnapshot(messageID string) {
@@ -904,6 +997,7 @@ func (store *messageNodeStore) deleteCachedSnapshot(messageID string) {
 	store.snapshotMu.Lock()
 	delete(store.snapshotCache, trimmedMessageID)
 	store.snapshotMu.Unlock()
+	store.dirty.Store(true)
 }
 
 func (store *messageNodeStore) snapshotCacheCopy() map[string]messageNodeSnapshot {

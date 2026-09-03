@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -35,6 +37,26 @@ func BenchmarkCompareMessageIDs(b *testing.B) {
 
 	for range b.N {
 		_ = compareMessageIDs(left, right)
+	}
+}
+
+func BenchmarkEncodeMessageNodeSnapshotJSON(b *testing.B) {
+	nodes := make(map[string]messageNodeSnapshot, maxMessageNodes)
+
+	for i := range maxMessageNodes {
+		digits := strconv.Itoa(i)
+		id := strings.Repeat("0", 19-len(digits)) + digits
+		nodes[id] = messageNodeSnapshot{
+			Role:        messageRoleUser,
+			Text:        "benchmark message text for snapshot encoding",
+			Initialized: true,
+		}
+	}
+
+	b.ResetTimer()
+
+	for range b.N {
+		_, _ = encodeMessageNodeSnapshotJSON(nodes)
 	}
 }
 

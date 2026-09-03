@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
@@ -43,6 +44,7 @@ type messageNodeStore struct {
 	persistDelay  time.Duration
 	snapshotMu    sync.Mutex
 	snapshotCache map[string]messageNodeSnapshot
+	dirty         atomic.Bool
 }
 
 // Get returns the message node for a message ID (NodeStore adapter).
