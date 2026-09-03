@@ -739,3 +739,77 @@ func TestMessageContentOptionsAllowsDocumentPartRespectsAllowedMIMETypes(t *test
 		t.Fatalf("expected DOCX part to be disallowed: %#v", docxPart)
 	}
 }
+
+func TestBuildMessageContentStripsThinkingWrapperFromAssistantHistory(t *testing.T) {
+	t.Parallel()
+
+	node := new(messageNode)
+	node.role = messageRoleAssistant
+	node.text = visibleResponseText("Plan first.", "Final answer.")
+
+	content, _ := buildMessageContent(node, messageContentOptions{
+		maxImages:                0,
+		allowAudio:               false,
+		allowDocuments:           false,
+		allowFiles:               false,
+		allowedDocumentMIMETypes: nil,
+		allowVideo:               false,
+	})
+
+	contentText, ok := content.(string)
+	if !ok {
+		t.Fatalf("unexpected content type: %T", content)
+	}
+
+	if contentText != "Final answer." {
+		t.Fatalf("expected answer-only assistant history, got %q", contentText)
+	}
+}
+
+func TestBuildMessageContentOmitsThinkingOnlyAssistantHistory(t *testing.T) {
+	t.Parallel()
+
+	node := new(messageNode)
+	node.role = messageRoleAssistant
+	node.text = visibleResponseText("Plan first.", "")
+
+	content, _ := buildMessageContent(node, messageContentOptions{
+		maxImages:                0,
+		allowAudio:               false,
+		allowDocuments:           false,
+		allowFiles:               false,
+		allowedDocumentMIMETypes: nil,
+		allowVideo:               false,
+	})
+	if content != nil {
+		t.Fatalf("expected thinking-only history to be omitted, got %#v", content)
+	}
+}
+
+func TestBuildMessageContentPreservesUserThinkingLikeText(t *testing.T) {
+	t.Parallel()
+
+	const userText = "**Thinking**\nPlan first.\n\n**Answer**\nFinal answer."
+
+	node := new(messageNode)
+	node.role = messageRoleUser
+	node.text = userText
+
+	content, _ := buildMessageContent(node, messageContentOptions{
+		maxImages:                0,
+		allowAudio:               false,
+		allowDocuments:           false,
+		allowFiles:               false,
+		allowedDocumentMIMETypes: nil,
+		allowVideo:               false,
+	})
+
+	contentText, ok := content.(string)
+	if !ok {
+		t.Fatalf("unexpected content type: %T", content)
+	}
+
+	if contentText != userText {
+		t.Fatalf("expected user text preserved, got %q", contentText)
+	}
+}

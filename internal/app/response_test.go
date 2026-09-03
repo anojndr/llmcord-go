@@ -215,6 +215,86 @@ func TestVisibleResponseSegmentsOmitsThinking(t *testing.T) {
 	}
 }
 
+func TestSplitInlineThinkingAnswer(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name         string
+		raw          string
+		wantThinking string
+		wantAnswer   string
+	}{
+		{
+			name:         "thinking and answer",
+			raw:          "**Thinking**\nPlan first.\n\n**Answer**\nFinal answer.",
+			wantThinking: "Plan first.",
+			wantAnswer:   "Final answer.",
+		},
+		{
+			name:         "thinking only without separator",
+			raw:          "**Thinking**\nPlan first.",
+			wantThinking: "Plan first.",
+			wantAnswer:   "",
+		},
+		{
+			name:         "normal answer untouched",
+			raw:          "Final answer.",
+			wantThinking: "",
+			wantAnswer:   "Final answer.",
+		},
+		{
+			name:         "bold answer untouched",
+			raw:          "**bold** text",
+			wantThinking: "",
+			wantAnswer:   "**bold** text",
+		},
+		{
+			name:         "partial thinking marker withheld",
+			raw:          "**Th",
+			wantThinking: "",
+			wantAnswer:   "",
+		},
+		{
+			name:         "partial answer separator withheld",
+			raw:          "**Thinking**\nPlan first.\n\n**Answer**",
+			wantThinking: "Plan first.",
+			wantAnswer:   "",
+		},
+	}
+
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			thinking, answer := splitInlineThinkingAnswer(testCase.raw)
+			if thinking != testCase.wantThinking {
+				t.Fatalf("unexpected thinking: got %q want %q", thinking, testCase.wantThinking)
+			}
+
+			if answer != testCase.wantAnswer {
+				t.Fatalf("unexpected answer: got %q want %q", answer, testCase.wantAnswer)
+			}
+		})
+	}
+}
+
+func TestAssistantHistoryAnswerTextStripsWrapper(t *testing.T) {
+	t.Parallel()
+
+	storedText := visibleResponseText("Plan first.", "Final answer.")
+	if answer := assistantHistoryAnswerText(storedText); answer != "Final answer." {
+		t.Fatalf("unexpected history answer: %q", answer)
+	}
+
+	if answer := assistantHistoryAnswerText("Final answer."); answer != "Final answer." {
+		t.Fatalf("unexpected passthrough history answer: %q", answer)
+	}
+
+	if answer := assistantHistoryAnswerText(visibleResponseText("Plan first.", "")); answer != "" {
+		t.Fatalf("expected empty history answer, got %q", answer)
+	}
+}
+
 func TestBuildResponseButtonsGistButtonLabel(t *testing.T) {
 	t.Parallel()
 
@@ -1640,6 +1720,354 @@ func TestGenerateAndSendResponseDoesNotStreamThinkingOnlyFinalAnswer(t *testing.
 	}
 }
 
+func TestGenerateAndSendResponseStripsInlineThinkingPrefix(t *testing.T) {
+	t.Parallel()
+
+	const (
+		botUserID          = "bot-user"
+		channelID          = "channel-1"
+		userID             = "user-1"
+		sourceMessageID    = "user-message-1"
+		assistantMessageID = "assistant-message-1"
+		thoughtText        = "Plan first."
+		answerText         = "Final answer."
+	)
+
+	inlineDeltas := []streamDelta{
+		{
+			Thinking:     "",
+			Content:      "**Thinking**\n" + thoughtText + "\n\n**Answer**\n" + answerText,
+			FinishReason: "",
+		},
+		{
+			Thinking:     "",
+			Content:      "",
+			FinishReason: finishReasonStop,
+		},
+	}
+
+	chunkedDeltas := []streamDelta{
+		{Thinking: "", Content: "**Th"},
+		{Thinking: "", Content: "inking**\nPlan"},
+		{Thinking: "", Content: " first.\n\n**An"},
+		{Thinking: "", Content: "swer**\n" + answerText},
+		{Thinking: "", Content: "", FinishReason: finishReasonStop},
+	}
+
+	for _, testCase := range []struct {
+		name   string
+		deltas []streamDelta
+	}{
+		{name: "single delta", deltas: inlineDeltas},
+		{name: "split across chunks", deltas: chunkedDeltas},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			assertInlineThinkingPrefixStripped(
+				t,
+				testCase.deltas,
+				sourceMessageID,
+				assistantMessageID,
+				channelID,
+				userID,
+				botUserID,
+				thoughtText,
+				answerText,
+			)
+		})
+	}
+}
+
+func assertInlineThinkingPrefixStripped(
+	t *testing.T,
+	deltas []streamDelta,
+	sourceMessageID string,
+	assistantMessageID string,
+	channelID string,
+	userID string,
+	botUserID string,
+	thoughtText string,
+	answerText string,
+) {
+	t.Helper()
+
+	sourceMessage := newPromptMessage(sourceMessageID, channelID, userID, botUserID)
+	assistantMessage := newAssistantReplyMessage(
+		assistantMessageID,
+		newDiscordUser(botUserID, true),
+		sourceMessage,
+	)
+	messageDescriptions := make([]string, 0, 2)
+	patchDescriptions := make([]string, 0, 2)
+	messageSendCount := 0
+	session := newPartialFailureResponseSession(
+		t,
+		channelID,
+		botUserID,
+		assistantMessage,
+		&messageDescriptions,
+		&patchDescriptions,
+		&messageSendCount,
+	)
+
+	instance := new(bot)
+	instance.session = session
+	instance.nodes = newMessageNodeStore(10)
+	instance.chatCompletions = fakeChatCompletionClient{
+		deltas: deltas,
+	}
+
+	tracker := newResponseTracker(sourceMessage, "")
+
+	err := instance.generateAndSendResponse(
+		context.Background(),
+		config{},
+		chatCompletionRequest{},
+		tracker,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("generate and send response: %v", err)
+	}
+
+	assertInlineThinkingNotRendered(t, messageDescriptions, patchDescriptions, thoughtText)
+	assertInlineThinkingStored(t, instance, tracker, assistantMessage, userID, channelID, thoughtText, answerText)
+}
+
+func assertInlineThinkingNotRendered(
+	t *testing.T,
+	messageDescriptions []string,
+	patchDescriptions []string,
+	thoughtText string,
+) {
+	t.Helper()
+
+	if len(messageDescriptions) == 0 {
+		t.Fatal("expected rendered response message")
+	}
+
+	for _, rendered := range append(append([]string{}, messageDescriptions...), patchDescriptions...) {
+		if containsFold(rendered, thoughtText) {
+			t.Fatalf("expected rendered response without inline thinking: %q", rendered)
+		}
+
+		if containsFold(rendered, "**Thinking**") || containsFold(rendered, "**Answer**") {
+			t.Fatalf("expected rendered response without thinking markers: %q", rendered)
+		}
+	}
+}
+
+func assertInlineThinkingStored(
+	t *testing.T,
+	instance *bot,
+	tracker *responseTracker,
+	assistantMessage *discordgo.Message,
+	userID string,
+	channelID string,
+	thoughtText string,
+	answerText string,
+) {
+	t.Helper()
+
+	if len(tracker.pendingResponses) != 1 {
+		t.Fatalf("unexpected pending response count: %d", len(tracker.pendingResponses))
+	}
+
+	pending := tracker.pendingResponses[0]
+	if strings.TrimSpace(pending.node.thinkingText) != thoughtText {
+		t.Fatalf("unexpected stored thinking: %q", pending.node.thinkingText)
+	}
+
+	expectedStoredText := visibleResponseText(thoughtText, answerText)
+	if pending.node.text != expectedStoredText {
+		t.Fatalf("unexpected stored assistant text: %q", pending.node.text)
+	}
+
+	var contentOptions messageContentOptions
+
+	followUpMessage := newFollowUpReplyMessage("user-message-2", channelID, userID, assistantMessage)
+
+	conversation, warnings := instance.buildConversation(
+		context.Background(),
+		followUpMessage,
+		contentOptions,
+		defaultMaxMessages,
+		false,
+		false,
+	)
+	if len(warnings) != 0 {
+		t.Fatalf("unexpected warnings: %#v", warnings)
+	}
+
+	assertConversationHistory(t, conversation, answerText)
+}
+
+func TestRunGenerationRoundStripsInlineMarkersAfterPrefillBase(t *testing.T) {
+	t.Parallel()
+
+	const (
+		botUserID          = "bot-user"
+		channelID          = "channel-1"
+		userID             = "user-1"
+		sourceMessageID    = "user-message-1"
+		assistantMessageID = "assistant-message-1"
+	)
+
+	sourceMessage := newPromptMessage(sourceMessageID, channelID, userID, botUserID)
+	assistantMessage := newAssistantReplyMessage(
+		assistantMessageID,
+		newDiscordUser(botUserID, true),
+		sourceMessage,
+	)
+	messageDescriptions := make([]string, 0, 2)
+	patchDescriptions := make([]string, 0, 2)
+	messageSendCount := 0
+	session := newPartialFailureResponseSession(
+		t,
+		channelID,
+		botUserID,
+		assistantMessage,
+		&messageDescriptions,
+		&patchDescriptions,
+		&messageSendCount,
+	)
+
+	instance := new(bot)
+	instance.session = session
+	instance.nodes = newMessageNodeStore(10)
+	instance.chatCompletions = fakeChatCompletionClient{
+		deltas: []streamDelta{
+			newStreamDelta("**Thinking**\nFollow-up plan.\n\n**Answer**\nFollow-up answer.", ""),
+			newStreamDelta("", finishReasonStop),
+		},
+	}
+
+	tracker := newResponseTracker(sourceMessage, "")
+	prefill := generatedPrefill{rawAnswer: "Partial answer. ", thinking: "Earlier plan. "}
+
+	round, _, err := instance.runGenerationRound(
+		context.Background(),
+		chatCompletionRequest{},
+		tracker,
+		nil,
+		prefill,
+	)
+	if err != nil {
+		t.Fatalf("run generation round: %v", err)
+	}
+
+	if containsFold(round.rawAnswer, "**Thinking**") || containsFold(round.rawAnswer, "**Answer**") {
+		t.Fatalf("expected follow-up markers stripped, got %q", round.rawAnswer)
+	}
+
+	if !containsFold(round.rawAnswer, "Follow-up answer.") {
+		t.Fatalf("expected follow-up answer preserved, got %q", round.rawAnswer)
+	}
+
+	if !containsFold(round.thinking, "Follow-up plan.") {
+		t.Fatalf("expected follow-up thinking routed to thinking channel, got %q", round.thinking)
+	}
+
+	if !containsFold(round.thinking, "Earlier plan.") {
+		t.Fatalf("expected prefill thinking preserved, got %q", round.thinking)
+	}
+}
+
+func TestGenerateAndSendResponseStripsInlineThinkingWithBridgeAppendix(t *testing.T) {
+	t.Parallel()
+
+	const (
+		botUserID          = "bot-user"
+		channelID          = "channel-1"
+		userID             = "user-1"
+		sourceMessageID    = "user-message-1"
+		assistantMessageID = "assistant-message-1"
+		answerText         = "Answer text."
+		thoughtText        = "Plan first."
+		sourceURL          = "https://example.com/source"
+	)
+
+	sourceMessage := newPromptMessage(sourceMessageID, channelID, userID, botUserID)
+	assistantMessage := newAssistantReplyMessage(
+		assistantMessageID,
+		newDiscordUser(botUserID, true),
+		sourceMessage,
+	)
+
+	messageDescriptions := make([]string, 0, 2)
+	patchDescriptions := make([]string, 0, 2)
+	messageSendCount := 0
+	session := newPartialFailureResponseSession(
+		t,
+		channelID,
+		botUserID,
+		assistantMessage,
+		&messageDescriptions,
+		&patchDescriptions,
+		&messageSendCount,
+	)
+
+	instance := new(bot)
+	instance.session = session
+	instance.nodes = newMessageNodeStore(10)
+	instance.chatCompletions = fakeChatCompletionClient{
+		deltas: newInlineThinkingAppendixDeltas(thoughtText, answerText, sourceURL),
+	}
+
+	tracker := newResponseTracker(sourceMessage, "")
+
+	err := instance.generateAndSendResponse(
+		context.Background(),
+		config{},
+		chatCompletionRequest{},
+		tracker,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("generate and send response: %v", err)
+	}
+
+	assertInlineThinkingNotRendered(t, messageDescriptions, patchDescriptions, thoughtText)
+	assertRenderedDescriptionsHideSources(
+		t,
+		sourceURL,
+		append(messageDescriptions, patchDescriptions...),
+	)
+
+	if len(tracker.pendingResponses) != 1 {
+		t.Fatalf("unexpected pending response count: %d", len(tracker.pendingResponses))
+	}
+
+	pending := tracker.pendingResponses[0]
+	if strings.TrimSpace(pending.node.thinkingText) != thoughtText {
+		t.Fatalf("unexpected stored thinking: %q", pending.node.thinkingText)
+	}
+
+	expectedStoredText := visibleResponseText(thoughtText, answerText)
+	if pending.node.text != expectedStoredText {
+		t.Fatalf("unexpected stored assistant text: %q", pending.node.text)
+	}
+
+	if pending.node.searchMetadata == nil || len(pending.node.searchMetadata.Results) != 1 {
+		t.Fatalf("expected parsed source metadata on stored node: %#v", pending.node.searchMetadata)
+	}
+}
+
+func newInlineThinkingAppendixDeltas(thoughtText, answerText, sourceURL string) []streamDelta {
+	return []streamDelta{
+		newStreamDelta("**Thinking**\n"+thoughtText+"\n\n**Answer**\n"+answerText, ""),
+		newStreamDelta("\n", ""),
+		newStreamDelta("\n### ", ""),
+		newStreamDelta("Sources:\n1. [Example Source]("+sourceURL+")", ""),
+		newStreamDelta(
+			" (example.com/source) via `latest ai news`\n\nSearch Queries\n1. `latest ai news`\n",
+			"",
+		),
+		newStreamDelta("", finishReasonStop),
+	}
+}
+
 func TestGenerateAndSendResponseDoesNotStreamBridgeSourceAppendix(t *testing.T) {
 	t.Parallel()
 
@@ -2055,7 +2483,7 @@ func TestGenerateAndSendResponsePersistsThinkingInConversationHistory(t *testing
 	assertConversationHistory(
 		t,
 		conversation,
-		visibleResponseText(thoughtText, answerText),
+		answerText,
 	)
 }
 

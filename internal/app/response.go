@@ -134,6 +134,69 @@ func extractThinkingText(fullText string) string {
 	return strings.TrimSpace(thinkingOnly)
 }
 
+// splitInlineThinkingAnswer separates a model-emitted "**Thinking** ...
+// **Answer** ..." prefix in Content from the visible answer. Provider-native
+// reasoning arrives on the Thinking channel and never hits Content, but
+// stored history used to feed the "**Thinking**/**Answer**" wrapper back to
+// the model, teaching it to reproduce the markers inline. The split is
+// streaming-safe: a marker fragment or a trailing partial "**Answer**"
+// separator is withheld until more deltas arrive, so thinking never flashes
+// into the visible answer.
+func splitInlineThinkingAnswer(raw string) (string, string) {
+	if strings.TrimSpace(raw) == "" {
+		return "", ""
+	}
+
+	trimmedLeading := strings.TrimLeft(raw, " \t\r\n")
+	if trimmedLeading == "" {
+		return "", ""
+	}
+
+	if len(trimmedLeading) < len(thinkingResponsePrefix) {
+		if strings.HasPrefix(thinkingResponsePrefix, trimmedLeading) {
+			return "", ""
+		}
+
+		return "", raw
+	}
+
+	if !strings.HasPrefix(trimmedLeading, thinkingResponsePrefix) {
+		return "", raw
+	}
+
+	body := strings.TrimPrefix(trimmedLeading, thinkingResponsePrefix)
+	if thinking, answer, found := strings.Cut(body, answerResponseSeparator); found {
+		return thinking, answer
+	}
+
+	if pending := trailingSeparatorPrefixLength(body, answerResponseSeparator); pending > 0 {
+		return body[:len(body)-pending], ""
+	}
+
+	return body, ""
+}
+
+// assistantHistoryAnswerText returns the answer-only text fed to the model
+// for an assistant history turn. Stored assistant text uses the
+// "**Thinking**/**Answer**" wrapper; sending it verbatim teaches the model
+// to reproduce the markers inline.
+func assistantHistoryAnswerText(fullText string) string {
+	_, answer := splitInlineThinkingAnswer(fullText)
+
+	return answer
+}
+
+func trailingSeparatorPrefixLength(text, separator string) int {
+	maxLength := min(len(text), len(separator)-1)
+	for length := maxLength; length > 0; length-- {
+		if strings.HasSuffix(text, separator[:length]) {
+			return length
+		}
+	}
+
+	return 0
+}
+
 func visibleResponseSegments(answerText string, maxLength int) []string {
 	if answerText == "" {
 		return nil
@@ -222,15 +285,17 @@ func (instance *bot) runGenerationRound(
 	lastRenderTime := time.Time{}
 
 	streamState := generatedStreamState{
-		request:             request,
-		warnings:            warnings,
-		answerAccumulator:   &accumulator,
-		thinkingAccumulator: &thinkingAccumulator,
-		finishReason:        &finishReason,
-		lastRenderTime:      &lastRenderTime,
-		rawAnswerText:       "",
-		renderedAnswerText:  "",
-		toolCalls:           nil,
+		request:                request,
+		warnings:               warnings,
+		answerAccumulator:      &accumulator,
+		thinkingAccumulator:    &thinkingAccumulator,
+		finishReason:           &finishReason,
+		lastRenderTime:         &lastRenderTime,
+		rawAnswerText:          "",
+		renderedAnswerText:     "",
+		inlineThinkingRendered: "",
+		inlineBaseLength:       0,
+		toolCalls:              nil,
 	}
 
 	if prefill.rawAnswer != "" {
@@ -239,6 +304,8 @@ func (instance *bot) runGenerationRound(
 
 		_ = accumulator.appendText(streamState.renderedAnswerText)
 	}
+
+	streamState.inlineBaseLength = len(streamState.rawAnswerText)
 
 	if prefill.thinking != "" {
 		_ = thinkingAccumulator.appendText(prefill.thinking)
@@ -258,12 +325,18 @@ func (instance *bot) runGenerationRound(
 
 	if streamErr == nil && len(streamState.toolCalls) > 0 {
 		// Tool round: hand off to the web search phase without finalizing
-		// the response render. The round's text is stripped of any bridge
-		// source appendix first — carried raw, it would sit mid-text after
-		// concatenation with the follow-up round and make the final
-		// finalize treat the real answer as appendix content.
+		// the response render. The round's text is stripped of any inline
+		// "**Thinking**/**Answer**" prefix first, then of any bridge source
+		// appendix — carried raw, either would sit mid-text after
+		// concatenation with the follow-up round and leak into the visible
+		// answer or make the final finalize treat the real answer as
+		// appendix content.
+		appendUnstreamedInlineThinking(&streamState, &thinkingAccumulator)
+
+		_, inlineAnswer := roundInlineThinkingAndAnswer(&streamState)
+
 		roundAnswerText, parsedMetadata := providers.FinalizeBridgeSourceAppendixAnswer(
-			streamState.rawAnswerText,
+			inlineAnswer,
 			tracker.searchMetadata,
 		)
 
@@ -291,7 +364,8 @@ func (instance *bot) runGenerationRound(
 	)
 }
 
-// finalizeGenerationRound finalizes a non-tool streaming round: it strips the
+// finalizeGenerationRound finalizes a non-tool streaming round: it strips an
+// inline "**Thinking**/**Answer**" prefix into the thinking channel, then the
 // bridge source appendix, merges its metadata into the tracker, renders the
 // final embeds, and reports empty responses as errors.
 func (instance *bot) finalizeGenerationRound(
@@ -304,7 +378,12 @@ func (instance *bot) finalizeGenerationRound(
 	finishReason string,
 	streamErr error,
 ) (generatedRoundResult, string, error) {
-	finalAnswerText := streamState.rawAnswerText
+	appendUnstreamedInlineThinking(&streamState, thinkingAccumulator)
+
+	_, inlineAnswer := roundInlineThinkingAndAnswer(&streamState)
+
+	finalAnswerText := inlineAnswer
+
 	cleanedAnswerText, parsedSearchMetadata := providers.FinalizeBridgeSourceAppendixAnswer(
 		finalAnswerText,
 		tracker.searchMetadata,
@@ -648,15 +727,17 @@ func (instance *bot) attemptFallbackResponse(
 }
 
 type generatedStreamState struct {
-	request             chatCompletionRequest
-	warnings            []string
-	answerAccumulator   *segmentAccumulator
-	thinkingAccumulator *segmentAccumulator
-	finishReason        *string
-	lastRenderTime      *time.Time
-	rawAnswerText       string
-	renderedAnswerText  string
-	toolCalls           []providers.FunctionToolCall
+	request                chatCompletionRequest
+	warnings               []string
+	answerAccumulator      *segmentAccumulator
+	thinkingAccumulator    *segmentAccumulator
+	finishReason           *string
+	lastRenderTime         *time.Time
+	rawAnswerText          string
+	renderedAnswerText     string
+	inlineThinkingRendered string
+	inlineBaseLength       int
+	toolCalls              []providers.FunctionToolCall
 }
 
 func (instance *bot) handleGeneratedStreamDelta(
@@ -722,10 +803,34 @@ func (instance *bot) handleGeneratedStreamDelta(
 	return nil
 }
 
+// roundInlineThinkingAndAnswer splits the round-local stream tail — the bytes
+// after the tool prefill base — into thinking and full answer parts. The
+// prefill base is already-clean answer text from a prior tool round, so only
+// the tail can open a new inline "**Thinking**/**Answer**" block; splitting
+// the concatenated string would miss follow-up markers sitting mid-text.
+func roundInlineThinkingAndAnswer(streamState *generatedStreamState) (string, string) {
+	baseLength := min(streamState.inlineBaseLength, len(streamState.rawAnswerText))
+	base := streamState.rawAnswerText[:baseLength]
+	thinking, tailAnswer := splitInlineThinkingAnswer(streamState.rawAnswerText[baseLength:])
+
+	return thinking, base + tailAnswer
+}
+
 func (state *generatedStreamState) appendAnswerText(answerDelta string) (bool, error) {
 	state.rawAnswerText += answerDelta
 
-	visibleAnswerText := providers.StreamingBridgeSourceAppendixVisibleText(state.rawAnswerText)
+	inlineThinking, inlineAnswer := roundInlineThinkingAndAnswer(state)
+	if len(inlineThinking) > len(state.inlineThinkingRendered) &&
+		strings.HasPrefix(inlineThinking, state.inlineThinkingRendered) {
+		remainder := strings.TrimPrefix(inlineThinking, state.inlineThinkingRendered)
+		state.inlineThinkingRendered = inlineThinking
+
+		if remainder != "" {
+			_ = state.thinkingAccumulator.appendText(remainder)
+		}
+	}
+
+	visibleAnswerText := providers.StreamingBridgeSourceAppendixVisibleText(inlineAnswer)
 	if !strings.HasPrefix(visibleAnswerText, state.renderedAnswerText) {
 		return false, errStreamedAnswerVisibilityRegressed
 	}
@@ -738,6 +843,22 @@ func (state *generatedStreamState) appendAnswerText(answerDelta string) (bool, e
 	}
 
 	return state.answerAccumulator.appendText(renderedDelta), nil
+}
+
+func appendUnstreamedInlineThinking(
+	streamState *generatedStreamState,
+	thinkingAccumulator *segmentAccumulator,
+) {
+	inlineThinking, _ := roundInlineThinkingAndAnswer(streamState)
+	if len(inlineThinking) > len(streamState.inlineThinkingRendered) &&
+		strings.HasPrefix(inlineThinking, streamState.inlineThinkingRendered) {
+		remainder := strings.TrimPrefix(inlineThinking, streamState.inlineThinkingRendered)
+		streamState.inlineThinkingRendered = inlineThinking
+
+		if remainder != "" {
+			_ = thinkingAccumulator.appendText(remainder)
+		}
+	}
 }
 
 func responseTextWithError(responseText, errorText string) string {
