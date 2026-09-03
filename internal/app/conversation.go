@@ -181,8 +181,13 @@ func buildMessageContent(
 ) (any, messageContentSummary) {
 	selectedMedia, summary := selectMessageMedia(node.media, options)
 
+	historyText := node.text
+	if node.role == messageRoleAssistant {
+		historyText = assistantHistoryAnswerText(node.text)
+	}
+
 	text := appendInlineAttachmentText(
-		node.text,
+		historyText,
 		inlineTextAttachmentContent(node.media, options),
 	)
 
