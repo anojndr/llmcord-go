@@ -127,12 +127,14 @@ const (
 	defaultFirecrawlMaxMarkdownCharacters = 12000
 	// TinyFish latency bounds: per_url_timeout_ms caps each URL's
 	// server-side fetch+extract work (API default 110 s per URL, 120 s CDN
-	// ceiling per batch); the request timeouts cap wall clock per HTTP call
-	// so a stalled connection cannot hang search enrichment or website
-	// fetching.
-	tinyFishFetchPerURLTimeoutMS                  = 30000
+	// ceiling per batch) so one slow URL fails fast into errors[] instead of
+	// stalling the whole 10-URL batch; the fetch request timeout caps wall
+	// clock per HTTP call so a stalled connection cannot hang search
+	// enrichment or website fetching. ttl stays omitted so Fetch may serve
+	// any cached entry, the fastest server-side path.
+	tinyFishFetchPerURLTimeoutMS                  = 5000
 	tinyFishSearchRequestTimeout                  = 20 * time.Second
-	tinyFishFetchRequestTimeout                   = 60 * time.Second
+	tinyFishFetchRequestTimeout                   = 30 * time.Second
 	parallelSearchRequestTimeout                  = 20 * time.Second
 	parallelExtractRequestTimeout                 = 60 * time.Second
 	parallelExtractMaxURLsPerRequest              = 20
