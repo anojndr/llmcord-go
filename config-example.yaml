@@ -306,9 +306,11 @@ web_search:
     #   - tvly-backup-key
     api_key:
 
-  # Parallel — fast, high-quality search with dense excerpts
+  # Parallel — fast, high-quality search with dense excerpts + full content
   parallel:
-    # Optional. When set, search can use the Parallel Search API.
+    # Optional. When set, search uses the Parallel Search API and enriches
+    # every result with full content per URL via the Extract API
+    # (advanced_settings.full_content, same key as search).
     # `api_key` accepts a YAML list; requests are round-robin across them.
     # api_key:
     #   - pal-primary-key
