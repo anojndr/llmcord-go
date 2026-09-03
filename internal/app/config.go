@@ -285,19 +285,19 @@ type permissionsConfig struct {
 }
 
 type rawProviderConfig struct {
-	BaseURL                   scalarString     `yaml:"base_url"`
-	API                       scalarString     `yaml:"api"`
-	APIKey                    scalarStringList `yaml:"api_key"`
-	ReasoningEffort           scalarString     `yaml:"reasoning_effort"`
-	EnableGrounding           *bool            `yaml:"enable_grounding"`
-	DisableWebSearch          *bool            `yaml:"disable_search_decider"`
-	DontSendSystemPrompt      *bool            `yaml:"dont_send_system_prompt"`
-	AutoAppendSearchWeb       *bool            `yaml:"auto_append_search_web"`
-	AutoAppendShortAnswer     *bool            `yaml:"auto_append_short_answer"`
-	AutoAppendPrioritizeTruth *bool            `yaml:"auto_append_prioritize_truth"`
-	ExtraHeaders              map[string]any   `yaml:"extra_headers"`
-	ExtraQuery                map[string]any   `yaml:"extra_query"`
-	ExtraBody                 map[string]any   `yaml:"extra_body"`
+	BaseURL                     scalarString     `yaml:"base_url"`
+	API                         scalarString     `yaml:"api"`
+	APIKey                      scalarStringList `yaml:"api_key"`
+	ReasoningEffort             scalarString     `yaml:"reasoning_effort"`
+	EnableGrounding             *bool            `yaml:"enable_grounding"`
+	DisableWebSearch            *bool            `yaml:"disable_search_decider"`
+	DontSendSystemPrompt        *bool            `yaml:"dont_send_system_prompt"`
+	AutoAppendSearchWeb         *bool            `yaml:"auto_append_search_web"`
+	AutoAppendShortAnswer       *bool            `yaml:"auto_append_short_answer"`
+	AutoAppendDontBeSycophantic *bool            `yaml:"auto_append_dont_be_sycophantic"`
+	ExtraHeaders                map[string]any   `yaml:"extra_headers"`
+	ExtraQuery                  map[string]any   `yaml:"extra_query"`
+	ExtraBody                   map[string]any   `yaml:"extra_body"`
 }
 
 type rawTavilySearchConfig struct {
@@ -356,21 +356,21 @@ type rawGistConfig struct {
 }
 
 type providerConfig struct {
-	Name                      string
-	BaseURL                   string
-	API                       string
-	APIKey                    string
-	APIKeys                   []string
-	ReasoningEffort           string
-	EnableGrounding           bool
-	DisableWebSearch          bool
-	DontSendSystemPrompt      bool
-	AutoAppendSearchWeb       bool
-	AutoAppendShortAnswer     bool
-	AutoAppendPrioritizeTruth bool
-	ExtraHeaders              map[string]any
-	ExtraQuery                map[string]any
-	ExtraBody                 map[string]any
+	Name                        string
+	BaseURL                     string
+	API                         string
+	APIKey                      string
+	APIKeys                     []string
+	ReasoningEffort             string
+	EnableGrounding             bool
+	DisableWebSearch            bool
+	DontSendSystemPrompt        bool
+	AutoAppendSearchWeb         bool
+	AutoAppendShortAnswer       bool
+	AutoAppendDontBeSycophantic bool
+	ExtraHeaders                map[string]any
+	ExtraQuery                  map[string]any
+	ExtraBody                   map[string]any
 }
 
 type tavilySearchConfig struct {
@@ -778,21 +778,21 @@ func normalizeProviderConfig(providerName string, rawProvider rawProviderConfig)
 	reasoningEffort := strings.ToLower(strings.TrimSpace(string(rawProvider.ReasoningEffort)))
 
 	return providerConfig{
-		Name:                      strings.TrimSpace(providerName),
-		BaseURL:                   baseURL,
-		API:                       normalizedAPI,
-		APIKey:                    firstAPIKey(apiKeys),
-		APIKeys:                   apiKeys,
-		ReasoningEffort:           reasoningEffort,
-		EnableGrounding:           boolValueOrDefault(rawProvider.EnableGrounding, false),
-		DisableWebSearch:          boolValueOrDefault(rawProvider.DisableWebSearch, false),
-		DontSendSystemPrompt:      boolValueOrDefault(rawProvider.DontSendSystemPrompt, false),
-		AutoAppendSearchWeb:       boolValueOrDefault(rawProvider.AutoAppendSearchWeb, false),
-		AutoAppendShortAnswer:     boolValueOrDefault(rawProvider.AutoAppendShortAnswer, false),
-		AutoAppendPrioritizeTruth: boolValueOrDefault(rawProvider.AutoAppendPrioritizeTruth, false),
-		ExtraHeaders:              rawProvider.ExtraHeaders,
-		ExtraQuery:                rawProvider.ExtraQuery,
-		ExtraBody:                 rawProvider.ExtraBody,
+		Name:                        strings.TrimSpace(providerName),
+		BaseURL:                     baseURL,
+		API:                         normalizedAPI,
+		APIKey:                      firstAPIKey(apiKeys),
+		APIKeys:                     apiKeys,
+		ReasoningEffort:             reasoningEffort,
+		EnableGrounding:             boolValueOrDefault(rawProvider.EnableGrounding, false),
+		DisableWebSearch:            boolValueOrDefault(rawProvider.DisableWebSearch, false),
+		DontSendSystemPrompt:        boolValueOrDefault(rawProvider.DontSendSystemPrompt, false),
+		AutoAppendSearchWeb:         boolValueOrDefault(rawProvider.AutoAppendSearchWeb, false),
+		AutoAppendShortAnswer:       boolValueOrDefault(rawProvider.AutoAppendShortAnswer, false),
+		AutoAppendDontBeSycophantic: boolValueOrDefault(rawProvider.AutoAppendDontBeSycophantic, false),
+		ExtraHeaders:                rawProvider.ExtraHeaders,
+		ExtraQuery:                  rawProvider.ExtraQuery,
+		ExtraBody:                   rawProvider.ExtraBody,
 	}
 }
 

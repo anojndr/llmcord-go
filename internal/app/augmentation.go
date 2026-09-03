@@ -9,12 +9,12 @@ import (
 )
 
 var (
-	searchWebRE       = regexp.MustCompile(`(?i)\bsearch(?:\s+the)?\s+web\b`)
-	shortAnswerRE     = regexp.MustCompile(`(?i)\bshort\s+answer\b`)
-	prioritizeTruthRE = regexp.MustCompile(`(?i)\bprioritize\s+truth\s+over\s+agreeableness\b`)
+	searchWebRE         = regexp.MustCompile(`(?i)\bsearch(?:\s+the)?\s+web\b`)
+	shortAnswerRE       = regexp.MustCompile(`(?i)\bshort\s+answer\b`)
+	dontBeSycophanticRE = regexp.MustCompile(`(?i)\bdon['’]?t\s+be\s+sycophantic\b`)
 )
 
-const prioritizeTruthPhrase = "Prioritize truth over agreeableness — be direct, challenge flawed assumptions, and never offer unwarranted praise or validation."
+const dontBeSycophanticPhrase = "don't be sycophantic."
 
 const (
 	augmentedPromptPrefix        = "Answer the user's query based on "
@@ -580,8 +580,8 @@ func containsShortAnswerPhrase(text string) bool {
 	return shortAnswerRE.MatchString(text)
 }
 
-func containsPrioritizeTruthPhrase(text string) bool {
-	return prioritizeTruthRE.MatchString(text)
+func containsDontBeSycophanticPhrase(text string) bool {
+	return dontBeSycophanticRE.MatchString(text)
 }
 
 // userQueryFromContent extracts the UserQuery from a chatMessage Content value.
@@ -658,22 +658,22 @@ func maybeAppendShortAnswerToConversation(conversation []chatMessage) ([]chatMes
 	})
 }
 
-func maybeAppendPrioritizeTruthToConversation(conversation []chatMessage) ([]chatMessage, error) {
+func maybeAppendDontBeSycophanticToConversation(conversation []chatMessage) ([]chatMessage, error) {
 	userQuery, ok := latestUserQuery(conversation)
 	if !ok {
 		return conversation, nil
 	}
 
-	if containsPrioritizeTruthPhrase(userQuery) {
+	if containsDontBeSycophanticPhrase(userQuery) {
 		return conversation, nil
 	}
 
 	return appendContextToConversation(conversation, func(prompt *augmentedUserPrompt) {
-		if containsPrioritizeTruthPhrase(prompt.UserQuery) {
+		if containsDontBeSycophanticPhrase(prompt.UserQuery) {
 			return
 		}
 
-		prompt.UserQuery = appendPromptUserQuery(prompt.UserQuery, prioritizeTruthPhrase)
+		prompt.UserQuery = appendPromptUserQuery(prompt.UserQuery, dontBeSycophanticPhrase)
 	})
 }
 
@@ -725,11 +725,11 @@ func maybeAppendSearchWebAndShortAnswerToConversation(conversation []chatMessage
 // the branching used by both prepareMessageResponse and buildFallbackRequest
 // so the two request builders stay in sync. It supports any combination of
 // auto_append_search_web, auto_append_short_answer, and
-// auto_append_prioritize_truth, appending missing phrases together with a
+// auto_append_dont_be_sycophantic, appending missing phrases together with a
 // single paragraph break before the first and single newlines between them
-// (e.g. "search the web\nshort answer\n<prior truth>") to match the spec.
+// (e.g. "search the web\nshort answer\ndon't be sycophantic.") to match the spec.
 func applyAutoAppend(provider providerConfig, conversation []chatMessage) ([]chatMessage, error) {
-	if !provider.AutoAppendSearchWeb && !provider.AutoAppendShortAnswer && !provider.AutoAppendPrioritizeTruth {
+	if !provider.AutoAppendSearchWeb && !provider.AutoAppendShortAnswer && !provider.AutoAppendDontBeSycophantic {
 		return conversation, nil
 	}
 
@@ -740,7 +740,7 @@ func applyAutoAppend(provider providerConfig, conversation []chatMessage) ([]cha
 
 	hasSearch := !provider.AutoAppendSearchWeb || containsSearchWebPhrase(userQuery)
 	hasShort := !provider.AutoAppendShortAnswer || containsShortAnswerPhrase(userQuery)
-	hasTruth := !provider.AutoAppendPrioritizeTruth || containsPrioritizeTruthPhrase(userQuery)
+	hasTruth := !provider.AutoAppendDontBeSycophantic || containsDontBeSycophanticPhrase(userQuery)
 
 	if hasSearch && hasShort && hasTruth {
 		return conversation, nil
@@ -756,8 +756,8 @@ func applyAutoAppend(provider providerConfig, conversation []chatMessage) ([]cha
 			toAppend = append(toAppend, "short answer")
 		}
 
-		if provider.AutoAppendPrioritizeTruth && !containsPrioritizeTruthPhrase(prompt.UserQuery) {
-			toAppend = append(toAppend, prioritizeTruthPhrase)
+		if provider.AutoAppendDontBeSycophantic && !containsDontBeSycophanticPhrase(prompt.UserQuery) {
+			toAppend = append(toAppend, dontBeSycophanticPhrase)
 		}
 
 		if len(toAppend) == 0 {
