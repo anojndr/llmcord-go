@@ -52,9 +52,9 @@ func TestHandleModelCommandAllowsNonAdminSwitch(t *testing.T) {
 
 	configPath := writeModelConfig(t)
 
-	var response discordgo.InteractionResponse
+	var capture deferredInteractionCapture
 
-	session := newInteractionTestSession(t, &response)
+	session := newDeferredInteractionTestSession(t, &capture)
 	instance := newModelTestBot(configPath)
 	interaction := newModelCommandInteraction("member-user", secondTestModel)
 
@@ -67,13 +67,11 @@ func TestHandleModelCommandAllowsNonAdminSwitch(t *testing.T) {
 		t.Fatalf("unexpected current model: %q", instance.currentModel)
 	}
 
-	if response.Data == nil {
-		t.Fatal("expected interaction response data")
-	}
+	assertDeferredInteractionResponse(t, &capture.deferredResponse)
 
 	expectedContent := fmt.Sprintf("Model switched to: `%s`", secondTestModel)
-	if response.Data.Content != expectedContent {
-		t.Fatalf("unexpected response content: got %q want %q", response.Data.Content, expectedContent)
+	if capture.editedResponse.Content != expectedContent {
+		t.Fatalf("unexpected response content: got %q want %q", capture.editedResponse.Content, expectedContent)
 	}
 }
 
@@ -964,9 +962,9 @@ web_search:
 `,
 	)
 
-	var response discordgo.InteractionResponse
+	var capture deferredInteractionCapture
 
-	session := newInteractionTestSession(t, &response)
+	session := newDeferredInteractionTestSession(t, &capture)
 	instance := newModelTestBot(configPath)
 	interaction := newSearchTypeCommandInteraction("member-user", exaSearchTypeDeepReasoning)
 
@@ -979,13 +977,11 @@ web_search:
 		t.Fatalf("unexpected current Exa search type: %q", instance.currentExaSearchTypeValue)
 	}
 
-	if response.Data == nil {
-		t.Fatal("expected interaction response data")
-	}
+	assertDeferredInteractionResponse(t, &capture.deferredResponse)
 
 	expectedContent := fmt.Sprintf("Exa search type switched to: `%s`", exaSearchTypeDeepReasoning)
-	if response.Data.Content != expectedContent {
-		t.Fatalf("unexpected response content: got %q want %q", response.Data.Content, expectedContent)
+	if capture.editedResponse.Content != expectedContent {
+		t.Fatalf("unexpected response content: got %q want %q", capture.editedResponse.Content, expectedContent)
 	}
 }
 
@@ -994,9 +990,9 @@ func TestHandleSearchTypeCommandRejectsWhenExaAPIIsNotConfigured(t *testing.T) {
 
 	configPath := writeModelConfig(t)
 
-	var response discordgo.InteractionResponse
+	var capture deferredInteractionCapture
 
-	session := newInteractionTestSession(t, &response)
+	session := newDeferredInteractionTestSession(t, &capture)
 	instance := newModelTestBot(configPath)
 	interaction := newSearchTypeCommandInteraction("member-user", exaSearchTypeFast)
 
@@ -1009,13 +1005,11 @@ func TestHandleSearchTypeCommandRejectsWhenExaAPIIsNotConfigured(t *testing.T) {
 		t.Fatalf("unexpected current Exa search type: %q", instance.currentExaSearchTypeValue)
 	}
 
-	if response.Data == nil {
-		t.Fatal("expected interaction response data")
-	}
+	assertDeferredInteractionResponse(t, &capture.deferredResponse)
 
 	expectedContent := "Exa Search API is not configured. Set `web_search.exa.api_key` to use `/searchtype`."
-	if response.Data.Content != expectedContent {
-		t.Fatalf("unexpected response content: got %q want %q", response.Data.Content, expectedContent)
+	if capture.editedResponse.Content != expectedContent {
+		t.Fatalf("unexpected response content: got %q want %q", capture.editedResponse.Content, expectedContent)
 	}
 }
 
@@ -1090,9 +1084,9 @@ web_search:
 `,
 	)
 
-	var response discordgo.InteractionResponse
+	var capture deferredInteractionCapture
 
-	session := newInteractionTestSession(t, &response)
+	session := newDeferredInteractionTestSession(t, &capture)
 	instance := newModelTestBot(configPath)
 	interaction := newSearchTypeCommandInteraction("member-user", "invalid-type")
 
@@ -1101,14 +1095,12 @@ web_search:
 		t.Fatalf("handle search type command: %v", err)
 	}
 
-	if response.Data == nil {
-		t.Fatal("expected interaction response data")
-	}
+	assertDeferredInteractionResponse(t, &capture.deferredResponse)
 
 	expectedContent := "Unknown Exa search type. Available options " +
 		"(ordered lowest to highest latency): `instant`, `fast`, `auto`, `deep-lite`, `deep`, `deep-reasoning`."
-	if response.Data.Content != expectedContent {
-		t.Fatalf("unexpected response content: got %q want %q", response.Data.Content, expectedContent)
+	if capture.editedResponse.Content != expectedContent {
+		t.Fatalf("unexpected response content: got %q want %q", capture.editedResponse.Content, expectedContent)
 	}
 }
 
@@ -1126,9 +1118,9 @@ channel_model_locks:
 		),
 	)
 
-	var response discordgo.InteractionResponse
+	var capture deferredInteractionCapture
 
-	session := newInteractionTestSession(t, &response)
+	session := newDeferredInteractionTestSession(t, &capture)
 	instance := newModelTestBot(configPath)
 	interaction := newModelCommandInteractionInChannel(
 		"member-user",
@@ -1145,16 +1137,14 @@ channel_model_locks:
 		t.Fatalf("unexpected current model: %q", instance.currentModel)
 	}
 
-	if response.Data == nil {
-		t.Fatal("expected interaction response data")
-	}
+	assertDeferredInteractionResponse(t, &capture.deferredResponse)
 
 	expectedContent := fmt.Sprintf(
 		"This channel is locked to `%s`. `/model` is disabled here.",
 		secondTestModel,
 	)
-	if response.Data.Content != expectedContent {
-		t.Fatalf("unexpected response content: got %q want %q", response.Data.Content, expectedContent)
+	if capture.editedResponse.Content != expectedContent {
+		t.Fatalf("unexpected response content: got %q want %q", capture.editedResponse.Content, expectedContent)
 	}
 }
 
@@ -2281,6 +2271,14 @@ func assertDeferredInteractionResponse(
 			response.Type,
 			discordgo.InteractionResponseDeferredChannelMessageWithSource,
 		)
+	}
+
+	if response.Data == nil {
+		t.Fatal("expected deferred interaction response data")
+	}
+
+	if response.Data.Flags != 0 {
+		t.Fatalf("unexpected deferred response flags: got %v want public (0)", response.Data.Flags)
 	}
 }
 

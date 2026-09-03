@@ -801,9 +801,29 @@ func (instance *bot) handleModelCommand(
 	session *discordgo.Session,
 	interaction *discordgo.InteractionCreate,
 ) error {
+	// Defer first: Discord expires the interaction token if the initial
+	// response takes longer than 3 seconds. Config reloads and channel
+	// lookups below can block on disk or REST well past that window,
+	// which surfaced as 10062 Unknown Interaction ("discard expired
+	// interaction"). The deferred ack reserves a 15-minute window for the
+	// follow-up edit.
+	if err := respondInteractionDeferredWithFlags(
+		session,
+		interaction.Interaction,
+		0,
+	); err != nil {
+		return fmt.Errorf("defer model command interaction response: %w", err)
+	}
+
 	loadedConfig, err := instance.loadConfigCached()
 	if err != nil {
-		return fmt.Errorf("load config for model command: %w", err)
+		logWarn("load config for model command", err)
+
+		return editInteractionResponseText(
+			session,
+			interaction.Interaction,
+			"Failed to load configuration.",
+		)
 	}
 
 	channelIDs, err := instance.interactionChannelIDs(interaction)
@@ -813,7 +833,7 @@ func (instance *bot) handleModelCommand(
 	}
 
 	if lockedModel, ok := loadedConfig.lockedModelForChannelIDs(channelIDs); ok {
-		return respondInteractionText(
+		return editInteractionResponseText(
 			session,
 			interaction.Interaction,
 			fmt.Sprintf("This channel is locked to `%s`. `/model` is disabled here.", lockedModel),
@@ -863,9 +883,9 @@ func handleConfiguredModelCommand(
 		slog.Info(options.logMessage, "model", requestedModel)
 	}
 
-	err := respondInteractionText(session, interaction.Interaction, responseText)
+	err := editInteractionResponseText(session, interaction.Interaction, responseText)
 	if err != nil {
-		return fmt.Errorf("respond to model command: %w", err)
+		return fmt.Errorf("edit model command response: %w", err)
 	}
 
 	return nil
@@ -875,13 +895,29 @@ func (instance *bot) handleSearchTypeCommand(
 	session *discordgo.Session,
 	interaction *discordgo.InteractionCreate,
 ) error {
+	// Defer first: see handleModelCommand for why the initial response must
+	// precede config reloads and any other blocking work.
+	if err := respondInteractionDeferredWithFlags(
+		session,
+		interaction.Interaction,
+		0,
+	); err != nil {
+		return fmt.Errorf("defer search type command interaction response: %w", err)
+	}
+
 	loadedConfig, err := instance.loadConfigCached()
 	if err != nil {
-		return fmt.Errorf("load config for search type command: %w", err)
+		logWarn("load config for search type command", err)
+
+		return editInteractionResponseText(
+			session,
+			interaction.Interaction,
+			"Failed to load configuration.",
+		)
 	}
 
 	if !loadedConfig.WebSearch.exaUsesAPI() {
-		return respondInteractionText(
+		return editInteractionResponseText(
 			session,
 			interaction.Interaction,
 			"Exa Search API is not configured. Set `web_search.exa.api_key` to use `/searchtype`.",
@@ -892,7 +928,7 @@ func (instance *bot) handleSearchTypeCommand(
 		interactionOptionString(interaction.ApplicationCommandData().Options),
 	)
 	if !ok {
-		return respondInteractionText(
+		return editInteractionResponseText(
 			session,
 			interaction.Interaction,
 			"Unknown Exa search type. Available options (ordered lowest to highest latency): "+
@@ -909,9 +945,8 @@ func (instance *bot) handleSearchTypeCommand(
 		slog.Info("search type switched", "type", requestedSearchType)
 	}
 
-	err = respondInteractionText(session, interaction.Interaction, responseText)
-	if err != nil {
-		return fmt.Errorf("respond to search type command: %w", err)
+	if err := editInteractionResponseText(session, interaction.Interaction, responseText); err != nil {
+		return fmt.Errorf("edit search type command response: %w", err)
 	}
 
 	return nil
@@ -1207,6 +1242,16 @@ func (instance *bot) handleGroundingCommand(
 	session *discordgo.Session,
 	interaction *discordgo.InteractionCreate,
 ) error {
+	// Defer first: see handleModelCommand for why the initial response must
+	// precede config reloads and channel lookups.
+	if err := respondInteractionDeferredWithFlags(
+		session,
+		interaction.Interaction,
+		0,
+	); err != nil {
+		return fmt.Errorf("defer grounding command interaction response: %w", err)
+	}
+
 	options := interaction.ApplicationCommandData().Options
 
 	var requestedEnabled *bool
@@ -1218,7 +1263,13 @@ func (instance *bot) handleGroundingCommand(
 
 	loadedConfig, err := instance.loadConfigCached()
 	if err != nil {
-		return fmt.Errorf("load config for grounding command: %w", err)
+		logWarn("load config for grounding command", err)
+
+		return editInteractionResponseText(
+			session,
+			interaction.Interaction,
+			"Failed to load configuration.",
+		)
 	}
 
 	channelIDs, err := instance.interactionChannelIDs(interaction)
@@ -1231,17 +1282,17 @@ func (instance *bot) handleGroundingCommand(
 
 	provider, err := configuredModelProvider(loadedConfig, currentModel)
 	if err != nil {
-		return respondInteractionText(session, interaction.Interaction, "Could not resolve current provider.")
+		return editInteractionResponseText(session, interaction.Interaction, "Could not resolve current provider.")
 	}
 
 	if provider.apiKind() != providerAPIKindGemini {
-		return respondInteractionText(session, interaction.Interaction, "Grounding is only supported for Gemini models.")
+		return editInteractionResponseText(session, interaction.Interaction, "Grounding is only supported for Gemini models.")
 	}
 
 	currentEnabled := instance.currentGroundingEnabled(provider)
 
 	if requestedEnabled == nil {
-		return respondInteractionText(
+		return editInteractionResponseText(
 			session,
 			interaction.Interaction,
 			fmt.Sprintf("Current Gemini grounding: `%t`", currentEnabled),
@@ -1249,7 +1300,7 @@ func (instance *bot) handleGroundingCommand(
 	}
 
 	if *requestedEnabled == currentEnabled {
-		return respondInteractionText(
+		return editInteractionResponseText(
 			session,
 			interaction.Interaction,
 			fmt.Sprintf("Gemini grounding is already `%t`.", currentEnabled),
@@ -1259,7 +1310,7 @@ func (instance *bot) handleGroundingCommand(
 	instance.setCurrentGroundingEnabled(requestedEnabled)
 	slog.Info("grounding switched", "enabled", *requestedEnabled)
 
-	return respondInteractionText(
+	return editInteractionResponseText(
 		session,
 		interaction.Interaction,
 		fmt.Sprintf("Gemini grounding switched to: `%t`", *requestedEnabled),
