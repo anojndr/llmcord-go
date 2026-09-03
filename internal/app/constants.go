@@ -16,6 +16,7 @@ const (
 	defaultTinyFishSearchEndpoint     = "https://api.search.tinyfish.ai"
 	defaultTinyFishFetchEndpoint      = "https://api.fetch.tinyfish.ai"
 	defaultParallelSearchEndpoint     = "https://api.parallel.ai/v1/search"
+	defaultParallelExtractEndpoint    = "https://api.parallel.ai/v1/extract"
 	defaultGithubGistEndpoint         = "https://api.github.com/gists"
 	defaultGistFilename               = "llmcord-go reply.md"
 	defaultStatusMessage              = "github.com/jakobdylanc/llmcord"
@@ -133,6 +134,8 @@ const (
 	tinyFishSearchRequestTimeout                  = 20 * time.Second
 	tinyFishFetchRequestTimeout                   = 60 * time.Second
 	parallelSearchRequestTimeout                  = 20 * time.Second
+	parallelExtractRequestTimeout                 = 60 * time.Second
+	parallelExtractMaxURLsPerRequest              = 20
 	exaSearchTypeInstant                          = "instant"
 	exaSearchTypeFast                             = "fast"
 	exaSearchTypeAuto                             = "auto"

@@ -82,9 +82,10 @@ type tavilySearchClient struct {
 }
 
 type parallelSearchClient struct {
-	endpoint   string
-	httpClient *http.Client
-	keys       *apiKeyRotator
+	endpoint        string
+	extractEndpoint string
+	httpClient      *http.Client
+	keys            *apiKeyRotator
 }
 
 type tinyFishSearchClient struct {
@@ -365,6 +366,45 @@ type parallelSearchResponseItem struct {
 	Excerpts    []string `json:"excerpts"`
 }
 
+// parallelExtractRequest follows https://docs.parallel.ai/api-reference/extract/extract:
+// Search returns compressed excerpts, not full page bodies — full content per
+// URL comes from the Extract API with advanced_settings.full_content enabled.
+type parallelExtractRequest struct {
+	URLs             []string                 `json:"urls"`
+	Objective        string                   `json:"objective,omitempty"`
+	SearchQueries    []string                 `json:"search_queries,omitempty"`
+	AdvancedSettings *parallelExtractSettings `json:"advanced_settings,omitempty"`
+}
+
+type parallelExtractSettings struct {
+	FullContent *parallelExtractFullContentSettings `json:"full_content,omitempty"`
+}
+
+type parallelExtractFullContentSettings struct {
+	MaxCharsPerResult int `json:"max_chars_per_result,omitempty"`
+}
+
+type parallelExtractResponse struct {
+	ExtractID string                  `json:"extract_id"`
+	Results   []parallelExtractResult `json:"results"`
+	Errors    []parallelExtractError  `json:"errors"`
+}
+
+type parallelExtractResult struct {
+	URL         string   `json:"url"`
+	Title       *string  `json:"title"`
+	PublishDate *string  `json:"publish_date"`
+	Excerpts    []string `json:"excerpts"`
+	FullContent *string  `json:"full_content"`
+}
+
+type parallelExtractError struct {
+	URL            string  `json:"url"`
+	ErrorType      string  `json:"error_type"`
+	HTTPStatusCode *int    `json:"http_status_code"`
+	Content        *string `json:"content"`
+}
+
 func (err parallelStatusError) Error() string {
 	return err.Message
 }
@@ -408,9 +448,10 @@ func newTavilySearchClient(httpClient *http.Client) tavilySearchClient {
 
 func newParallelSearchClient(httpClient *http.Client) parallelSearchClient {
 	return parallelSearchClient{
-		endpoint:   defaultParallelSearchEndpoint,
-		httpClient: httpClient,
-		keys:       newAPIKeyRotator(),
+		endpoint:        defaultParallelSearchEndpoint,
+		extractEndpoint: defaultParallelExtractEndpoint,
+		httpClient:      httpClient,
+		keys:            newAPIKeyRotator(),
 	}
 }
 
@@ -1567,7 +1608,7 @@ func (client parallelSearchClient) searchQueryOnce(
 	apiKey string,
 	maxURLs int,
 ) (webSearchResult, error) {
-	ctx, cancel := context.WithTimeout(ctx, parallelSearchRequestTimeout)
+	searchCtx, cancel := context.WithTimeout(ctx, parallelSearchRequestTimeout)
 	defer cancel()
 
 	requestBody := parallelSearchRequest{
@@ -1585,7 +1626,7 @@ func (client parallelSearchClient) searchQueryOnce(
 	}
 
 	httpRequest, err := http.NewRequestWithContext(
-		ctx,
+		searchCtx,
 		http.MethodPost,
 		client.endpoint,
 		bytes.NewReader(requestBytes),
@@ -1637,10 +1678,226 @@ func (client parallelSearchClient) searchQueryOnce(
 		return webSearchResult{}, fmt.Errorf("decode Parallel search response for %q: %w", query, err)
 	}
 
+	urls := make([]string, 0, len(response.Results))
+	for _, result := range response.Results {
+		if trimmedURL := strings.TrimSpace(result.URL); trimmedURL != "" {
+			urls = append(urls, trimmedURL)
+		}
+	}
+
+	// Search returns compressed excerpts, not full page bodies. Enrich every
+	// result with full content from the Extract API (same API key as the
+	// search, mirroring tinyFish search+fetch). Extract failures are
+	// non-fatal: excerpts alone still produce a usable result.
+	fetchedContentMap, fetchedTitleMap := client.fetchFullContents(ctx, apiKey, urls, query)
+
 	return webSearchResult{
 		Query: query,
-		Text:  formatParallelSearchResultText(response.Results),
+		Text:  formatParallelSearchResultText(response.Results, fetchedContentMap, fetchedTitleMap),
 	}, nil
+}
+
+// extractURLForRequest resolves the Extract endpoint, falling back to the
+// search endpoint for test clients that override only endpoint.
+func (client parallelSearchClient) extractURLForRequest() string {
+	if strings.TrimSpace(client.extractEndpoint) != "" {
+		return client.extractEndpoint
+	}
+
+	if strings.TrimSpace(client.endpoint) != "" && client.endpoint != defaultParallelSearchEndpoint {
+		return client.endpoint
+	}
+
+	return defaultParallelExtractEndpoint
+}
+
+func (client parallelSearchClient) fetchFullContents(
+	ctx context.Context,
+	apiKey string,
+	urls []string,
+	query string,
+) (map[string]string, map[string]string) {
+	fetchedContentMap := make(map[string]string)
+	fetchedTitleMap := make(map[string]string)
+
+	if len(urls) == 0 {
+		return fetchedContentMap, fetchedTitleMap
+	}
+
+	batchSize := parallelExtractMaxURLsPerRequest
+	if batchSize <= 0 {
+		batchSize = len(urls)
+	}
+
+	batchCount := (len(urls) + batchSize - 1) / batchSize
+	if batchCount == 1 {
+		extractResponse, err := client.fetchExtractBatch(ctx, apiKey, urls, query)
+		if err != nil {
+			logWarn("parallel extract for search enrichment failed", err, "query", query)
+
+			return fetchedContentMap, fetchedTitleMap
+		}
+
+		mergeParallelExtractResults(extractResponse, fetchedContentMap, fetchedTitleMap)
+
+		return fetchedContentMap, fetchedTitleMap
+	}
+
+	taskResults := runTasksConcurrently(
+		ctx,
+		externalRequestConcurrency,
+		batchCount,
+		func(taskCtx context.Context, index int) (parallelExtractResponse, error) {
+			start := index * batchSize
+			end := min(start+batchSize, len(urls))
+
+			return client.fetchExtractBatch(taskCtx, apiKey, urls[start:end], query)
+		},
+	)
+
+	hasSuccess := false
+
+	var firstErr error
+
+	for _, result := range taskResults {
+		if result.err != nil {
+			if firstErr == nil {
+				firstErr = result.err
+			}
+
+			logWarn("parallel extract batch failed", result.err, "query", query)
+
+			continue
+		}
+
+		hasSuccess = true
+
+		mergeParallelExtractResults(result.value, fetchedContentMap, fetchedTitleMap)
+	}
+
+	if !hasSuccess {
+		logWarn("parallel extract for search enrichment failed", firstErr, "query", query)
+	}
+
+	return fetchedContentMap, fetchedTitleMap
+}
+
+func mergeParallelExtractResults(
+	extractResponse parallelExtractResponse,
+	fetchedContentMap map[string]string,
+	fetchedTitleMap map[string]string,
+) {
+	if len(extractResponse.Errors) > 0 {
+		for _, extractErr := range extractResponse.Errors {
+			logWarn(
+				"parallel extract reported URL error",
+				nil,
+				"url", extractErr.URL,
+				"error_type", extractErr.ErrorType,
+			)
+		}
+	}
+
+	for _, extractResult := range extractResponse.Results {
+		content := trimmedOptionalString(extractResult.FullContent)
+		if content == "" {
+			continue
+		}
+
+		trimmedURL := strings.TrimSpace(extractResult.URL)
+		if trimmedURL == "" {
+			continue
+		}
+
+		key := strings.ToLower(trimmedURL)
+		fetchedContentMap[key] = content
+
+		if title := trimmedOptionalString(extractResult.Title); title != "" {
+			fetchedTitleMap[key] = title
+		}
+	}
+}
+
+func (client parallelSearchClient) fetchExtractBatch(
+	ctx context.Context,
+	apiKey string,
+	batch []string,
+	query string,
+) (parallelExtractResponse, error) {
+	if len(batch) == 0 {
+		return parallelExtractResponse{ExtractID: "", Results: nil, Errors: nil}, nil
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, parallelExtractRequestTimeout)
+	defer cancel()
+
+	requestBody := parallelExtractRequest{
+		URLs:          batch,
+		Objective:     query,
+		SearchQueries: []string{query},
+		AdvancedSettings: &parallelExtractSettings{
+			FullContent: &parallelExtractFullContentSettings{
+				MaxCharsPerResult: maxWebsiteContentRunes,
+			},
+		},
+	}
+
+	requestBytes, err := json.Marshal(requestBody)
+	if err != nil {
+		return parallelExtractResponse{}, fmt.Errorf("marshal Parallel extract request: %w", err)
+	}
+
+	httpRequest, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodPost,
+		client.extractURLForRequest(),
+		bytes.NewReader(requestBytes),
+	)
+	if err != nil {
+		return parallelExtractResponse{}, fmt.Errorf("create Parallel extract request: %w", err)
+	}
+
+	httpRequest.Header.Set("Accept", applicationJSONContentType)
+	httpRequest.Header.Set("X-Api-Key", strings.TrimSpace(apiKey))
+	httpRequest.Header.Set(contentTypeHeader, applicationJSONContentType)
+
+	httpResponse, err := client.httpClient.Do(httpRequest)
+	if err != nil {
+		return parallelExtractResponse{}, fmt.Errorf("send Parallel extract request: %w", err)
+	}
+
+	defer func() {
+		_ = httpResponse.Body.Close()
+	}()
+
+	if httpResponse.StatusCode < http.StatusOK || httpResponse.StatusCode >= http.StatusMultipleChoices {
+		responseBody, readErr := io.ReadAll(httpResponse.Body)
+		if readErr != nil {
+			return parallelExtractResponse{}, fmt.Errorf(
+				"read Parallel extract error response after status %d: %w",
+				httpResponse.StatusCode,
+				readErr,
+			)
+		}
+
+		return parallelExtractResponse{}, parallelStatusError{
+			StatusCode: httpResponse.StatusCode,
+			Message: fmt.Sprintf(
+				"Parallel extract request failed with status %d: %s",
+				httpResponse.StatusCode,
+				strings.TrimSpace(string(responseBody)),
+			),
+			Err: os.ErrInvalid,
+		}
+	}
+
+	var extractResponse parallelExtractResponse
+
+	if err := json.NewDecoder(httpResponse.Body).Decode(&extractResponse); err != nil {
+		return parallelExtractResponse{}, fmt.Errorf("decode Parallel extract response: %w", err)
+	}
+
+	return extractResponse, nil
 }
 
 func (client tinyFishSearchClient) search(
@@ -2048,20 +2305,30 @@ func formatTavilySearchResultText(results []tavilySearchResponseResult) string {
 	return strings.Join(formattedResults, "\n\n")
 }
 
-func formatParallelSearchResultText(results []parallelSearchResponseItem) string {
+func formatParallelSearchResultText(
+	results []parallelSearchResponseItem,
+	fetchedContentMap map[string]string,
+	fetchedTitleMap map[string]string,
+) string {
 	formattedResults := make([]string, 0, len(results))
 
 	for _, result := range results {
-		lines := make([]string, 0, 4)
+		lines := make([]string, 0, 5)
+
+		trimmedURL := strings.TrimSpace(result.URL)
+		lowerURL := strings.ToLower(trimmedURL)
 
 		title := strings.TrimSpace(result.Title)
+		if title == "" {
+			title = strings.TrimSpace(fetchedTitleMap[lowerURL])
+		}
+
 		if title != "" {
 			lines = append(lines, "Title: "+title)
 		}
 
-		url := strings.TrimSpace(result.URL)
-		if url != "" {
-			lines = append(lines, "URL: "+url)
+		if trimmedURL != "" {
+			lines = append(lines, "URL: "+trimmedURL)
 		}
 
 		if publishedDate := trimmedOptionalString(result.PublishDate); publishedDate != "" {
@@ -2071,6 +2338,14 @@ func formatParallelSearchResultText(results []parallelSearchResponseItem) string
 		excerpts := formatSearchListField("Excerpts", result.Excerpts)
 		if excerpts != "" {
 			lines = append(lines, excerpts)
+		}
+
+		fetchedText := strings.TrimSpace(fetchedContentMap[lowerURL])
+		if fetchedText != "" {
+			fetchedText = truncateRunes(fetchedText, maxWebsiteContentRunes)
+			lines = append(lines, formatSearchMultilineField("Content", fetchedText))
+		} else if excerpts == "" {
+			lines = append(lines, "Content: [No extracted content — fetch failed]")
 		}
 
 		if len(lines) == 0 {

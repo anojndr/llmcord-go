@@ -1305,6 +1305,27 @@ func TestParallelSearchClientSearchRotatesAPIKeysAcrossCalls(t *testing.T) {
 		responseWriter http.ResponseWriter,
 		request *http.Request,
 	) {
+		body, err := io.ReadAll(request.Body)
+		if err != nil {
+			t.Errorf("read request body: %v", err)
+		}
+
+		// Extract enrichment reuses the search API key; only search calls
+		// participate in key rotation assertions.
+		if strings.Contains(string(body), `"urls"`) {
+			responseWriter.Header().Set("Content-Type", "application/json")
+
+			if err := json.NewEncoder(responseWriter).Encode(map[string]any{
+				"extract_id": "extract_123",
+				"results":    []any{},
+				"errors":     []any{},
+			}); err != nil {
+				t.Errorf("encode Parallel extract response: %v", err)
+			}
+
+			return
+		}
+
 		headerMu.Lock()
 
 		authHeaders = append(authHeaders, request.Header.Get("x-api-key"))
@@ -1312,7 +1333,7 @@ func TestParallelSearchClientSearchRotatesAPIKeysAcrossCalls(t *testing.T) {
 
 		responseWriter.Header().Set("Content-Type", "application/json")
 
-		err := json.NewEncoder(responseWriter).Encode(parallelSearchResponse{
+		err = json.NewEncoder(responseWriter).Encode(parallelSearchResponse{
 			SearchID: "search_123",
 			Results: []parallelSearchResponseItem{
 				{
@@ -1361,6 +1382,45 @@ func TestParallelSearchClientSearchRotatesAPIKeysAcrossCalls(t *testing.T) {
 	}
 }
 
+func serveParallelValidRequestStub(
+	t *testing.T,
+	responseWriter http.ResponseWriter,
+	request *http.Request,
+	capturedRequest *parallelSearchRequest,
+) {
+	t.Helper()
+
+	assertParallelSearchHeaders(t, request, "pal-test-key")
+
+	body, err := io.ReadAll(request.Body)
+	if err != nil {
+		t.Fatalf("read request body: %v", err)
+	}
+
+	// Extract enrichment posts to the same test server via the endpoint
+	// fallback; keep search-request capture free of extract bodies.
+	if strings.Contains(string(body), `"urls"`) {
+		writeParallelExtractStubResponse(t, responseWriter, "extract_abc", []map[string]any{})
+
+		return
+	}
+
+	if err := json.Unmarshal(body, capturedRequest); err != nil {
+		t.Fatalf("unmarshal request body: %v", err)
+	}
+
+	publishDate := "2026-09-01"
+
+	writeParallelSearchStubResponse(t, responseWriter, "search_abc", []parallelSearchResponseItem{
+		{
+			Title:       "Parallel AI Web Systems",
+			URL:         "https://parallel.ai",
+			PublishDate: &publishDate,
+			Excerpts:    []string{"Parallel brings AI web search to life.", "Second excerpt line"},
+		},
+	})
+}
+
 func TestParallelSearchClientSearchSendsValidRequestAndFormatsResults(t *testing.T) {
 	t.Parallel()
 
@@ -1370,37 +1430,7 @@ func TestParallelSearchClientSearchSendsValidRequestAndFormatsResults(t *testing
 		responseWriter http.ResponseWriter,
 		request *http.Request,
 	) {
-		if request.Header.Get("x-api-key") != "pal-test-key" {
-			t.Fatalf("unexpected x-api-key: %q", request.Header.Get("x-api-key"))
-		}
-
-		if request.Header.Get("Content-Type") != "application/json" {
-			t.Fatalf("unexpected Content-Type: %q", request.Header.Get("Content-Type"))
-		}
-
-		body, err := io.ReadAll(request.Body)
-		if err != nil {
-			t.Fatalf("read request body: %v", err)
-		}
-
-		if err := json.Unmarshal(body, &capturedRequest); err != nil {
-			t.Fatalf("unmarshal request body: %v", err)
-		}
-
-		publishDate := "2026-09-01"
-
-		responseWriter.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(responseWriter).Encode(parallelSearchResponse{
-			SearchID: "search_abc",
-			Results: []parallelSearchResponseItem{
-				{
-					Title:       "Parallel AI Web Systems",
-					URL:         "https://parallel.ai",
-					PublishDate: &publishDate,
-					Excerpts:    []string{"Parallel brings AI web search to life.", "Second excerpt line"},
-				},
-			},
-		})
+		serveParallelValidRequestStub(t, responseWriter, request, &capturedRequest)
 	}))
 	defer httpServer.Close()
 
@@ -1460,6 +1490,342 @@ func TestParallelSearchClientSearchSendsValidRequestAndFormatsResults(t *testing
 	sources := extractSearchSources(resultText)
 	if len(sources) != 1 || sources[0].Title != "Parallel AI Web Systems" || sources[0].URL != "https://parallel.ai" {
 		t.Fatalf("unexpected extracted sources: %#v", sources)
+	}
+}
+
+func assertParallelSearchHeaders(t *testing.T, request *http.Request, expectedKey string) {
+	t.Helper()
+
+	if request.Header.Get("x-api-key") != expectedKey {
+		t.Fatalf("unexpected x-api-key: %q", request.Header.Get("x-api-key"))
+	}
+
+	if request.Header.Get("Content-Type") != "application/json" {
+		t.Fatalf("unexpected Content-Type: %q", request.Header.Get("Content-Type"))
+	}
+}
+
+func writeParallelSearchStubResponse(
+	t *testing.T,
+	responseWriter http.ResponseWriter,
+	searchID string,
+	results []parallelSearchResponseItem,
+) {
+	t.Helper()
+
+	responseWriter.Header().Set("Content-Type", "application/json")
+
+	if err := json.NewEncoder(responseWriter).Encode(parallelSearchResponse{
+		SearchID: searchID,
+		Results:  results,
+	}); err != nil {
+		t.Errorf("encode Parallel search stub response: %v", err)
+	}
+}
+
+func writeParallelExtractStubResponse(
+	t *testing.T,
+	responseWriter http.ResponseWriter,
+	extractID string,
+	results []map[string]any,
+) {
+	t.Helper()
+
+	responseWriter.Header().Set("Content-Type", "application/json")
+
+	if err := json.NewEncoder(responseWriter).Encode(map[string]any{
+		"extract_id": extractID,
+		"results":    results,
+		"errors":     []any{},
+	}); err != nil {
+		t.Errorf("encode Parallel extract stub response: %v", err)
+	}
+}
+
+func searchWithParallelTestClient(
+	t *testing.T,
+	client parallelSearchClient,
+	query string,
+) []webSearchResult {
+	t.Helper()
+
+	loadedConfig := testParallelSearchConfig()
+	loadedConfig.WebSearch.Parallel.APIKey = "pal-test-key"
+	loadedConfig.WebSearch.Parallel.APIKeys = []string{"pal-test-key"}
+
+	results, err := client.search(context.Background(), loadedConfig, []string{query})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+
+	return results
+}
+
+func assertParallelExtractRequestHasFullContent(
+	t *testing.T,
+	body []byte,
+	expectedURL string,
+) {
+	t.Helper()
+
+	var extractRequest map[string]any
+
+	if err := json.Unmarshal(body, &extractRequest); err != nil {
+		t.Fatalf("unmarshal extract request body: %v", err)
+	}
+
+	rawURLs, urlsOK := extractRequest["urls"].([]any)
+	if !urlsOK || len(rawURLs) != 1 || rawURLs[0] != expectedURL {
+		t.Fatalf("unexpected extract urls: %#v", extractRequest["urls"])
+	}
+
+	advanced, settingsOK := extractRequest["advanced_settings"].(map[string]any)
+	if !settingsOK {
+		t.Fatalf("missing advanced_settings with full_content in extract request: %#v", extractRequest)
+	}
+
+	if _, hasFullContent := advanced["full_content"]; !hasFullContent {
+		t.Fatalf("missing full_content in extract advanced_settings: %#v", advanced)
+	}
+}
+
+func TestParallelSearchClientSearchIncludesFullContentPerURL(t *testing.T) {
+	t.Parallel()
+
+	var (
+		extractBodies [][]byte
+		extractMu     sync.Mutex
+	)
+
+	httpServer := httptest.NewServer(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		request *http.Request,
+	) {
+		body, err := io.ReadAll(request.Body)
+		if err != nil {
+			t.Errorf("read request body: %v", err)
+		}
+
+		if strings.Contains(string(body), `"urls"`) {
+			extractMu.Lock()
+
+			extractBodies = append(extractBodies, body)
+
+			extractMu.Unlock()
+
+			responseWriter.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(responseWriter).Encode(map[string]any{
+				"extract_id": "extract_123",
+				"results": []map[string]any{
+					{
+						"url":          "https://example.com/full",
+						"title":        "Full Page Title",
+						"excerpts":     []string{"Focused excerpt line"},
+						"full_content": "# Full Page Title\n\nThis is the full page body content for the URL.",
+					},
+				},
+				"errors": []any{},
+			})
+
+			return
+		}
+
+		responseWriter.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(responseWriter).Encode(parallelSearchResponse{
+			SearchID: "search_full",
+			Results: []parallelSearchResponseItem{
+				{
+					Title:    "Full Page Title",
+					URL:      "https://example.com/full",
+					Excerpts: []string{"Focused excerpt line"},
+				},
+			},
+		})
+	}))
+	defer httpServer.Close()
+
+	client := parallelSearchClient{
+		endpoint:   httpServer.URL,
+		httpClient: httpServer.Client(),
+		keys:       newAPIKeyRotator(),
+	}
+
+	loadedConfig := testParallelSearchConfig()
+	loadedConfig.WebSearch.Parallel.APIKey = "pal-test-key"
+	loadedConfig.WebSearch.Parallel.APIKeys = []string{"pal-test-key"}
+
+	results, err := client.search(context.Background(), loadedConfig, []string{"full content query"})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+
+	resultText := results[0].Text
+	if !strings.Contains(resultText, "Excerpts:\n| Focused excerpt line") {
+		t.Fatalf("missing excerpts in formatted text: %q", resultText)
+	}
+
+	if !strings.Contains(resultText, "This is the full page body content for the URL.") {
+		t.Fatalf("missing full content per URL in formatted text: %q", resultText)
+	}
+
+	extractMu.Lock()
+	defer extractMu.Unlock()
+
+	if len(extractBodies) == 0 {
+		t.Fatalf("expected Parallel Extract call for full content, got none")
+	}
+
+	assertParallelExtractRequestHasFullContent(t, extractBodies[0], "https://example.com/full")
+}
+
+func TestParallelSearchClientSearchFallsBackToExcerptsWhenExtractFails(t *testing.T) {
+	t.Parallel()
+
+	httpServer := httptest.NewServer(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		request *http.Request,
+	) {
+		body, err := io.ReadAll(request.Body)
+		if err != nil {
+			t.Errorf("read request body: %v", err)
+		}
+
+		if strings.Contains(string(body), `"urls"`) {
+			http.Error(responseWriter, "extract boom", http.StatusInternalServerError)
+
+			return
+		}
+
+		responseWriter.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(responseWriter).Encode(parallelSearchResponse{
+			SearchID: "search_fallback",
+			Results: []parallelSearchResponseItem{
+				{
+					Title:    "Fallback Title",
+					URL:      "https://example.com/fallback",
+					Excerpts: []string{"Fallback excerpt"},
+				},
+			},
+		})
+	}))
+	defer httpServer.Close()
+
+	client := parallelSearchClient{
+		endpoint:   httpServer.URL,
+		httpClient: httpServer.Client(),
+		keys:       newAPIKeyRotator(),
+	}
+
+	loadedConfig := testParallelSearchConfig()
+	loadedConfig.WebSearch.Parallel.APIKey = "pal-test-key"
+	loadedConfig.WebSearch.Parallel.APIKeys = []string{"pal-test-key"}
+
+	results, err := client.search(context.Background(), loadedConfig, []string{"fallback query"})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+
+	resultText := results[0].Text
+	if !strings.Contains(resultText, "Excerpts:\n| Fallback excerpt") {
+		t.Fatalf("missing excerpts in fallback text: %q", resultText)
+	}
+}
+
+func TestParallelSearchClientSearchRoutesToDistinctExtractEndpoint(t *testing.T) {
+	t.Parallel()
+
+	var (
+		searchHits    int
+		extractBodies [][]byte
+		extractKey    string
+		routeMu       sync.Mutex
+	)
+
+	searchServer := httptest.NewServer(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		_ *http.Request,
+	) {
+		routeMu.Lock()
+		searchHits++
+		routeMu.Unlock()
+
+		writeParallelSearchStubResponse(t, responseWriter, "search_routed", []parallelSearchResponseItem{
+			{
+				Title:    "Routed Title",
+				URL:      "https://example.com/routed",
+				Excerpts: []string{"Routed excerpt"},
+			},
+		})
+	}))
+	defer searchServer.Close()
+
+	extractServer := httptest.NewServer(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		request *http.Request,
+	) {
+		body, err := io.ReadAll(request.Body)
+		if err != nil {
+			t.Errorf("read extract request body: %v", err)
+		}
+
+		routeMu.Lock()
+
+		extractBodies = append(extractBodies, body)
+		extractKey = request.Header.Get("x-api-key")
+
+		routeMu.Unlock()
+
+		writeParallelExtractStubResponse(t, responseWriter, "extract_routed", []map[string]any{
+			{
+				"url":          "https://example.com/routed",
+				"title":        "Routed Title",
+				"excerpts":     []string{"Routed excerpt"},
+				"full_content": "Routed full body content.",
+			},
+		})
+	}))
+	defer extractServer.Close()
+
+	client := parallelSearchClient{
+		endpoint:        searchServer.URL,
+		extractEndpoint: extractServer.URL,
+		httpClient:      searchServer.Client(),
+		keys:            newAPIKeyRotator(),
+	}
+
+	results := searchWithParallelTestClient(t, client, "routed query")
+
+	routeMu.Lock()
+	defer routeMu.Unlock()
+
+	if searchHits != 1 {
+		t.Fatalf("expected 1 search request, got %d", searchHits)
+	}
+
+	if len(extractBodies) != 1 {
+		t.Fatalf("expected 1 extract request, got %d", len(extractBodies))
+	}
+
+	if extractKey != "pal-test-key" {
+		t.Fatalf("unexpected extract x-api-key header: %q", extractKey)
+	}
+
+	assertParallelExtractRequestHasFullContent(t, extractBodies[0], "https://example.com/routed")
+
+	if !strings.Contains(results[0].Text, "Routed full body content.") {
+		t.Fatalf("missing full content in routed text: %q", results[0].Text)
 	}
 }
 
