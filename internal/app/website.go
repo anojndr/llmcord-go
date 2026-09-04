@@ -267,7 +267,8 @@ func (instance *bot) prepareTinyFishWebsiteAugmentationBatch(
 		for _, result := range resp.Results {
 			rawText := tinyFishFetchResultText(result.Text)
 
-			rawText = strings.TrimSpace(rawText)
+			rawText = truncateRunes(strings.TrimSpace(rawText), loadedConfig.WebSearch.TinyFish.maxCharsPerResult())
+
 			if rawText == "" {
 				if raw, ok := rawForNormalized[result.URL]; ok {
 					logWarn("fetch website content", fmt.Errorf("TinyFish fetch returned empty content for %q: %w", result.URL, os.ErrInvalid), "url", raw)
@@ -570,6 +571,7 @@ func (client websiteClient) fetch(
 				ctx,
 				normalizedURL,
 				tinyFishAPIKey,
+				loadedConfig.WebSearch.TinyFish.maxCharsPerResult(),
 			)
 			if tinyFishErr == nil {
 				return pageContent, nil
@@ -590,6 +592,7 @@ func (client websiteClient) fetch(
 				normalizedURL,
 				exaAPIKey,
 				loadedConfig.WebSearch.Exa.livecrawlTimeoutMS(),
+				loadedConfig.WebSearch.Exa.textMaxCharacters(),
 			)
 			if exaErr == nil {
 				return pageContent, nil
@@ -610,6 +613,7 @@ func (client websiteClient) fetch(
 				ctx,
 				normalizedURL,
 				tavilyAPIKey,
+				loadedConfig.WebSearch.Tavily.maxCharsPerResult(),
 			)
 			if tavilyErr == nil {
 				return pageContent, nil
@@ -825,8 +829,9 @@ func (client websiteClient) fetchWithExaContents(
 	requestURL string,
 	apiKey string,
 	livecrawlTimeoutMS int,
+	textMaxCharacters int,
 ) (websitePageContent, error) {
-	pageContent, err := client.fetchWithExaContentsOnce(ctx, requestURL, apiKey, livecrawlTimeoutMS)
+	pageContent, err := client.fetchWithExaContentsOnce(ctx, requestURL, apiKey, livecrawlTimeoutMS, textMaxCharacters)
 	if err == nil || !isExaLivecrawlTimeoutError(err) {
 		return pageContent, err
 	}
@@ -840,7 +845,7 @@ func (client websiteClient) fetchWithExaContents(
 
 	extendedTimeout := exaContentsLivecrawlExtendedTimeoutMultiplier * livecrawlTimeoutMS
 
-	pageContent, err = client.fetchWithExaContentsOnce(ctx, requestURL, apiKey, extendedTimeout)
+	pageContent, err = client.fetchWithExaContentsOnce(ctx, requestURL, apiKey, extendedTimeout, textMaxCharacters)
 	if err == nil || !isExaLivecrawlTimeoutError(err) {
 		return pageContent, err
 	}
@@ -852,7 +857,7 @@ func (client websiteClient) fetchWithExaContents(
 		requestURL,
 	)
 
-	return client.fetchWithExaContentsOnce(ctx, requestURL, apiKey, 0)
+	return client.fetchWithExaContentsOnce(ctx, requestURL, apiKey, 0, textMaxCharacters)
 }
 
 func (client websiteClient) fetchWithExaContentsOnce(
@@ -860,8 +865,9 @@ func (client websiteClient) fetchWithExaContentsOnce(
 	requestURL string,
 	apiKey string,
 	livecrawlTimeoutMS int,
+	textMaxCharacters int,
 ) (websitePageContent, error) {
-	requestBytes, err := json.Marshal(exaContentsRequestBody(requestURL, livecrawlTimeoutMS))
+	requestBytes, err := json.Marshal(exaContentsRequestBody(requestURL, livecrawlTimeoutMS, textMaxCharacters))
 	if err != nil {
 		return websitePageContent{}, fmt.Errorf("marshal Exa contents request for %q: %w", requestURL, err)
 	}
@@ -944,11 +950,15 @@ func (client websiteClient) fetchWithExaContentsOnce(
 	return newWebsitePageContent(resultURL, result.Title, "", result.Text)
 }
 
-func exaContentsRequestBody(requestURL string, livecrawlTimeoutMS int) map[string]any {
+func exaContentsRequestBody(requestURL string, livecrawlTimeoutMS int, textMaxCharacters int) map[string]any {
+	if textMaxCharacters <= 0 {
+		textMaxCharacters = defaultExaSearchTextMaxCharacters
+	}
+
 	requestBody := map[string]any{
 		"urls": []string{requestURL},
 		messageTextKey: map[string]any{
-			"maxCharacters": maxWebsiteContentRunes,
+			"maxCharacters": textMaxCharacters,
 			"verbosity":     "full",
 			"excludeSections": []string{
 				"header",
@@ -959,7 +969,6 @@ func exaContentsRequestBody(requestURL string, livecrawlTimeoutMS int) map[strin
 			},
 		},
 	}
-
 	if livecrawlTimeoutMS > 0 {
 		requestBody["livecrawlTimeout"] = livecrawlTimeoutMS
 	}
@@ -1113,14 +1122,16 @@ func (client websiteClient) fetchWithTavilyExtract(
 	ctx context.Context,
 	requestURL string,
 	apiKey string,
+	maxCharsPerResult int,
 ) (websitePageContent, error) {
-	return client.fetchWithTavilyExtractOnce(ctx, requestURL, apiKey)
+	return client.fetchWithTavilyExtractOnce(ctx, requestURL, apiKey, maxCharsPerResult)
 }
 
 func (client websiteClient) fetchWithTavilyExtractOnce(
 	ctx context.Context,
 	requestURL string,
 	apiKey string,
+	maxCharsPerResult int,
 ) (websitePageContent, error) {
 	requestBytes, err := json.Marshal(tavilyExtractRequestBody(requestURL))
 	if err != nil {
@@ -1199,7 +1210,8 @@ func (client websiteClient) fetchWithTavilyExtractOnce(
 		)
 	}
 
-	return newWebsitePageContent(firstNonEmptyString(result.URL, requestURL), "", "", result.RawContent)
+	rawContent := truncateRunes(strings.TrimSpace(result.RawContent), maxCharsPerResult)
+	return newWebsitePageContent(firstNonEmptyString(result.URL, requestURL), "", "", rawContent)
 }
 
 func tavilyExtractRequestBody(requestURL string) map[string]any {
@@ -1306,6 +1318,7 @@ func (client websiteClient) fetchWithTinyFishFetch(
 	ctx context.Context,
 	requestURL string,
 	apiKey string,
+	maxCharsPerResult int,
 ) (websitePageContent, error) {
 	ctx, cancel := context.WithTimeout(ctx, tinyFishFetchRequestTimeout)
 	defer cancel()
@@ -1414,7 +1427,7 @@ func (client websiteClient) fetchWithTinyFishFetch(
 
 	text := tinyFishFetchResultText(matchedResult.Text)
 
-	text = strings.TrimSpace(text)
+	text = truncateRunes(strings.TrimSpace(text), maxCharsPerResult)
 	if text == "" {
 		return websitePageContent{}, fmt.Errorf("TinyFish fetch returned empty content for %q: %w", requestURL, os.ErrInvalid)
 	}

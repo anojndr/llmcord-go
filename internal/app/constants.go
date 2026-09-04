@@ -125,6 +125,9 @@ const (
 	PortEnvironmentVariable               = "PORT"
 	defaultWebSearchMaxURLs               = 5
 	defaultFirecrawlMaxMarkdownCharacters = 12000
+	defaultTinyFishMaxCharsPerResult      = 5000
+	defaultParallelMaxCharsPerResult      = 5000
+	defaultTavilyMaxCharsPerResult        = 5000
 	// TinyFish latency bounds: per_url_timeout_ms caps each URL's
 	// server-side fetch+extract work (API default 110 s per URL, 120 s CDN
 	// ceiling per batch) so one slow URL fails fast into errors[] instead of
@@ -156,7 +159,7 @@ const (
 	messageCookieHeader                           = "Cookie"
 	messageDetailKey                              = "detail"
 	messageKindValue                              = "message"
-	defaultExaSearchTextMaxCharacters             = 15000
+	defaultExaSearchTextMaxCharacters             = 5000
 	defaultExaContentsLivecrawlTimeoutMS          = 15000
 	exaContentsLivecrawlExtendedTimeoutMultiplier = 2
 	exaContentsLivecrawlRetryMaxAttempts          = 3

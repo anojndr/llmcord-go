@@ -273,6 +273,8 @@ web_search:
   tinyfish:
     # Optional. When set, search uses TinyFish Search API (with automatic Fetch
     # enrichment) and website extraction falls back to TinyFish Fetch API.
+    # Optional max characters per URL result. Default: 5000
+    # max_chars_per_result: 5000
     # `api_key` also accepts a YAML list; requests are round-robin across them.
     # api_key:
     #   - tf-primary-key
@@ -285,8 +287,8 @@ web_search:
     # extraction uses Exa Contents API. `/searchtype` switches between
     # `instant`, `fast`, `auto`, `deep-lite`, `deep`, `deep-reasoning`.
     # `api_key` also accepts a YAML list; requests are round-robin.
-    # Optional max characters for Exa full page text per result. Default: 15000
-    text_max_characters: 15000
+    # Optional max characters for Exa full page text per result. Default: 5000
+    text_max_characters: 5000
     # Optional livecrawl timeout ms for Exa Contents. Slow pages that exceed it
     # are retried once with doubled timeout, then fetched from cache.
     # Default: 15000 (Exa's recommended maximum)
@@ -300,23 +302,25 @@ web_search:
   tavily:
     # Optional. Used as final fallback after TinyFish and Exa; also used for
     # generic website extraction via Tavily Extract when Exa is unavailable.
+    # Optional max characters per URL result. Default: 5000
+    # max_chars_per_result: 5000
     # `api_key` accepts a YAML list; requests are round-robin across them.
     # api_key:
     #   - tvly-primary-key
     #   - tvly-backup-key
     api_key:
-
   # Parallel — fast, high-quality search with dense excerpts + full content
   parallel:
     # Optional. When set, search uses the Parallel Search API and enriches
     # every result with full content per URL via the Extract API
     # (advanced_settings.full_content, same key as search).
+    # Optional max characters per URL result. Default: 5000
+    # max_chars_per_result: 5000
     # `api_key` accepts a YAML list; requests are round-robin across them.
     # api_key:
     #   - pal-primary-key
     #   - pal-backup-key
     api_key:
-
   # Firecrawl — primary generic website extraction (markdown, JS-rendered)
   firecrawl:
     # Optional. When set, generic website extraction uses Firecrawl Scrape API

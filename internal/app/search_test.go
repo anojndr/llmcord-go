@@ -44,8 +44,9 @@ func testTavilySearchConfig() config {
 	loadedConfig := testSearchConfig()
 	loadedConfig.WebSearch.MaxURLs = testWebSearchMaxURLs
 	loadedConfig.WebSearch.Tavily = tavilySearchConfig{
-		APIKey:  testTavilyPrimaryAPIKey,
-		APIKeys: []string{testTavilyPrimaryAPIKey},
+		APIKey:            testTavilyPrimaryAPIKey,
+		APIKeys:           []string{testTavilyPrimaryAPIKey},
+		MaxCharsPerResult: defaultTavilyMaxCharsPerResult,
 	}
 
 	return loadedConfig
@@ -55,13 +56,13 @@ func testParallelSearchConfig() config {
 	loadedConfig := testSearchConfig()
 	loadedConfig.WebSearch.MaxURLs = testWebSearchMaxURLs
 	loadedConfig.WebSearch.Parallel = parallelSearchConfig{
-		APIKey:  "parallel-test-key",
-		APIKeys: []string{"parallel-test-key"},
+		APIKey:            "parallel-test-key",
+		APIKeys:           []string{"parallel-test-key"},
+		MaxCharsPerResult: defaultParallelMaxCharsPerResult,
 	}
 
 	return loadedConfig
 }
-
 func TestSearchQueriesConcurrentlyLimitsFanoutAndCancelsQueuedQueries(t *testing.T) {
 	t.Parallel()
 
@@ -2148,6 +2149,87 @@ func TestFormatSearchSourcesPageContentIncludesTotalSourcesOnPaginatedContent(t 
 	}
 }
 
+func TestTinyFishSearchResultTruncatesContentToConfiguredLimit(t *testing.T) {
+	t.Parallel()
+
+	results := []tinyFishSearchResult{
+		{
+			Title: "Test Page",
+			URL:   "https://example.com/test",
+		},
+	}
+	fetchedTextMap := map[string]string{
+		"https://example.com/test": strings.Repeat("a", 1000),
+	}
+	fetchedTitleMap := map[string]string{}
+
+	formatted := formatTinyFishSearchResultText(results, fetchedTextMap, fetchedTitleMap, 50)
+
+	if !strings.Contains(formatted, "Content:\n| "+strings.Repeat("a", 50)) {
+		t.Fatalf("expected content to be truncated to 50 chars: %q", formatted)
+	}
+
+	if strings.Contains(formatted, strings.Repeat("a", 51)) {
+		t.Fatalf("content was not truncated: %q", formatted)
+	}
+}
+
+func TestParallelSearchResultTruncatesContentToConfiguredLimit(t *testing.T) {
+	t.Parallel()
+
+	results := []parallelSearchResponseItem{
+		{
+			Title: "Parallel Test",
+			URL:   "https://example.com/parallel",
+		},
+	}
+	fetchedContentMap := map[string]string{
+		"https://example.com/parallel": strings.Repeat("b", 1000),
+	}
+	fetchedTitleMap := map[string]string{}
+
+	formatted := formatParallelSearchResultText(results, fetchedContentMap, fetchedTitleMap, 60)
+
+	if !strings.Contains(formatted, "Content:\n| "+strings.Repeat("b", 60)) {
+		t.Fatalf("expected content to be truncated to 60 chars: %q", formatted)
+	}
+
+	if strings.Contains(formatted, strings.Repeat("b", 61)) {
+		t.Fatalf("content was not truncated: %q", formatted)
+	}
+}
+
+func TestTavilySearchResultTruncatesContentToConfiguredLimit(t *testing.T) {
+	t.Parallel()
+
+	results := []tavilySearchResponseResult{
+		{
+			Title:      "Tavily Test",
+			URL:        "https://example.com/tavily",
+			Content:    strings.Repeat("c", 1000),
+			RawContent: strings.Repeat("d", 1000),
+		},
+	}
+
+	formatted := formatTavilySearchResultText(results, 40)
+
+	if !strings.Contains(formatted, "Text:\n| "+strings.Repeat("c", 40)) {
+		t.Fatalf("expected text content to be truncated to 40 chars: %q", formatted)
+	}
+
+	if strings.Contains(formatted, strings.Repeat("c", 41)) {
+		t.Fatalf("text was not truncated: %q", formatted)
+	}
+
+	if !strings.Contains(formatted, "Raw Content:\n| "+strings.Repeat("d", 40)) {
+		t.Fatalf("expected raw content to be truncated to 40 chars: %q", formatted)
+	}
+
+	if strings.Contains(formatted, strings.Repeat("d", 41)) {
+		t.Fatalf("raw content was not truncated: %q", formatted)
+	}
+}
+
 func testPaginatedSearchMetadata() *searchMetadata {
 	searchQueries := []struct {
 		query string
@@ -2211,6 +2293,15 @@ func testSearchConfig() config {
 		SearchType:         defaultExaSearchType,
 		TextMaxCharacters:  defaultExaSearchTextMaxCharacters,
 		LivecrawlTimeoutMS: defaultExaContentsLivecrawlTimeoutMS,
+	}
+	loadedConfig.WebSearch.TinyFish = tinyFishSearchConfig{
+		MaxCharsPerResult: defaultTinyFishMaxCharsPerResult,
+	}
+	loadedConfig.WebSearch.Parallel = parallelSearchConfig{
+		MaxCharsPerResult: defaultParallelMaxCharsPerResult,
+	}
+	loadedConfig.WebSearch.Tavily = tavilySearchConfig{
+		MaxCharsPerResult: defaultTavilyMaxCharsPerResult,
 	}
 	loadedConfig.ModelOrder = []string{"openai/main-model"}
 	loadedConfig.MaxMessages = defaultMaxMessages

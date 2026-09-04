@@ -95,6 +95,27 @@ models:
 		)
 	}
 
+	if loadedConfig.WebSearch.TinyFish.MaxCharsPerResult != defaultTinyFishMaxCharsPerResult {
+		t.Fatalf(
+			"unexpected default TinyFish max chars per result: %d",
+			loadedConfig.WebSearch.TinyFish.MaxCharsPerResult,
+		)
+	}
+
+	if loadedConfig.WebSearch.Parallel.MaxCharsPerResult != defaultParallelMaxCharsPerResult {
+		t.Fatalf(
+			"unexpected default Parallel max chars per result: %d",
+			loadedConfig.WebSearch.Parallel.MaxCharsPerResult,
+		)
+	}
+
+	if loadedConfig.WebSearch.Tavily.MaxCharsPerResult != defaultTavilyMaxCharsPerResult {
+		t.Fatalf(
+			"unexpected default Tavily max chars per result: %d",
+			loadedConfig.WebSearch.Tavily.MaxCharsPerResult,
+		)
+	}
+
 	if loadedConfig.Database.ConnectionString != "" {
 		t.Fatalf(
 			"unexpected default database connection string: %q",
@@ -963,6 +984,186 @@ web_search:
 
 	if loadedConfig.WebSearch.Exa.TextMaxCharacters != 9000 {
 		t.Fatalf("unexpected Exa text max characters: %d", loadedConfig.WebSearch.Exa.TextMaxCharacters)
+	}
+}
+
+func TestLoadConfigUsesConfiguredTinyFishWebSearchMaxCharsPerResult(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	configText := `
+bot_token: discord-token
+providers:
+  openai:
+    base_url: https://api.example.com/v1
+models:
+  openai/first-model:
+web_search:
+  tinyfish:
+    max_chars_per_result: 3000
+`
+
+	err := os.WriteFile(configPath, []byte(configText), 0o600)
+	if err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	loadedConfig, err := loadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	if loadedConfig.WebSearch.TinyFish.MaxCharsPerResult != 3000 {
+		t.Fatalf("unexpected TinyFish max chars per result: %d", loadedConfig.WebSearch.TinyFish.MaxCharsPerResult)
+	}
+}
+
+func TestLoadConfigUsesConfiguredParallelWebSearchMaxCharsPerResult(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	configText := `
+bot_token: discord-token
+providers:
+  openai:
+    base_url: https://api.example.com/v1
+models:
+  openai/first-model:
+web_search:
+  parallel:
+    max_chars_per_result: 4000
+`
+
+	err := os.WriteFile(configPath, []byte(configText), 0o600)
+	if err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	loadedConfig, err := loadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	if loadedConfig.WebSearch.Parallel.MaxCharsPerResult != 4000 {
+		t.Fatalf("unexpected Parallel max chars per result: %d", loadedConfig.WebSearch.Parallel.MaxCharsPerResult)
+	}
+}
+
+func TestLoadConfigUsesConfiguredTavilyWebSearchMaxCharsPerResult(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	configText := `
+bot_token: discord-token
+providers:
+  openai:
+    base_url: https://api.example.com/v1
+models:
+  openai/first-model:
+web_search:
+  tavily:
+    max_chars_per_result: 2500
+`
+
+	err := os.WriteFile(configPath, []byte(configText), 0o600)
+	if err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	loadedConfig, err := loadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	if loadedConfig.WebSearch.Tavily.MaxCharsPerResult != 2500 {
+		t.Fatalf("unexpected Tavily max chars per result: %d", loadedConfig.WebSearch.Tavily.MaxCharsPerResult)
+	}
+}
+
+func TestLoadConfigRejectsNonPositiveTinyFishMaxCharsPerResult(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	configText := `
+bot_token: discord-token
+providers:
+  openai:
+    base_url: https://api.example.com/v1
+models:
+  openai/first-model:
+web_search:
+  tinyfish:
+    max_chars_per_result: 0
+`
+
+	err := os.WriteFile(configPath, []byte(configText), 0o600)
+	if err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	_, err = loadConfig(configPath)
+	if err == nil {
+		t.Fatal("expected non-positive TinyFish max chars per result to fail validation")
+	}
+}
+
+func TestLoadConfigRejectsNonPositiveParallelMaxCharsPerResult(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	configText := `
+bot_token: discord-token
+providers:
+  openai:
+    base_url: https://api.example.com/v1
+models:
+  openai/first-model:
+web_search:
+  parallel:
+    max_chars_per_result: -1
+`
+
+	err := os.WriteFile(configPath, []byte(configText), 0o600)
+	if err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	_, err = loadConfig(configPath)
+	if err == nil {
+		t.Fatal("expected non-positive Parallel max chars per result to fail validation")
+	}
+}
+
+func TestLoadConfigRejectsNonPositiveTavilyMaxCharsPerResult(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	configText := `
+bot_token: discord-token
+providers:
+  openai:
+    base_url: https://api.example.com/v1
+models:
+  openai/first-model:
+web_search:
+  tavily:
+    max_chars_per_result: 0
+`
+
+	err := os.WriteFile(configPath, []byte(configText), 0o600)
+	if err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	_, err = loadConfig(configPath)
+	if err == nil {
+		t.Fatal("expected non-positive Tavily max chars per result to fail validation")
 	}
 }
 

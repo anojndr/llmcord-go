@@ -180,18 +180,19 @@ func testWebsiteExaAndTavilyConfig() config {
 		LivecrawlTimeoutMS: defaultExaContentsLivecrawlTimeoutMS,
 	}
 	loadedConfig.WebSearch.Tavily = tavilySearchConfig{
-		APIKey:  testTavilyPrimaryAPIKey,
-		APIKeys: []string{testTavilyPrimaryAPIKey},
+		APIKey:            testTavilyPrimaryAPIKey,
+		APIKeys:           []string{testTavilyPrimaryAPIKey},
+		MaxCharsPerResult: defaultTavilyMaxCharsPerResult,
 	}
-
 	return loadedConfig
 }
 
 func testWebsiteTavilyOnlyConfig() config {
 	loadedConfig := testSearchConfig()
 	loadedConfig.WebSearch.Tavily = tavilySearchConfig{
-		APIKey:  testTavilyPrimaryAPIKey,
-		APIKeys: []string{testTavilyPrimaryAPIKey},
+		APIKey:            testTavilyPrimaryAPIKey,
+		APIKeys:           []string{testTavilyPrimaryAPIKey},
+		MaxCharsPerResult: defaultTavilyMaxCharsPerResult,
 	}
 
 	return loadedConfig
@@ -1740,7 +1741,7 @@ func assertExaContentsRequest(t *testing.T, request map[string]any, requestURL s
 		t.Fatalf("unexpected Exa contents text payload: %#v", request["text"])
 	}
 
-	if mapIntValue(rawText, "maxCharacters") != maxWebsiteContentRunes {
+	if mapIntValue(rawText, "maxCharacters") != defaultExaSearchTextMaxCharacters {
 		t.Fatalf("unexpected Exa contents max characters: %d", mapIntValue(rawText, "maxCharacters"))
 	}
 
