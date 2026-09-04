@@ -164,8 +164,9 @@ func testGroundingConfig() config {
 				MaxMarkdownCharacters: 0,
 			},
 			Tavily: tavilySearchConfig{
-				APIKey:  "",
-				APIKeys: nil,
+				APIKey:            "",
+				APIKeys:           nil,
+				MaxCharsPerResult: 0,
 			},
 		},
 		VisualSearch: visualSearchConfig{

@@ -301,15 +301,18 @@ type rawProviderConfig struct {
 }
 
 type rawTavilySearchConfig struct {
-	APIKey scalarStringList `yaml:"api_key"`
+	APIKey            scalarStringList `yaml:"api_key"`
+	MaxCharsPerResult *int             `yaml:"max_chars_per_result"`
 }
 
 type rawTinyFishSearchConfig struct {
-	APIKey scalarStringList `yaml:"api_key"`
+	APIKey            scalarStringList `yaml:"api_key"`
+	MaxCharsPerResult *int             `yaml:"max_chars_per_result"`
 }
 
 type rawParallelSearchConfig struct {
-	APIKey scalarStringList `yaml:"api_key"`
+	APIKey            scalarStringList `yaml:"api_key"`
+	MaxCharsPerResult *int             `yaml:"max_chars_per_result"`
 }
 
 type rawFirecrawlSearchConfig struct {
@@ -374,18 +377,21 @@ type providerConfig struct {
 }
 
 type tavilySearchConfig struct {
-	APIKey  string
-	APIKeys []string
+	APIKey            string
+	APIKeys           []string
+	MaxCharsPerResult int
 }
 
 type tinyFishSearchConfig struct {
-	APIKey  string
-	APIKeys []string
+	APIKey            string
+	APIKeys           []string
+	MaxCharsPerResult int
 }
 
 type parallelSearchConfig struct {
-	APIKey  string
-	APIKeys []string
+	APIKey            string
+	APIKeys           []string
+	MaxCharsPerResult int
 }
 
 type exaSearchConfig struct {
@@ -884,6 +890,10 @@ func normalizeWebSearchConfig(
 		Tavily: tavilySearchConfig{
 			APIKey:  firstAPIKey(tavilyAPIKeys),
 			APIKeys: tavilyAPIKeys,
+			MaxCharsPerResult: intValueOrDefault(
+				rawLoadedConfig.Tavily.MaxCharsPerResult,
+				defaultTavilyMaxCharsPerResult,
+			),
 		},
 		Firecrawl: firecrawlSearchConfig{
 			APIKey:  firstAPIKey(firecrawlAPIKeys),
@@ -896,10 +906,18 @@ func normalizeWebSearchConfig(
 		TinyFish: tinyFishSearchConfig{
 			APIKey:  firstAPIKey(tinyFishAPIKeys),
 			APIKeys: tinyFishAPIKeys,
+			MaxCharsPerResult: intValueOrDefault(
+				rawLoadedConfig.TinyFish.MaxCharsPerResult,
+				defaultTinyFishMaxCharsPerResult,
+			),
 		},
 		Parallel: parallelSearchConfig{
 			APIKey:  firstAPIKey(parallelAPIKeys),
 			APIKeys: parallelAPIKeys,
+			MaxCharsPerResult: intValueOrDefault(
+				rawLoadedConfig.Parallel.MaxCharsPerResult,
+				defaultParallelMaxCharsPerResult,
+			),
 		},
 	}
 }
@@ -931,6 +949,30 @@ func (settings exaSearchConfig) textMaxCharacters() int {
 	}
 
 	return settings.TextMaxCharacters
+}
+
+func (settings tinyFishSearchConfig) maxCharsPerResult() int {
+	if settings.MaxCharsPerResult <= 0 {
+		return defaultTinyFishMaxCharsPerResult
+	}
+
+	return settings.MaxCharsPerResult
+}
+
+func (settings parallelSearchConfig) maxCharsPerResult() int {
+	if settings.MaxCharsPerResult <= 0 {
+		return defaultParallelMaxCharsPerResult
+	}
+
+	return settings.MaxCharsPerResult
+}
+
+func (settings tavilySearchConfig) maxCharsPerResult() int {
+	if settings.MaxCharsPerResult <= 0 {
+		return defaultTavilyMaxCharsPerResult
+	}
+
+	return settings.MaxCharsPerResult
 }
 
 func (settings exaSearchConfig) livecrawlTimeoutMS() int {
@@ -1093,6 +1135,27 @@ func validateWebSearchConfig(loadedConfig webSearchConfig) error {
 	if loadedConfig.Firecrawl.MaxMarkdownCharacters <= 0 {
 		return fmt.Errorf(
 			"web_search.firecrawl.max_markdown_characters must be greater than zero: %w",
+			os.ErrInvalid,
+		)
+	}
+
+	if loadedConfig.TinyFish.MaxCharsPerResult <= 0 {
+		return fmt.Errorf(
+			"web_search.tinyfish.max_chars_per_result must be greater than zero: %w",
+			os.ErrInvalid,
+		)
+	}
+
+	if loadedConfig.Parallel.MaxCharsPerResult <= 0 {
+		return fmt.Errorf(
+			"web_search.parallel.max_chars_per_result must be greater than zero: %w",
+			os.ErrInvalid,
+		)
+	}
+
+	if loadedConfig.Tavily.MaxCharsPerResult <= 0 {
+		return fmt.Errorf(
+			"web_search.tavily.max_chars_per_result must be greater than zero: %w",
 			os.ErrInvalid,
 		)
 	}

@@ -350,7 +350,8 @@ type parallelSearchRequest struct {
 }
 
 type parallelSearchSettings struct {
-	MaxResults int `json:"max_results,omitempty"`
+	MaxResults      int                      `json:"max_results,omitempty"`
+	ExcerptSettings *parallelExcerptSettings `json:"excerpt_settings,omitempty"`
 }
 
 type parallelSearchResponse struct {
@@ -375,9 +376,13 @@ type parallelExtractRequest struct {
 	SearchQueries    []string                 `json:"search_queries,omitempty"`
 	AdvancedSettings *parallelExtractSettings `json:"advanced_settings,omitempty"`
 }
-
 type parallelExtractSettings struct {
-	FullContent *parallelExtractFullContentSettings `json:"full_content,omitempty"`
+	ExcerptSettings *parallelExcerptSettings            `json:"excerpt_settings,omitempty"`
+	FullContent     *parallelExtractFullContentSettings `json:"full_content,omitempty"`
+}
+
+type parallelExcerptSettings struct {
+	MaxCharsPerResult int `json:"max_chars_per_result,omitempty"`
 }
 
 type parallelExtractFullContentSettings struct {
@@ -1240,6 +1245,7 @@ func (client tavilySearchClient) search(
 	}
 
 	maxURLs := loadedConfig.WebSearch.maxURLs()
+	maxChars := loadedConfig.WebSearch.Tavily.maxCharsPerResult()
 
 	return searchQueriesConcurrently(ctx, queries, func(
 		queryContext context.Context,
@@ -1247,7 +1253,7 @@ func (client tavilySearchClient) search(
 	) (webSearchResult, error) {
 		apiKey := firstAPIKey(client.keys.rotate(tavilyAPIKeys))
 
-		return client.searchQuery(queryContext, apiKey, query, maxURLs)
+		return client.searchQuery(queryContext, apiKey, query, maxURLs, maxChars)
 	})
 }
 
@@ -1490,8 +1496,9 @@ func (client tavilySearchClient) searchQuery(
 	apiKey string,
 	query string,
 	maxURLs int,
+	maxCharsPerResult int,
 ) (webSearchResult, error) {
-	return client.searchQueryOnce(ctx, query, apiKey, maxURLs)
+	return client.searchQueryOnce(ctx, query, apiKey, maxURLs, maxCharsPerResult)
 }
 
 func (client tavilySearchClient) searchQueryOnce(
@@ -1499,6 +1506,7 @@ func (client tavilySearchClient) searchQueryOnce(
 	query string,
 	apiKey string,
 	maxURLs int,
+	maxCharsPerResult int,
 ) (webSearchResult, error) {
 	requestBody := tavilySearchRequest{
 		Query:             query,
@@ -1567,7 +1575,7 @@ func (client tavilySearchClient) searchQueryOnce(
 
 	return webSearchResult{
 		Query: query,
-		Text:  formatTavilySearchResultText(response.Results),
+		Text:  formatTavilySearchResultText(response.Results, maxCharsPerResult),
 	}, nil
 }
 
@@ -1582,6 +1590,7 @@ func (client parallelSearchClient) search(
 	}
 
 	maxURLs := loadedConfig.WebSearch.maxURLs()
+	maxChars := loadedConfig.WebSearch.Parallel.maxCharsPerResult()
 
 	return searchQueriesConcurrently(ctx, queries, func(
 		queryContext context.Context,
@@ -1589,7 +1598,7 @@ func (client parallelSearchClient) search(
 	) (webSearchResult, error) {
 		apiKey := firstAPIKey(client.keys.rotate(parallelAPIKeys))
 
-		return client.searchQuery(queryContext, apiKey, query, maxURLs)
+		return client.searchQuery(queryContext, apiKey, query, maxURLs, maxChars)
 	})
 }
 
@@ -1598,8 +1607,9 @@ func (client parallelSearchClient) searchQuery(
 	apiKey string,
 	query string,
 	maxURLs int,
+	maxCharsPerResult int,
 ) (webSearchResult, error) {
-	return client.searchQueryOnce(ctx, query, apiKey, maxURLs)
+	return client.searchQueryOnce(ctx, query, apiKey, maxURLs, maxCharsPerResult)
 }
 
 func (client parallelSearchClient) searchQueryOnce(
@@ -1607,6 +1617,7 @@ func (client parallelSearchClient) searchQueryOnce(
 	query string,
 	apiKey string,
 	maxURLs int,
+	maxCharsPerResult int,
 ) (webSearchResult, error) {
 	searchCtx, cancel := context.WithTimeout(ctx, parallelSearchRequestTimeout)
 	defer cancel()
@@ -1617,6 +1628,9 @@ func (client parallelSearchClient) searchQueryOnce(
 		Mode:          "fast",
 		AdvancedSettings: &parallelSearchSettings{
 			MaxResults: maxURLs,
+			ExcerptSettings: &parallelExcerptSettings{
+				MaxCharsPerResult: maxCharsPerResult,
+			},
 		},
 	}
 
@@ -1636,7 +1650,7 @@ func (client parallelSearchClient) searchQueryOnce(
 	}
 
 	httpRequest.Header.Set("Accept", applicationJSONContentType)
-	httpRequest.Header.Set("x-api-key", strings.TrimSpace(apiKey))
+	httpRequest.Header.Set("X-Api-Key", strings.TrimSpace(apiKey))
 	httpRequest.Header.Set(contentTypeHeader, applicationJSONContentType)
 
 	httpResponse, err := client.httpClient.Do(httpRequest)
@@ -1689,11 +1703,11 @@ func (client parallelSearchClient) searchQueryOnce(
 	// result with full content from the Extract API (same API key as the
 	// search, mirroring tinyFish search+fetch). Extract failures are
 	// non-fatal: excerpts alone still produce a usable result.
-	fetchedContentMap, fetchedTitleMap := client.fetchFullContents(ctx, apiKey, urls, query)
+	fetchedContentMap, fetchedTitleMap := client.fetchFullContents(ctx, apiKey, urls, query, maxCharsPerResult)
 
 	return webSearchResult{
 		Query: query,
-		Text:  formatParallelSearchResultText(response.Results, fetchedContentMap, fetchedTitleMap),
+		Text:  formatParallelSearchResultText(response.Results, fetchedContentMap, fetchedTitleMap, maxCharsPerResult),
 	}, nil
 }
 
@@ -1716,6 +1730,7 @@ func (client parallelSearchClient) fetchFullContents(
 	apiKey string,
 	urls []string,
 	query string,
+	maxCharsPerResult int,
 ) (map[string]string, map[string]string) {
 	fetchedContentMap := make(map[string]string)
 	fetchedTitleMap := make(map[string]string)
@@ -1731,7 +1746,7 @@ func (client parallelSearchClient) fetchFullContents(
 
 	batchCount := (len(urls) + batchSize - 1) / batchSize
 	if batchCount == 1 {
-		extractResponse, err := client.fetchExtractBatch(ctx, apiKey, urls, query)
+		extractResponse, err := client.fetchExtractBatch(ctx, apiKey, urls, query, maxCharsPerResult)
 		if err != nil {
 			logWarn("parallel extract for search enrichment failed", err, "query", query)
 
@@ -1751,7 +1766,7 @@ func (client parallelSearchClient) fetchFullContents(
 			start := index * batchSize
 			end := min(start+batchSize, len(urls))
 
-			return client.fetchExtractBatch(taskCtx, apiKey, urls[start:end], query)
+			return client.fetchExtractBatch(taskCtx, apiKey, urls[start:end], query, maxCharsPerResult)
 		},
 	)
 
@@ -1823,6 +1838,7 @@ func (client parallelSearchClient) fetchExtractBatch(
 	apiKey string,
 	batch []string,
 	query string,
+	maxCharsPerResult int,
 ) (parallelExtractResponse, error) {
 	if len(batch) == 0 {
 		return parallelExtractResponse{ExtractID: "", Results: nil, Errors: nil}, nil
@@ -1836,8 +1852,11 @@ func (client parallelSearchClient) fetchExtractBatch(
 		Objective:     query,
 		SearchQueries: []string{query},
 		AdvancedSettings: &parallelExtractSettings{
+			ExcerptSettings: &parallelExcerptSettings{
+				MaxCharsPerResult: maxCharsPerResult,
+			},
 			FullContent: &parallelExtractFullContentSettings{
-				MaxCharsPerResult: maxWebsiteContentRunes,
+				MaxCharsPerResult: maxCharsPerResult,
 			},
 		},
 	}
@@ -1911,10 +1930,11 @@ func (client tinyFishSearchClient) search(
 	}
 
 	maxURLs := loadedConfig.WebSearch.maxURLs()
+	maxChars := loadedConfig.WebSearch.TinyFish.maxCharsPerResult()
 
 	return searchQueriesConcurrently(ctx, queries, func(queryContext context.Context, query string) (webSearchResult, error) {
 		apiKey := firstAPIKey(client.keys.rotate(apiKeys))
-		return client.searchSingleQuery(queryContext, apiKey, query, maxURLs)
+		return client.searchSingleQuery(queryContext, apiKey, query, maxURLs, maxChars)
 	})
 }
 
@@ -1923,6 +1943,7 @@ func (client tinyFishSearchClient) searchSingleQuery(
 	apiKey string,
 	query string,
 	maxURLs int,
+	maxCharsPerResult int,
 ) (webSearchResult, error) {
 	searchResults, err := client.searchQuery(ctx, apiKey, query)
 	if err != nil {
@@ -1984,8 +2005,7 @@ func (client tinyFishSearchClient) searchSingleQuery(
 		}
 	}
 
-	formatted := formatTinyFishSearchResultText(searchResults, fetchedTextMap, fetchedTitleMap)
-
+	formatted := formatTinyFishSearchResultText(searchResults, fetchedTextMap, fetchedTitleMap, maxCharsPerResult)
 	return webSearchResult{
 		Query: query,
 		Text:  formatted,
@@ -2221,9 +2241,13 @@ func formatTinyFishSearchResultText(
 	results []tinyFishSearchResult,
 	fetchedTextMap map[string]string,
 	fetchedTitleMap map[string]string,
+	maxCharsPerResult int,
 ) string {
-	formattedResults := make([]string, 0, len(results))
+	if maxCharsPerResult <= 0 {
+		maxCharsPerResult = defaultTinyFishMaxCharsPerResult
+	}
 
+	formattedResults := make([]string, 0, len(results))
 	for _, result := range results {
 		lines := make([]string, 0, 6)
 
@@ -2253,7 +2277,7 @@ func formatTinyFishSearchResultText(
 
 		fetchedText := fetchedTextMap[strings.ToLower(strings.TrimSpace(result.URL))]
 		if fetchedText != "" {
-			fetchedText = truncateRunes(strings.TrimSpace(fetchedText), maxWebsiteContentRunes)
+			fetchedText = truncateRunes(strings.TrimSpace(fetchedText), maxCharsPerResult)
 			lines = append(lines, formatSearchMultilineField("Content", fetchedText))
 		} else if snippet := strings.TrimSpace(result.Snippet); snippet == "" {
 			lines = append(lines, "Content: [No extracted content — fetch failed]")
@@ -2269,7 +2293,11 @@ func formatTinyFishSearchResultText(
 	return strings.Join(formattedResults, "\n\n")
 }
 
-func formatTavilySearchResultText(results []tavilySearchResponseResult) string {
+func formatTavilySearchResultText(results []tavilySearchResponseResult, maxCharsPerResult int) string {
+	if maxCharsPerResult <= 0 {
+		maxCharsPerResult = defaultTavilyMaxCharsPerResult
+	}
+
 	formattedResults := make([]string, 0, len(results))
 
 	for _, result := range results {
@@ -2285,14 +2313,16 @@ func formatTavilySearchResultText(results []tavilySearchResponseResult) string {
 			lines = append(lines, "URL: "+url)
 		}
 
-		snippet := formatSearchMultilineField("Text", result.Content)
-		if snippet != "" {
-			lines = append(lines, snippet)
+		if content := truncateRunes(strings.TrimSpace(result.Content), maxCharsPerResult); content != "" {
+			if snippet := formatSearchMultilineField("Text", content); snippet != "" {
+				lines = append(lines, snippet)
+			}
 		}
 
-		rawContent := formatSearchMultilineField("Raw Content", result.RawContent)
-		if rawContent != "" {
-			lines = append(lines, rawContent)
+		if rawContent := truncateRunes(strings.TrimSpace(result.RawContent), maxCharsPerResult); rawContent != "" {
+			if formatted := formatSearchMultilineField("Raw Content", rawContent); formatted != "" {
+				lines = append(lines, formatted)
+			}
 		}
 
 		if len(lines) == 0 {
@@ -2309,9 +2339,13 @@ func formatParallelSearchResultText(
 	results []parallelSearchResponseItem,
 	fetchedContentMap map[string]string,
 	fetchedTitleMap map[string]string,
+	maxCharsPerResult int,
 ) string {
-	formattedResults := make([]string, 0, len(results))
+	if maxCharsPerResult <= 0 {
+		maxCharsPerResult = defaultParallelMaxCharsPerResult
+	}
 
+	formattedResults := make([]string, 0, len(results))
 	for _, result := range results {
 		lines := make([]string, 0, 5)
 
@@ -2342,7 +2376,7 @@ func formatParallelSearchResultText(
 
 		fetchedText := strings.TrimSpace(fetchedContentMap[lowerURL])
 		if fetchedText != "" {
-			fetchedText = truncateRunes(fetchedText, maxWebsiteContentRunes)
+			fetchedText = truncateRunes(fetchedText, maxCharsPerResult)
 			lines = append(lines, formatSearchMultilineField("Content", fetchedText))
 		} else if excerpts == "" {
 			lines = append(lines, "Content: [No extracted content — fetch failed]")
