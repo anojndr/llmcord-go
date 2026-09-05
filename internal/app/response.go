@@ -38,18 +38,18 @@ type pendingResponse struct {
 }
 
 type responseTracker struct {
-	sourceMessage         *discordgo.Message
-	searchMetadata        *searchMetadata
-	modelName             string
-	originalModel         string
-	providerResponseID    string
-	responseMessages      []*discordgo.Message
-	pendingResponses      []pendingResponse
-	renderedSpecs         []renderSpec
-	pixelVaultRepliedURLs map[string]struct{}
-	progressActive        bool
-	responseVisible       bool
-	originalMessages      []chatMessage
+	sourceMessage      *discordgo.Message
+	searchMetadata     *searchMetadata
+	modelName          string
+	originalModel      string
+	providerResponseID string
+	responseMessages   []*discordgo.Message
+	pendingResponses   []pendingResponse
+	renderedSpecs      []renderSpec
+	iiliRepliedURLs    map[string]struct{}
+	progressActive     bool
+	responseVisible    bool
+	originalMessages   []chatMessage
 }
 
 const (
@@ -57,7 +57,7 @@ const (
 	userFacingErrorMaxRunes        = 1500
 )
 
-var pixelVaultResponseURLRegexp = regexp.MustCompile(`(?i)\bhttps?://img\.pixelvault\.dev/[^\s<>\]\)]+`)
+var iiliResponseURLRegexp = regexp.MustCompile(`(?i)\bhttps?://iili\.io/[^\s<>\]\)]+`)
 
 func newSegmentAccumulator(maxLength int) segmentAccumulator {
 	return segmentAccumulator{
@@ -435,7 +435,7 @@ func (instance *bot) finalizeGenerationRound(
 // incomplete message, and nothing else surfaces the failure. Each retry runs
 // with fresh accumulators and re-renders over the tracker's existing messages
 // in place, so a truncated reply is replaced rather than duplicated, and
-// auxiliary PixelVault url replies are claimed once per response. Up to
+// auxiliary iili.io url replies are claimed once per response. Up to
 // prematureStreamRetryMaxAttempts streams are attempted in total; exhausted
 // retries keep the existing behavior of releasing the truncated reply.
 func (instance *bot) runGenerationRoundWithRetry(
@@ -941,7 +941,7 @@ func (instance *bot) renderFinalResponse(
 		return fmt.Errorf("render final embed response: %w", err)
 	}
 
-	instance.sendPixelVaultURLReplies(tracker, accumulator.joined())
+	instance.sendIiliURLReplies(tracker, accumulator.joined())
 
 	return nil
 }
@@ -1298,8 +1298,8 @@ func (instance *bot) renderFailureOnProgressMessage(
 	return true, nil
 }
 
-func pixelVaultResponseURLs(text string) []string {
-	rawURLs := pixelVaultResponseURLRegexp.FindAllString(text, -1)
+func iiliResponseURLs(text string) []string {
+	rawURLs := iiliResponseURLRegexp.FindAllString(text, -1)
 	urls := make([]string, 0, len(rawURLs))
 	seenURLs := make(map[string]struct{}, len(rawURLs))
 
@@ -1358,26 +1358,26 @@ func contentBatchesForLines(lines []string, maxLength int) []string {
 	return batches
 }
 
-// unrepliedPixelVaultURLs filters urls down to those this response has not
+// unrepliedIiliURLs filters urls down to those this response has not
 // replied with yet and claims them on the tracker, so a retried generation
-// attempt never re-posts duplicate PixelVault url replies.
-func unrepliedPixelVaultURLs(tracker *responseTracker, urls []string) []string {
+// attempt never re-posts duplicate iili.io url replies.
+func unrepliedIiliURLs(tracker *responseTracker, urls []string) []string {
 	if len(urls) == 0 {
 		return urls
 	}
 
-	if tracker.pixelVaultRepliedURLs == nil {
-		tracker.pixelVaultRepliedURLs = make(map[string]struct{}, len(urls))
+	if tracker.iiliRepliedURLs == nil {
+		tracker.iiliRepliedURLs = make(map[string]struct{}, len(urls))
 	}
 
 	unreplied := make([]string, 0, len(urls))
 
 	for _, url := range urls {
-		if _, replied := tracker.pixelVaultRepliedURLs[url]; replied {
+		if _, replied := tracker.iiliRepliedURLs[url]; replied {
 			continue
 		}
 
-		tracker.pixelVaultRepliedURLs[url] = struct{}{}
+		tracker.iiliRepliedURLs[url] = struct{}{}
 
 		unreplied = append(unreplied, url)
 	}
@@ -1385,14 +1385,14 @@ func unrepliedPixelVaultURLs(tracker *responseTracker, urls []string) []string {
 	return unreplied
 }
 
-func (instance *bot) sendPixelVaultURLReplies(tracker *responseTracker, answerText string) {
+func (instance *bot) sendIiliURLReplies(tracker *responseTracker, answerText string) {
 	if instance == nil || instance.session == nil || tracker == nil || len(tracker.responseMessages) == 0 {
 		return
 	}
 
 	responseMessage := tracker.responseMessages[len(tracker.responseMessages)-1]
 
-	replyURLs := unrepliedPixelVaultURLs(tracker, pixelVaultResponseURLs(answerText))
+	replyURLs := unrepliedIiliURLs(tracker, iiliResponseURLs(answerText))
 	if len(replyURLs) == 0 {
 		return
 	}
@@ -1409,7 +1409,7 @@ func (instance *bot) sendPixelVaultURLReplies(tracker *responseTracker, answerTe
 		sentMessage, err := instance.session.ChannelMessageSendComplex(responseMessage.ChannelID, send)
 		if err != nil {
 			logWarn(
-				"send PixelVault url reply",
+				"send iili.io url reply",
 				err,
 				"channel_id",
 				responseMessage.ChannelID,

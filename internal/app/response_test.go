@@ -555,51 +555,51 @@ func TestBuildResponseEmbedLeavesGeneratedImageURLInDescription(t *testing.T) {
 	}
 }
 
-func TestPixelVaultResponseURLsDeduplicatesMarkdownLinks(t *testing.T) {
+func TestIiliResponseURLsDeduplicatesMarkdownLinks(t *testing.T) {
 	t.Parallel()
 
-	urls := pixelVaultResponseURLs(
-		"See [https://img.pixelvault.dev/proj_xyz789/img_abc123.jpg](https://img.pixelvault.dev/proj_xyz789/img_abc123.jpg), " +
-			"https://img.pixelvault.dev/proj_xyz789/img_abc124.png, and https://example.com/ignore.jpg.",
+	urls := iiliResponseURLs(
+		"See [https://iili.io/nd822Qn.png](https://iili.io/nd822Qn.png), " +
+			"https://iili.io/nd823Vs.png, and https://example.com/ignore.jpg.",
 	)
 
 	expectedURLs := []string{
-		"https://img.pixelvault.dev/proj_xyz789/img_abc123.jpg",
-		"https://img.pixelvault.dev/proj_xyz789/img_abc124.png",
+		"https://iili.io/nd822Qn.png",
+		"https://iili.io/nd823Vs.png",
 	}
 	if len(urls) != len(expectedURLs) {
-		t.Fatalf("unexpected pixelVault url count: %#v", urls)
+		t.Fatalf("unexpected iili url count: %#v", urls)
 	}
 
 	for index, expectedURL := range expectedURLs {
 		if urls[index] != expectedURL {
-			t.Fatalf("unexpected pixelVault url at %d: got %q want %q", index, urls[index], expectedURL)
+			t.Fatalf("unexpected iili url at %d: got %q want %q", index, urls[index], expectedURL)
 		}
 	}
 }
 
-func TestRenderFinalResponseResendsPixelVaultURLsWithoutBreakingReplyHistory(t *testing.T) {
+func TestRenderFinalResponseResendsIiliURLsWithoutBreakingReplyHistory(t *testing.T) {
 	t.Parallel()
-	testRenderFinalResponseResendsPixelVaultURLsWithoutBreakingReplyHistory(t)
+	testRenderFinalResponseResendsIiliURLsWithoutBreakingReplyHistory(t)
 }
 
-func testRenderFinalResponseResendsPixelVaultURLsWithoutBreakingReplyHistory(t *testing.T) {
+func testRenderFinalResponseResendsIiliURLsWithoutBreakingReplyHistory(t *testing.T) {
 	t.Helper()
 
 	const (
-		botUserID         = "bot-user"
-		channelID         = "channel-1"
-		userID            = "user-1"
-		sourceMessageID   = "user-message-1"
-		responseID        = "assistant-message-1"
-		pixelVaultReplyID = "assistant-message-2"
-		modelName         = "openai/gpt-5"
-		followUpText      = "repeat the image link"
-		pixelVaultURL     = "https://img.pixelvault.dev/proj_xyz789/img_abc123.jpg"
+		botUserID       = "bot-user"
+		channelID       = "channel-1"
+		userID          = "user-1"
+		sourceMessageID = "user-message-1"
+		responseID      = "assistant-message-1"
+		iiliReplyID     = "assistant-message-2"
+		modelName       = "openai/gpt-5"
+		followUpText    = "repeat the image link"
+		iiliURL         = "https://iili.io/nd822Qn.png"
 	)
 
 	answerText := "Result.\n\nGenerated image:\n" +
-		"[https://img.pixelvault.dev/proj_xyz789/img_abc123.jpg](https://img.pixelvault.dev/proj_xyz789/img_abc123.jpg)"
+		"[https://iili.io/nd822Qn.png](https://iili.io/nd822Qn.png)"
 
 	sourceMessage := newPromptMessage(sourceMessageID, channelID, userID, botUserID)
 	responseMessage := newAssistantReplyMessage(
@@ -607,19 +607,19 @@ func testRenderFinalResponseResendsPixelVaultURLsWithoutBreakingReplyHistory(t *
 		newDiscordUser(botUserID, true),
 		sourceMessage,
 	)
-	pixelVaultReplyMessage := newAssistantReplyMessage(
-		pixelVaultReplyID,
+	iiliReplyMessage := newAssistantReplyMessage(
+		iiliReplyID,
 		newDiscordUser(botUserID, true),
 		responseMessage,
 	)
 
-	session := newPixelVaultReplyHistoryTestSession(
+	session := newIiliReplyHistoryTestSession(
 		t,
 		channelID,
 		botUserID,
-		pixelVaultURL,
+		iiliURL,
 		responseMessage,
-		pixelVaultReplyMessage,
+		iiliReplyMessage,
 	)
 	instance := new(bot)
 	instance.session = session
@@ -649,32 +649,32 @@ func testRenderFinalResponseResendsPixelVaultURLsWithoutBreakingReplyHistory(t *
 		t.Fatalf("unexpected tracked response message count: %d", len(tracker.responseMessages))
 	}
 
-	assertCachedPixelVaultReplyNode(
+	assertCachedIiliReplyNode(
 		t,
 		instance.nodes,
-		pixelVaultReplyID,
+		iiliReplyID,
 		responseID,
 		testProviderResponseID,
 		modelName,
 	)
-	assertPixelVaultReplyConversation(
+	assertIiliReplyConversation(
 		t,
 		instance,
 		channelID,
 		userID,
 		answerText,
 		followUpText,
-		pixelVaultReplyMessage,
+		iiliReplyMessage,
 	)
 }
 
-func newPixelVaultReplyHistoryTestSession(
+func newIiliReplyHistoryTestSession(
 	t *testing.T,
 	channelID string,
 	botUserID string,
-	pixelVaultURL string,
+	iiliURL string,
 	responseMessage *discordgo.Message,
-	pixelVaultReplyMessage *discordgo.Message,
+	iiliReplyMessage *discordgo.Message,
 ) *discordgo.Session {
 	t.Helper()
 
@@ -718,10 +718,10 @@ func newPixelVaultReplyHistoryTestSession(
 			t.Fatalf("decode request payload: %v", err)
 		}
 
-		if content, contentOK := payload["content"].(string); contentOK && content == pixelVaultURL {
-			assertPlainReplyPayload(t, payload, pixelVaultURL, responseMessage.ID)
+		if content, contentOK := payload["content"].(string); contentOK && content == iiliURL {
+			assertPlainReplyPayload(t, payload, iiliURL, responseMessage.ID)
 
-			return newJSONResponse(t, request, pixelVaultReplyMessage), nil
+			return newJSONResponse(t, request, iiliReplyMessage), nil
 		}
 
 		return newJSONResponse(t, request, responseMessage), nil
@@ -731,7 +731,7 @@ func newPixelVaultReplyHistoryTestSession(
 	return session
 }
 
-func assertCachedPixelVaultReplyNode(
+func assertCachedIiliReplyNode(
 	t *testing.T,
 	store *messageNodeStore,
 	messageID string,
@@ -741,43 +741,43 @@ func assertCachedPixelVaultReplyNode(
 ) {
 	t.Helper()
 
-	pixelVaultReplyNode, nodeFound := store.get(messageID)
+	iiliReplyNode, nodeFound := store.get(messageID)
 	if !nodeFound {
-		t.Fatalf("expected cached pixelVault reply node for %q", messageID)
+		t.Fatalf("expected cached iili reply node for %q", messageID)
 	}
 
-	pixelVaultReplyNode.mu.Lock()
-	defer pixelVaultReplyNode.mu.Unlock()
+	iiliReplyNode.mu.Lock()
+	defer iiliReplyNode.mu.Unlock()
 
-	if pixelVaultReplyNode.role != messageRoleAssistant {
-		t.Fatalf("unexpected pixelVault reply role: %q", pixelVaultReplyNode.role)
+	if iiliReplyNode.role != messageRoleAssistant {
+		t.Fatalf("unexpected iili reply role: %q", iiliReplyNode.role)
 	}
 
-	if pixelVaultReplyNode.text != "" {
-		t.Fatalf("expected pixelVault reply text to stay out of history, got %q", pixelVaultReplyNode.text)
+	if iiliReplyNode.text != "" {
+		t.Fatalf("expected iili reply text to stay out of history, got %q", iiliReplyNode.text)
 	}
 
-	if pixelVaultReplyNode.providerResponseID != providerResponseID {
-		t.Fatalf("unexpected pixelVault provider response id: %q", pixelVaultReplyNode.providerResponseID)
+	if iiliReplyNode.providerResponseID != providerResponseID {
+		t.Fatalf("unexpected iili provider response id: %q", iiliReplyNode.providerResponseID)
 	}
 
-	if pixelVaultReplyNode.providerResponseModel != providerResponseModel {
-		t.Fatalf("unexpected pixelVault provider response model: %q", pixelVaultReplyNode.providerResponseModel)
+	if iiliReplyNode.providerResponseModel != providerResponseModel {
+		t.Fatalf("unexpected iili provider response model: %q", iiliReplyNode.providerResponseModel)
 	}
 
-	if pixelVaultReplyNode.parentMessage == nil || pixelVaultReplyNode.parentMessage.ID != parentMessageID {
-		t.Fatalf("unexpected pixelVault reply parent: %#v", pixelVaultReplyNode.parentMessage)
+	if iiliReplyNode.parentMessage == nil || iiliReplyNode.parentMessage.ID != parentMessageID {
+		t.Fatalf("unexpected iili reply parent: %#v", iiliReplyNode.parentMessage)
 	}
 }
 
-func assertPixelVaultReplyConversation(
+func assertIiliReplyConversation(
 	t *testing.T,
 	instance *bot,
 	channelID string,
 	userID string,
 	answerText string,
 	followUpText string,
-	pixelVaultReplyMessage *discordgo.Message,
+	iiliReplyMessage *discordgo.Message,
 ) {
 	t.Helper()
 
@@ -786,8 +786,8 @@ func assertPixelVaultReplyConversation(
 	followUpMessage.ChannelID = channelID
 	followUpMessage.Author = newDiscordUser(userID, false)
 	followUpMessage.Content = followUpText
-	followUpMessage.MessageReference = pixelVaultReplyMessage.Reference()
-	followUpMessage.ReferencedMessage = pixelVaultReplyMessage
+	followUpMessage.MessageReference = iiliReplyMessage.Reference()
+	followUpMessage.ReferencedMessage = iiliReplyMessage
 
 	var contentOptions messageContentOptions
 
@@ -1529,22 +1529,22 @@ func TestGenerateAndSendResponseRetriesPrematureStreamOnFallbackModel(t *testing
 	}
 }
 
-func TestRenderFinalResponseSkipsDuplicatePixelVaultURLRepliesAcrossAttempts(t *testing.T) {
+func TestRenderFinalResponseSkipsDuplicateIiliURLRepliesAcrossAttempts(t *testing.T) {
 	t.Parallel()
 
 	const (
-		botUserID         = "bot-user"
-		channelID         = "channel-1"
-		userID            = "user-1"
-		sourceMessageID   = "user-message-1"
-		responseID        = "assistant-message-1"
-		pixelVaultReplyID = "assistant-message-2"
-		modelName         = "openai/gpt-5"
-		pixelVaultURL     = "https://img.pixelvault.dev/proj_xyz789/img_abc123.jpg"
+		botUserID       = "bot-user"
+		channelID       = "channel-1"
+		userID          = "user-1"
+		sourceMessageID = "user-message-1"
+		responseID      = "assistant-message-1"
+		iiliReplyID     = "assistant-message-2"
+		modelName       = "openai/gpt-5"
+		iiliURL         = "https://iili.io/nd822Qn.png"
 	)
 
 	answerText := "Result.\n\nGenerated image:\n" +
-		"[https://img.pixelvault.dev/proj_xyz789/img_abc123.jpg](https://img.pixelvault.dev/proj_xyz789/img_abc123.jpg)"
+		"[https://iili.io/nd822Qn.png](https://iili.io/nd822Qn.png)"
 
 	sourceMessage := newPromptMessage(sourceMessageID, channelID, userID, botUserID)
 	responseMessage := newAssistantReplyMessage(
@@ -1552,8 +1552,8 @@ func TestRenderFinalResponseSkipsDuplicatePixelVaultURLRepliesAcrossAttempts(t *
 		newDiscordUser(botUserID, true),
 		sourceMessage,
 	)
-	pixelVaultReplyMessage := newAssistantReplyMessage(
-		pixelVaultReplyID,
+	iiliReplyMessage := newAssistantReplyMessage(
+		iiliReplyID,
 		newDiscordUser(botUserID, true),
 		responseMessage,
 	)
@@ -1590,10 +1590,10 @@ func TestRenderFinalResponseSkipsDuplicatePixelVaultURLRepliesAcrossAttempts(t *
 			t.Fatalf("decode request payload: %v", err)
 		}
 
-		if content, contentOK := payload["content"].(string); contentOK && containsFold(content, pixelVaultURL) {
+		if content, contentOK := payload["content"].(string); contentOK && containsFold(content, iiliURL) {
 			urlReplyCount++
 
-			return newJSONResponse(t, request, pixelVaultReplyMessage), nil
+			return newJSONResponse(t, request, iiliReplyMessage), nil
 		}
 
 		return newJSONResponse(t, request, responseMessage), nil
@@ -1625,7 +1625,7 @@ func TestRenderFinalResponseSkipsDuplicatePixelVaultURLRepliesAcrossAttempts(t *
 	}
 
 	if urlReplyCount != 1 {
-		t.Fatalf("unexpected pixelVault url reply count: %d", urlReplyCount)
+		t.Fatalf("unexpected iili url reply count: %d", urlReplyCount)
 	}
 }
 
