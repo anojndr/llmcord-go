@@ -428,7 +428,9 @@ func (instance *bot) finalizeGenerationRound(
 }
 
 // runGenerationRoundWithRetry wraps runGenerationRound with a bounded
-// same-model retry for streams that end without delivering a finish reason:
+// same-model retry for streams that end without delivering a finish reason
+// or fail transiently mid-stream (for example a Responses stream dropped
+// before response.completed/response.done, surfaced as unexpected EOF):
 // the provider closed the stream mid-response, the partial text renders as an
 // incomplete message, and nothing else surfaces the failure. Each retry runs
 // with fresh accumulators and re-renders over the tracker's existing messages
@@ -451,15 +453,30 @@ func (instance *bot) runGenerationRoundWithRetry(
 		prefill,
 	)
 
-	for attempt := 2; attemptErr == nil && finishReason == "" && attempt <= prematureStreamRetryMaxAttempts; attempt++ {
-		logWarn(
-			"stream ended without finish reason; retrying generation",
-			nil,
-			"attempt",
-			attempt,
-			"max_attempts",
-			prematureStreamRetryMaxAttempts,
-		)
+	for attempt := 2; attempt <= prematureStreamRetryMaxAttempts; attempt++ {
+		if !shouldRetryGenerationRound(finishReason, attemptErr) {
+			break
+		}
+
+		if providers.IsTransientStreamError(attemptErr) {
+			logWarn(
+				"transient stream error; retrying generation",
+				attemptErr,
+				"attempt",
+				attempt,
+				"max_attempts",
+				prematureStreamRetryMaxAttempts,
+			)
+		} else {
+			logWarn(
+				"stream ended without finish reason; retrying generation",
+				nil,
+				"attempt",
+				attempt,
+				"max_attempts",
+				prematureStreamRetryMaxAttempts,
+			)
+		}
 
 		sleepErr := sleepPrematureStreamRetry(ctx, prematureStreamRetryFixedDelay)
 		if sleepErr != nil {
@@ -484,7 +501,34 @@ func (instance *bot) runGenerationRoundWithRetry(
 		)
 	}
 
+	if providers.IsTransientStreamError(attemptErr) {
+		logWarn(
+			"stream kept failing transiently; giving up",
+			attemptErr,
+			"max_attempts",
+			prematureStreamRetryMaxAttempts,
+		)
+	}
+
 	return round, attemptErr
+}
+
+// shouldRetryGenerationRound reports whether another same-model generation
+// attempt may recover a complete reply. A clean close without a finish
+// reason is always retried. A transient stream failure (dropped connection
+// before [DONE] or before response.completed, surfaced as unexpected EOF
+// and classified by providers.IsTransientStreamError) is also retried: the
+// provider layer never re-sends after visible content to avoid duplicating
+// a partial reply, but each generation round uses fresh accumulators and
+// re-renders in place, so retrying here replaces the truncated reply.
+// Anything else (including non-transient provider errors) is returned
+// unchanged.
+func shouldRetryGenerationRound(finishReason string, err error) bool {
+	if err == nil && finishReason == "" {
+		return true
+	}
+
+	return err != nil && providers.IsTransientStreamError(err)
 }
 
 // generateResponseWithWebSearchTool streams the request; when the model

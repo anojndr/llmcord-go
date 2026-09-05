@@ -1290,6 +1290,87 @@ func TestGenerateAndSendResponseRetriesPrematureStreamUntilFinishReason(t *testi
 	}
 }
 
+func TestGenerateAndSendResponseRetriesTransientTruncationAfterPartialContent(t *testing.T) {
+	t.Parallel()
+
+	const (
+		botUserID          = "bot-user"
+		channelID          = "channel-1"
+		userID             = "user-1"
+		sourceMessageID    = "user-message-1"
+		assistantMessageID = "assistant-message-1"
+		prematureText      = "truncated repl"
+		finalText          = "full completed reply"
+	)
+
+	sourceMessage := newPromptMessage(sourceMessageID, channelID, userID, botUserID)
+	assistantMessage := newAssistantReplyMessage(
+		assistantMessageID,
+		newDiscordUser(botUserID, true),
+		sourceMessage,
+	)
+
+	messageDescriptions := make([]string, 0, 1)
+	patchDescriptions := make([]string, 0, 6)
+	messageSendCount := 0
+	session := newPartialFailureResponseSession(
+		t,
+		channelID,
+		botUserID,
+		assistantMessage,
+		&messageDescriptions,
+		&patchDescriptions,
+		&messageSendCount,
+	)
+
+	streamCalls := 0
+	instance := newPrematureStreamResponseBot(session, func(_ chatCompletionRequest, handle func(streamDelta) error) error {
+		streamCalls++
+
+		if streamCalls == 1 {
+			if err := handle(newStreamDelta(prematureText, "")); err != nil {
+				return err
+			}
+
+			return io.ErrUnexpectedEOF
+		}
+
+		return handle(newStreamDelta(finalText, finishReasonStop))
+	})
+
+	err := instance.generateAndSendResponse(
+		context.Background(),
+		config{},
+		chatCompletionRequest{},
+		newResponseTracker(sourceMessage, ""),
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("generate and send response: %v", err)
+	}
+
+	if streamCalls != 2 {
+		t.Fatalf("unexpected stream call count: %d", streamCalls)
+	}
+
+	if messageSendCount != 1 {
+		t.Fatalf("unexpected message send count: %d", messageSendCount)
+	}
+
+	if len(patchDescriptions) == 0 {
+		t.Fatal("expected final response patch")
+	}
+
+	lastPatch := patchDescriptions[len(patchDescriptions)-1]
+	if containsFold(lastPatch, prematureText) {
+		t.Fatalf("retry duplicated truncated text in final patch: %q", lastPatch)
+	}
+
+	if !containsFold(lastPatch, finalText) {
+		t.Fatalf("unexpected final response patch: %q", lastPatch)
+	}
+}
+
 func TestGenerateAndSendResponseExhaustsPrematureStreamRetries(t *testing.T) {
 	t.Parallel()
 

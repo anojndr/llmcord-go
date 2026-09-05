@@ -628,6 +628,35 @@ func TestResponsesStreamPayloadDeltaMarksCompletedEventTerminal(t *testing.T) {
 	}
 }
 
+func TestResponsesStreamPayloadDeltaMarksDoneEventTerminal(t *testing.T) {
+	t.Parallel()
+
+	payload := []byte(`{
+		"type": "response.done",
+		"response": {
+			"id": "resp_test_123",
+			"status": "completed",
+			"output": [],
+			"usage": {
+				"input_tokens": 2006,
+				"output_tokens": 300,
+				"input_tokens_details": {
+					"cached_tokens": 1920
+				}
+			}
+		}
+	}`)
+
+	_, terminal, err := responsesStreamPayloadDelta(payload, newResponsesStreamState())
+	if err != nil {
+		t.Fatalf("decode responses stream Payload: %v", err)
+	}
+
+	if !terminal {
+		t.Fatal("expected terminal delta for response.done")
+	}
+}
+
 func TestOpenAIStreamPayloadDeltaContentFields(t *testing.T) {
 	t.Parallel()
 

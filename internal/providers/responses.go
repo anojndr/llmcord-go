@@ -23,6 +23,7 @@ import (
 const (
 	responsesRequestBodyBaseFields                = 4
 	responsesStreamEventCompleted                 = "response.completed"
+	responsesStreamEventDone                      = "response.done"
 	responsesStreamEventError                     = "error"
 	responsesStreamEventFailed                    = "response.failed"
 	responsesStreamEventIncomplete                = "response.incomplete"
@@ -924,7 +925,7 @@ func responsesStreamPayloadDelta(
 		responsesCompleteFunctionCallArguments(state, event.ItemID)
 
 		return emptyDelta, false, nil
-	case responsesStreamEventCompleted:
+	case responsesStreamEventCompleted, responsesStreamEventDone:
 		delta, completedErr := responsesCompletedDelta(
 			event.Response,
 			state,
