@@ -2,7 +2,9 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -417,12 +419,14 @@ func newLoaderYouTubeShortsTestServer(t *testing.T) (*httptest.Server, *youtubeS
 
 func newTestYouTubeShortsClient(server *httptest.Server) youtubeShortsClient {
 	return youtubeShortsClient{
-		httpClient:         server.Client(),
-		infoURL:            server.URL + "/info",
-		loaderURL:          server.URL + "/loader",
-		userAgent:          youtubeUserAgent,
-		infoRetryDelay:     time.Millisecond,
-		loaderPollInterval: time.Millisecond,
+		httpClient:           server.Client(),
+		infoURL:              server.URL + "/info",
+		loaderURL:            server.URL + "/loader",
+		compressorURL:        server.URL,
+		userAgent:            youtubeUserAgent,
+		infoRetryDelay:       time.Millisecond,
+		loaderPollInterval:   time.Millisecond,
+		compressPollInterval: time.Millisecond,
 	}
 }
 
@@ -991,4 +995,204 @@ func assertYouTubeShortsAugmentationForProvider(
 	}
 
 	assertResult(t, augmentedConversation, expectedText, callCount)
+}
+
+func oversizedYouTubeShortsTestVideo() []byte {
+	video := make([]byte, youtubeShortsMaxUploadBytes+1024)
+	for index := range video {
+		video[index] = byte(index)
+	}
+
+	return video
+}
+
+type youtubeShortsCompressServerConfig struct {
+	oversizedVideo  []byte
+	compressedVideo []byte
+	allowJob        bool
+	uploaded        *[]byte
+	rqjobCalls      *int
+}
+
+func newYouTubeShortsCompressTestServer(
+	t *testing.T,
+	config youtubeShortsCompressServerConfig,
+) *httptest.Server {
+	t.Helper()
+
+	return httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/info":
+			writeJSON(writer, aceThinkerYouTubeShortsInfoResponse{
+				ResData: aceThinkerYouTubeShortsInfo{
+					Title:   "Example Short",
+					Message: "success",
+					Formats: []aceThinkerYouTubeShortsItem{
+						{
+							URL:      "http://" + request.Host + "/downloads/direct.mp4",
+							Filesize: int64(len(config.oversizedVideo)),
+							Quality:  "720p",
+							ACodec:   "opus",
+							VCodec:   "av01.0.01M.08",
+							Ext:      "mp4",
+							Protocol: "https",
+						},
+					},
+				},
+			})
+		case "/downloads/direct.mp4":
+			writer.Header().Set("Content-Type", "video/mp4")
+			writer.Header().Set("Content-Disposition", `attachment; filename="original.mp4"`)
+			_, _ = writer.Write(config.oversizedVideo)
+		case "/rqjob":
+			if config.rqjobCalls != nil {
+				*config.rqjobCalls++
+			}
+
+			if !config.allowJob {
+				writeJSON(writer, autocompressorRQJobResponse{
+					Allowed: false,
+					Message: "Server full",
+				})
+
+				return
+			}
+
+			var req autocompressorRQJobRequest
+
+			_ = json.NewDecoder(request.Body).Decode(&req)
+			if req.TargetSize != "8" || req.OutputFormat != "mp4" {
+				t.Errorf("unexpected rqjob request: %#v", req)
+			}
+
+			writeJSON(writer, autocompressorRQJobResponse{
+				Allowed:     true,
+				Server:      "01",
+				Message:     "job-12345",
+				UploadLimit: 2147483648,
+			})
+		case "/job/job-12345/upload":
+			serveYouTubeShortsCompressUpload(t, writer, request, config.uploaded)
+		case "/job/job-12345/status":
+			writeJSON(writer, finishedAutocompressorStatusResponse())
+		case "/job/job-12345/download":
+			writer.Header().Set("Content-Type", "video/mp4")
+			writer.Header().Set("Content-Disposition", `attachment; filename="original-8.mp4"`)
+			_, _ = writer.Write(config.compressedVideo)
+		default:
+			t.Errorf("unexpected path: %s", request.URL.Path)
+		}
+	}))
+}
+
+func serveYouTubeShortsCompressUpload(
+	t *testing.T,
+	writer http.ResponseWriter,
+	request *http.Request,
+	uploaded *[]byte,
+) {
+	t.Helper()
+
+	err := request.ParseMultipartForm(32 << 20)
+	if err != nil {
+		t.Errorf("parse multipart upload form: %v", err)
+	}
+
+	file, _, err := request.FormFile("filetoupload")
+	if err != nil {
+		t.Errorf("get filetoupload: %v", err)
+	} else {
+		body, _ := io.ReadAll(file)
+		_ = file.Close()
+
+		if uploaded != nil {
+			*uploaded = body
+		}
+	}
+
+	writeJSON(writer, autocompressorUploadResponse{Error: false})
+}
+
+func finishedAutocompressorStatusResponse() autocompressorStatusResponse {
+	var resp autocompressorStatusResponse
+
+	resp.Status.Ended = true
+	resp.Status.Error = false
+	resp.Progress.Action = "Running final encoding pass"
+	resp.Progress.Quantified = true
+	resp.Progress.Progress = 1.0
+
+	return resp
+}
+
+func TestYouTubeShortsClientFetchCompressesOversizedVideo(t *testing.T) {
+	t.Parallel()
+
+	oversizedVideo := oversizedYouTubeShortsTestVideo()
+	compressedVideo := []byte("compressed-8mb-shorts-video")
+
+	var uploadFileBytes []byte
+
+	var rqjobCalls int
+
+	server := newYouTubeShortsCompressTestServer(t, youtubeShortsCompressServerConfig{
+		oversizedVideo:  oversizedVideo,
+		compressedVideo: compressedVideo,
+		allowJob:        true,
+		uploaded:        &uploadFileBytes,
+		rqjobCalls:      &rqjobCalls,
+	})
+	defer server.Close()
+
+	client := newTestYouTubeShortsClient(server)
+
+	result, err := client.fetch(context.Background(), testYouTubeShortsCanonicalURL)
+	if err != nil {
+		t.Fatalf("fetch youtube shorts content: %v", err)
+	}
+
+	if rqjobCalls != 1 {
+		t.Fatalf("compressor job requests = %d, want 1", rqjobCalls)
+	}
+
+	if len(uploadFileBytes) != len(oversizedVideo) {
+		t.Fatalf("uploaded file size = %d, want %d", len(uploadFileBytes), len(oversizedVideo))
+	}
+
+	if string(mediaPartBytes(t, result.MediaPart)) != string(compressedVideo) {
+		t.Fatal("expected compressed video bytes in result media part")
+	}
+
+	if result.MediaPart[contentFieldFilename] != "original-8.mp4" {
+		t.Fatalf("got filename %q, want %q", result.MediaPart[contentFieldFilename], "original-8.mp4")
+	}
+}
+
+func TestYouTubeShortsClientFetchCompressFallbackOnFailure(t *testing.T) {
+	t.Parallel()
+
+	oversizedVideo := oversizedYouTubeShortsTestVideo()
+
+	var rqjobCalls int
+
+	server := newYouTubeShortsCompressTestServer(t, youtubeShortsCompressServerConfig{
+		oversizedVideo: oversizedVideo,
+		rqjobCalls:     &rqjobCalls,
+	})
+	defer server.Close()
+
+	client := newTestYouTubeShortsClient(server)
+
+	result, err := client.fetch(context.Background(), testYouTubeShortsCanonicalURL)
+	if err != nil {
+		t.Fatalf("fetch youtube shorts content: %v", err)
+	}
+
+	if rqjobCalls != 1 {
+		t.Fatalf("compressor job requests = %d, want 1", rqjobCalls)
+	}
+
+	if len(mediaPartBytes(t, result.MediaPart)) != len(oversizedVideo) {
+		t.Fatalf("got result bytes len %d, want %d", len(mediaPartBytes(t, result.MediaPart)), len(oversizedVideo))
+	}
 }

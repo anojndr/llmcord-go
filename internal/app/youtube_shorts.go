@@ -39,12 +39,14 @@ type youtubeShortsFetcher interface {
 }
 
 type youtubeShortsClient struct {
-	httpClient         *http.Client
-	infoURL            string
-	loaderURL          string
-	userAgent          string
-	loaderPollInterval time.Duration
-	infoRetryDelay     time.Duration
+	httpClient           *http.Client
+	infoURL              string
+	loaderURL            string
+	compressorURL        string
+	userAgent            string
+	loaderPollInterval   time.Duration
+	compressPollInterval time.Duration
+	infoRetryDelay       time.Duration
 }
 
 type youtubeShortsVideoContent struct {
@@ -104,12 +106,14 @@ func (content youtubeShortsVideoContent) downloadURL() string {
 
 func newYouTubeShortsClient(httpClient *http.Client) youtubeShortsClient {
 	return youtubeShortsClient{
-		httpClient:         httpClient,
-		infoRetryDelay:     youtubeShortsInfoRetryDelay,
-		infoURL:            defaultYouTubeShortsInfoURL,
-		loaderURL:          defaultYouTubeShortsLoaderURL,
-		userAgent:          youtubeUserAgent,
-		loaderPollInterval: youtubeShortsLoaderPollInterval,
+		httpClient:           httpClient,
+		infoRetryDelay:       youtubeShortsInfoRetryDelay,
+		infoURL:              defaultYouTubeShortsInfoURL,
+		loaderURL:            defaultYouTubeShortsLoaderURL,
+		compressorURL:        defaultAutocompressorBaseURL,
+		userAgent:            youtubeUserAgent,
+		loaderPollInterval:   youtubeShortsLoaderPollInterval,
+		compressPollInterval: autocompressorDefaultPollInterval,
 	}
 }
 
@@ -235,6 +239,32 @@ func (client youtubeShortsClient) fetch(
 		return youtubeShortsVideoContent{}, fmt.Errorf("download youtube shorts video: %w", err)
 	}
 
+	if int64(len(videoBytes)) > youtubeShortsMaxUploadBytes {
+		compressedBytes, compressedMIME, compressedFilename, compressErr := client.compressVideo(
+			ctx,
+			videoBytes,
+			filename,
+		)
+		if compressErr == nil && len(compressedBytes) > 0 {
+			videoBytes = compressedBytes
+
+			if compressedMIME != "" {
+				mimeType = compressedMIME
+			}
+
+			if compressedFilename != "" {
+				filename = compressedFilename
+			}
+		} else if compressErr != nil {
+			logWarn(
+				"compress youtube shorts video with autocompressor",
+				compressErr,
+				"url",
+				resolvedURL,
+			)
+		}
+	}
+
 	return youtubeShortsVideoContent{
 		ResolvedURL: resolvedURL,
 		DownloadURL: downloadURL,
@@ -245,6 +275,22 @@ func (client youtubeShortsClient) fetch(
 			contentFieldFilename: filename,
 		},
 	}, nil
+}
+
+func (client youtubeShortsClient) compressVideo(
+	ctx context.Context,
+	videoBytes []byte,
+	filename string,
+) ([]byte, string, string, error) {
+	return compressVideoViaAutocompressor(
+		ctx,
+		client.httpClient,
+		client.compressorURL,
+		client.compressPollInterval,
+		videoBytes,
+		filename,
+		youtubeShortsDefaultFilename,
+	)
 }
 
 func normalizeYouTubeShortsURL(rawURL string) (string, error) {
