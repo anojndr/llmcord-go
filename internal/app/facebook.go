@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"mime"
-	"mime/multipart"
 	"net/http"
 	"net/url"
 	"os"
@@ -25,10 +24,6 @@ import (
 
 const (
 	defaultFacebookGetMyFBProcessURL  = "https://getmyfb.com/process"
-	defaultAutocompressorBaseURL      = "https://autocompressor.net"
-	autocompressorTargetSize          = "8"
-	autocompressorDefaultPollInterval = time.Second
-	autocompressorMaxPollAttempts     = 120
 	facebookDefaultFilename           = "facebook.mp4"
 	facebookDefaultMIMEType           = "video/mp4"
 	facebookFilenamePrefix            = "facebook_"
@@ -641,321 +636,20 @@ func facebookGetMyFBDownloadHeaders(processURL string) (string, string) {
 	return originURL + "/", originURL
 }
 
-type autocompressorRQJobRequest struct {
-	SourceType       string                 `json:"source_type"`
-	CompressionLevel string                 `json:"compression_level"`
-	TargetSize       string                 `json:"target_size"`
-	OutputFormat     string                 `json:"output_format"`
-	MoreOptions      map[string]interface{} `json:"moreoptions"`
-}
-
-type autocompressorRQJobResponse struct {
-	Allowed     bool   `json:"allowed"`
-	Server      string `json:"server"`
-	Message     string `json:"message"`
-	UploadLimit int64  `json:"upload_limit"`
-}
-
-type autocompressorUploadResponse struct {
-	Error interface{} `json:"error"`
-}
-
-type autocompressorStatusResponse struct {
-	Error  interface{} `json:"error"`
-	Status struct {
-		Thumbnail bool        `json:"thumbnail"`
-		Ended     bool        `json:"ended"`
-		Error     interface{} `json:"error"`
-	} `json:"status"`
-	Progress struct {
-		Action     string  `json:"action"`
-		Quantified bool    `json:"quantified"`
-		Progress   float64 `json:"progress"`
-	} `json:"progress"`
-}
-
 func (client facebookClient) compressVideo(
 	ctx context.Context,
 	videoBytes []byte,
 	filename string,
 ) ([]byte, string, string, error) {
-	baseURL := strings.TrimRight(strings.TrimSpace(client.compressorURL), "/")
-	if baseURL == "" {
-		baseURL = defaultAutocompressorBaseURL
-	}
-
-	rqReqBody, err := json.Marshal(autocompressorRQJobRequest{
-		SourceType:       "file",
-		CompressionLevel: "normal",
-		TargetSize:       autocompressorTargetSize,
-		OutputFormat:     "mp4",
-		MoreOptions: map[string]interface{}{
-			"av1webm": false,
-			"dlaudio": false,
-		},
-	})
-	if err != nil {
-		return nil, "", "", fmt.Errorf("marshal autocompressor rqjob request: %w", err)
-	}
-
-	httpReq, err := http.NewRequestWithContext(
+	return compressVideoViaAutocompressor(
 		ctx,
-		http.MethodPost,
-		baseURL+"/rqjob",
-		bytes.NewReader(rqReqBody),
+		client.httpClient,
+		client.compressorURL,
+		client.pollInterval,
+		videoBytes,
+		filename,
+		facebookDefaultFilename,
 	)
-	if err != nil {
-		return nil, "", "", fmt.Errorf("create autocompressor rqjob request: %w", err)
-	}
-
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("User-Agent", facebookGetMyFBDownloadUserAgent)
-
-	httpResp, err := client.httpClient.Do(httpReq)
-	if err != nil {
-		return nil, "", "", fmt.Errorf("send autocompressor rqjob request: %w", err)
-	}
-	defer func() {
-		_ = httpResp.Body.Close()
-	}()
-
-	respBytes, err := io.ReadAll(httpResp.Body)
-	if err != nil {
-		return nil, "", "", fmt.Errorf("read autocompressor rqjob response: %w", err)
-	}
-
-	if httpResp.StatusCode < http.StatusOK || httpResp.StatusCode >= http.StatusMultipleChoices {
-		return nil, "", "", fmt.Errorf(
-			"autocompressor rqjob failed with status %d: %s: %w",
-			httpResp.StatusCode,
-			strings.TrimSpace(string(respBytes)),
-			os.ErrInvalid,
-		)
-	}
-
-	var rqResp autocompressorRQJobResponse
-
-	err = json.Unmarshal(respBytes, &rqResp)
-	if err != nil {
-		return nil, "", "", fmt.Errorf("decode autocompressor rqjob response: %w", err)
-	}
-
-	if !rqResp.Allowed || strings.TrimSpace(rqResp.Message) == "" || strings.TrimSpace(rqResp.Server) == "" {
-		return nil, "", "", fmt.Errorf("autocompressor rqjob not allowed: %s: %w", rqResp.Message, os.ErrInvalid)
-	}
-
-	jobID := strings.TrimSpace(rqResp.Message)
-	server := strings.TrimSpace(rqResp.Server)
-
-	var serverURL string
-	if strings.Contains(baseURL, "://autocompressor.net") {
-		serverURL = fmt.Sprintf("https://auto-rez-%s.autocompressor.net", server)
-	} else {
-		serverURL = baseURL
-	}
-
-	var bodyBuf bytes.Buffer
-
-	mpWriter := multipart.NewWriter(&bodyBuf)
-
-	_ = mpWriter.WriteField("source_url", "null")
-
-	uploadFilename := strings.TrimSpace(filename)
-	if uploadFilename == "" {
-		uploadFilename = facebookDefaultFilename
-	}
-
-	part, err := mpWriter.CreateFormFile("filetoupload", uploadFilename)
-	if err != nil {
-		return nil, "", "", fmt.Errorf("create autocompressor form file: %w", err)
-	}
-
-	_, err = part.Write(videoBytes)
-	if err != nil {
-		return nil, "", "", fmt.Errorf("write autocompressor form file bytes: %w", err)
-	}
-
-	err = mpWriter.Close()
-	if err != nil {
-		return nil, "", "", fmt.Errorf("close autocompressor multipart writer: %w", err)
-	}
-
-	uploadReq, err := http.NewRequestWithContext(
-		ctx,
-		http.MethodPost,
-		fmt.Sprintf("%s/job/%s/upload", serverURL, jobID),
-		&bodyBuf,
-	)
-	if err != nil {
-		return nil, "", "", fmt.Errorf("create autocompressor upload request: %w", err)
-	}
-
-	uploadReq.Header.Set("Content-Type", mpWriter.FormDataContentType())
-	uploadReq.Header.Set("User-Agent", facebookGetMyFBDownloadUserAgent)
-
-	uploadResp, err := client.httpClient.Do(uploadReq)
-	if err != nil {
-		return nil, "", "", fmt.Errorf("send autocompressor upload request: %w", err)
-	}
-	defer func() {
-		_ = uploadResp.Body.Close()
-	}()
-
-	uploadRespBytes, err := io.ReadAll(uploadResp.Body)
-	if err != nil {
-		return nil, "", "", fmt.Errorf("read autocompressor upload response: %w", err)
-	}
-
-	if uploadResp.StatusCode < http.StatusOK || uploadResp.StatusCode >= http.StatusMultipleChoices {
-		return nil, "", "", fmt.Errorf(
-			"autocompressor upload failed with status %d: %s: %w",
-			uploadResp.StatusCode,
-			strings.TrimSpace(string(uploadRespBytes)),
-			os.ErrInvalid,
-		)
-	}
-
-	var uploadStatus autocompressorUploadResponse
-	if err := json.Unmarshal(uploadRespBytes, &uploadStatus); err == nil {
-		if uploadStatus.Error != nil && uploadStatus.Error != false {
-			return nil, "", "", fmt.Errorf("autocompressor upload returned error: %v: %w", uploadStatus.Error, os.ErrInvalid)
-		}
-	}
-
-	downloadURL := fmt.Sprintf("%s/job/%s/download", serverURL, jobID)
-	statusURL := fmt.Sprintf("%s/job/%s/status", serverURL, jobID)
-
-	for range autocompressorMaxPollAttempts {
-		err := ctx.Err()
-		if err != nil {
-			return nil, "", "", fmt.Errorf(facebookRequestContextErrorFormat, err)
-		}
-
-		pollInterval := client.pollInterval
-		if pollInterval <= 0 {
-			pollInterval = autocompressorDefaultPollInterval
-		}
-
-		select {
-		case <-ctx.Done():
-			return nil, "", "", fmt.Errorf(facebookRequestContextErrorFormat, ctx.Err())
-		case <-time.After(pollInterval):
-		}
-
-		statusReq, err := http.NewRequestWithContext(
-			ctx,
-			http.MethodGet,
-			statusURL,
-			nil,
-		)
-		if err != nil {
-			return nil, "", "", fmt.Errorf("create autocompressor status request: %w", err)
-		}
-
-		statusReq.Header.Set("User-Agent", facebookGetMyFBDownloadUserAgent)
-
-		statusResp, err := client.httpClient.Do(statusReq)
-		if err != nil {
-			return nil, "", "", fmt.Errorf("send autocompressor status request: %w", err)
-		}
-
-		statusBytes, err := io.ReadAll(statusResp.Body)
-		_ = statusResp.Body.Close()
-
-		if err != nil {
-			return nil, "", "", fmt.Errorf("read autocompressor status response: %w", err)
-		}
-
-		if statusResp.StatusCode < http.StatusOK || statusResp.StatusCode >= http.StatusMultipleChoices {
-			return nil, "", "", fmt.Errorf(
-				"autocompressor status failed with status %d: %s: %w",
-				statusResp.StatusCode,
-				strings.TrimSpace(string(statusBytes)),
-				os.ErrInvalid,
-			)
-		}
-
-		var statusData autocompressorStatusResponse
-
-		err = json.Unmarshal(statusBytes, &statusData)
-		if err != nil {
-			return nil, "", "", fmt.Errorf("decode autocompressor status response: %w", err)
-		}
-
-		if statusData.Status.Ended {
-			if statusData.Status.Error != nil && statusData.Status.Error != false {
-				return nil, "", "", fmt.Errorf("autocompressor job failed: %v: %w", statusData.Status.Error, os.ErrInvalid)
-			}
-
-			return client.downloadCompressedVideo(ctx, downloadURL, filename)
-		}
-	}
-
-	return nil, "", "", fmt.Errorf("autocompressor job timed out: %w", os.ErrDeadlineExceeded)
-}
-
-func (client facebookClient) downloadCompressedVideo(
-	ctx context.Context,
-	downloadURL string,
-	originalFilename string,
-) ([]byte, string, string, error) {
-	dlReq, err := http.NewRequestWithContext(
-		ctx,
-		http.MethodGet,
-		downloadURL,
-		nil,
-	)
-	if err != nil {
-		return nil, "", "", fmt.Errorf("create autocompressor download request: %w", err)
-	}
-
-	dlReq.Header.Set("User-Agent", facebookGetMyFBDownloadUserAgent)
-
-	dlResp, err := client.httpClient.Do(dlReq)
-	if err != nil {
-		return nil, "", "", fmt.Errorf("send autocompressor download request: %w", err)
-	}
-	defer func() {
-		_ = dlResp.Body.Close()
-	}()
-
-	dlBytes, err := io.ReadAll(dlResp.Body)
-	if err != nil {
-		return nil, "", "", fmt.Errorf("read autocompressor download response: %w", err)
-	}
-
-	if dlResp.StatusCode < http.StatusOK || dlResp.StatusCode >= http.StatusMultipleChoices {
-		return nil, "", "", fmt.Errorf(
-			"autocompressor download failed with status %d: %s: %w",
-			dlResp.StatusCode,
-			strings.TrimSpace(string(dlBytes)),
-			os.ErrInvalid,
-		)
-	}
-
-	if len(dlBytes) == 0 {
-		return nil, "", "", fmt.Errorf("empty autocompressor download response: %w", os.ErrInvalid)
-	}
-
-	mimeType := normalizedFacebookMIMEType(dlResp.Header.Get("Content-Type"))
-	filename := originalFilename
-
-	contentDisposition := dlResp.Header.Get("Content-Disposition")
-	if strings.TrimSpace(contentDisposition) != "" {
-		_, params, err := mime.ParseMediaType(contentDisposition)
-		if err == nil {
-			dispositionFilename := strings.TrimSpace(params["filename"])
-			if dispositionFilename != "" {
-				filename = dispositionFilename
-			}
-		}
-	}
-
-	if strings.TrimSpace(filename) == "" {
-		filename = facebookDefaultFilename
-	}
-
-	return dlBytes, mimeType, filename, nil
 }
 
 func (client facebookClient) downloadVideo(
