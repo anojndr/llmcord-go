@@ -40,6 +40,7 @@ func (instance *bot) setMaintenanceChannel(channelID string) {
 
 	instance.maintenanceChannels[channelID] = struct{}{}
 	instance.maintenanceMu.Unlock()
+	instance.botStateGeneration.Add(1)
 
 	instance.persistBotStateBestEffort()
 }
@@ -59,6 +60,7 @@ func (instance *bot) clearMaintenanceChannel(channelID string) {
 
 	delete(instance.maintenanceChannels, channelID)
 	instance.maintenanceMu.Unlock()
+	instance.botStateGeneration.Add(1)
 
 	instance.persistBotStateBestEffort()
 }

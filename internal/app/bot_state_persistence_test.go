@@ -5,6 +5,7 @@ import (
 	"slices"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 )
@@ -79,10 +80,31 @@ func newTestBotWithStateBackend(backend botStateBackend, loadedConfig config) *b
 	instance.currentModel = loadedConfig.firstModel()
 	instance.currentExaSearchTypeValue = defaultExaSearchType
 	instance.maintenanceChannels = make(map[string]struct{})
+	instance.botStateMu.Lock()
 	instance.botStateKey = testSharedHomeBotsStoreKey
 	instance.botStateBackend = backend
+	instance.botStateMu.Unlock()
 
 	return instance
+}
+
+func waitForBotStateSnapshot(t *testing.T, backend *testBotStateBackend, want func(botStateSnapshot) bool) botStateSnapshot {
+	t.Helper()
+
+	deadline := time.Now().Add(2 * time.Second)
+
+	for {
+		saved, ok := backend.savedSnapshot()
+		if ok && want(saved) {
+			return saved
+		}
+
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for bot state snapshot")
+		}
+
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func TestBotStateSettersPersistAcrossRestart(t *testing.T) {
@@ -99,10 +121,12 @@ func TestBotStateSettersPersistAcrossRestart(t *testing.T) {
 	instance.setCurrentGroundingEnabled(&grounding)
 	instance.setMaintenanceChannel("channel-123")
 
-	saved, ok := backend.savedSnapshot()
-	if !ok {
-		t.Fatal("expected bot state snapshot after setters")
-	}
+	saved := waitForBotStateSnapshot(t, backend, func(snapshot botStateSnapshot) bool {
+		return snapshot.CurrentModel == "google/gemini-3.6-flash" &&
+			snapshot.ExaSearchType == "deep" &&
+			snapshot.GroundingEnabled != nil && *snapshot.GroundingEnabled &&
+			slices.Contains(snapshot.MaintenanceChannels, "channel-123")
+	})
 
 	if saved.CurrentModel != "google/gemini-3.6-flash" {
 		t.Fatalf("unexpected persisted model: %q", saved.CurrentModel)
@@ -147,14 +171,12 @@ func TestBotStateClearMaintenancePersists(t *testing.T) {
 	loadedConfig := testBotStateConfig()
 	backend := newTestBotStateBackend()
 	instance := newTestBotWithStateBackend(backend, loadedConfig)
-
 	instance.setMaintenanceChannel("channel-123")
 	instance.clearMaintenanceChannel("channel-123")
 
-	saved, ok := backend.savedSnapshot()
-	if !ok {
-		t.Fatal("expected bot state snapshot after clear")
-	}
+	saved := waitForBotStateSnapshot(t, backend, func(snapshot botStateSnapshot) bool {
+		return !slices.Contains(snapshot.MaintenanceChannels, "channel-123")
+	})
 
 	if slices.Contains(saved.MaintenanceChannels, "channel-123") {
 		t.Fatalf("cleared channel still persisted: %q", saved.MaintenanceChannels)

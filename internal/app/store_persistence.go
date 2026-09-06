@@ -331,42 +331,6 @@ func isPostgresJSONBSizeExceededError(err error) bool {
 	return false
 }
 
-func newConfiguredMessageNodeStore(
-	ctx context.Context,
-	capacity int,
-	configPath string,
-	configuredStoreKey string,
-	connectionString string,
-) (*messageNodeStore, error) {
-	backend, err := newPostgresMessageNodeStoreBackend(ctx, connectionString)
-	if err != nil {
-		if errors.Is(err, errMessageNodeStorePersistenceDisabled) {
-			return newMessageNodeStore(capacity), nil
-		}
-
-		return nil, err
-	}
-
-	storeKey := messageNodeStoreKey(configPath, configuredStoreKey)
-
-	store, err := newPersistentMessageNodeStore(capacity, storeKey, backend)
-	if err == nil {
-		return store, nil
-	}
-
-	closeErr := backend.close()
-	if closeErr != nil {
-		return nil, fmt.Errorf(
-			"load persisted message history for store key %q: %w (close backend: %w)",
-			storeKey,
-			err,
-			closeErr,
-		)
-	}
-
-	return nil, fmt.Errorf("load persisted message history for store key %q: %w", storeKey, err)
-}
-
 func decodeMessageNodeSnapshotJSON(
 	snapshotBytes []byte,
 	nodes *map[string]messageNodeSnapshot,
@@ -824,8 +788,10 @@ func newPersistentMessageNodeStore(
 		return store, nil
 	}
 
+	store.backendMu.Lock()
 	store.storeKey = trimmedStoreKey
 	store.backend = backend
+	store.backendMu.Unlock()
 
 	snapshot, err := backend.loadSnapshot(trimmedStoreKey, capacity)
 	if err != nil {
@@ -834,6 +800,8 @@ func newPersistentMessageNodeStore(
 
 			return store, nil
 		}
+
+		_ = backend.close()
 
 		return nil, annotateMessageHistoryPersistenceError(
 			"load persisted message history",
@@ -847,6 +815,158 @@ func newPersistentMessageNodeStore(
 	store.startSaveWorker()
 
 	return store, nil
+}
+func (store *messageNodeStore) attachPersistentBackend(
+	storeKey string,
+	backend messageNodeStoreBackend,
+	loaded map[string]messageNodeSnapshot,
+) bool {
+	if store == nil {
+		if backend != nil {
+			_ = backend.close()
+		}
+
+		return false
+	}
+
+	trimmedStoreKey := strings.TrimSpace(storeKey)
+	if trimmedStoreKey == "" || backend == nil {
+		if backend != nil {
+			_ = backend.close()
+		}
+
+		return false
+	}
+
+	if store.closed.Load() {
+		_ = backend.close()
+
+		return false
+	}
+
+	store.backendMu.Lock()
+	if store.closed.Load() || store.backend != nil {
+		store.backendMu.Unlock()
+
+		_ = backend.close()
+
+		return false
+	}
+
+	store.storeKey = trimmedStoreKey
+	store.backend = backend
+	store.backendMu.Unlock()
+
+	liveCount := store.mergeLoadedHistory(loaded)
+	store.startSaveWorker()
+	store.evictExcess()
+
+	if liveCount > 0 || store.dirty.Load() {
+		store.persistBestEffort()
+	}
+
+	return true
+}
+
+func (store *messageNodeStore) mergeLoadedHistory(loaded map[string]messageNodeSnapshot) int {
+	liveNodes := make(map[string]*messageNode)
+
+	store.mu.Lock()
+	if store.nodes == nil {
+		store.nodes = make(map[string]*messageNode, len(loaded))
+	}
+
+	for messageID, node := range store.nodes {
+		liveNodes[messageID] = node
+	}
+
+	for messageID, snapshot := range loaded {
+		if _, ok := store.nodes[messageID]; !ok {
+			store.nodes[messageID] = snapshot.messageNode()
+		}
+	}
+
+	store.mu.Unlock()
+
+	store.snapshotMu.Lock()
+	if store.snapshotCache == nil {
+		store.snapshotCache = make(map[string]messageNodeSnapshot, len(loaded))
+	}
+
+	for messageID, snapshot := range loaded {
+		if _, isLive := liveNodes[messageID]; isLive {
+			continue
+		}
+
+		if _, ok := store.snapshotCache[messageID]; !ok {
+			store.snapshotCache[messageID] = snapshot
+		}
+	}
+
+	for messageID, node := range liveNodes {
+		if node == nil {
+			continue
+		}
+
+		if node.mu.TryLock() {
+			if snapshot, ok := messageNodeSnapshotFromLockedNode(node); ok {
+				store.snapshotCache[messageID] = snapshot
+			}
+
+			node.mu.Unlock()
+		}
+	}
+
+	store.snapshotMu.Unlock()
+
+	return len(liveNodes)
+}
+
+func hydrateMessageHistoryInBackground(
+	store *messageNodeStore,
+	capacity int,
+	configPath, configuredStoreKey, connectionString string,
+) {
+	if store == nil || strings.TrimSpace(connectionString) == "" {
+		return
+	}
+
+	if store.closed.Load() {
+		return
+	}
+
+	storeKey := messageNodeStoreKey(configPath, configuredStoreKey)
+
+	loadCtx, cancelLoad := context.WithTimeout(context.Background(), postgresMessageNodeStoreStatementTimeout)
+	defer cancelLoad()
+
+	backend, err := newPostgresMessageNodeStoreBackend(loadCtx, connectionString)
+	if err != nil {
+		if errors.Is(err, errMessageNodeStorePersistenceDisabled) {
+			return
+		}
+
+		logWarn("configure persisted message history", err, "store_key", storeKey)
+
+		return
+	}
+
+	snapshot, err := backend.loadSnapshot(storeKey, capacity)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			store.attachPersistentBackend(storeKey, backend, nil)
+
+			return
+		}
+
+		logWarn("load persisted message history", err, "store_key", storeKey)
+
+		_ = backend.close()
+
+		return
+	}
+
+	store.attachPersistentBackend(storeKey, backend, snapshot.Nodes)
 }
 
 func defaultMessageNodeStoreKey(configPath string) string {
@@ -869,8 +989,20 @@ func messageNodeStoreKey(configPath, configuredStoreKey string) string {
 	return defaultMessageNodeStoreKey(configPath)
 }
 
+func (store *messageNodeStore) backendAndKey() (messageNodeStoreBackend, string) {
+	if store == nil {
+		return nil, ""
+	}
+
+	store.backendMu.RLock()
+	defer store.backendMu.RUnlock()
+
+	return store.backend, store.storeKey
+}
+
 func (store *messageNodeStore) persistBestEffort() {
-	if store == nil || strings.TrimSpace(store.storeKey) == "" || store.backend == nil {
+	backend, storeKey := store.backendAndKey()
+	if store == nil || strings.TrimSpace(storeKey) == "" || backend == nil {
 		return
 	}
 
@@ -891,7 +1023,8 @@ func (store *messageNodeStore) persistBestEffort() {
 }
 
 func (store *messageNodeStore) persist() error {
-	if strings.TrimSpace(store.storeKey) == "" || store.backend == nil {
+	backend, storeKey := store.backendAndKey()
+	if strings.TrimSpace(storeKey) == "" || backend == nil {
 		return nil
 	}
 
@@ -904,13 +1037,13 @@ func (store *messageNodeStore) persist() error {
 
 	snapshot := store.snapshot()
 
-	err := store.backend.saveSnapshot(store.storeKey, snapshot)
+	err := backend.saveSnapshot(storeKey, snapshot)
 	if err != nil {
 		store.dirty.Store(true)
 
 		return annotateMessageHistoryPersistenceError(
 			"persist message history",
-			store.storeKey,
+			storeKey,
 			err,
 		)
 	}
@@ -963,8 +1096,14 @@ func (store *messageNodeStore) cacheLockedNode(messageID string, node *messageNo
 	store.cacheLockedNodeLocked(messageID, node)
 }
 
+func (store *messageNodeStore) hasStoreKey() bool {
+	_, storeKey := store.backendAndKey()
+
+	return strings.TrimSpace(storeKey) != ""
+}
+
 func (store *messageNodeStore) cacheLockedNodeLocked(messageID string, node *messageNode) {
-	if node == nil || strings.TrimSpace(store.storeKey) == "" {
+	if node == nil || !store.hasStoreKey() {
 		return
 	}
 
@@ -985,7 +1124,7 @@ func (store *messageNodeStore) cacheLockedNodeLocked(messageID string, node *mes
 }
 
 func (store *messageNodeStore) deleteCachedSnapshot(messageID string) {
-	if strings.TrimSpace(store.storeKey) == "" {
+	if !store.hasStoreKey() {
 		return
 	}
 
@@ -1020,7 +1159,11 @@ func (store *messageNodeStore) nodeEntries() map[string]*messageNode {
 	return maps.Clone(store.nodes)
 }
 func (store *messageNodeStore) close() error {
-	if store == nil || store.backend == nil {
+	if store == nil {
+		return nil
+	}
+
+	if store.closed.Swap(true) {
 		return nil
 	}
 
@@ -1028,10 +1171,24 @@ func (store *messageNodeStore) close() error {
 
 	persistErr := store.persist()
 
-	closeErr := store.backend.close()
-	if closeErr == nil {
-		store.backend = nil
+	for range 2 {
+		if persistErr != nil || !store.dirty.Load() {
+			break
+		}
+
+		persistErr = store.persist()
 	}
+
+	backend, _ := store.backendAndKey()
+
+	var closeErr error
+	if backend != nil {
+		closeErr = backend.close()
+	}
+
+	store.backendMu.Lock()
+	store.backend = nil
+	store.backendMu.Unlock()
 
 	switch {
 	case persistErr != nil && closeErr != nil:
@@ -1042,20 +1199,19 @@ func (store *messageNodeStore) close() error {
 		return closeErr
 	}
 
-	store.backend = nil
-
 	return nil
 }
 
 func (store *messageNodeStore) startSaveWorker() {
-	if store == nil || strings.TrimSpace(store.storeKey) == "" || store.backend == nil {
+	backend, storeKey := store.backendAndKey()
+	if store == nil || strings.TrimSpace(storeKey) == "" || backend == nil {
 		return
 	}
 
 	store.saveWorkerMu.Lock()
 	defer store.saveWorkerMu.Unlock()
 
-	if store.saveRequests != nil {
+	if store.closed.Load() || store.saveRequests != nil {
 		return
 	}
 
@@ -1121,11 +1277,12 @@ func (store *messageNodeStore) runSaveWorker(
 
 			err := store.persist()
 			if err != nil {
+				_, logStoreKey := store.backendAndKey()
 				logWarn(
 					"persist message history",
 					err,
 					"store_key",
-					store.storeKey,
+					logStoreKey,
 				)
 			}
 		case <-saveStop:
