@@ -3,9 +3,9 @@ package app
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -226,7 +226,7 @@ func TestRespondToMessageKeepsToolsOfferedAcrossConsecutiveToolRounds(t *testing
 		if len(roundRequests) <= 2 {
 			return handle(streamDelta{
 				ToolCalls: []providers.FunctionToolCall{{
-					ID:        "call_round_" + fmt.Sprint(len(roundRequests)),
+					ID:        "call_round_" + strconv.Itoa(len(roundRequests)),
 					Name:      providers.WebSearchToolName,
 					Arguments: `{"objective": "Find query results", "search_queries": ["` + testWebSearchQueryOne + `"]}`,
 				}},
@@ -260,7 +260,7 @@ func TestRespondToMessageKeepsToolsOfferedAcrossConsecutiveToolRounds(t *testing
 	}
 }
 
-func TestRespondToMessageStopsAfterWebSearchToolRoundCap(t *testing.T) {
+func TestRespondToMessageForcesFinalAnswerAfterWebSearchToolRoundCap(t *testing.T) {
 	t.Parallel()
 
 	var roundRequests []chatCompletionRequest
@@ -272,15 +272,82 @@ func TestRespondToMessageStopsAfterWebSearchToolRoundCap(t *testing.T) {
 	) error {
 		roundRequests = append(roundRequests, request)
 
-		// Even the runaway rounds keep the tools offered: tool calling is
-		// never disabled, the round cap only stops the loop.
 		if len(request.Tools) == 0 {
-			t.Errorf("round %d carried no tools", len(roundRequests))
+			return handle(newStreamDelta(testWebSearchToolAnswer, finishReasonStop))
 		}
 
 		return handle(streamDelta{
 			ToolCalls: []providers.FunctionToolCall{{
-				ID:        "call_loop_" + fmt.Sprint(len(roundRequests)),
+				ID:        "call_loop_" + strconv.Itoa(len(roundRequests)),
+				Name:      providers.WebSearchToolName,
+				Arguments: `{"objective": "Find query results", "search_queries": ["` + testWebSearchQueryOne + `"]}`,
+			}},
+			FinishReason: "tool_calls",
+		})
+	})
+
+	webSearch := newStubWebSearchClient(func(
+		_ context.Context,
+		_ config,
+		queries []string,
+	) ([]webSearchResult, error) {
+		return []webSearchResult{
+			{Query: queries[0], Text: testWebSearchResultText},
+		}, nil
+	})
+
+	instance := newSearchToolTestBot(t, chatClient, webSearch)
+
+	respondWithWebSearchTool(t, instance, newWebSearchToolTestConfig())
+
+	// maxWebSearchToolRounds tool rounds execute searches, the cap round still
+	// returns tool calls, then one final round runs with tools stripped so
+	// the model must answer from the accumulated results.
+	expectedRounds := maxWebSearchToolRounds + 2
+	if len(roundRequests) != expectedRounds {
+		t.Fatalf(
+			"expected %d generation rounds (cap %d tool rounds + cap round + forced final), got %d",
+			expectedRounds,
+			maxWebSearchToolRounds,
+			len(roundRequests),
+		)
+	}
+
+	if len(webSearch.calls) != maxWebSearchToolRounds {
+		t.Fatalf(
+			"expected %d web search calls, got %d",
+			maxWebSearchToolRounds,
+			len(webSearch.calls),
+		)
+	}
+
+	if len(roundRequests[expectedRounds-1].Tools) != 0 {
+		t.Fatalf(
+			"expected the forced final round to strip tools, got %#v",
+			roundRequests[expectedRounds-1].Tools,
+		)
+	}
+}
+
+func TestRespondToMessageSurfacesEmptyResponseWhenForcedFinalAnswerIsEmpty(t *testing.T) {
+	t.Parallel()
+
+	var roundRequests []chatCompletionRequest
+
+	chatClient := newStubChatClient(func(
+		_ context.Context,
+		request chatCompletionRequest,
+		handle func(streamDelta) error,
+	) error {
+		roundRequests = append(roundRequests, request)
+
+		if len(request.Tools) == 0 {
+			return handle(newStreamDelta("", finishReasonStop))
+		}
+
+		return handle(streamDelta{
+			ToolCalls: []providers.FunctionToolCall{{
+				ID:        "call_loop_" + strconv.Itoa(len(roundRequests)),
 				Name:      providers.WebSearchToolName,
 				Arguments: `{"objective": "Find query results", "search_queries": ["` + testWebSearchQueryOne + `"]}`,
 			}},
@@ -307,25 +374,16 @@ func TestRespondToMessageStopsAfterWebSearchToolRoundCap(t *testing.T) {
 		testWebSearchMainModel,
 	)
 	if !errors.Is(err, errEmptyModelResponse) {
-		t.Fatalf("expected the empty-response error after the tool round cap, got %v", err)
+		t.Fatalf("expected the empty-response error when the forced final answer is empty, got %v", err)
 	}
 
-	// maxWebSearchToolRounds tool rounds execute, then the loop surfaces the
-	// empty-response error instead of looping forever.
-	if len(roundRequests) != maxWebSearchToolRounds+1 {
+	expectedRounds := maxWebSearchToolRounds + 2
+	if len(roundRequests) != expectedRounds {
 		t.Fatalf(
-			"expected %d generation rounds (cap %d tool rounds + cap round), got %d",
-			maxWebSearchToolRounds+1,
+			"expected %d generation rounds (cap %d tool rounds + cap round + forced final), got %d",
+			expectedRounds,
 			maxWebSearchToolRounds,
 			len(roundRequests),
-		)
-	}
-
-	if len(webSearch.calls) != maxWebSearchToolRounds {
-		t.Fatalf(
-			"expected %d web search calls, got %d",
-			maxWebSearchToolRounds,
-			len(webSearch.calls),
 		)
 	}
 }
