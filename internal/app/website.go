@@ -57,6 +57,7 @@ type websiteClient struct {
 	tinyFishFetchEndpoint   string
 	lookupIP                websiteLookupIPFunc
 	keys                    *apiKeyRotator
+	tinyFishFetchCache      *tinyFishFetchCache
 }
 
 type websitePageContent struct {
@@ -76,6 +77,7 @@ func newWebsiteClient(httpClient *http.Client) websiteClient {
 		tinyFishFetchEndpoint:   defaultTinyFishFetchEndpoint,
 		lookupIP:                defaultWebsiteLookupIP,
 		keys:                    newAPIKeyRotator(),
+		tinyFishFetchCache:      newTinyFishFetchCache(),
 	}
 }
 
@@ -198,7 +200,44 @@ func (instance *bot) prepareTinyFishWebsiteAugmentationBatch(
 		return warningPreparedConversationAugmentation(warnings), nil
 	}
 
-	batchCount := (len(validNormalized) + 9) / 10
+	// Serve repeat URLs from the in-memory fetch cache: no Fetch API round
+	// trip, same full content truncated to the current limit.
+	maxFetchChars := loadedConfig.WebSearch.TinyFish.maxCharsPerResult()
+	cachedPageMap := make(map[string]websitePageContent)
+	fetchNormalized := make([]string, 0, len(validNormalized))
+
+	for _, normalized := range validNormalized {
+		text, title, description, resolvedURL, finalURL, ok := wc.tinyFishFetchCache.lookup(normalized)
+		if !ok {
+			fetchNormalized = append(fetchNormalized, normalized)
+
+			continue
+		}
+
+		// Mirror the miss path: FinalURL-preferred page URL with the page
+		// title falling back to it, so warm runs match cold runs exactly.
+		resultURL := firstNonEmptyString(finalURL, resolvedURL, normalized)
+
+		candidateTitle := title
+		if candidateTitle == "" {
+			candidateTitle = resultURL
+		}
+
+		if pageContent, err := newWebsitePageContent(
+			resultURL,
+			candidateTitle,
+			description,
+			truncateRunes(strings.TrimSpace(text), maxFetchChars),
+		); err == nil {
+			cachedPageMap[strings.ToLower(strings.TrimSpace(normalized))] = pageContent
+
+			continue
+		}
+
+		fetchNormalized = append(fetchNormalized, normalized)
+	}
+
+	batchCount := (len(fetchNormalized) + 9) / 10
 
 	type batchFetchResult struct {
 		response  tinyFishFetchResponse
@@ -213,11 +252,11 @@ func (instance *bot) prepareTinyFishWebsiteAugmentationBatch(
 			start := index * 10
 
 			end := start + 10
-			if end > len(validNormalized) {
-				end = len(validNormalized)
+			if end > len(fetchNormalized) {
+				end = len(fetchNormalized)
 			}
 
-			batch := validNormalized[start:end]
+			batch := fetchNormalized[start:end]
 			apiKey := firstAPIKey(wc.keys.rotate(apiKeys))
 
 			resp, err := wc.fetchTinyFishBatch(taskCtx, apiKey, batch)
@@ -235,6 +274,10 @@ func (instance *bot) prepareTinyFishWebsiteAugmentationBatch(
 	)
 	hasFetchFailure := hasValidationFailure
 	fetchedPageMap := make(map[string]websitePageContent)
+
+	for key, pageContent := range cachedPageMap {
+		fetchedPageMap[key] = pageContent
+	}
 
 	for _, br := range batchResults {
 		if br.err != nil {
@@ -265,11 +308,9 @@ func (instance *bot) prepareTinyFishWebsiteAugmentationBatch(
 		}
 
 		for _, result := range resp.Results {
-			rawText := tinyFishFetchResultText(result.Text)
+			fullText := strings.TrimSpace(tinyFishFetchResultText(result.Text))
 
-			rawText = truncateRunes(strings.TrimSpace(rawText), loadedConfig.WebSearch.TinyFish.maxCharsPerResult())
-
-			if rawText == "" {
+			if fullText == "" {
 				if raw, ok := rawForNormalized[result.URL]; ok {
 					logWarn("fetch website content", fmt.Errorf("TinyFish fetch returned empty content for %q: %w", result.URL, os.ErrInvalid), "url", raw)
 				} else if raw, ok := rawForNormalized[result.FinalURL]; ok {
@@ -318,6 +359,14 @@ func (instance *bot) prepareTinyFishWebsiteAugmentationBatch(
 			description := ""
 			if result.Description != nil {
 				description = strings.TrimSpace(*result.Description)
+			}
+
+			wc.tinyFishFetchCache.store(result.URL, result.FinalURL, fullText, title, description)
+
+			rawText := truncateRunes(fullText, loadedConfig.WebSearch.TinyFish.maxCharsPerResult())
+			if rawText == "" {
+				hasFetchFailure = true
+				continue
 			}
 
 			resultURL := firstNonEmptyString(result.FinalURL, result.URL, "")
@@ -1320,6 +1369,20 @@ func (client websiteClient) fetchWithTinyFishFetch(
 	apiKey string,
 	maxCharsPerResult int,
 ) (websitePageContent, error) {
+	if text, title, desc, resolvedURL, finalURL, ok := client.tinyFishFetchCache.lookup(requestURL); ok {
+		trimmedText := truncateRunes(strings.TrimSpace(text), maxCharsPerResult)
+		if trimmedText != "" {
+			resultURL := firstNonEmptyString(finalURL, resolvedURL, requestURL)
+
+			candidateTitle := title
+			if candidateTitle == "" {
+				candidateTitle = firstNonEmptyString(resolvedURL, finalURL, requestURL)
+			}
+
+			return newWebsitePageContent(resultURL, candidateTitle, desc, trimmedText)
+		}
+	}
+
 	ctx, cancel := context.WithTimeout(ctx, tinyFishFetchRequestTimeout)
 	defer cancel()
 
@@ -1425,10 +1488,8 @@ func (client websiteClient) fetchWithTinyFishFetch(
 		matchedResult = &response.Results[0]
 	}
 
-	text := tinyFishFetchResultText(matchedResult.Text)
-
-	text = truncateRunes(strings.TrimSpace(text), maxCharsPerResult)
-	if text == "" {
+	fullText := strings.TrimSpace(tinyFishFetchResultText(matchedResult.Text))
+	if fullText == "" {
 		return websitePageContent{}, fmt.Errorf("TinyFish fetch returned empty content for %q: %w", requestURL, os.ErrInvalid)
 	}
 
@@ -1437,13 +1498,20 @@ func (client websiteClient) fetchWithTinyFishFetch(
 		title = strings.TrimSpace(*matchedResult.Title)
 	}
 
-	if title == "" {
-		title = firstNonEmptyString(matchedResult.URL, matchedResult.FinalURL, requestURL)
-	}
-
 	description := ""
 	if matchedResult.Description != nil {
 		description = strings.TrimSpace(*matchedResult.Description)
+	}
+
+	client.tinyFishFetchCache.store(matchedResult.URL, matchedResult.FinalURL, fullText, title, description)
+
+	text := truncateRunes(fullText, maxCharsPerResult)
+	if text == "" {
+		return websitePageContent{}, fmt.Errorf("TinyFish fetch returned empty content for %q: %w", requestURL, os.ErrInvalid)
+	}
+
+	if title == "" {
+		title = firstNonEmptyString(matchedResult.URL, matchedResult.FinalURL, requestURL)
 	}
 
 	resultURL := firstNonEmptyString(matchedResult.FinalURL, matchedResult.URL, requestURL)
