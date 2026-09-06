@@ -164,16 +164,17 @@ func (backend *postgresBotStateBackend) saveBotState(storeKey string, snapshot b
 // postgresDatabase returns the shared postgres handle when the message store
 // is persistent, or nil when history persistence is disabled.
 func (store *messageNodeStore) postgresDatabase() *sql.DB {
-	if store == nil {
+	backend, _ := store.backendAndKey()
+	if backend == nil {
 		return nil
 	}
 
-	backend, ok := store.backend.(*postgresMessageNodeStoreBackend)
-	if !ok || backend == nil {
+	postgresBackend, ok := backend.(*postgresMessageNodeStoreBackend)
+	if !ok || postgresBackend == nil {
 		return nil
 	}
 
-	return backend.database
+	return postgresBackend.database
 }
 
 // snapshotBotState copies the restart-relevant runtime state under read
@@ -269,17 +270,26 @@ func (instance *bot) applyBotStateSnapshot(snapshot botStateSnapshot, loadedConf
 // loadPersistedBotState hydrates runtime state from postgres. Missing rows
 // (first run) are a no-op; other failures are logged and keep defaults.
 func (instance *bot) loadPersistedBotState(loadedConfig config) {
-	if instance == nil || instance.botStateBackend == nil || strings.TrimSpace(instance.botStateKey) == "" {
+	backend, storeKey := instance.botStateBackendAndKey()
+	if instance == nil || backend == nil || strings.TrimSpace(storeKey) == "" {
 		return
 	}
 
-	snapshot, err := instance.botStateBackend.loadBotState(instance.botStateKey)
+	generationBeforeLoad := instance.botStateGeneration.Load()
+
+	snapshot, err := backend.loadBotState(storeKey)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return
 		}
 
-		logWarn("load persisted bot state", err, "store_key", instance.botStateKey)
+		logWarn("load persisted bot state", err, "store_key", storeKey)
+
+		return
+	}
+
+	if instance.botStateGeneration.Load() != generationBeforeLoad {
+		instance.persistBotStateBestEffort()
 
 		return
 	}
@@ -287,33 +297,59 @@ func (instance *bot) loadPersistedBotState(loadedConfig config) {
 	instance.applyBotStateSnapshot(snapshot, loadedConfig)
 }
 
-// persistBotStateBestEffort saves runtime state without blocking the caller
-// on failure. It is used after every operator mutation.
+func (instance *bot) botStateBackendAndKey() (botStateBackend, string) {
+	if instance == nil {
+		return nil, ""
+	}
+
+	instance.botStateMu.RLock()
+	defer instance.botStateMu.RUnlock()
+
+	return instance.botStateBackend, instance.botStateKey
+}
+
+// persistBotStateBestEffort saves runtime state without blocking the caller.
+// It flushes on a background goroutine, so Discord handlers never wait on
+// postgres latency or outages. The snapshot is taken inside the serialized
+// save, so concurrent mutations converge on the latest state.
 func (instance *bot) persistBotStateBestEffort() {
-	if instance == nil || instance.botStateBackend == nil || strings.TrimSpace(instance.botStateKey) == "" {
+	backend, storeKey := instance.botStateBackendAndKey()
+	if instance == nil || backend == nil || strings.TrimSpace(storeKey) == "" {
 		return
 	}
 
-	snapshot := instance.snapshotBotState()
+	safeGo(func() {
+		instance.botStateSaveMu.Lock()
+		defer instance.botStateSaveMu.Unlock()
 
-	err := instance.botStateBackend.saveBotState(instance.botStateKey, snapshot)
-	if err != nil {
-		logWarn("persist bot state", err, "store_key", instance.botStateKey)
-	}
+		if instance.botClosed.Load() {
+			return
+		}
+
+		snapshot := instance.snapshotBotState()
+
+		if err := backend.saveBotState(storeKey, snapshot); err != nil {
+			logWarn("persist bot state", err, "store_key", storeKey)
+		}
+	})
 }
 
 // persistBotStateSync saves runtime state and reports the error for shutdown
 // flushing. A nil backend (persistence disabled) is a successful no-op.
 func (instance *bot) persistBotStateSync() error {
-	if instance == nil || instance.botStateBackend == nil || strings.TrimSpace(instance.botStateKey) == "" {
+	backend, storeKey := instance.botStateBackendAndKey()
+	if instance == nil || backend == nil || strings.TrimSpace(storeKey) == "" {
 		return nil
 	}
 
+	instance.botStateSaveMu.Lock()
+	defer instance.botStateSaveMu.Unlock()
+
 	snapshot := instance.snapshotBotState()
 
-	err := instance.botStateBackend.saveBotState(instance.botStateKey, snapshot)
+	err := backend.saveBotState(storeKey, snapshot)
 	if err != nil {
-		return fmt.Errorf("persist bot state for store key %q: %w", instance.botStateKey, err)
+		return fmt.Errorf("persist bot state for store key %q: %w", storeKey, err)
 	}
 
 	return nil
@@ -327,7 +363,9 @@ func (instance *bot) wireBotStatePersistence(ctx context.Context, loadedConfig c
 		return
 	}
 
-	storeKey := strings.TrimSpace(instance.nodes.storeKey)
+	_, rawStoreKey := instance.nodes.backendAndKey()
+	storeKey := strings.TrimSpace(rawStoreKey)
+
 	if storeKey == "" {
 		return
 	}
@@ -337,6 +375,8 @@ func (instance *bot) wireBotStatePersistence(ctx context.Context, loadedConfig c
 		return
 	}
 
+	generationBeforeLoad := instance.botStateGeneration.Load()
+
 	backend, err := newPostgresBotStateBackend(ctx, database)
 	if err != nil {
 		logWarn("configure persisted bot state", err, "store_key", storeKey)
@@ -344,7 +384,31 @@ func (instance *bot) wireBotStatePersistence(ctx context.Context, loadedConfig c
 		return
 	}
 
+	if instance.botClosed.Load() {
+		if instance.botStateGeneration.Load() != generationBeforeLoad {
+			instance.botStateSaveMu.Lock()
+			snapshot := instance.snapshotBotState()
+
+			if err := backend.saveBotState(storeKey, snapshot); err != nil {
+				logWarn("persist bot state at shutdown", err, "store_key", storeKey)
+			}
+
+			instance.botStateSaveMu.Unlock()
+		}
+
+		return
+	}
+
+	instance.botStateMu.Lock()
 	instance.botStateKey = storeKey
 	instance.botStateBackend = backend
+	instance.botStateMu.Unlock()
+
+	if instance.botStateGeneration.Load() != generationBeforeLoad {
+		instance.persistBotStateBestEffort()
+
+		return
+	}
+
 	instance.loadPersistedBotState(loadedConfig)
 }

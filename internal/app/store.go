@@ -34,6 +34,7 @@ type messageNodeStore struct {
 	mu            sync.Mutex
 	nodes         map[string]*messageNode
 	capacity      int
+	backendMu     sync.RWMutex
 	storeKey      string
 	backend       messageNodeStoreBackend
 	saveMu        sync.Mutex
@@ -45,6 +46,7 @@ type messageNodeStore struct {
 	snapshotMu    sync.Mutex
 	snapshotCache map[string]messageNodeSnapshot
 	dirty         atomic.Bool
+	closed        atomic.Bool
 }
 
 // Get returns the message node for a message ID (NodeStore adapter).

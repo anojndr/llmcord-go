@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
@@ -68,8 +69,12 @@ type bot struct {
 	resetGatewayProbeStateFn     func()
 	channelCacheMu               sync.Mutex
 	channelCache                 map[string]channelCacheEntry
+	botStateMu                   sync.RWMutex
 	botStateKey                  string
 	botStateBackend              botStateBackend
+	botStateGeneration           atomic.Uint64
+	botStateSaveMu               sync.Mutex
+	botClosed                    atomic.Bool
 }
 
 func newOptimizedHTTPTransport() *http.Transport {
@@ -184,24 +189,18 @@ func newBot(ctx context.Context, configPath string, loadedConfig config) (*bot, 
 	instance.website = newWebsiteClient(httpClient)
 	instance.nodes = newMessageNodeStore(maxMessageNodes)
 
-	store, err := newConfiguredMessageNodeStore(
+	instance.currentModel = loadedConfig.firstModel()
+	instance.currentExaSearchTypeValue = defaultExaSearchType
+	instance.maintenanceChannels = make(map[string]struct{})
+	instance.onlineOutput = os.Stdout
+	instance.hydratePersistenceInBackground(
 		ctx,
 		maxMessageNodes,
 		configPath,
 		loadedConfig.Database.StoreKey,
 		loadedConfig.Database.ConnectionString,
+		loadedConfig,
 	)
-	if err != nil {
-		logWarn("configure persisted message history", err)
-	} else {
-		instance.nodes = store
-	}
-
-	instance.currentModel = loadedConfig.firstModel()
-	instance.currentExaSearchTypeValue = defaultExaSearchType
-	instance.maintenanceChannels = make(map[string]struct{})
-	instance.onlineOutput = os.Stdout
-	instance.wireBotStatePersistence(ctx, loadedConfig)
 
 	discordSession.Identify.Intents = discordgo.IntentsGuilds |
 		discordgo.IntentsGuildMessages |
@@ -214,6 +213,41 @@ func newBot(ctx context.Context, configPath string, loadedConfig config) (*bot, 
 	discordSession.AddHandler(recoverHandler(instance.handleMessageCreate))
 
 	return instance, nil
+}
+func (instance *bot) hydratePersistenceInBackground(
+	ctx context.Context,
+	capacity int,
+	configPath, configuredStoreKey, connectionString string,
+	loadedConfig config,
+) {
+	if instance == nil || strings.TrimSpace(connectionString) == "" {
+		return
+	}
+
+	if ctx != nil && ctx.Err() != nil {
+		return
+	}
+
+	if instance.botClosed.Load() {
+		return
+	}
+
+	safeGo(func() {
+		if instance.botClosed.Load() {
+			return
+		}
+
+		hydrateMessageHistoryInBackground(instance.nodes, capacity, configPath, configuredStoreKey, connectionString)
+
+		if instance.botClosed.Load() {
+			return
+		}
+
+		backgroundCtx, cancelBackground := context.WithTimeout(context.Background(), postgresMessageNodeStoreStatementTimeout)
+		defer cancelBackground()
+
+		instance.wireBotStatePersistence(backgroundCtx, loadedConfig)
+	})
 }
 
 // Run starts the bot until the context is cancelled.
@@ -412,6 +446,7 @@ func (instance *bot) configureSession(loadedConfig config) error {
 	return nil
 }
 func (instance *bot) close() error {
+	instance.botClosed.Store(true)
 	instance.stopReconnectGuard()
 
 	var sessionErr error
@@ -710,6 +745,7 @@ func (instance *bot) setCurrentModel(modelName string) {
 	instance.modelMu.Lock()
 	instance.currentModel = modelName
 	instance.modelMu.Unlock()
+	instance.botStateGeneration.Add(1)
 
 	instance.persistBotStateBestEffort()
 }
@@ -740,6 +776,7 @@ func (instance *bot) setCurrentExaSearchType(searchType string) {
 
 	instance.currentExaSearchTypeValue = normalizedSearchType
 	instance.modelMu.Unlock()
+	instance.botStateGeneration.Add(1)
 
 	instance.persistBotStateBestEffort()
 }
@@ -759,6 +796,7 @@ func (instance *bot) setCurrentGroundingEnabled(enabled *bool) {
 	instance.modelMu.Lock()
 	instance.currentGroundingEnabledValue = enabled
 	instance.modelMu.Unlock()
+	instance.botStateGeneration.Add(1)
 
 	instance.persistBotStateBestEffort()
 }
