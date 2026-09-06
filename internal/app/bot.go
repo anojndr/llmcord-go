@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	providers "llmcord-go/internal/providers"
@@ -67,6 +68,8 @@ type bot struct {
 	resetGatewayProbeStateFn     func()
 	channelCacheMu               sync.Mutex
 	channelCache                 map[string]channelCacheEntry
+	botStateKey                  string
+	botStateBackend              botStateBackend
 }
 
 func newOptimizedHTTPTransport() *http.Transport {
@@ -198,6 +201,7 @@ func newBot(ctx context.Context, configPath string, loadedConfig config) (*bot, 
 	instance.currentExaSearchTypeValue = defaultExaSearchType
 	instance.maintenanceChannels = make(map[string]struct{})
 	instance.onlineOutput = os.Stdout
+	instance.wireBotStatePersistence(ctx, loadedConfig)
 
 	discordSession.Identify.Intents = discordgo.IntentsGuilds |
 		discordgo.IntentsGuildMessages |
@@ -407,21 +411,37 @@ func (instance *bot) configureSession(loadedConfig config) error {
 
 	return nil
 }
-
 func (instance *bot) close() error {
 	instance.stopReconnectGuard()
 
-	err := instance.session.Close()
-	if err != nil {
-		return fmt.Errorf("close discord session: %w", err)
+	var sessionErr error
+
+	switch {
+	case instance.sessionClose != nil:
+		sessionErr = instance.sessionClose(instance.session)
+	case instance.session != nil:
+		sessionErr = instance.session.Close()
 	}
 
-	err = instance.nodes.close()
-	if err != nil {
-		return fmt.Errorf("close message store: %w", err)
+	if sessionErr != nil {
+		sessionErr = fmt.Errorf("close discord session: %w", sessionErr)
 	}
 
-	return nil
+	botStateErr := instance.persistBotStateSync()
+	if botStateErr != nil {
+		botStateErr = fmt.Errorf("close bot state: %w", botStateErr)
+	}
+
+	var nodesErr error
+
+	if instance.nodes != nil {
+		err := instance.nodes.close()
+		if err != nil {
+			nodesErr = fmt.Errorf("close message store: %w", err)
+		}
+	}
+
+	return errors.Join(sessionErr, botStateErr, nodesErr)
 }
 
 func (instance *bot) syncCommands() error {
@@ -688,9 +708,10 @@ func (instance *bot) currentModelForChannelIDs(
 
 func (instance *bot) setCurrentModel(modelName string) {
 	instance.modelMu.Lock()
-	defer instance.modelMu.Unlock()
-
 	instance.currentModel = modelName
+	instance.modelMu.Unlock()
+
+	instance.persistBotStateBestEffort()
 }
 
 func (instance *bot) currentExaSearchType() string {
@@ -711,7 +732,6 @@ func (instance *bot) currentExaSearchType() string {
 
 func (instance *bot) setCurrentExaSearchType(searchType string) {
 	instance.modelMu.Lock()
-	defer instance.modelMu.Unlock()
 
 	normalizedSearchType, ok := normalizeExaSearchType(searchType)
 	if !ok {
@@ -719,6 +739,9 @@ func (instance *bot) setCurrentExaSearchType(searchType string) {
 	}
 
 	instance.currentExaSearchTypeValue = normalizedSearchType
+	instance.modelMu.Unlock()
+
+	instance.persistBotStateBestEffort()
 }
 
 func (instance *bot) currentGroundingEnabled(provider providerConfig) bool {
@@ -734,7 +757,8 @@ func (instance *bot) currentGroundingEnabled(provider providerConfig) bool {
 
 func (instance *bot) setCurrentGroundingEnabled(enabled *bool) {
 	instance.modelMu.Lock()
-	defer instance.modelMu.Unlock()
-
 	instance.currentGroundingEnabledValue = enabled
+	instance.modelMu.Unlock()
+
+	instance.persistBotStateBestEffort()
 }

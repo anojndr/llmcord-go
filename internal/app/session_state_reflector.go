@@ -64,6 +64,10 @@ func sessionState(session *discordgo.Session) discordSessionState {
 		seq:       0,
 	}
 
+	if session == nil {
+		return state
+	}
+
 	sessionIDFieldName, sequenceFieldName, err := discordSessionFieldNames()
 	if err != nil {
 		return state
@@ -96,6 +100,10 @@ func sessionState(session *discordgo.Session) discordSessionState {
 // field shape has changed (the library already reconnects, just via resumes
 // that may be rejected).
 func clearSessionResumeState(session *discordgo.Session) {
+	if session == nil {
+		return
+	}
+
 	sessionIDFieldName, sequenceFieldName, err := discordSessionFieldNames()
 	if err != nil {
 		return

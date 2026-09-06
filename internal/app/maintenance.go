@@ -33,13 +33,15 @@ func (instance *bot) setMaintenanceChannel(channelID string) {
 	}
 
 	instance.maintenanceMu.Lock()
-	defer instance.maintenanceMu.Unlock()
 
 	if instance.maintenanceChannels == nil {
 		instance.maintenanceChannels = make(map[string]struct{})
 	}
 
 	instance.maintenanceChannels[channelID] = struct{}{}
+	instance.maintenanceMu.Unlock()
+
+	instance.persistBotStateBestEffort()
 }
 
 func (instance *bot) clearMaintenanceChannel(channelID string) {
@@ -48,13 +50,17 @@ func (instance *bot) clearMaintenanceChannel(channelID string) {
 	}
 
 	instance.maintenanceMu.Lock()
-	defer instance.maintenanceMu.Unlock()
 
 	if instance.maintenanceChannels == nil {
+		instance.maintenanceMu.Unlock()
+
 		return
 	}
 
 	delete(instance.maintenanceChannels, channelID)
+	instance.maintenanceMu.Unlock()
+
+	instance.persistBotStateBestEffort()
 }
 
 func (instance *bot) isAllowedMaintenanceBypass(userID string) bool {
@@ -389,7 +395,16 @@ func (instance *bot) enforceMaintenanceMode(message *discordgo.Message) bool {
 
 	if instance.session != nil {
 		if err := instance.session.ChannelMessageDelete(message.ChannelID, message.ID); err != nil {
-			logWarn("maintenance delete blocked message", err, "channel_id", message.ChannelID, "message_id", message.ID, "user_id", message.Author.ID)
+			logWarn(
+				"maintenance delete blocked message",
+				err,
+				"channel_id",
+				message.ChannelID,
+				"message_id",
+				message.ID,
+				"user_id",
+				message.Author.ID,
+			)
 		}
 	}
 

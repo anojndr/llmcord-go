@@ -13,7 +13,7 @@ It turns Discord reply chains into a frontend for OpenAI-compatible chat-complet
 - Automatic Facebook video downloads: any message containing a Facebook or fb.watch link (no bot mention needed) gets a reply with the MP4 attached; oversized videos are compressed to 8 MB first and fall back to the direct download link if compression fails
 - Automatic YouTube Shorts downloads: any message containing a YouTube Shorts link (no bot mention needed) is deleted and re-sent by the bot as "<username> sent:" with the MP4 attached, preserving any surrounding text; oversized videos are compressed to 8 MB first and fall back to the direct download link (temporary resolver URL) if compression fails
 - Web-search augmentation (Exa by default), reverse-image lookup (`vsearch`), and native Gemini grounding
-- Hot-reloaded `config.yaml`, permissions, channel model locks, and PostgreSQL-backed history
+- Hot-reloaded `config.yaml`, permissions, channel model locks, and PostgreSQL-backed history and bot state
 
 ## Quick Start
 
@@ -52,7 +52,7 @@ The provided `docker-compose.yaml` mounts the repository root read-write for loc
 
 ### Render
 
-When `PORT` or `LLMCORD_HTTP_ADDR` is set, the bot exposes JSON health responses on `/` and `/healthz`. The included `render.yaml` uses the Docker runtime, points `LLMCORD_CONFIG_PATH` at `/etc/secrets/config.yaml`, and configures `healthCheckPath: /healthz`. For history that survives restarts, add a persistent PostgreSQL `database.connection_string`.
+When `PORT` or `LLMCORD_HTTP_ADDR` is set, the bot exposes JSON health responses on `/` and `/healthz`. The included `render.yaml` uses the Docker runtime, points `LLMCORD_CONFIG_PATH` at `/etc/secrets/config.yaml`, and configures `healthCheckPath: /healthz`. For history and bot state (current `/model`, `/searchtype`, `/grounding`, `/maintenance` selections) that survive restarts, add a persistent PostgreSQL `database.connection_string`.
 
 ## Configuration
 
@@ -79,8 +79,8 @@ Providers are declared with `base_url` (OpenAI-compatible). The provider name se
 | `channel_model_locks` | Map of channel IDs to configured models. `/model` is disabled in locked channels. |
 | `media_analysis_model` | Gemini model used to preprocess audio and video for non-Gemini replies; auto-selected when unset. |
 | `fallback_model` | Model to fall back to before returning an error (defaults to `9router/stable_model:vision` when configured in `models`). The fallback attempt gets the `web_search` tool under the same conditions as the primary. |
-| `database.connection_string` | PostgreSQL connection string for persisted history (`postgres://` or `postgresql://`). |
-| `database.store_key` | Logical key selecting the persisted history row. |
+| `database.connection_string` | PostgreSQL connection string for persisted history and bot state (`postgres://` or `postgresql://`). Without it, reply history and operator selections (`/model`, `/searchtype`, `/grounding`, `/maintenance`) live only in memory and are lost on restart. |
+| `database.store_key` | Logical key selecting the persisted history and bot-state rows. |
 | `gist.api_key` | GitHub personal access token (with the `gist` scope) used by the "View response better on GitHub Gist" button. Get one at https://github.com/settings/tokens. Accepts a string or a YAML list, round-robin across multiple tokens. Publishing is disabled without a key. |
 | `gist.endpoint` | GitHub REST API endpoint used to create gists. Default: `https://api.github.com/gists`. |
 | `gist.public` | Whether created gists are public (default `false`, secret). |

@@ -347,14 +347,17 @@ visual_search:
     api_key:
 
 # -----------------------------------------------------------------------------
-# Persistence — PostgreSQL for reply-chain history across restarts
+# Persistence — PostgreSQL for reply-chain history and bot state across restarts
 # -----------------------------------------------------------------------------
 database:
-  # Required if you want persisted history across restarts. Leave blank to disable.
+  # Required if you want persisted history and bot state across restarts.
+  # Leave blank to disable (everything stays in memory and is lost on restart).
   # Example: postgresql://postgres:password@localhost:5432/llmcordgo?sslmode=disable
   connection_string:
   # Optional key to share one persisted history stream across multiple machines
-  # that use different local config paths.
+  # that use different local config paths. The same key also selects the
+  # persisted bot-state row (current `/model`, `/searchtype`, `/grounding`,
+  # and `/maintenance` selections).
   # store_key: shared-home-bots
   store_key:
 
