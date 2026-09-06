@@ -93,6 +93,7 @@ type tinyFishSearchClient struct {
 	fetchEndpoint  string
 	httpClient     *http.Client
 	keys           *apiKeyRotator
+	fetchCache     *tinyFishFetchCache
 }
 
 type routedWebSearchClient struct {
@@ -190,6 +191,11 @@ type tinyFishSearchResponse struct {
 	Results      []tinyFishSearchResult `json:"results"`
 	TotalResults flexibleInt            `json:"total_results"`
 	Page         flexibleInt            `json:"page"`
+}
+
+type tinyFishQueryOutcome struct {
+	query   string
+	results []tinyFishSearchResult
 }
 
 type tinyFishSearchResult struct {
@@ -466,6 +472,7 @@ func newTinyFishSearchClient(httpClient *http.Client) tinyFishSearchClient {
 		fetchEndpoint:  defaultTinyFishFetchEndpoint,
 		httpClient:     httpClient,
 		keys:           newAPIKeyRotator(),
+		fetchCache:     newTinyFishFetchCache(),
 	}
 }
 
@@ -1257,11 +1264,11 @@ func (client tavilySearchClient) search(
 	})
 }
 
-func searchQueriesConcurrently(
+func searchQueriesConcurrently[T any](
 	ctx context.Context,
 	queries []string,
-	searchQuery func(context.Context, string) (webSearchResult, error),
-) ([]webSearchResult, error) {
+	searchQuery func(context.Context, string) (T, error),
+) ([]T, error) {
 	taskContext, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -1274,7 +1281,7 @@ func searchQueriesConcurrently(
 		taskContext,
 		externalRequestConcurrency,
 		len(queries),
-		func(queryContext context.Context, index int) (webSearchResult, error) {
+		func(queryContext context.Context, index int) (T, error) {
 			result, err := searchQuery(queryContext, queries[index])
 			if err != nil {
 				firstErrOnce.Do(func() {
@@ -1292,7 +1299,7 @@ func searchQueriesConcurrently(
 		return nil, firstErr
 	}
 
-	results := make([]webSearchResult, len(taskResults))
+	results := make([]T, len(taskResults))
 	for index, result := range taskResults {
 		if result.err != nil {
 			return nil, result.err
@@ -1932,84 +1939,153 @@ func (client tinyFishSearchClient) search(
 	maxURLs := loadedConfig.WebSearch.maxURLs()
 	maxChars := loadedConfig.WebSearch.TinyFish.maxCharsPerResult()
 
-	return searchQueriesConcurrently(ctx, queries, func(queryContext context.Context, query string) (webSearchResult, error) {
+	// Phase 1: searches run concurrently; the fetch in phase 2 needs every
+	// query's URLs first, so enrichment cannot overlap the searches.
+	outcomes, err := searchQueriesConcurrently(ctx, queries, func(
+		queryContext context.Context,
+		query string,
+	) (tinyFishQueryOutcome, error) {
 		apiKey := firstAPIKey(client.keys.rotate(apiKeys))
-		return client.searchSingleQuery(queryContext, apiKey, query, maxURLs, maxChars)
+
+		searchResults, err := client.searchQuery(queryContext, apiKey, query)
+		if err != nil {
+			return tinyFishQueryOutcome{}, err
+		}
+
+		if len(searchResults) > maxURLs {
+			searchResults = searchResults[:maxURLs]
+		}
+
+		return tinyFishQueryOutcome{query: query, results: searchResults}, nil
 	})
-}
-
-func (client tinyFishSearchClient) searchSingleQuery(
-	ctx context.Context,
-	apiKey string,
-	query string,
-	maxURLs int,
-	maxCharsPerResult int,
-) (webSearchResult, error) {
-	searchResults, err := client.searchQuery(ctx, apiKey, query)
 	if err != nil {
-		return webSearchResult{}, err
+		return nil, err
 	}
 
-	if len(searchResults) > maxURLs {
-		searchResults = searchResults[:maxURLs]
-	}
+	// Phase 2: one deduplicated fetch across all queries. Overlapping URLs
+	// (common when the model issues related queries) are fetched once, and
+	// repeat URLs inside the cache TTL cost no round trip at all.
+	fetchedTextMap, fetchedTitleMap := client.enrichTinyFishOutcomes(ctx, apiKeys, outcomes)
 
-	if len(searchResults) == 0 {
-		return webSearchResult{
-			Query: query,
-			Text:  "No search results found.",
-		}, nil
-	}
+	formatted := make([]webSearchResult, len(outcomes))
+	for index, outcome := range outcomes {
+		if len(outcome.results) == 0 {
+			formatted[index] = webSearchResult{
+				Query: outcome.query,
+				Text:  "No search results found.",
+			}
 
-	urls := make([]string, 0, len(searchResults))
-	for _, result := range searchResults {
-		trimmedURL := strings.TrimSpace(result.URL)
-		if trimmedURL != "" {
-			urls = append(urls, trimmedURL)
+			continue
+		}
+
+		formatted[index] = webSearchResult{
+			Query: outcome.query,
+			Text:  formatTinyFishSearchResultText(outcome.results, fetchedTextMap, fetchedTitleMap, maxChars),
 		}
 	}
 
+	return formatted, nil
+}
+
+func (client tinyFishSearchClient) enrichTinyFishOutcomes(
+	ctx context.Context,
+	apiKeys []string,
+	outcomes []tinyFishQueryOutcome,
+) (map[string]string, map[string]string) {
 	// Canonicalize fetch results by lower-cased URL for case-insensitive lookup.
 	fetchedTextMap := make(map[string]string)
 	fetchedTitleMap := make(map[string]string)
 
-	if len(urls) > 0 {
-		fetchResponse, fetchErr := client.fetchContents(ctx, apiKey, urls)
-		if fetchErr != nil {
-			logWarn("tinyfish fetch for search enrichment failed", fetchErr, "query", query)
-		} else {
-			for _, fetchResult := range fetchResponse.Results {
-				textStr := tinyFishFetchResultText(fetchResult.Text)
+	uniqueURLs := make([]string, 0)
+	seenURLs := make(map[string]struct{})
 
-				textStr = strings.TrimSpace(textStr)
-				if textStr == "" {
-					continue
-				}
+	for _, outcome := range outcomes {
+		for _, result := range outcome.results {
+			trimmedURL := strings.TrimSpace(result.URL)
+			if trimmedURL == "" {
+				continue
+			}
 
-				for _, rawURL := range []string{fetchResult.URL, fetchResult.FinalURL} {
-					trimmed := strings.TrimSpace(rawURL)
-					if trimmed == "" {
-						continue
-					}
+			key := strings.ToLower(trimmedURL)
+			if _, seen := seenURLs[key]; seen {
+				continue
+			}
 
-					key := strings.ToLower(trimmed)
-					fetchedTextMap[key] = textStr
+			seenURLs[key] = struct{}{}
 
-					if fetchResult.Title != nil {
-						if title := strings.TrimSpace(*fetchResult.Title); title != "" {
-							fetchedTitleMap[key] = title
-						}
-					}
-				}
+			uniqueURLs = append(uniqueURLs, trimmedURL)
+		}
+	}
+
+	missingURLs := make([]string, 0, len(uniqueURLs))
+
+	for _, rawURL := range uniqueURLs {
+		if text, title, _, _, _, ok := client.fetchCache.lookup(rawURL); ok {
+			key := strings.ToLower(strings.TrimSpace(rawURL))
+			fetchedTextMap[key] = text
+
+			if title != "" {
+				fetchedTitleMap[key] = title
+			}
+
+			continue
+		}
+
+		missingURLs = append(missingURLs, rawURL)
+	}
+
+	if len(missingURLs) == 0 {
+		return fetchedTextMap, fetchedTitleMap
+	}
+
+	apiKey := firstAPIKey(client.keys.rotate(apiKeys))
+
+	fetchResponse, fetchErr := client.fetchContents(ctx, apiKey, missingURLs)
+	if fetchErr != nil {
+		queries := make([]string, 0, len(outcomes))
+		for _, outcome := range outcomes {
+			queries = append(queries, outcome.query)
+		}
+
+		logWarn("tinyfish fetch for search enrichment failed", fetchErr, "queries", queries)
+
+		return fetchedTextMap, fetchedTitleMap
+	}
+
+	for _, fetchResult := range fetchResponse.Results {
+		textStr := strings.TrimSpace(tinyFishFetchResultText(fetchResult.Text))
+		if textStr == "" {
+			continue
+		}
+
+		var title string
+		if fetchResult.Title != nil {
+			title = strings.TrimSpace(*fetchResult.Title)
+		}
+
+		var description string
+		if fetchResult.Description != nil {
+			description = strings.TrimSpace(*fetchResult.Description)
+		}
+
+		client.fetchCache.store(fetchResult.URL, fetchResult.FinalURL, textStr, title, description)
+
+		for _, rawURL := range []string{fetchResult.URL, fetchResult.FinalURL} {
+			trimmed := strings.TrimSpace(rawURL)
+			if trimmed == "" {
+				continue
+			}
+
+			key := strings.ToLower(trimmed)
+			fetchedTextMap[key] = textStr
+
+			if title != "" {
+				fetchedTitleMap[key] = title
 			}
 		}
 	}
 
-	formatted := formatTinyFishSearchResultText(searchResults, fetchedTextMap, fetchedTitleMap, maxCharsPerResult)
-	return webSearchResult{
-		Query: query,
-		Text:  formatted,
-	}, nil
+	return fetchedTextMap, fetchedTitleMap
 }
 
 func (client tinyFishSearchClient) searchQuery(

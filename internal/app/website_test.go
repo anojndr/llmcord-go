@@ -61,6 +61,7 @@ func newWebsiteTestClient(httpClient *http.Client, exaURL string, tavilyURL stri
 		tinyFishFetchEndpoint:   defaultTinyFishFetchEndpoint,
 		lookupIP:                testWebsiteLookupIP,
 		keys:                    newAPIKeyRotator(),
+		tinyFishFetchCache:      newTinyFishFetchCache(),
 	}
 }
 

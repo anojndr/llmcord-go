@@ -135,9 +135,16 @@ const (
 	// clock per HTTP call so a stalled connection cannot hang search
 	// enrichment or website fetching. ttl stays omitted so Fetch may serve
 	// any cached entry, the fastest server-side path.
-	tinyFishFetchPerURLTimeoutMS                  = 5000
-	tinyFishSearchRequestTimeout                  = 20 * time.Second
-	tinyFishFetchRequestTimeout                   = 30 * time.Second
+	tinyFishFetchPerURLTimeoutMS = 5000
+	tinyFishSearchRequestTimeout = 20 * time.Second
+	tinyFishFetchRequestTimeout  = 30 * time.Second
+	// tinyFishFetchCacheTTL bounds how long a fetched page is served from
+	// the in-memory fetch cache without another Fetch API round trip.
+	// Repeat URLs inside this window (overlapping queries, Show Sources,
+	// website re-fetches) resolve instantly; the cap keeps worst-case
+	// memory to a few hundred pages.
+	tinyFishFetchCacheTTL                         = 10 * time.Minute
+	tinyFishFetchCacheMaxEntries                  = 200
 	parallelSearchRequestTimeout                  = 20 * time.Second
 	parallelExtractRequestTimeout                 = 60 * time.Second
 	parallelExtractMaxURLsPerRequest              = 20
