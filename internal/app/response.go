@@ -531,17 +531,13 @@ func shouldRetryGenerationRound(finishReason string, err error) bool {
 	return err != nil && providers.IsTransientStreamError(err)
 }
 
-// generateResponseWithWebSearchTool streams the request; when the model
-// responds with web_search tool calls, it executes them through the routed
-// TinyFish -> Exa -> Tavily clients, appends the results to the request
-// messages, and streams a final answer.
-//
 // Tool calling is never disabled: every round re-offers the tools with
 // tool_choice "auto" (and a byte-identical tool prefix, so the provider's
 // prompt cache keeps matching). The loop is bounded by
 // maxWebSearchToolRounds so a model that keeps calling tools without
-// answering cannot run away; hitting the cap surfaces the empty-response
-// error instead of silently refusing further tool calls.
+// answering cannot run away; hitting the cap runs one final round with
+// tools stripped so the model must answer from the accumulated search
+// results instead of surfacing an empty-response error.
 func (instance *bot) generateResponseWithWebSearchTool(
 	ctx context.Context,
 	loadedConfig config,
@@ -581,16 +577,7 @@ func (instance *bot) generateResponseWithWebSearchTool(
 		}
 
 		if roundIndex >= maxWebSearchToolRounds {
-			logWarn(
-				"web_search tool round cap reached without a final answer",
-				nil,
-				"rounds",
-				roundIndex+1,
-				"max_rounds",
-				maxWebSearchToolRounds,
-			)
-
-			return round.rawAnswer, round.thinking, errEmptyModelResponse
+			return instance.runForcedFinalAnswerRound(ctx, request, tracker, warnings, round, roundIndex)
 		}
 
 		var searchWarnings []string
@@ -618,6 +605,59 @@ func (instance *bot) generateResponseWithWebSearchTool(
 			thinking:  round.thinking,
 		}
 	}
+}
+
+// runForcedFinalAnswerRound runs one last generation round with tools
+// stripped after the web_search tool loop hits maxWebSearchToolRounds: the
+// model must answer from the accumulated search results instead of calling
+// tools again.
+func (instance *bot) runForcedFinalAnswerRound(
+	ctx context.Context,
+	request chatCompletionRequest,
+	tracker *responseTracker,
+	warnings []string,
+	round generatedRoundResult,
+	roundIndex int,
+) (string, string, error) {
+	logWarn(
+		"web_search tool round cap reached without a final answer; forcing final answer without tools",
+		nil,
+		"rounds",
+		roundIndex+1,
+		"max_rounds",
+		maxWebSearchToolRounds,
+	)
+
+	request.Tools = nil
+
+	finalPrefill := generatedPrefill{
+		rawAnswer: round.rawAnswer,
+		thinking:  round.thinking,
+	}
+
+	final, finalErr := instance.runGenerationRoundWithRetry(
+		ctx,
+		request,
+		tracker,
+		warnings,
+		finalPrefill,
+	)
+	if finalErr != nil {
+		return final.rawAnswer, final.thinking, finalErr
+	}
+
+	if len(final.toolCalls) != 0 {
+		logWarn(
+			"model emitted tool calls without offered tools",
+			nil,
+			"tool_calls",
+			len(final.toolCalls),
+		)
+
+		return final.rawAnswer, final.thinking, errEmptyModelResponse
+	}
+
+	return final.rawAnswer, final.thinking, nil
 }
 
 func sleepPrematureStreamRetry(ctx context.Context, delay time.Duration) error {
