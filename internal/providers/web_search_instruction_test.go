@@ -10,7 +10,7 @@ func TestWebSearchToolDescriptionIncludesUserInstruction(t *testing.T) {
 
 	tool := WebSearchTool(0)
 
-	const want = "Always search the web if the user told you to, like 'search the web' or something similar."
+	const want = "Always search the web if the user told you to, like 'search the web' or something similar, unless web search is absolutely not needed."
 	if !strings.Contains(tool.Description, want) {
 		t.Fatalf("web_search tool description missing required instruction %q: got %q", want, tool.Description)
 	}
