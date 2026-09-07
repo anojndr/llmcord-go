@@ -70,11 +70,10 @@ func testPermissionsConfig() config {
 	searchConfig := webSearchConfig{
 		MaxURLs: defaultWebSearchMaxURLs,
 		Exa: exaSearchConfig{
-			APIKey:             "",
-			APIKeys:            nil,
-			SearchType:         defaultExaSearchType,
-			TextMaxCharacters:  defaultExaSearchTextMaxCharacters,
-			LivecrawlTimeoutMS: defaultExaContentsLivecrawlTimeoutMS,
+			APIKey:            "",
+			APIKeys:           nil,
+			SearchType:        defaultExaSearchType,
+			TextMaxCharacters: defaultExaSearchTextMaxCharacters,
 		},
 		Firecrawl: firecrawlSearchConfig{
 			APIKey:                "",

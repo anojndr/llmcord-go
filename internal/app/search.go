@@ -257,8 +257,9 @@ type exaSearchRequest struct {
 }
 
 type exaSearchRequestContents struct {
-	Text       exaSearchTextRequest
-	Highlights bool
+	Text        exaSearchTextRequest
+	Highlights  bool
+	MaxAgeHours int
 }
 
 type exaSearchTextRequest struct {
@@ -348,6 +349,9 @@ type parallelStatusError struct {
 	Err        error
 }
 
+// parallelSearchRequest follows https://docs.parallel.ai/api-reference/search/search.
+// Cache-first retrieval: fetch_policy stays unset so Parallel serves cached
+// index content instead of live-fetching the origin.
 type parallelSearchRequest struct {
 	Objective        string                  `json:"objective,omitempty"`
 	SearchQueries    []string                `json:"search_queries"`
@@ -376,12 +380,15 @@ type parallelSearchResponseItem struct {
 // parallelExtractRequest follows https://docs.parallel.ai/api-reference/extract/extract:
 // Search returns compressed excerpts, not full page bodies — full content per
 // URL comes from the Extract API with advanced_settings.full_content enabled.
+// Cache-first retrieval: fetch_policy stays unset so Parallel serves cached
+// index content instead of live-fetching the origin.
 type parallelExtractRequest struct {
 	URLs             []string                 `json:"urls"`
 	Objective        string                   `json:"objective,omitempty"`
 	SearchQueries    []string                 `json:"search_queries,omitempty"`
 	AdvancedSettings *parallelExtractSettings `json:"advanced_settings,omitempty"`
 }
+
 type parallelExtractSettings struct {
 	ExcerptSettings *parallelExcerptSettings            `json:"excerpt_settings,omitempty"`
 	FullContent     *parallelExtractFullContentSettings `json:"full_content,omitempty"`
@@ -1381,6 +1388,10 @@ func (client exaSearchClient) searchAPIQuery(
 func marshalExaSearchRequest(requestBody exaSearchRequest) ([]byte, error) {
 	contentsMap := map[string]any{
 		"highlights": requestBody.Contents.Highlights,
+		// Cache-only retrieval: serve any cached copy regardless of age and
+		// never livecrawl the origin. livecrawlTimeout stays omitted for the
+		// same reason: no live crawl means no live-crawl budget to bound.
+		"maxAgeHours": exaSearchNeverLivecrawlMaxAgeHours,
 	}
 
 	if requestBody.Contents.Text.MaxCharacters > 0 {
@@ -1423,7 +1434,8 @@ func (client exaSearchClient) searchAPIQueryOnce(
 				MaxCharacters: textMaxCharacters,
 				Verbosity:     "full",
 			},
-			Highlights: true,
+			Highlights:  true,
+			MaxAgeHours: exaSearchNeverLivecrawlMaxAgeHours,
 		},
 		NumResults: maxURLs,
 	}

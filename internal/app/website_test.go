@@ -174,11 +174,10 @@ func newWebsiteForwardingHTTPClient(
 func testWebsiteExaAndTavilyConfig() config {
 	loadedConfig := testExaAPIWebSearchConfig()
 	loadedConfig.WebSearch.Exa = exaSearchConfig{
-		APIKey:             testExaPrimaryValue,
-		APIKeys:            []string{testExaPrimaryValue},
-		SearchType:         defaultExaSearchType,
-		TextMaxCharacters:  defaultExaSearchTextMaxCharacters,
-		LivecrawlTimeoutMS: defaultExaContentsLivecrawlTimeoutMS,
+		APIKey:            testExaPrimaryValue,
+		APIKeys:           []string{testExaPrimaryValue},
+		SearchType:        defaultExaSearchType,
+		TextMaxCharacters: defaultExaSearchTextMaxCharacters,
 	}
 	loadedConfig.WebSearch.Tavily = tavilySearchConfig{
 		APIKey:            testTavilyPrimaryAPIKey,
@@ -658,82 +657,6 @@ func assertWebsiteTestCookie(
 	}
 }
 
-func TestWebsiteClientFetchUsesConfiguredExaLivecrawlTimeout(t *testing.T) {
-	t.Parallel()
-
-	var (
-		exaCallCount    int
-		tavilyCallCount int
-	)
-
-	exaServer := httptest.NewServer(http.HandlerFunc(func(
-		responseWriter http.ResponseWriter,
-		request *http.Request,
-	) {
-		exaCallCount++
-
-		if request.Header.Get("X-Api-Key") != testExaPrimaryValue {
-			t.Fatalf("unexpected Exa auth header: %q", request.Header.Get("X-Api-Key"))
-		}
-
-		var body map[string]any
-
-		err := json.NewDecoder(request.Body).Decode(&body)
-		if err != nil {
-			t.Fatalf("decode Exa contents request: %v", err)
-		}
-
-		if mapIntValue(body, "livecrawlTimeout") != 6000 {
-			t.Fatalf("unexpected Exa livecrawl timeout: %d", mapIntValue(body, "livecrawlTimeout"))
-		}
-
-		responseWriter.Header().Set("Content-Type", "application/json")
-
-		responseBody := map[string]any{
-			"results": []map[string]any{{
-				"title": "Example Article",
-				"url":   "https://example.com/article",
-				"id":    "https://example.com/article",
-				"text":  "# Example Article\n\nExa extracted body.",
-			}},
-			"statuses": []map[string]any{{
-				"id":     "https://example.com/article",
-				"status": "success",
-			}},
-		}
-
-		err = json.NewEncoder(responseWriter).Encode(responseBody)
-		if err != nil {
-			t.Fatalf("encode Exa contents response: %v", err)
-		}
-	}))
-	defer exaServer.Close()
-
-	tavilyServer := httptest.NewServer(http.HandlerFunc(func(
-		responseWriter http.ResponseWriter,
-		_ *http.Request,
-	) {
-		tavilyCallCount++
-
-		http.Error(responseWriter, "unexpected Tavily call", http.StatusInternalServerError)
-	}))
-	defer tavilyServer.Close()
-
-	loadedConfig := testWebsiteExaAndTavilyConfig()
-	loadedConfig.WebSearch.Exa.LivecrawlTimeoutMS = 6000
-	client := newWebsiteTestClient(exaServer.Client(), exaServer.URL, tavilyServer.URL)
-
-	mustFetchWebsiteArticle(t, client, loadedConfig)
-
-	if exaCallCount != 1 {
-		t.Fatalf("unexpected Exa call count: %d", exaCallCount)
-	}
-
-	if tavilyCallCount != 0 {
-		t.Fatalf("unexpected Tavily call count: %d", tavilyCallCount)
-	}
-}
-
 func TestWebsiteClientFetchUsesExaContentsWhenConfigured(t *testing.T) {
 	t.Parallel()
 
@@ -763,23 +686,13 @@ func TestWebsiteClientFetchUsesExaContentsWhenConfigured(t *testing.T) {
 
 		responseWriter.Header().Set("Content-Type", "application/json")
 
-		responseBody := map[string]any{
-			"results": []map[string]any{{
-				"title": "Example Article",
-				"url":   "https://example.com/article",
-				"id":    "https://example.com/article",
-				"text":  "# Example Article\n\nExa extracted body.",
-			}},
-			"statuses": []map[string]any{{
-				"id":     "https://example.com/article",
-				"status": "success",
-			}},
-		}
-
-		err = json.NewEncoder(responseWriter).Encode(responseBody)
-		if err != nil {
-			t.Fatalf("encode Exa contents response: %v", err)
-		}
+		writeExaContentsSuccessResponse(
+			t,
+			responseWriter,
+			"https://example.com/article",
+			"Example Article",
+			"Exa extracted body.",
+		)
 	}))
 	defer exaServer.Close()
 
@@ -815,7 +728,7 @@ func TestWebsiteClientFetchUsesExaContentsWhenConfigured(t *testing.T) {
 	}
 }
 
-func TestWebsiteClientFetchRetriesExaLivecrawlTimeoutThenFallsBackToCache(t *testing.T) {
+func TestWebsiteClientFetchSurfacesExaContentsErrorWithoutRetry(t *testing.T) {
 	t.Parallel()
 
 	var (
@@ -838,81 +751,8 @@ func TestWebsiteClientFetchRetriesExaLivecrawlTimeoutThenFallsBackToCache(t *tes
 			t.Fatalf("decode Exa contents request: %v", err)
 		}
 
-		switch exaCallCount {
-		case 1:
-			assertExaLivecrawlTimeout(t, body, defaultExaContentsLivecrawlTimeoutMS)
-			writeExaContentsTimeoutResponse(t, responseWriter, testWebsiteArticleURL)
-		case 2:
-			assertExaLivecrawlTimeout(
-				t,
-				body,
-				exaContentsLivecrawlExtendedTimeoutMultiplier*defaultExaContentsLivecrawlTimeoutMS,
-			)
-			writeExaContentsTimeoutResponse(t, responseWriter, testWebsiteArticleURL)
-		case 3:
-			assertExaOmitsLivecrawlTimeout(t, body)
-			writeExaContentsSuccessResponse(
-				t,
-				responseWriter,
-				testWebsiteArticleURL,
-				"Cached Article",
-				"Exa cached body.",
-			)
-		default:
-			t.Fatalf("unexpected Exa contents call count: %d", exaCallCount)
-		}
-	}))
-	defer exaServer.Close()
-
-	tavilyServer := httptest.NewServer(http.HandlerFunc(func(
-		responseWriter http.ResponseWriter,
-		_ *http.Request,
-	) {
-		tavilyCallCount++
-
-		http.Error(responseWriter, "unexpected Tavily call", http.StatusInternalServerError)
-	}))
-	defer tavilyServer.Close()
-
-	loadedConfig := testWebsiteExaAndTavilyConfig()
-	client := newWebsiteTestClient(exaServer.Client(), exaServer.URL, tavilyServer.URL)
-
-	result := mustFetchWebsiteArticle(t, client, loadedConfig)
-
-	if exaCallCount != 3 {
-		t.Fatalf("unexpected Exa call count: %d", exaCallCount)
-	}
-
-	if tavilyCallCount != 0 {
-		t.Fatalf("unexpected Tavily call count: %d", tavilyCallCount)
-	}
-
-	if result.Title != "Cached Article" {
-		t.Fatalf("unexpected title: %q", result.Title)
-	}
-
-	if !containsFold(result.Content, "Exa cached body.") {
-		t.Fatalf("unexpected content: %q", result.Content)
-	}
-}
-
-func TestWebsiteClientFetchSurfacesPersistentExaLivecrawlTimeout(t *testing.T) {
-	t.Parallel()
-
-	var (
-		exaCallCount    int
-		tavilyCallCount int
-	)
-
-	exaServer := httptest.NewServer(http.HandlerFunc(func(
-		responseWriter http.ResponseWriter,
-		_ *http.Request,
-	) {
-		exaCallCount++
-
-		responseWriter.Header().Set("Content-Type", "application/json")
-
-		writeExaContentsTimeoutResponse(t, responseWriter, testWebsiteArticleURL)
+		assertExaContentsRequest(t, body, testWebsiteArticleURL)
+		writeExaContentsErrorResponse(t, responseWriter, testWebsiteArticleURL, "CRAWL_NOT_FOUND")
 	}))
 	defer exaServer.Close()
 
@@ -932,19 +772,208 @@ func TestWebsiteClientFetchSurfacesPersistentExaLivecrawlTimeout(t *testing.T) {
 
 	_, err := client.fetch(context.Background(), loadedConfig, testWebsiteArticleURL)
 	if err == nil {
-		t.Fatal("expected persistent Exa livecrawl timeout to surface as an error")
+		t.Fatal("expected Exa contents error to surface as an error")
 	}
 
-	if !strings.Contains(err.Error(), "CRAWL_LIVECRAWL_TIMEOUT") {
+	if !strings.Contains(err.Error(), "CRAWL_NOT_FOUND") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if exaCallCount != exaContentsLivecrawlRetryMaxAttempts {
+	if exaCallCount != 1 {
 		t.Fatalf("unexpected Exa call count: %d", exaCallCount)
 	}
 
 	if tavilyCallCount != 0 {
 		t.Fatalf("unexpected Tavily call count: %d", tavilyCallCount)
+	}
+}
+
+func TestWebsiteClientFetchSurfacesExaContentsEmptyResultsWithoutRetry(t *testing.T) {
+	t.Parallel()
+
+	var (
+		exaCallCount    int
+		tavilyCallCount int
+	)
+
+	exaServer := httptest.NewServer(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		request *http.Request,
+	) {
+		exaCallCount++
+
+		responseWriter.Header().Set("Content-Type", "application/json")
+
+		var body map[string]any
+
+		err := json.NewDecoder(request.Body).Decode(&body)
+		if err != nil {
+			t.Fatalf("decode Exa contents request: %v", err)
+		}
+
+		assertExaContentsRequest(t, body, testWebsiteArticleURL)
+
+		responseBody := map[string]any{
+			"results":  []any{},
+			"statuses": []any{},
+		}
+
+		if err := json.NewEncoder(responseWriter).Encode(responseBody); err != nil {
+			t.Fatalf("encode Exa contents response: %v", err)
+		}
+	}))
+	defer exaServer.Close()
+
+	tavilyServer := httptest.NewServer(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		_ *http.Request,
+	) {
+		tavilyCallCount++
+
+		http.Error(responseWriter, "unexpected Tavily call", http.StatusInternalServerError)
+	}))
+	defer tavilyServer.Close()
+
+	loadedConfig := testWebsiteExaAndTavilyConfig()
+	loadedConfig.WebSearch.ExtractionOrder = []webExtractionProvider{webExtractionProviderExa}
+	client := newWebsiteTestClient(exaServer.Client(), exaServer.URL, tavilyServer.URL)
+
+	_, err := client.fetch(context.Background(), loadedConfig, testWebsiteArticleURL)
+	if err == nil {
+		t.Fatal("expected empty Exa contents results to surface as an error")
+	}
+
+	if !strings.Contains(err.Error(), "contained no result") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if exaCallCount != 1 {
+		t.Fatalf("unexpected Exa call count: %d", exaCallCount)
+	}
+
+	if tavilyCallCount != 0 {
+		t.Fatalf("unexpected Tavily call count: %d", tavilyCallCount)
+	}
+}
+
+func TestWebsiteClientFetchFallsBackToTavilyWhenExaContentsFails(t *testing.T) {
+	t.Parallel()
+
+	var (
+		exaCallCount    int
+		tavilyCallCount int
+	)
+
+	exaServer := httptest.NewServer(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		request *http.Request,
+	) {
+		exaCallCount++
+
+		responseWriter.Header().Set("Content-Type", "application/json")
+
+		var body map[string]any
+
+		err := json.NewDecoder(request.Body).Decode(&body)
+		if err != nil {
+			t.Fatalf("decode Exa contents request: %v", err)
+		}
+
+		assertExaContentsRequest(t, body, testWebsiteArticleURL)
+		writeExaContentsErrorResponse(t, responseWriter, testWebsiteArticleURL, "CRAWL_NOT_FOUND")
+	}))
+	defer exaServer.Close()
+
+	tavilyServer := httptest.NewServer(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		request *http.Request,
+	) {
+		tavilyCallCount++
+
+		var body map[string]any
+
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Fatalf("decode Tavily extract request: %v", err)
+		}
+
+		assertTavilyExtractRequest(t, body, testWebsiteArticleURL)
+
+		responseWriter.Header().Set("Content-Type", "application/json")
+
+		responseBody := map[string]any{
+			"results": []map[string]any{{
+				"url":         testWebsiteArticleURL,
+				"raw_content": "# Tavily Heading\n\nTavily extracted body.",
+			}},
+			"failed_results": []any{},
+		}
+
+		if err := json.NewEncoder(responseWriter).Encode(responseBody); err != nil {
+			t.Fatalf("encode Tavily extract response: %v", err)
+		}
+	}))
+	defer tavilyServer.Close()
+
+	loadedConfig := testWebsiteExaAndTavilyConfig()
+	loadedConfig.WebSearch.ExtractionOrder = []webExtractionProvider{
+		webExtractionProviderExa,
+		webExtractionProviderTavily,
+	}
+	client := newWebsiteTestClient(exaServer.Client(), exaServer.URL, tavilyServer.URL)
+
+	result, err := client.fetch(context.Background(), loadedConfig, testWebsiteArticleURL)
+	if err != nil {
+		t.Fatalf("fetch with Tavily fallback: %v", err)
+	}
+
+	if !containsFold(result.Content, "Tavily extracted body.") {
+		t.Fatalf("unexpected content: %q", result.Content)
+	}
+
+	if exaCallCount != 1 {
+		t.Fatalf("unexpected Exa call count: %d", exaCallCount)
+	}
+
+	if tavilyCallCount != 1 {
+		t.Fatalf("unexpected Tavily call count: %d", tavilyCallCount)
+	}
+}
+
+func TestWebsiteClientFetchSurfacesExaContentsHTTPStatusError(t *testing.T) {
+	t.Parallel()
+
+	exaServer := httptest.NewServer(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		_ *http.Request,
+	) {
+		http.Error(responseWriter, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+	}))
+	defer exaServer.Close()
+
+	tavilyServer := httptest.NewServer(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		_ *http.Request,
+	) {
+		http.Error(responseWriter, "unexpected Tavily call", http.StatusInternalServerError)
+	}))
+	defer tavilyServer.Close()
+
+	loadedConfig := testWebsiteExaAndTavilyConfig()
+	loadedConfig.WebSearch.ExtractionOrder = []webExtractionProvider{webExtractionProviderExa}
+	client := newWebsiteTestClient(exaServer.Client(), exaServer.URL, tavilyServer.URL)
+
+	_, err := client.fetch(context.Background(), loadedConfig, testWebsiteArticleURL)
+	if err == nil {
+		t.Fatal("expected Exa HTTP status error to surface")
+	}
+
+	var statusErr exaStatusError
+	if !errors.As(err, &statusErr) {
+		t.Fatalf("expected exaStatusError, got %T (%v)", err, err)
+	}
+
+	if statusErr.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unexpected status code: %d", statusErr.StatusCode)
 	}
 }
 
@@ -1706,6 +1735,10 @@ func assertTinyFishFetchRequest(t *testing.T, request map[string]any, requestURL
 	if rawTimeout, ok := request["per_url_timeout_ms"].(float64); !ok || int(rawTimeout) != tinyFishFetchPerURLTimeoutMS {
 		t.Fatalf("unexpected TinyFish per_url_timeout_ms: %#v", request["per_url_timeout_ms"])
 	}
+
+	if _, hasTTL := request["ttl"]; hasTTL {
+		t.Fatalf("expected TinyFish fetch request to omit ttl, got %#v", request["ttl"])
+	}
 }
 
 func assertFirecrawlScrapeRequest(t *testing.T, request map[string]any, requestURL string) {
@@ -1750,44 +1783,29 @@ func assertExaContentsRequest(t *testing.T, request map[string]any, requestURL s
 		t.Fatalf("unexpected Exa contents verbosity: %q", mapStringValue(rawText, "verbosity"))
 	}
 
-	if mapIntValue(request, "livecrawlTimeout") != defaultExaContentsLivecrawlTimeoutMS {
-		t.Fatalf("unexpected Exa livecrawl timeout: %d", mapIntValue(request, "livecrawlTimeout"))
+	if mapIntValue(request, "maxAgeHours") != exaSearchNeverLivecrawlMaxAgeHours {
+		t.Fatalf("unexpected Exa contents max age hours: %d", mapIntValue(request, "maxAgeHours"))
+	}
+
+	if _, hasLivecrawlTimeout := request["livecrawlTimeout"]; hasLivecrawlTimeout {
+		t.Fatalf(
+			"expected cache-only Exa contents request to omit livecrawl timeout, got %d",
+			mapIntValue(request, "livecrawlTimeout"),
+		)
 	}
 }
 
 const testWebsiteArticleURL = "https://example.com/article"
 
-func assertExaLivecrawlTimeout(t *testing.T, request map[string]any, wantTimeout int) {
-	t.Helper()
-
-	if mapIntValue(request, "livecrawlTimeout") != wantTimeout {
-		t.Fatalf(
-			"unexpected Exa livecrawl timeout: %d, want %d",
-			mapIntValue(request, "livecrawlTimeout"),
-			wantTimeout,
-		)
-	}
-}
-
-func assertExaOmitsLivecrawlTimeout(t *testing.T, request map[string]any) {
-	t.Helper()
-
-	if _, hasLivecrawlTimeout := request["livecrawlTimeout"]; hasLivecrawlTimeout {
-		t.Fatalf(
-			"expected cache fallback Exa contents request to omit livecrawl timeout, got %d",
-			mapIntValue(request, "livecrawlTimeout"),
-		)
-	}
-}
-
-func writeExaContentsTimeoutResponse(
+func writeExaContentsErrorResponse(
 	t *testing.T,
 	responseWriter http.ResponseWriter,
 	requestURL string,
+	errorTag string,
 ) {
 	t.Helper()
 
-	httpStatusCode := http.StatusGatewayTimeout
+	httpStatusCode := http.StatusNotFound
 
 	responseBody := map[string]any{
 		"results": []any{},
@@ -1795,15 +1813,14 @@ func writeExaContentsTimeoutResponse(
 			"id":     requestURL,
 			"status": "error",
 			"error": map[string]any{
-				"tag":            "CRAWL_LIVECRAWL_TIMEOUT",
+				"tag":            errorTag,
 				"httpStatusCode": &httpStatusCode,
 			},
 		}},
 	}
 
-	err := json.NewEncoder(responseWriter).Encode(responseBody)
-	if err != nil {
-		t.Fatalf("encode Exa contents timeout response: %v", err)
+	if err := json.NewEncoder(responseWriter).Encode(responseBody); err != nil {
+		t.Fatalf("encode Exa contents error response: %v", err)
 	}
 }
 
@@ -1854,5 +1871,9 @@ func assertTavilyExtractRequest(t *testing.T, request map[string]any, requestURL
 	timeout, ok := request["timeout"].(float64)
 	if !ok || timeout != tavilyExtractTimeoutSeconds {
 		t.Fatalf("unexpected Tavily extract timeout: %#v", request["timeout"])
+	}
+
+	if _, hasTTL := request["ttl"]; hasTTL {
+		t.Fatalf("expected Tavily extract request to omit ttl, got %#v", request["ttl"])
 	}
 }
