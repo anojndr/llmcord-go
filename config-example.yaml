@@ -289,10 +289,10 @@ web_search:
     # `api_key` also accepts a YAML list; requests are round-robin.
     # Optional max characters for Exa full page text per result. Default: 5000
     text_max_characters: 5000
-    # Optional livecrawl timeout ms for Exa Contents. Slow pages that exceed it
-    # are retried once with doubled timeout, then fetched from cache.
-    # Default: 15000 (Exa's recommended maximum)
-    # livecrawl_timeout_ms: 15000
+    # Both endpoints are cache-only: contents maxAgeHours -1 serves any cached
+    # copy regardless of age and never livecrawls the origin, so no
+    # livecrawl_timeout_ms is sent. A URL without a cached copy surfaces as an
+    # error and the extraction chain moves on to the next provider.
     # api_key:
     #   - exa-primary-key
     #   - exa-backup-key

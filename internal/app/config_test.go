@@ -74,13 +74,6 @@ models:
 		)
 	}
 
-	if loadedConfig.WebSearch.Exa.LivecrawlTimeoutMS != defaultExaContentsLivecrawlTimeoutMS {
-		t.Fatalf(
-			"unexpected default Exa livecrawl timeout: %d",
-			loadedConfig.WebSearch.Exa.LivecrawlTimeoutMS,
-		)
-	}
-
 	if len(loadedConfig.WebSearch.Firecrawl.APIKeys) != 0 {
 		t.Fatalf(
 			"unexpected default Firecrawl API keys: %#v",
@@ -1167,7 +1160,7 @@ web_search:
 	}
 }
 
-func TestLoadConfigUsesConfiguredExaWebSearchLivecrawlTimeout(t *testing.T) {
+func TestLoadConfigIgnoresLegacyExaLivecrawlTimeout(t *testing.T) {
 	t.Parallel()
 
 	tempDir := t.TempDir()
@@ -1189,41 +1182,10 @@ web_search:
 		t.Fatalf("write config file: %v", err)
 	}
 
-	loadedConfig, err := loadConfig(configPath)
-	if err != nil {
-		t.Fatalf("load config: %v", err)
-	}
-
-	if loadedConfig.WebSearch.Exa.LivecrawlTimeoutMS != 20000 {
-		t.Fatalf("unexpected Exa livecrawl timeout: %d", loadedConfig.WebSearch.Exa.LivecrawlTimeoutMS)
-	}
-}
-
-func TestLoadConfigRejectsNonPositiveExaWebSearchLivecrawlTimeout(t *testing.T) {
-	t.Parallel()
-
-	tempDir := t.TempDir()
-	configPath := filepath.Join(tempDir, "config.yaml")
-	configText := `
-bot_token: discord-token
-providers:
-  openai:
-    base_url: https://api.example.com/v1
-models:
-  openai/first-model:
-web_search:
-  exa:
-    livecrawl_timeout_ms: 0
-`
-
-	err := os.WriteFile(configPath, []byte(configText), 0o600)
-	if err != nil {
-		t.Fatalf("write config file: %v", err)
-	}
-
-	_, err = loadConfig(configPath)
-	if err == nil {
-		t.Fatal("expected non-positive Exa livecrawl timeout to fail validation")
+	// The knob is retained in raw config only so existing user configurations
+	// keep loading; Exa requests are cache-only and never read it.
+	if _, err := loadConfig(configPath); err != nil {
+		t.Fatalf("load config with legacy livecrawl timeout: %v", err)
 	}
 }
 

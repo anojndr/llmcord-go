@@ -104,7 +104,6 @@ Website extraction order is configurable in `config.yaml` via `extraction_order`
 | `web_search.max_urls` | Max URLs per query and in `Show Sources`. Default: `5`. |
 | `web_search.exa.api_key` | Enables Exa Search API; without it, Exa uses its MCP endpoint. |
 | `web_search.exa.text_max_characters` | Max full-page text from Exa per result. Default: `15000`. |
-| `web_search.exa.livecrawl_timeout_ms` | Exa Contents crawl timeout. Default: `15000`. If a page's livecrawl exceeds it, the fetch is retried once with a doubled timeout, then falls back to Exa's cache, so slow pages still usually resolve. |
 | `web_search.tavily.api_key` | Enables Tavily search and Tavily Extract fallback. |
 | `web_search.parallel.api_key` | Enables Parallel Search API (`https://api.parallel.ai/v1/search`) with full content per URL via the Extract API (`https://api.parallel.ai/v1/extract`, `advanced_settings.full_content`). |
 | `web_search.firecrawl.api_key` | Makes Firecrawl Scrape the main extractor for generic website URLs (TikTok, YouTube, Facebook, and Reddit URLs are excluded). |

@@ -30,11 +30,10 @@ func testExaAPIWebSearchConfig() config {
 	loadedConfig := testSearchConfig()
 	loadedConfig.WebSearch.MaxURLs = testWebSearchMaxURLs
 	loadedConfig.WebSearch.Exa = exaSearchConfig{
-		APIKey:             testExaPrimaryValue,
-		APIKeys:            []string{testExaPrimaryValue},
-		SearchType:         defaultExaSearchType,
-		TextMaxCharacters:  defaultExaSearchTextMaxCharacters,
-		LivecrawlTimeoutMS: defaultExaContentsLivecrawlTimeoutMS,
+		APIKey:            testExaPrimaryValue,
+		APIKeys:           []string{testExaPrimaryValue},
+		SearchType:        defaultExaSearchType,
+		TextMaxCharacters: defaultExaSearchTextMaxCharacters,
 	}
 
 	return loadedConfig
@@ -196,8 +195,50 @@ func assertExaAPISearchRequest(
 	if !request.Contents.Highlights {
 		t.Fatal("expected Exa API highlights to be true")
 	}
+
+	if request.Contents.MaxAgeHours != exaSearchNeverLivecrawlMaxAgeHours {
+		t.Fatalf("unexpected Exa contents max age hours: %d", request.Contents.MaxAgeHours)
+	}
 }
 
+func TestExaSearchRequestUsesCacheOnlyContents(t *testing.T) {
+	t.Parallel()
+
+	var rawRequest map[string]any
+
+	client, closeServer := newExaAPISearchTestClient(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		request *http.Request,
+	) {
+		if err := json.NewDecoder(request.Body).Decode(&rawRequest); err != nil {
+			t.Fatalf("decode Exa request body: %v", err)
+		}
+
+		responseWriter.Header().Set("Content-Type", "application/json")
+
+		if err := json.NewEncoder(responseWriter).Encode(testExaAPISearchSuccessResponse()); err != nil {
+			t.Errorf("encode Exa response: %v", err)
+		}
+	}))
+	defer closeServer()
+
+	if _, err := client.search(context.Background(), testExaAPIWebSearchConfig(), []string{"latest ai news"}); err != nil {
+		t.Fatalf("search: %v", err)
+	}
+
+	rawContents, ok := rawRequest["contents"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing Exa contents payload: %#v", rawRequest["contents"])
+	}
+
+	if mapIntValue(rawContents, "maxAgeHours") != exaSearchNeverLivecrawlMaxAgeHours {
+		t.Fatalf("unexpected Exa contents max age hours: %#v", rawContents["maxAgeHours"])
+	}
+
+	if _, hasLivecrawlTimeout := rawContents["livecrawlTimeout"]; hasLivecrawlTimeout {
+		t.Fatalf("expected cache-only Exa search request to omit livecrawl timeout, got %#v", rawContents["livecrawlTimeout"])
+	}
+}
 func testExaAPISearchSuccessResponse() map[string]any {
 	publishedDate := "2026-03-20T00:00:00.000Z"
 	author := "Example Author"
@@ -244,6 +285,8 @@ func decodeExaSearchRequest(t *testing.T, requestBody io.Reader) exaSearchReques
 	if highlightsVal, ok := rawContents["highlights"].(bool); ok {
 		request.Contents.Highlights = highlightsVal
 	}
+
+	request.Contents.MaxAgeHours = mapIntValue(rawContents, "maxAgeHours")
 
 	rawText, hasText := rawContents["text"].(map[string]any)
 	if !hasText {
@@ -774,6 +817,12 @@ func TestTinyFishFetchBatchSendsPerURLTimeout(t *testing.T) {
 		t.Fatalf("unexpected TinyFish per_url_timeout_ms: %#v", receivedRequest["per_url_timeout_ms"])
 	}
 
+	// Cache-first retrieval: omit ttl so Fetch serves any cached entry instead
+	// of forcing a live fetch (ttl 0) or bounding cache age (ttl > 0).
+	if _, hasTTL := receivedRequest["ttl"]; hasTTL {
+		t.Fatalf("expected TinyFish fetch request to omit ttl, got %#v", receivedRequest["ttl"])
+	}
+
 	remaining := time.Until(capturedDeadline)
 	if remaining <= tinyFishSearchRequestTimeout || remaining > tinyFishFetchRequestTimeout {
 		t.Fatalf(
@@ -1294,6 +1343,55 @@ func TestTavilySearchClientSearchRotatesAPIKeysAcrossCalls(t *testing.T) {
 	}
 }
 
+func TestTavilySearchClientSearchOmitsTTL(t *testing.T) {
+	t.Parallel()
+
+	var capturedRequest map[string]any
+
+	httpServer := httptest.NewServer(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		request *http.Request,
+	) {
+		if err := json.NewDecoder(request.Body).Decode(&capturedRequest); err != nil {
+			t.Fatalf("decode Tavily search request: %v", err)
+		}
+
+		responseWriter.Header().Set("Content-Type", "application/json")
+
+		if err := json.NewEncoder(responseWriter).Encode(tavilySearchResponse{
+			Results: []tavilySearchResponseResult{},
+		}); err != nil {
+			t.Errorf("encode Tavily response: %v", err)
+		}
+	}))
+	defer httpServer.Close()
+
+	client := tavilySearchClient{
+		endpoint:   httpServer.URL,
+		httpClient: httpServer.Client(),
+		keys:       newAPIKeyRotator(),
+	}
+
+	loadedConfig := testTavilySearchConfig()
+	loadedConfig.WebSearch.Tavily.APIKey = "tvly-key"
+	loadedConfig.WebSearch.Tavily.APIKeys = []string{"tvly-key"}
+
+	_, err := client.search(context.Background(), loadedConfig, []string{"test query"})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+
+	if _, hasTTL := capturedRequest["ttl"]; hasTTL {
+		t.Fatalf("expected Tavily search request to omit ttl, got %#v", capturedRequest["ttl"])
+	}
+
+	for _, freshnessKey := range []string{"time_range", "start_date", "end_date", "days"} {
+		if _, hasKey := capturedRequest[freshnessKey]; hasKey {
+			t.Fatalf("expected Tavily search request to omit %s, got %#v", freshnessKey, capturedRequest[freshnessKey])
+		}
+	}
+}
+
 func TestParallelSearchClientSearchRotatesAPIKeysAcrossCalls(t *testing.T) {
 	t.Parallel()
 
@@ -1388,6 +1486,7 @@ func serveParallelValidRequestStub(
 	responseWriter http.ResponseWriter,
 	request *http.Request,
 	capturedRequest *parallelSearchRequest,
+	capturedRawBody *[]byte,
 ) {
 	t.Helper()
 
@@ -1405,6 +1504,8 @@ func serveParallelValidRequestStub(
 
 		return
 	}
+
+	*capturedRawBody = body
 
 	if err := json.Unmarshal(body, capturedRequest); err != nil {
 		t.Fatalf("unmarshal request body: %v", err)
@@ -1427,14 +1528,14 @@ func TestParallelSearchClientSearchSendsValidRequestAndFormatsResults(t *testing
 
 	var capturedRequest parallelSearchRequest
 
+	var capturedRawBody []byte
+
 	httpServer := httptest.NewServer(http.HandlerFunc(func(
 		responseWriter http.ResponseWriter,
 		request *http.Request,
 	) {
-		serveParallelValidRequestStub(t, responseWriter, request, &capturedRequest)
+		serveParallelValidRequestStub(t, responseWriter, request, &capturedRequest, &capturedRawBody)
 	}))
-	defer httpServer.Close()
-
 	client := parallelSearchClient{
 		endpoint:   httpServer.URL,
 		httpClient: httpServer.Client(),
@@ -1470,6 +1571,8 @@ func TestParallelSearchClientSearchSendsValidRequestAndFormatsResults(t *testing
 	if capturedRequest.AdvancedSettings == nil || capturedRequest.AdvancedSettings.MaxResults != 8 {
 		t.Fatalf("unexpected advanced settings: %#v", capturedRequest.AdvancedSettings)
 	}
+
+	assertParallelSearchOmitsFetchPolicy(t, capturedRawBody)
 
 	resultText := results[0].Text
 	if !strings.Contains(resultText, "Title: Parallel AI Web Systems") {
@@ -1591,6 +1694,33 @@ func assertParallelExtractRequestHasFullContent(
 
 	if _, hasFullContent := advanced["full_content"]; !hasFullContent {
 		t.Fatalf("missing full_content in extract advanced_settings: %#v", advanced)
+	}
+
+	if _, hasTTL := extractRequest["ttl"]; hasTTL {
+		t.Fatalf("expected Parallel extract request to omit ttl, got %#v", extractRequest["ttl"])
+	}
+
+	if _, hasFetchPolicy := advanced["fetch_policy"]; hasFetchPolicy {
+		t.Fatalf("expected Parallel extract request to omit fetch_policy, got %#v", advanced["fetch_policy"])
+	}
+}
+
+func assertParallelSearchOmitsFetchPolicy(t *testing.T, rawBody []byte) {
+	t.Helper()
+
+	var rawMap map[string]any
+	if err := json.Unmarshal(rawBody, &rawMap); err != nil {
+		t.Fatalf("unmarshal Parallel search request: %v", err)
+	}
+
+	if _, hasTTL := rawMap["ttl"]; hasTTL {
+		t.Fatalf("expected Parallel search request to omit ttl, got %#v", rawMap["ttl"])
+	}
+
+	if advanced, ok := rawMap["advanced_settings"].(map[string]any); ok {
+		if _, hasFetchPolicy := advanced["fetch_policy"]; hasFetchPolicy {
+			t.Fatalf("expected Parallel search request to omit fetch_policy, got %#v", advanced["fetch_policy"])
+		}
 	}
 }
 
@@ -2288,11 +2418,10 @@ func testSearchConfig() config {
 	}
 	loadedConfig.WebSearch.MaxURLs = defaultWebSearchMaxURLs
 	loadedConfig.WebSearch.Exa = exaSearchConfig{
-		APIKey:             "",
-		APIKeys:            nil,
-		SearchType:         defaultExaSearchType,
-		TextMaxCharacters:  defaultExaSearchTextMaxCharacters,
-		LivecrawlTimeoutMS: defaultExaContentsLivecrawlTimeoutMS,
+		APIKey:            "",
+		APIKeys:           nil,
+		SearchType:        defaultExaSearchType,
+		TextMaxCharacters: defaultExaSearchTextMaxCharacters,
 	}
 	loadedConfig.WebSearch.TinyFish = tinyFishSearchConfig{
 		MaxCharsPerResult: defaultTinyFishMaxCharsPerResult,

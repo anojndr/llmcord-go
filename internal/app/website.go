@@ -640,7 +640,6 @@ func (client websiteClient) fetch(
 				ctx,
 				normalizedURL,
 				exaAPIKey,
-				loadedConfig.WebSearch.Exa.livecrawlTimeoutMS(),
 				loadedConfig.WebSearch.Exa.textMaxCharacters(),
 			)
 			if exaErr == nil {
@@ -873,50 +872,18 @@ func (err firecrawlStatusError) Error() string {
 	return err.Message
 }
 
+// fetchWithExaContents performs a single cache-only Contents request: Exa
+// serves any cached copy regardless of age (maxAgeHours -1) and never
+// livecrawls the origin, so no livecrawlTimeout is sent and no live-crawl
+// retry chain exists. A miss surfaces as an error and the extraction chain
+// moves on to the next provider.
 func (client websiteClient) fetchWithExaContents(
 	ctx context.Context,
 	requestURL string,
 	apiKey string,
-	livecrawlTimeoutMS int,
 	textMaxCharacters int,
 ) (websitePageContent, error) {
-	pageContent, err := client.fetchWithExaContentsOnce(ctx, requestURL, apiKey, livecrawlTimeoutMS, textMaxCharacters)
-	if err == nil || !isExaLivecrawlTimeoutError(err) {
-		return pageContent, err
-	}
-
-	logWarn(
-		"Exa contents livecrawl timed out; retrying with extended timeout",
-		err,
-		"url",
-		requestURL,
-	)
-
-	extendedTimeout := exaContentsLivecrawlExtendedTimeoutMultiplier * livecrawlTimeoutMS
-
-	pageContent, err = client.fetchWithExaContentsOnce(ctx, requestURL, apiKey, extendedTimeout, textMaxCharacters)
-	if err == nil || !isExaLivecrawlTimeoutError(err) {
-		return pageContent, err
-	}
-
-	logWarn(
-		"Exa contents livecrawl timed out with extended timeout; falling back to cached content",
-		err,
-		"url",
-		requestURL,
-	)
-
-	return client.fetchWithExaContentsOnce(ctx, requestURL, apiKey, 0, textMaxCharacters)
-}
-
-func (client websiteClient) fetchWithExaContentsOnce(
-	ctx context.Context,
-	requestURL string,
-	apiKey string,
-	livecrawlTimeoutMS int,
-	textMaxCharacters int,
-) (websitePageContent, error) {
-	requestBytes, err := json.Marshal(exaContentsRequestBody(requestURL, livecrawlTimeoutMS, textMaxCharacters))
+	requestBytes, err := json.Marshal(exaContentsRequestBody(requestURL, textMaxCharacters))
 	if err != nil {
 		return websitePageContent{}, fmt.Errorf("marshal Exa contents request for %q: %w", requestURL, err)
 	}
@@ -999,13 +966,17 @@ func (client websiteClient) fetchWithExaContentsOnce(
 	return newWebsitePageContent(resultURL, result.Title, "", result.Text)
 }
 
-func exaContentsRequestBody(requestURL string, livecrawlTimeoutMS int, textMaxCharacters int) map[string]any {
+func exaContentsRequestBody(requestURL string, textMaxCharacters int) map[string]any {
 	if textMaxCharacters <= 0 {
 		textMaxCharacters = defaultExaSearchTextMaxCharacters
 	}
 
-	requestBody := map[string]any{
-		"urls": []string{requestURL},
+	// Cache-only retrieval: maxAgeHours -1 serves any cached copy regardless
+	// of age and never livecrawls the origin. livecrawlTimeout stays omitted:
+	// no live crawl means no live-crawl budget to bound.
+	return map[string]any{
+		"urls":        []string{requestURL},
+		"maxAgeHours": exaSearchNeverLivecrawlMaxAgeHours,
 		messageTextKey: map[string]any{
 			"maxCharacters": textMaxCharacters,
 			"verbosity":     "full",
@@ -1018,11 +989,6 @@ func exaContentsRequestBody(requestURL string, livecrawlTimeoutMS int, textMaxCh
 			},
 		},
 	}
-	if livecrawlTimeoutMS > 0 {
-		requestBody["livecrawlTimeout"] = livecrawlTimeoutMS
-	}
-
-	return requestBody
 }
 
 func parseExaContentsResponse(rawResponse map[string]any) (exaContentsResponse, error) {
@@ -1129,13 +1095,6 @@ func exaContentsResponseError(response exaContentsResponse, requestURL string) e
 	}
 
 	return nil
-}
-
-func isExaLivecrawlTimeoutError(err error) bool {
-	return err != nil && strings.Contains(
-		strings.ToLower(err.Error()),
-		strings.ToLower("CRAWL_LIVECRAWL_TIMEOUT"),
-	)
 }
 
 func exaContentsStatusMatchesURL(status exaContentsResponseStatus, requestURL string) bool {

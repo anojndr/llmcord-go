@@ -395,11 +395,10 @@ type parallelSearchConfig struct {
 }
 
 type exaSearchConfig struct {
-	APIKey             string
-	APIKeys            []string
-	SearchType         string
-	TextMaxCharacters  int
-	LivecrawlTimeoutMS int
+	APIKey            string
+	APIKeys           []string
+	SearchType        string
+	TextMaxCharacters int
 }
 
 type firecrawlSearchConfig struct {
@@ -881,11 +880,10 @@ func normalizeWebSearchConfig(
 		MaxURLs:         intValueOrDefault(rawLoadedConfig.MaxURLs, defaultWebSearchMaxURLs),
 
 		Exa: exaSearchConfig{
-			APIKey:             firstAPIKey(exaAPIKeys),
-			APIKeys:            exaAPIKeys,
-			SearchType:         defaultExaSearchType,
-			TextMaxCharacters:  intValueOrDefault(rawLoadedConfig.Exa.TextMaxCharacters, defaultExaSearchTextMaxCharacters),
-			LivecrawlTimeoutMS: intValueOrDefault(rawLoadedConfig.Exa.LivecrawlTimeoutMS, defaultExaContentsLivecrawlTimeoutMS),
+			APIKey:            firstAPIKey(exaAPIKeys),
+			APIKeys:           exaAPIKeys,
+			SearchType:        defaultExaSearchType,
+			TextMaxCharacters: intValueOrDefault(rawLoadedConfig.Exa.TextMaxCharacters, defaultExaSearchTextMaxCharacters),
 		},
 		Tavily: tavilySearchConfig{
 			APIKey:  firstAPIKey(tavilyAPIKeys),
@@ -973,14 +971,6 @@ func (settings tavilySearchConfig) maxCharsPerResult() int {
 	}
 
 	return settings.MaxCharsPerResult
-}
-
-func (settings exaSearchConfig) livecrawlTimeoutMS() int {
-	if settings.LivecrawlTimeoutMS <= 0 {
-		return defaultExaContentsLivecrawlTimeoutMS
-	}
-
-	return settings.LivecrawlTimeoutMS
 }
 
 func validateConfig(loadedConfig config) error {
@@ -1121,13 +1111,6 @@ func validateWebSearchConfig(loadedConfig webSearchConfig) error {
 	if loadedConfig.Exa.TextMaxCharacters <= 0 {
 		return fmt.Errorf(
 			"web_search.exa.text_max_characters must be greater than zero: %w",
-			os.ErrInvalid,
-		)
-	}
-
-	if loadedConfig.Exa.LivecrawlTimeoutMS <= 0 {
-		return fmt.Errorf(
-			"web_search.exa.livecrawl_timeout_ms must be greater than zero: %w",
 			os.ErrInvalid,
 		)
 	}
