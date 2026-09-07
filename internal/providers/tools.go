@@ -1,6 +1,6 @@
 package providers
 
-const webSearchToolDescription = "Search the web and return result titles, URLs, and excerpts. Always search the web if the user told you to, like 'search the web' or something similar."
+const webSearchToolDescription = "Search the web and return result titles, URLs, and excerpts. Always search the web if the user told you to, like 'search the web' or something similar, unless web search is absolutely not needed."
 
 const webSearchObjectiveDescription = "Describe the search goal in a concise, standalone sentence. Name the key entity or topic."
 
