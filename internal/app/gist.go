@@ -64,8 +64,10 @@ func newGistClient(
 	client.filename = strings.TrimSpace(filename)
 	client.public = public
 
-	if httpClient != nil {
+	if httpClient != nil && httpClient.Transport != nil {
 		client.transport = httpClient.Transport
+	} else {
+		client.transport = http.DefaultTransport
 	}
 
 	client.apiKeys = normalizeAPIKeys(apiKeys)
@@ -86,6 +88,16 @@ func (client *httpGistClient) createGist(ctx context.Context, text string) (stri
 		return "", fmt.Errorf("build GitHub gist create request: %w", err)
 	}
 
+	if len(client.apiKeys) == 0 {
+		return client.createGistWithKey(ctx, requestBody, "")
+	}
+
+	return tryAllAPIKeys(ctx, client.rotator, client.apiKeys, func(apiKey string) (string, error) {
+		return client.createGistWithKey(ctx, requestBody, apiKey)
+	})
+}
+
+func (client *httpGistClient) createGistWithKey(ctx context.Context, requestBody []byte, apiKey string) (string, error) {
 	httpRequest, err := http.NewRequestWithContext(
 		ctx,
 		http.MethodPost,
@@ -101,11 +113,8 @@ func (client *httpGistClient) createGist(ctx context.Context, text string) (stri
 	httpRequest.Header.Set("X-Github-Api-Version", "2022-11-28")
 	httpRequest.Header.Set(userAgentHeader, "llmcord-go")
 
-	if client.rotator != nil {
-		rotatedKeys := client.rotator.rotate(client.apiKeys)
-		if len(rotatedKeys) > 0 {
-			httpRequest.Header.Set("Authorization", "Bearer "+rotatedKeys[0])
-		}
+	if strings.TrimSpace(apiKey) != "" {
+		httpRequest.Header.Set("Authorization", "Bearer "+apiKey)
 	}
 
 	httpResponse, err := client.transport.RoundTrip(httpRequest)

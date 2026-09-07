@@ -43,26 +43,46 @@ func NewChatCompletionRouter(httpClient *http.Client) ChatCompletionRouter {
 }
 
 // StreamChatCompletion streams a completion with key rotation and retries.
+// Every configured API key is tried before an error is returned: transient,
+// queue-full, empty, and non-transient failures all fail over to the next key
+// while no visible content has been delivered. Once any content reaches the
+// caller the stream is final and never retried.
 func (client ChatCompletionRouter) StreamChatCompletion(
 	ctx context.Context,
 	request ChatCompletionRequest,
 	handle func(StreamDelta) error,
 ) error {
-	rotatedKeys := client.keys.Rotate(request.Provider.APIKeys)
-	request.Provider.APIKeys = rotatedKeys
-	request.Provider.APIKey = firstAPIKey(rotatedKeys)
+	rotatedKeys := rotateProviderKeys(client.keys, request.Provider.APIKeys)
+
+	numKeys := len(rotatedKeys)
+	if numKeys > 0 {
+		request.Provider.APIKeys = rotatedKeys
+		request.Provider.APIKey = firstAPIKey(rotatedKeys)
+	}
 
 	for attempt := 1; ; attempt++ {
 		contentSent := false
+		handleFailed := false
 		wrappedHandle := func(delta StreamDelta) error {
 			if deltaReferencesContent(delta) {
 				contentSent = true
 			}
 
-			return handle(delta)
+			if err := handle(delta); err != nil {
+				handleFailed = true
+
+				return err
+			}
+
+			return nil
 		}
 
 		err := client.streamChatCompletionOnce(ctx, request, wrappedHandle)
+
+		// Consumer failures are not provider key failures: never fail over.
+		if handleFailed {
+			return err
+		}
 
 		// A stream that delivered any content is final: retrying would
 		// duplicate a partial reply in the user's chat.
@@ -78,15 +98,46 @@ func (client ChatCompletionRouter) StreamChatCompletion(
 		// transient retry: it is re-sent under the transient retry budget
 		// before being surfaced as ErrEmptyModelResponse.
 		retry := streamRetryAction(err)
+
+		effectiveMaxAttempts := retry.maxAttempts
 		if retry.giveUp {
-			if err == nil {
-				return ErrEmptyModelResponse
+			// Non-transient failures still fail over across every key: a
+			// revoked key must not block the remaining valid keys.
+			effectiveMaxAttempts = max(numKeys, 1)
+			if attempt >= effectiveMaxAttempts {
+				if err == nil {
+					return ErrEmptyModelResponse
+				}
+
+				return err
 			}
 
-			return err
+			if ctx != nil && ctx.Err() != nil {
+				if err == nil {
+					return ctx.Err()
+				}
+
+				return err
+			}
+
+			logWarn(
+				"stream result; retrying chat completion with next API key",
+				err,
+				"attempt",
+				attempt,
+				"max_attempts",
+				effectiveMaxAttempts,
+			)
+			setProviderKeysForAttempt(&request.Provider, rotatedKeys, attempt)
+
+			continue
 		}
 
-		if attempt >= retry.maxAttempts {
+		if effectiveMaxAttempts < numKeys {
+			effectiveMaxAttempts = numKeys
+		}
+
+		if attempt >= effectiveMaxAttempts {
 			if err == nil {
 				return ErrEmptyModelResponse
 			}
@@ -100,7 +151,7 @@ func (client ChatCompletionRouter) StreamChatCompletion(
 			"attempt",
 			attempt,
 			"max_attempts",
-			retry.maxAttempts,
+			effectiveMaxAttempts,
 			"kind",
 			retry.kind,
 		)
@@ -110,11 +161,27 @@ func (client ChatCompletionRouter) StreamChatCompletion(
 			return sleepErr
 		}
 
-		if len(request.Provider.APIKeys) > 1 {
-			request.Provider.APIKeys = client.keys.Rotate(request.Provider.APIKeys)
-			request.Provider.APIKey = firstAPIKey(request.Provider.APIKeys)
-		}
+		setProviderKeysForAttempt(&request.Provider, rotatedKeys, attempt)
 	}
+}
+
+func rotateProviderKeys(rotator *APIKeyRotator, apiKeys []string) []string {
+	if rotator == nil {
+		return append([]string(nil), apiKeys...)
+	}
+
+	return rotator.Rotate(apiKeys)
+}
+
+func setProviderKeysForAttempt(provider *ProviderRequestConfig, rotatedKeys []string, completedAttempt int) {
+	if len(rotatedKeys) <= 1 {
+		return
+	}
+
+	nextIndex := completedAttempt % len(rotatedKeys)
+	current := append(append([]string(nil), rotatedKeys[nextIndex:]...), rotatedKeys[:nextIndex]...)
+	provider.APIKeys = current
+	provider.APIKey = firstAPIKey(current)
 }
 
 const (
@@ -236,6 +303,12 @@ func IsQueueFullQueueError(err error) bool {
 func sleepStreamRetryDelay(ctx context.Context, delay time.Duration) error {
 	timer := time.NewTimer(delay)
 	defer timer.Stop()
+
+	if ctx == nil {
+		<-timer.C
+
+		return nil
+	}
 
 	select {
 	case <-ctx.Done():
