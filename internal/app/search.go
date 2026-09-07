@@ -1232,16 +1232,16 @@ func (client exaSearchClient) search(
 		query string,
 	) (webSearchResult, error) {
 		if loadedConfig.WebSearch.exaUsesAPI() {
-			exaAPIKey := firstAPIKey(client.keys.rotate(loadedConfig.WebSearch.Exa.apiKeys()))
-
-			return client.searchAPIQuery(
-				queryContext,
-				exaAPIKey,
-				query,
-				maxURLs,
-				searchType,
-				loadedConfig.WebSearch.Exa.textMaxCharacters(),
-			)
+			return tryAllAPIKeys(queryContext, client.keys, loadedConfig.WebSearch.Exa.apiKeys(), func(apiKey string) (webSearchResult, error) {
+				return client.searchAPIQuery(
+					queryContext,
+					apiKey,
+					query,
+					maxURLs,
+					searchType,
+					loadedConfig.WebSearch.Exa.textMaxCharacters(),
+				)
+			})
 		}
 
 		return client.searchMCPQuery(queryContext, query, maxURLs)
@@ -1265,9 +1265,9 @@ func (client tavilySearchClient) search(
 		queryContext context.Context,
 		query string,
 	) (webSearchResult, error) {
-		apiKey := firstAPIKey(client.keys.rotate(tavilyAPIKeys))
-
-		return client.searchQuery(queryContext, apiKey, query, maxURLs, maxChars)
+		return tryAllAPIKeys(queryContext, client.keys, tavilyAPIKeys, func(apiKey string) (webSearchResult, error) {
+			return client.searchQuery(queryContext, apiKey, query, maxURLs, maxChars)
+		})
 	})
 }
 
@@ -1615,9 +1615,9 @@ func (client parallelSearchClient) search(
 		queryContext context.Context,
 		query string,
 	) (webSearchResult, error) {
-		apiKey := firstAPIKey(client.keys.rotate(parallelAPIKeys))
-
-		return client.searchQuery(queryContext, apiKey, query, maxURLs, maxChars)
+		return tryAllAPIKeys(queryContext, client.keys, parallelAPIKeys, func(apiKey string) (webSearchResult, error) {
+			return client.searchQuery(queryContext, apiKey, query, maxURLs, maxChars)
+		})
 	})
 }
 
@@ -1957,18 +1957,18 @@ func (client tinyFishSearchClient) search(
 		queryContext context.Context,
 		query string,
 	) (tinyFishQueryOutcome, error) {
-		apiKey := firstAPIKey(client.keys.rotate(apiKeys))
+		return tryAllAPIKeys(queryContext, client.keys, apiKeys, func(apiKey string) (tinyFishQueryOutcome, error) {
+			searchResults, err := client.searchQuery(queryContext, apiKey, query)
+			if err != nil {
+				return tinyFishQueryOutcome{}, err
+			}
 
-		searchResults, err := client.searchQuery(queryContext, apiKey, query)
-		if err != nil {
-			return tinyFishQueryOutcome{}, err
-		}
+			if len(searchResults) > maxURLs {
+				searchResults = searchResults[:maxURLs]
+			}
 
-		if len(searchResults) > maxURLs {
-			searchResults = searchResults[:maxURLs]
-		}
-
-		return tinyFishQueryOutcome{query: query, results: searchResults}, nil
+			return tinyFishQueryOutcome{query: query, results: searchResults}, nil
+		})
 	})
 	if err != nil {
 		return nil, err
@@ -2050,9 +2050,9 @@ func (client tinyFishSearchClient) enrichTinyFishOutcomes(
 		return fetchedTextMap, fetchedTitleMap
 	}
 
-	apiKey := firstAPIKey(client.keys.rotate(apiKeys))
-
-	fetchResponse, fetchErr := client.fetchContents(ctx, apiKey, missingURLs)
+	fetchResponse, fetchErr := tryAllAPIKeys(ctx, client.keys, apiKeys, func(apiKey string) (tinyFishFetchResponse, error) {
+		return client.fetchContents(ctx, apiKey, missingURLs)
+	})
 	if fetchErr != nil {
 		queries := make([]string, 0, len(outcomes))
 		for _, outcome := range outcomes {

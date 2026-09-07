@@ -184,6 +184,7 @@ func testWebsiteExaAndTavilyConfig() config {
 		APIKeys:           []string{testTavilyPrimaryAPIKey},
 		MaxCharsPerResult: defaultTavilyMaxCharsPerResult,
 	}
+
 	return loadedConfig
 }
 

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -181,4 +182,39 @@ func (settings parallelSearchConfig) apiKeys() []string {
 
 func (settings serpAPIVisualSearchConfig) apiKeys() []string {
 	return providerAPIKeys(settings.APIKey, settings.APIKeys)
+}
+
+// tryAllAPIKeys runs attempt with each rotated key in order, trying every key
+// before returning an error. The key set is rotated once for load spreading,
+// then each key is tried until one succeeds. Context cancellation aborts the
+// remaining keys and returns the last attempt error.
+func tryAllAPIKeys[T any](ctx context.Context, rotator *apiKeyRotator, apiKeys []string, attempt func(string) (T, error)) (T, error) {
+	var rotated []string
+	if rotator != nil {
+		rotated = rotator.rotate(apiKeys)
+	} else {
+		rotated = append([]string(nil), apiKeys...)
+	}
+
+	var zero T
+	if len(rotated) == 0 {
+		return zero, fmt.Errorf("no API keys configured: %w", os.ErrNotExist)
+	}
+
+	var lastErr error
+
+	for index, apiKey := range rotated {
+		if index > 0 && ctx != nil && ctx.Err() != nil {
+			break
+		}
+
+		result, err := attempt(apiKey)
+		if err == nil {
+			return result, nil
+		}
+
+		lastErr = err
+	}
+
+	return zero, lastErr
 }

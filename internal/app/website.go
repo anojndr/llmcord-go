@@ -257,9 +257,10 @@ func (instance *bot) prepareTinyFishWebsiteAugmentationBatch(
 			}
 
 			batch := fetchNormalized[start:end]
-			apiKey := firstAPIKey(wc.keys.rotate(apiKeys))
 
-			resp, err := wc.fetchTinyFishBatch(taskCtx, apiKey, batch)
+			resp, err := tryAllAPIKeys(taskCtx, wc.keys, apiKeys, func(apiKey string) (tinyFishFetchResponse, error) {
+				return wc.fetchTinyFishBatch(taskCtx, apiKey, batch)
+			})
 			if err != nil {
 				for _, u := range batch {
 					raw := rawForNormalized[u]
@@ -593,14 +594,15 @@ func (client websiteClient) fetch(
 			}
 
 			attemptsCount++
-			firecrawlAPIKey := firstAPIKey(client.keys.rotate(firecrawlAPIKeys))
 
-			pageContent, firecrawlErr := client.fetchWithFirecrawlScrape(
-				ctx,
-				normalizedURL,
-				firecrawlAPIKey,
-				loadedConfig.WebSearch.Firecrawl.maxMarkdownCharacters(),
-			)
+			pageContent, firecrawlErr := tryAllAPIKeys(ctx, client.keys, firecrawlAPIKeys, func(apiKey string) (websitePageContent, error) {
+				return client.fetchWithFirecrawlScrape(
+					ctx,
+					normalizedURL,
+					apiKey,
+					loadedConfig.WebSearch.Firecrawl.maxMarkdownCharacters(),
+				)
+			})
 			if firecrawlErr == nil {
 				return pageContent, nil
 			}
@@ -614,14 +616,15 @@ func (client websiteClient) fetch(
 			}
 
 			attemptsCount++
-			tinyFishAPIKey := firstAPIKey(client.keys.rotate(tinyFishAPIKeys))
 
-			pageContent, tinyFishErr := client.fetchWithTinyFishFetch(
-				ctx,
-				normalizedURL,
-				tinyFishAPIKey,
-				loadedConfig.WebSearch.TinyFish.maxCharsPerResult(),
-			)
+			pageContent, tinyFishErr := tryAllAPIKeys(ctx, client.keys, tinyFishAPIKeys, func(apiKey string) (websitePageContent, error) {
+				return client.fetchWithTinyFishFetch(
+					ctx,
+					normalizedURL,
+					apiKey,
+					loadedConfig.WebSearch.TinyFish.maxCharsPerResult(),
+				)
+			})
 			if tinyFishErr == nil {
 				return pageContent, nil
 			}
@@ -634,20 +637,20 @@ func (client websiteClient) fetch(
 			}
 
 			attemptsCount++
-			exaAPIKey := firstAPIKey(client.keys.rotate(loadedConfig.WebSearch.Exa.apiKeys()))
 
-			pageContent, exaErr := client.fetchWithExaContents(
-				ctx,
-				normalizedURL,
-				exaAPIKey,
-				loadedConfig.WebSearch.Exa.textMaxCharacters(),
-			)
+			pageContent, exaErr := tryAllAPIKeys(ctx, client.keys, loadedConfig.WebSearch.Exa.apiKeys(), func(apiKey string) (websitePageContent, error) {
+				return client.fetchWithExaContents(
+					ctx,
+					normalizedURL,
+					apiKey,
+					loadedConfig.WebSearch.Exa.textMaxCharacters(),
+				)
+			})
 			if exaErr == nil {
 				return pageContent, nil
 			}
 
 			attemptErrs = append(attemptErrs, exaErr)
-
 		case webExtractionProviderTavily:
 			tavilyAPIKeys := loadedConfig.WebSearch.Tavily.apiKeys()
 			if len(tavilyAPIKeys) == 0 {
@@ -655,14 +658,15 @@ func (client websiteClient) fetch(
 			}
 
 			attemptsCount++
-			tavilyAPIKey := firstAPIKey(client.keys.rotate(tavilyAPIKeys))
 
-			pageContent, tavilyErr := client.fetchWithTavilyExtract(
-				ctx,
-				normalizedURL,
-				tavilyAPIKey,
-				loadedConfig.WebSearch.Tavily.maxCharsPerResult(),
-			)
+			pageContent, tavilyErr := tryAllAPIKeys(ctx, client.keys, tavilyAPIKeys, func(apiKey string) (websitePageContent, error) {
+				return client.fetchWithTavilyExtract(
+					ctx,
+					normalizedURL,
+					apiKey,
+					loadedConfig.WebSearch.Tavily.maxCharsPerResult(),
+				)
+			})
 			if tavilyErr == nil {
 				return pageContent, nil
 			}
@@ -1219,6 +1223,7 @@ func (client websiteClient) fetchWithTavilyExtractOnce(
 	}
 
 	rawContent := truncateRunes(strings.TrimSpace(result.RawContent), maxCharsPerResult)
+
 	return newWebsitePageContent(firstNonEmptyString(result.URL, requestURL), "", "", rawContent)
 }
 

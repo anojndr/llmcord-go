@@ -303,9 +303,9 @@ func (client serpAPIGoogleLensClient) search(
 		)
 	}
 
-	apiKey := firstAPIKey(client.keys.rotate(apiKeys))
-
-	return client.searchOnce(ctx, imageURL, apiKey)
+	return tryAllAPIKeys(ctx, client.keys, apiKeys, func(apiKey string) (visualSearchResult, error) {
+		return client.searchOnce(ctx, imageURL, apiKey)
+	})
 }
 
 func (client serpAPIGoogleLensClient) searchOnce(
