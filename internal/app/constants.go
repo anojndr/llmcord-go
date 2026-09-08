@@ -22,6 +22,7 @@ const (
 	defaultStatusMessage              = "github.com/jakobdylanc/llmcord"
 	defaultMaxImages                  = 100
 	defaultMaxMessages                = 25
+	systemPromptTimeBucketMinutes     = 10
 	maxMessageNodes                   = 500
 	registeredCommandCount            = 7
 	maxAutocompleteChoices            = 25

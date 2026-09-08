@@ -176,10 +176,29 @@ func systemPromptNow(template string, now time.Time) string {
 		"{date}",
 		now.Format("January 02 2006"),
 	)
+	// Quantize {time} to 10-minute buckets so follow-ups within the same
+	// window keep a byte-identical system prefix and reuse the provider
+	// prompt cache. Per the OpenAI prompt caching guide, timestamps in
+	// leading instructions otherwise reset cache reuse on every request;
+	// Gemini implicit caching has the same stable-prefix requirement.
+	quantized := now
+	if loc := quantized.Location(); loc != nil {
+		quantized = time.Date(
+			quantized.Year(),
+			quantized.Month(),
+			quantized.Day(),
+			quantized.Hour(),
+			(quantized.Minute()/systemPromptTimeBucketMinutes)*systemPromptTimeBucketMinutes,
+			0,
+			0,
+			loc,
+		)
+	}
+
 	replacedText = strings.ReplaceAll(
 		replacedText,
 		"{time}",
-		now.Format("15:04:05 MST-0700"),
+		quantized.Format("15:04:05 MST-0700"),
 	)
 
 	return strings.TrimSpace(replacedText)

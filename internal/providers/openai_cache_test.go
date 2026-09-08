@@ -2,9 +2,11 @@ package providers
 
 import (
 	"reflect"
+	"testing"
+
+	"github.com/bwmarrin/discordgo"
 
 	searchtypes "llmcord-go/internal/searchtypes"
-	"testing"
 )
 
 func TestBuildChatCompletionRequestBodySkipsCacheOptionsWithoutSessionID(t *testing.T) {
@@ -758,5 +760,143 @@ func TestOpenAIResponsesCacheBreakpointMessagesThreadsThroughMapSlice(t *testing
 	lastPart := content[len(content)-1]
 	if _, marked := lastPart[openAICacheBreakpointKey]; !marked {
 		t.Fatal("expected last content part to be marked with a cache breakpoint")
+	}
+}
+
+type stubChainNodeStore map[string]NodeSnapshot
+
+func (store stubChainNodeStore) Get(messageID string) (NodeSnapshot, bool) {
+	snapshot, ok := store[messageID]
+
+	return snapshot, ok
+}
+
+func chainTestMessage(messageID string) *discordgo.Message {
+	message := new(discordgo.Message)
+	message.ID = messageID
+
+	return message
+}
+
+func TestOpenAIConversationPromptCacheKeyAnchorsToConversationRoot(t *testing.T) {
+	t.Parallel()
+
+	root := chainTestMessage("root-message")
+	mid := chainTestMessage("mid-message")
+	leaf := chainTestMessage("leaf-message")
+	store := stubChainNodeStore{
+		"leaf-message": {ParentMessage: mid},
+		"mid-message":  {ParentMessage: root},
+	}
+
+	// The key must not rotate as the maxMessages window slides: a follow-up
+	// deeper in the same chain resolves the same root anchor.
+	narrowKey := OpenAIConversationPromptCacheKey("llmcord-go-openai", "openai/gpt-test", leaf, store, 1, "")
+	wideKey := OpenAIConversationPromptCacheKey("llmcord-go-openai", "openai/gpt-test", leaf, store, 25, "")
+	rootKey := OpenAIConversationPromptCacheKey("llmcord-go-openai", "openai/gpt-test", root, store, 25, "")
+
+	if narrowKey == "" || wideKey == "" || rootKey == "" {
+		t.Fatalf("expected non-empty cache keys, got narrow=%q, wide=%q, root=%q", narrowKey, wideKey, rootKey)
+	}
+
+	if narrowKey != wideKey {
+		t.Fatalf("expected stable window-invariant cache key, got %q and %q", narrowKey, wideKey)
+	}
+
+	if narrowKey != rootKey {
+		t.Fatalf("expected leaf key to match root key, got leaf=%q, root=%q", narrowKey, rootKey)
+	}
+}
+
+func TestBuildResponsesRequestBodyChainsFollowUpWithPreviousResponseID(t *testing.T) {
+	t.Parallel()
+
+	request := ChatCompletionRequest{
+		Provider: ProviderRequestConfig{
+			APIKind:         ProviderAPIKindOpenAI,
+			BaseURL:         "https://example.com/v1",
+			APIKey:          "test-key",
+			UseResponsesAPI: true,
+			ExtraBody:       nil,
+		},
+		Model:                 "gpt-test",
+		ConfiguredModel:       "openai/gpt-test",
+		SessionID:             testOpenAIPromptCacheKey,
+		PreviousResponseID:    "resp_parent_123",
+		PreviousResponseCount: 3,
+		Messages: []ChatMessage{
+			{Role: searchtypes.MessageRoleSystem, Content: "You are concise."},
+			{Role: searchtypes.MessageRoleUser, Content: "first question"},
+			{Role: searchtypes.MessageRoleAssistant, Content: "first answer"},
+			{Role: searchtypes.MessageRoleUser, Content: "follow-up question"},
+		},
+		Tools: nil,
+	}
+
+	requestBody, err := buildResponsesRequestBody(request)
+	if err != nil {
+		t.Fatalf("build responses request body: %v", err)
+	}
+
+	if requestBody["previous_response_id"] != "resp_parent_123" {
+		t.Fatalf("unexpected previous_response_id: %#v", requestBody["previous_response_id"])
+	}
+
+	input, inputOK := requestBody["input"].([]map[string]any)
+	if !inputOK || len(input) != 1 {
+		t.Fatalf("expected only the new tail in chained input, got %#v", requestBody["input"])
+	}
+
+	content, contentOK := input[0]["content"].(string)
+	if !contentOK || content != "follow-up question" {
+		t.Fatalf("expected follow-up content in chained input, got %#v", input[0]["content"])
+	}
+}
+
+func TestBuildResponsesRequestBodyOmitsPreviousResponseIDWhenUnchained(t *testing.T) {
+	t.Parallel()
+
+	request := ChatCompletionRequest{
+		Provider: ProviderRequestConfig{
+			APIKind:         ProviderAPIKindOpenAI,
+			BaseURL:         "https://example.com/v1",
+			APIKey:          "test-key",
+			UseResponsesAPI: true,
+			ExtraBody:       nil,
+		},
+		Model:           "gpt-test",
+		ConfiguredModel: "openai/gpt-test",
+		SessionID:       testOpenAIPromptCacheKey,
+		Messages: []ChatMessage{
+			{Role: searchtypes.MessageRoleUser, Content: "hello"},
+		},
+		Tools: nil,
+	}
+
+	requestBody, err := buildResponsesRequestBody(request)
+	if err != nil {
+		t.Fatalf("build responses request body: %v", err)
+	}
+
+	if _, exists := requestBody["previous_response_id"]; exists {
+		t.Fatalf("unexpected previous_response_id without chaining: %#v", requestBody["previous_response_id"])
+	}
+}
+
+func TestResponsesChainedInputFallsBackToLatestMessage(t *testing.T) {
+	t.Parallel()
+
+	messages := []ChatMessage{
+		{Role: searchtypes.MessageRoleUser, Content: "first"},
+		{Role: searchtypes.MessageRoleUser, Content: "latest"},
+	}
+
+	tail := responsesChainedInput(messages, len(messages)+5)
+	if len(tail) != 1 || tail[0].Content != "latest" {
+		t.Fatalf("expected latest-message fallback, got %#v", tail)
+	}
+
+	if empty := responsesChainedInput(nil, 0); len(empty) != 0 {
+		t.Fatalf("expected empty input passthrough, got %#v", empty)
 	}
 }
