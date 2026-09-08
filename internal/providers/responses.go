@@ -257,7 +257,14 @@ func (client openAIClient) consumeResponsesStream(
 }
 
 func buildResponsesRequestBody(request ChatCompletionRequest) (map[string]any, error) {
-	messages := RequestMessagesWithFileOrImageOnlyQueryPlaceholder(request.Messages)
+	inputMessages := request.Messages
+
+	previousResponseID := strings.TrimSpace(request.PreviousResponseID)
+	if previousResponseID != "" {
+		inputMessages = responsesChainedInput(request.Messages, request.PreviousResponseCount)
+	}
+
+	messages := RequestMessagesWithFileOrImageOnlyQueryPlaceholder(inputMessages)
 	messages = openAIReplaceSystemRoleWithDeveloper(messages, request.Model)
 
 	if openAIRequestPromptCacheKeyPrefix(request) != "" &&
@@ -274,6 +281,11 @@ func buildResponsesRequestBody(request ChatCompletionRequest) (map[string]any, e
 	requestBody["model"] = request.Model
 	requestBody["stream"] = true
 	requestBody["input"] = input
+
+	if previousResponseID != "" {
+		requestBody["previous_response_id"] = previousResponseID
+	}
+
 	addOpenAIPromptCacheKey(requestBody, request)
 	addResponsesTools(requestBody, request)
 	defaultOpenAIServiceTier(requestBody)
@@ -291,6 +303,26 @@ func buildResponsesRequestBody(request ChatCompletionRequest) (map[string]any, e
 	}
 
 	return requestBody, nil
+}
+
+// responsesChainedInput returns the trailing messages not yet stored under
+// the chained previous response. The full history lives server-side via
+// previous_response_id (see the conversation-state guide); resending it as
+// input would duplicate the context, so follow-ups send only the new tail.
+// A degenerate count (negative or >=len) falls back to the latest message,
+// and an empty input passes through unchanged.
+func responsesChainedInput(messages []ChatMessage, storedCount int) []ChatMessage {
+	if len(messages) == 0 {
+		return messages
+	}
+
+	if storedCount >= 0 && storedCount < len(messages) {
+		if tail := messages[storedCount:]; len(tail) > 0 {
+			return tail
+		}
+	}
+
+	return messages[len(messages)-1:]
 }
 
 func openAICacheOptionsModeIsExplicit(extraBody map[string]any) bool {

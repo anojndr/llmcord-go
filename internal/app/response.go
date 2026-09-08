@@ -6,6 +6,7 @@ import (
 	"fmt"
 	providers "llmcord-go/internal/providers"
 	searchtypes "llmcord-go/internal/searchtypes"
+	"net/http"
 	"regexp"
 	"strings"
 	"time"
@@ -531,6 +532,32 @@ func shouldRetryGenerationRound(finishReason string, err error) bool {
 	return err != nil && providers.IsTransientStreamError(err)
 }
 
+// isInvalidPreviousResponseError reports whether err rejects the chained
+// previous_response_id (unknown, expired, or evicted server-side response).
+// The match requires the exact parameter token: provider status errors wrap
+// the raw response body, and only this narrow signal may trigger a stateless
+// retry. A status-carrying error must be a 400/404 rejection; other statuses
+// (auth, rate limits, server failures) keep their normal handling even when
+// they quote the parameter.
+func isInvalidPreviousResponseError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	normalized := strings.ToLower(err.Error())
+	if !strings.Contains(normalized, "previous_response_id") {
+		return false
+	}
+
+	var statusErr providers.StatusError
+	if errors.As(err, &statusErr) {
+		return statusErr.StatusCode == http.StatusBadRequest ||
+			statusErr.StatusCode == http.StatusNotFound
+	}
+
+	return true
+}
+
 // Tool calling is never disabled: every round re-offers the tools with
 // tool_choice "auto" (and a byte-identical tool prefix, so the provider's
 // prompt cache keeps matching). The loop is bounded by
@@ -561,6 +588,16 @@ func (instance *bot) generateResponseWithWebSearchTool(
 
 		if len(round.toolCalls) == 0 {
 			return round.rawAnswer, round.thinking, nil
+		}
+
+		// A chained follow-up sent only the new tail with
+		// previous_response_id. Tool execution appends function outputs
+		// that the stateless tool phase builds against the full history,
+		// so revert to a full stateless send for the remaining rounds:
+		// request.Messages already holds the complete conversation.
+		if strings.TrimSpace(request.PreviousResponseID) != "" {
+			request.PreviousResponseID = ""
+			request.PreviousResponseCount = 0
 		}
 
 		if len(request.Tools) == 0 {
@@ -688,6 +725,25 @@ func (instance *bot) generateAndSendResponse(
 		tracker,
 		warnings,
 	)
+	// A chained follow-up depends on the parent response still being
+	// stored server-side (retention, ZDR, or eviction can invalidate it).
+	// On a previous_response_id rejection, retry once statelessly with the
+	// full history already in request.Messages before failing over.
+	if responseErr != nil && strings.TrimSpace(request.PreviousResponseID) != "" &&
+		isInvalidPreviousResponseError(responseErr) {
+		logWarn("retry chained follow-up statelessly", responseErr)
+
+		request.PreviousResponseID = ""
+		request.PreviousResponseCount = 0
+		cleanedText, thinkingText, responseErr = instance.generateResponseWithWebSearchTool(
+			ctx,
+			loadedConfig,
+			request,
+			tracker,
+			warnings,
+		)
+	}
+
 	if responseErr == nil {
 		finalText := visibleResponseText(thinkingText, cleanedText)
 

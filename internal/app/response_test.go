@@ -3525,3 +3525,341 @@ func fallbackToolRoundStream(
 		}
 	}
 }
+
+func TestChainableResponsesPreviousResponseChainsDirectAssistantReply(t *testing.T) {
+	t.Parallel()
+
+	const (
+		botUserID          = "bot-user"
+		channelID          = "channel-1"
+		userID             = "user-1"
+		sourceMessageID    = "user-message-2"
+		assistantMessageID = "assistant-message-1"
+		configuredModel    = "openai/gpt-test"
+		previousResponseID = "resp_parent_123"
+	)
+
+	sourceMessage := newPromptMessage(sourceMessageID, channelID, userID, botUserID)
+	assistantMessage := newAssistantReplyMessage(
+		assistantMessageID,
+		newDiscordUser(botUserID, true),
+		newPromptMessage("user-message-1", channelID, userID, botUserID),
+	)
+	sourceMessage.MessageReference = assistantMessage.Reference()
+	sourceMessage.ReferencedMessage = assistantMessage
+
+	instance := new(bot)
+	instance.nodes = newMessageNodeStore(10)
+
+	sourceNode := instance.nodes.getOrCreate(sourceMessageID)
+	sourceNode.initialized = true
+	sourceNode.role = messageRoleUser
+	sourceNode.parentMessage = assistantMessage
+
+	assistantNode := instance.nodes.getOrCreate(assistantMessageID)
+	assistantNode.initialized = true
+	assistantNode.role = messageRoleAssistant
+	assistantNode.providerResponseID = previousResponseID
+	assistantNode.providerResponseModel = configuredModel
+
+	requestMessages := []chatMessage{
+		{Role: messageRoleSystem, Content: "You are concise."},
+		{Role: messageRoleAssistant, Content: "first answer"},
+		{Role: messageRoleUser, Content: "follow-up question"},
+	}
+
+	responseID, storedCount, ok := instance.chainableResponsesPreviousResponse(
+		sourceMessage,
+		configuredModel,
+		requestMessages,
+	)
+	if !ok {
+		t.Fatal("expected direct assistant reply to be chainable")
+	}
+
+	if responseID != previousResponseID {
+		t.Fatalf("unexpected previous response id: %q", responseID)
+	}
+
+	if storedCount != len(requestMessages)-1 {
+		t.Fatalf("expected only the new tail to be sent, got stored count %d", storedCount)
+	}
+}
+
+func TestChainableResponsesPreviousResponseRejectsIneligibleScenarios(t *testing.T) {
+	t.Parallel()
+
+	const (
+		sourceMessageID    = "user-message-2"
+		assistantMessageID = "assistant-message-1"
+		validModel         = "openai/gpt-test"
+		validResponseID    = "resp_parent_123"
+	)
+
+	newBaseSetup := func() (*bot, *discordgo.Message, *discordgo.Message) {
+		sourceMessage := new(discordgo.Message)
+		sourceMessage.ID = sourceMessageID
+		assistantMessage := new(discordgo.Message)
+		assistantMessage.ID = assistantMessageID
+
+		instance := new(bot)
+		instance.nodes = newMessageNodeStore(10)
+
+		sourceNode := instance.nodes.getOrCreate(sourceMessageID)
+		sourceNode.initialized = true
+		sourceNode.role = messageRoleUser
+		sourceNode.parentMessage = assistantMessage
+
+		assistantNode := instance.nodes.getOrCreate(assistantMessageID)
+		assistantNode.initialized = true
+		assistantNode.role = messageRoleAssistant
+		assistantNode.providerResponseID = validResponseID
+		assistantNode.providerResponseModel = validModel
+
+		return instance, sourceMessage, assistantMessage
+	}
+
+	validMessages := []chatMessage{
+		{Role: messageRoleAssistant, Content: "first answer"},
+		{Role: messageRoleUser, Content: "follow-up question"},
+	}
+
+	t.Run("model switch", func(t *testing.T) {
+		t.Parallel()
+
+		instance, sourceMessage, _ := newBaseSetup()
+
+		_, _, ok := instance.chainableResponsesPreviousResponse(sourceMessage, "openai/gpt-new", validMessages)
+		if ok {
+			t.Fatal("expected model switch to disable chaining")
+		}
+	})
+
+	t.Run("empty provider response id", func(t *testing.T) {
+		t.Parallel()
+
+		instance, sourceMessage, assistantMessage := newBaseSetup()
+		assistantNode, _ := instance.nodes.get(assistantMessage.ID)
+		assistantNode.providerResponseID = ""
+
+		_, _, ok := instance.chainableResponsesPreviousResponse(sourceMessage, validModel, validMessages)
+		if ok {
+			t.Fatal("expected empty response id to disable chaining")
+		}
+	})
+
+	t.Run("non-assistant parent role", func(t *testing.T) {
+		t.Parallel()
+
+		instance, sourceMessage, assistantMessage := newBaseSetup()
+		assistantNode, _ := instance.nodes.get(assistantMessage.ID)
+		assistantNode.role = messageRoleUser
+
+		_, _, ok := instance.chainableResponsesPreviousResponse(sourceMessage, validModel, validMessages)
+		if ok {
+			t.Fatal("expected non-assistant parent to disable chaining")
+		}
+	})
+
+	t.Run("non-user message tail", func(t *testing.T) {
+		t.Parallel()
+
+		instance, sourceMessage, _ := newBaseSetup()
+		nonUserTail := []chatMessage{
+			{Role: messageRoleUser, Content: "first"},
+			{Role: messageRoleAssistant, Content: "second"},
+		}
+
+		_, _, ok := instance.chainableResponsesPreviousResponse(sourceMessage, validModel, nonUserTail)
+		if ok {
+			t.Fatal("expected non-user tail to disable chaining")
+		}
+	})
+
+	t.Run("single message conversation", func(t *testing.T) {
+		t.Parallel()
+
+		instance, sourceMessage, _ := newBaseSetup()
+		singleMessage := []chatMessage{
+			{Role: messageRoleUser, Content: "only user"},
+		}
+
+		_, _, ok := instance.chainableResponsesPreviousResponse(sourceMessage, validModel, singleMessage)
+		if ok {
+			t.Fatal("expected single message to disable chaining")
+		}
+	})
+
+	t.Run("nil parent message", func(t *testing.T) {
+		t.Parallel()
+
+		instance, sourceMessage, _ := newBaseSetup()
+		sourceNode, _ := instance.nodes.get(sourceMessage.ID)
+		sourceNode.parentMessage = nil
+
+		_, _, ok := instance.chainableResponsesPreviousResponse(sourceMessage, validModel, validMessages)
+		if ok {
+			t.Fatal("expected nil parent to disable chaining")
+		}
+	})
+}
+
+func TestIsInvalidPreviousResponseErrorMatchesChainedRejections(t *testing.T) {
+	t.Parallel()
+
+	if !isInvalidPreviousResponseError(errors.New("previous_response_id `resp_123` not found")) {
+		t.Fatal("expected previous_response_id rejection to match")
+	}
+
+	// 400 or 404 StatusError quoting previous_response_id matches.
+	badRequestStatusErr := providers.StatusError{
+		StatusCode: http.StatusBadRequest,
+		Message:    "Invalid 'previous_response_id': not found",
+	}
+	if !isInvalidPreviousResponseError(badRequestStatusErr) {
+		t.Fatal("expected 400 status error with previous_response_id to match")
+	}
+
+	notFoundStatusErr := providers.StatusError{
+		StatusCode: http.StatusNotFound,
+		Message:    "Response with previous_response_id 'resp_1' not found",
+	}
+	if !isInvalidPreviousResponseError(notFoundStatusErr) {
+		t.Fatal("expected 404 status error with previous_response_id to match")
+	}
+
+	// Status 503 or 429 mentioning previous_response_id must NOT trigger stateless retry.
+	serverUnavailableErr := providers.StatusError{
+		StatusCode: http.StatusServiceUnavailable,
+		Message:    "server error for previous_response_id",
+	}
+	if isInvalidPreviousResponseError(serverUnavailableErr) {
+		t.Fatal("expected 503 status error to not match")
+	}
+
+	if isInvalidPreviousResponseError(errors.New("upstream overloaded 503")) {
+		t.Fatal("expected unrelated errors to miss")
+	}
+
+	if isInvalidPreviousResponseError(errors.New("previous response text")) {
+		t.Fatal("expected non-token mention to miss")
+	}
+
+	if isInvalidPreviousResponseError(nil) {
+		t.Fatal("expected nil error to miss")
+	}
+}
+
+func TestGenerateAndSendResponseRetriesChainedFollowUpStatelessly(t *testing.T) {
+	t.Parallel()
+
+	chatClient := newStubChatClient(func(
+		_ context.Context,
+		request chatCompletionRequest,
+		handle func(streamDelta) error,
+	) error {
+		if strings.TrimSpace(request.PreviousResponseID) != "" {
+			return errors.New("previous_response_id `resp_parent_123` not found")
+		}
+
+		return handle(newStreamDelta("Stateless answer.", finishReasonStop))
+	})
+	webSearch := newStubWebSearchClient(func(
+		_ context.Context,
+		_ config,
+		queries []string,
+	) ([]webSearchResult, error) {
+		return []webSearchResult{{Query: queries[0], Text: testWebSearchResultText}}, nil
+	})
+
+	instance := newSearchToolTestBot(t, chatClient, webSearch)
+	sourceMessage := newWebSearchToolSourceMessage()
+	request := chatCompletionRequest{
+		ConfiguredModel:       testWebSearchMainModel,
+		Model:                 "main-model",
+		Messages:              []chatMessage{{Role: messageRoleUser, Content: "follow-up question"}},
+		PreviousResponseID:    "resp_parent_123",
+		PreviousResponseCount: 2,
+	}
+	tracker := newResponseTracker(sourceMessage, request.ConfiguredModel)
+
+	if err := instance.generateAndSendResponse(
+		context.Background(),
+		newWebSearchToolTestConfig(),
+		request,
+		tracker,
+		nil,
+	); err != nil {
+		t.Fatalf("generate and send response: %v", err)
+	}
+
+	if len(chatClient.requests) != 2 {
+		t.Fatalf("expected chained attempt plus stateless retry, got %d requests", len(chatClient.requests))
+	}
+
+	retry := chatClient.requests[1]
+	if strings.TrimSpace(retry.PreviousResponseID) != "" || retry.PreviousResponseCount != 0 {
+		t.Fatalf("expected stateless retry without chaining, got %#v", retry)
+	}
+}
+
+func TestGenerateResponseWithWebSearchToolRevertsToStatelessOnToolCalls(t *testing.T) {
+	t.Parallel()
+
+	chatClient := newStubChatClient(func(
+		_ context.Context,
+		request chatCompletionRequest,
+		handle func(streamDelta) error,
+	) error {
+		if strings.Contains(latestChatMessageText(request.Messages), testWebSearchResultText) {
+			return handle(newStreamDelta(testWebSearchToolAnswer, finishReasonStop))
+		}
+
+		return handle(streamDelta{
+			ToolCalls: []providers.FunctionToolCall{{
+				ID:        "call_1",
+				Name:      providers.WebSearchToolName,
+				Arguments: `{"objective": "Find first query results", "search_queries": ["` + testWebSearchQueryOne + `"]}`,
+			}},
+			FinishReason: "tool_calls",
+		})
+	})
+	webSearch := newStubWebSearchClient(func(
+		_ context.Context,
+		_ config,
+		queries []string,
+	) ([]webSearchResult, error) {
+		return []webSearchResult{{Query: queries[0], Text: testWebSearchResultText}}, nil
+	})
+
+	instance := newSearchToolTestBot(t, chatClient, webSearch)
+	sourceMessage := newWebSearchToolSourceMessage()
+	request := chatCompletionRequest{
+		ConfiguredModel:       testWebSearchMainModel,
+		Model:                 "main-model",
+		Messages:              []chatMessage{{Role: messageRoleUser, Content: "search for " + testWebSearchQueryOne}},
+		Tools:                 []providers.FunctionTool{providers.WebSearchTool(webSearchToolMaxQueries)},
+		PreviousResponseID:    "resp_parent_123",
+		PreviousResponseCount: 2,
+	}
+	tracker := newResponseTracker(sourceMessage, request.ConfiguredModel)
+
+	if err := instance.generateAndSendResponse(
+		context.Background(),
+		newWebSearchToolTestConfig(),
+		request,
+		tracker,
+		nil,
+	); err != nil {
+		t.Fatalf("generate and send response: %v", err)
+	}
+
+	if len(chatClient.requests) != 2 {
+		t.Fatalf("expected tool round plus stateless follow-up, got %d requests", len(chatClient.requests))
+	}
+
+	followUp := chatClient.requests[1]
+	if strings.TrimSpace(followUp.PreviousResponseID) != "" || followUp.PreviousResponseCount != 0 {
+		t.Fatalf("expected tool follow-up without chaining, got %#v", followUp)
+	}
+}

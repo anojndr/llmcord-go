@@ -143,16 +143,28 @@ func openAIConversationAnchorMessageID(
 		return ""
 	}
 
-	if maxMessages <= 0 {
-		maxMessages = 1
-	}
+	_ = maxMessages
+
+	// Anchor to the conversation root instead of the sliding maxMessages
+	// window so follow-ups keep a stable prompt_cache_key. Per the OpenAI
+	// prompt caching guide, keys must stay stable while the prefix is
+	// useful; anchoring to the window oldest rotates the key every turn
+	// and defeats routing to the machine holding the cached prefix.
+	// maxMessages is retained for signature compatibility only.
+	const maxAnchorSteps = 500
 
 	currentMessage := sourceMessage
 	anchorMessageID := strings.TrimSpace(sourceMessage.ID)
+	visited := make(map[string]struct{}, 32)
 
-	for step := 0; currentMessage != nil && step < maxMessages; step++ {
+	for step := 0; currentMessage != nil && step < maxAnchorSteps; step++ {
 		currentMessageID := strings.TrimSpace(currentMessage.ID)
 		if currentMessageID != "" {
+			if _, seen := visited[currentMessageID]; seen {
+				break
+			}
+
+			visited[currentMessageID] = struct{}{}
 			anchorMessageID = currentMessageID
 		}
 

@@ -380,6 +380,7 @@ gist:
 
 # -----------------------------------------------------------------------------
 # Prompt — prepended to every request; {date} and {time} expanded in host TZ
+# ({time} is quantized to 10-minute buckets so follow-up prefixes stay cacheable)
 # User messages are prefixed with <@ID> for mentions.
 # -----------------------------------------------------------------------------
 system_prompt: |

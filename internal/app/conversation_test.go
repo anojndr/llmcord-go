@@ -813,3 +813,114 @@ func TestBuildMessageContentPreservesUserThinkingLikeText(t *testing.T) {
 		t.Fatalf("expected user text preserved, got %q", contentText)
 	}
 }
+
+func imageBudgetTestMessage(text, imageURL string) chatMessage {
+	return chatMessage{
+		Role: messageRoleUser,
+		Content: []contentPart{
+			{"type": contentTypeText, "text": text},
+			{"type": contentTypeImageURL, "image_url": map[string]string{"url": imageURL}},
+		},
+	}
+}
+
+func countBudgetTestImages(messages []chatMessage) int {
+	total := 0
+
+	for _, message := range messages {
+		parts, ok := message.Content.([]contentPart)
+		if !ok {
+			continue
+		}
+
+		for _, part := range parts {
+			partType, _ := part["type"].(string)
+			if partType == contentTypeImageURL {
+				total++
+			}
+		}
+	}
+
+	return total
+}
+
+func TestCapConversationImagesKeepsNewestImages(t *testing.T) {
+	t.Parallel()
+
+	messages := []chatMessage{
+		imageBudgetTestMessage("oldest", "https://example.com/oldest.png"),
+		imageBudgetTestMessage("middle", "https://example.com/middle.png"),
+		imageBudgetTestMessage("latest", "https://example.com/latest.png"),
+	}
+
+	capped, stripped := capConversationImages(messages, 2)
+	if stripped != 1 {
+		t.Fatalf("expected one stripped image, got %d", stripped)
+	}
+
+	if total := countBudgetTestImages(capped); total != 2 {
+		t.Fatalf("expected two images after capping, got %d", total)
+	}
+
+	if total := countBudgetTestImages(capped[:1]); total != 0 {
+		t.Fatalf("expected oldest images stripped first, got %d remaining", total)
+	}
+}
+
+func TestCapConversationImagesKeepsHistoryUnderBudget(t *testing.T) {
+	t.Parallel()
+
+	messages := []chatMessage{
+		imageBudgetTestMessage("first", "https://example.com/first.png"),
+		{Role: messageRoleAssistant, Content: "answer"},
+	}
+
+	capped, stripped := capConversationImages(messages, 2)
+	if stripped != 0 {
+		t.Fatalf("expected no stripped images, got %d", stripped)
+	}
+
+	if total := countBudgetTestImages(capped); total != 1 {
+		t.Fatalf("expected image preserved under budget, got %d", total)
+	}
+}
+
+func TestCapConversationImagesPreservesTextAndHandlesMultiImageMessages(t *testing.T) {
+	t.Parallel()
+
+	multiPartMessage := chatMessage{
+		Role: messageRoleUser,
+		Content: []contentPart{
+			{"type": contentTypeText, "text": "preserved text part"},
+			{"type": contentTypeImageURL, "image_url": map[string]string{"url": "https://example.com/img1.png"}},
+			{"type": contentTypeImageURL, "image_url": map[string]string{"url": "https://example.com/img2.png"}},
+		},
+	}
+	plainTextMessage := chatMessage{Role: messageRoleAssistant, Content: "plain string answer"}
+	emptyMessage := chatMessage{Role: messageRoleUser, Content: nil}
+
+	messages := []chatMessage{multiPartMessage, plainTextMessage, emptyMessage}
+
+	// Cap at 1 image: one image from multiPartMessage is stripped; text must remain untouched.
+	capped, stripped := capConversationImages(messages, 1)
+	if stripped != 1 {
+		t.Fatalf("expected one stripped image, got %d", stripped)
+	}
+
+	parts, ok := capped[0].Content.([]contentPart)
+	if !ok || len(parts) != 2 {
+		t.Fatalf("expected text + 1 image in first message, got %#v", capped[0].Content)
+	}
+
+	if text, _ := parts[0]["text"].(string); text != "preserved text part" {
+		t.Fatalf("expected text part preserved, got %q", text)
+	}
+
+	if capped[1].Content != "plain string answer" {
+		t.Fatalf("expected plain string message unchanged, got %#v", capped[1].Content)
+	}
+
+	if capped[2].Content != nil {
+		t.Fatalf("expected nil content unchanged, got %#v", capped[2].Content)
+	}
+}

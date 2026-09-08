@@ -1733,9 +1733,28 @@ func TestSystemPromptNowReplacesDateAndTime(t *testing.T) {
 		instant,
 	)
 
-	expectedPrompt := "Today is March 09 2026 and the time is 13:14:15 PHT+0800."
+	// {time} is quantized to 10-minute buckets so follow-ups share a
+	// byte-identical system prefix for provider prompt caching.
+	expectedPrompt := "Today is March 09 2026 and the time is 13:10:00 PHT+0800."
 	if prompt != expectedPrompt {
 		t.Fatalf("unexpected rendered prompt: %q", prompt)
+	}
+}
+
+func TestSystemPromptNowQuantizesTimeToTenMinuteBuckets(t *testing.T) {
+	t.Parallel()
+
+	location := time.FixedZone("PHT", 8*60*60)
+	early := systemPromptNow("{time}", time.Date(2026, time.March, 9, 13, 11, 0, 0, location))
+	late := systemPromptNow("{time}", time.Date(2026, time.March, 9, 13, 19, 59, 0, location))
+
+	if early != late {
+		t.Fatalf("expected stable system prefix within bucket, got %q and %q", early, late)
+	}
+
+	nextBucket := systemPromptNow("{time}", time.Date(2026, time.March, 9, 13, 20, 0, 0, location))
+	if nextBucket == early {
+		t.Fatalf("expected time to advance in the next bucket, got %q", nextBucket)
 	}
 }
 

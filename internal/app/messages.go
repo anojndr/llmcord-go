@@ -356,6 +356,17 @@ func (instance *bot) prepareMessageResponse(
 
 	request.RequestID = strings.TrimSpace(message.ID)
 
+	if request.Provider.UseResponsesAPI && providers.OpenAIConfiguredModel(request.ConfiguredModel) {
+		if previousResponseID, storedCount, ok := instance.chainableResponsesPreviousResponse(
+			message,
+			request.ConfiguredModel,
+			request.Messages,
+		); ok {
+			request.PreviousResponseID = previousResponseID
+			request.PreviousResponseCount = storedCount
+		}
+	}
+
 	providers.AssignOpenAIPromptCacheKey(&request, message, instance.nodes, loadedConfig.MaxMessages)
 
 	progress.advance(requestProgressStageGeneratingResponse)
@@ -366,6 +377,70 @@ func (instance *bot) prepareMessageResponse(
 	}
 
 	return request, tracker, warnings, nil
+}
+
+// chainableResponsesPreviousResponse resolves server-side chaining for a
+// Responses API follow-up. When the source message directly replies to the
+// bot's previous assistant message and that turn's stored response ID is
+// available for the same configured model, the follow-up sends only the new
+// tail with previous_response_id (see the OpenAI conversation-state guide)
+// instead of resending the full reply chain. This makes long-chain
+// follow-ups O(1) input tokens on the wire; the provider reuses the stored
+// prefix server-side. Anything unexpected falls back to a full stateless
+// send: non-user tails, non-assistant parents, missing IDs, or model
+// switches all return ok=false.
+func (instance *bot) chainableResponsesPreviousResponse(
+	sourceMessage *discordgo.Message,
+	configuredModel string,
+	requestMessages []chatMessage,
+) (string, int, bool) {
+	if sourceMessage == nil || len(requestMessages) < 2 {
+		return "", 0, false
+	}
+
+	if requestMessages[len(requestMessages)-1].Role != messageRoleUser {
+		return "", 0, false
+	}
+
+	if requestMessages[len(requestMessages)-2].Role != messageRoleAssistant {
+		return "", 0, false
+	}
+
+	sourceNode, ok := instance.nodes.get(strings.TrimSpace(sourceMessage.ID))
+	if !ok || sourceNode == nil {
+		return "", 0, false
+	}
+
+	sourceNode.mu.Lock()
+	parentMessage := sourceNode.parentMessage
+	sourceNode.mu.Unlock()
+
+	if parentMessage == nil {
+		return "", 0, false
+	}
+
+	parentNode, ok := instance.nodes.get(strings.TrimSpace(parentMessage.ID))
+	if !ok || parentNode == nil {
+		return "", 0, false
+	}
+
+	parentNode.mu.Lock()
+	defer parentNode.mu.Unlock()
+
+	if parentNode.role != messageRoleAssistant {
+		return "", 0, false
+	}
+
+	previousResponseID := strings.TrimSpace(parentNode.providerResponseID)
+	if previousResponseID == "" {
+		return "", 0, false
+	}
+
+	if strings.TrimSpace(parentNode.providerResponseModel) != strings.TrimSpace(configuredModel) {
+		return "", 0, false
+	}
+
+	return previousResponseID, len(requestMessages) - 1, true
 }
 
 // buildPreparedChatCompletionRequest assembles the outgoing request for a
@@ -782,6 +857,14 @@ func (instance *bot) buildMessageConversation(
 		useGeminiMediaAnalysis,
 		usePDFExtraction,
 	)
+
+	messages, strippedImages := capConversationImages(messages, contentOptions.maxImages)
+	if strippedImages > 0 {
+		warnings = append(warnings, fmt.Sprintf(
+			"Warning: max %d images per conversation",
+			contentOptions.maxImages,
+		))
+	}
 
 	return messages, warnings, nil
 }

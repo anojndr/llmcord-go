@@ -264,6 +264,74 @@ func selectMessageMedia(
 	return selectedMedia, summary
 }
 
+// capConversationImages enforces maxImages as a conversation-wide budget so
+// long reply chains stay fast regardless of model. Per-message selection
+// already caps each turn, but without a global cap a 25-message chain can
+// resend dozens of images every follow-up, exploding prefill time. Oldest
+// images are stripped first so the latest turn keeps full fidelity; text
+// and non-image parts are never touched. It returns the capped conversation
+// and the number of stripped images.
+func capConversationImages(messages []chatMessage, maxImages int) ([]chatMessage, int) {
+	if maxImages <= 0 || len(messages) == 0 {
+		return messages, 0
+	}
+
+	totalImages := 0
+
+	for _, message := range messages {
+		parts, ok := message.Content.([]contentPart)
+		if !ok {
+			continue
+		}
+
+		for _, part := range parts {
+			partType, _ := part["type"].(string)
+			if partType == contentTypeImageURL {
+				totalImages++
+			}
+		}
+	}
+
+	excess := totalImages - maxImages
+	if excess <= 0 {
+		return messages, 0
+	}
+
+	capped := make([]chatMessage, len(messages))
+	copy(capped, messages)
+
+	stripped := 0
+
+	for index := range capped {
+		if excess <= 0 {
+			break
+		}
+
+		parts, ok := capped[index].Content.([]contentPart)
+		if !ok || len(parts) == 0 {
+			continue
+		}
+
+		kept := make([]contentPart, 0, len(parts))
+
+		for _, part := range parts {
+			partType, _ := part["type"].(string)
+			if partType == contentTypeImageURL && excess > 0 {
+				excess--
+				stripped++
+
+				continue
+			}
+
+			kept = append(kept, part)
+		}
+
+		capped[index].Content = kept
+	}
+
+	return capped, stripped
+}
+
 func (instance *bot) initializeNode(
 	ctx context.Context,
 	message *discordgo.Message,

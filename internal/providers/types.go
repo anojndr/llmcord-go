@@ -24,6 +24,13 @@ type ChatCompletionRequest struct {
 	RequestID       string
 	Messages        []ChatMessage
 	Tools           []FunctionTool
+	// PreviousResponseID chains a Responses API follow-up onto the parent
+	// turn's stored response so only new input is sent. Empty disables
+	// chaining and sends the full Messages history statelessly.
+	PreviousResponseID string
+	// PreviousResponseCount is the number of leading Messages already
+	// stored under PreviousResponseID and excluded from chained input.
+	PreviousResponseCount int
 }
 
 // ProviderRequestConfig is the per-request provider identity and options.
