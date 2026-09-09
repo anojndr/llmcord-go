@@ -249,10 +249,6 @@ type sizeFailingTestBackend struct {
 	storedBytes int
 }
 
-func (b *sizeFailingTestBackend) loadSnapshot(_ string, _ int) (messageNodeStoreSnapshot, error) {
-	return messageNodeStoreSnapshot{}, nil
-}
-
 func (b *sizeFailingTestBackend) saveSnapshot(_ string, snapshot messageNodeStoreSnapshot) error {
 	payloadBytes, err := encodeMessageNodeSnapshotJSON(snapshot.Nodes)
 	if err != nil {
@@ -276,8 +272,6 @@ func (b *sizeFailingTestBackend) saveSnapshot(_ string, snapshot messageNodeStor
 
 	return nil
 }
-
-func (b *sizeFailingTestBackend) close() error { return nil }
 
 type stubPQError struct{ msg string }
 

@@ -44,11 +44,6 @@ func IsValidOpenAIReasoningEffort(effort string) bool {
 	}
 }
 
-// NormalizeOpenAIReasoningEffortForModel normalizes effort for a model.
-func NormalizeOpenAIReasoningEffortForModel(model, effort string) string {
-	return normalizeOpenAIReasoningEffort(model, effort)
-}
-
 // ApplyDedicatedReasoningEffort applies a dedicated reasoning effort to
 // extraBody for the correct API.
 func ApplyDedicatedReasoningEffort(

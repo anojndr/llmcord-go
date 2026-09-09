@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -223,25 +222,6 @@ func mustFetchWebsiteArticle(
 	}
 
 	return result
-}
-
-func newWebsiteTestResponse(
-	statusCode int,
-	headers http.Header,
-	body string,
-	request *http.Request,
-) *http.Response {
-	response := new(http.Response)
-	response.StatusCode = statusCode
-	response.Status = fmt.Sprintf("%d %s", statusCode, http.StatusText(statusCode))
-	response.Proto = "HTTP/1.1"
-	response.ProtoMajor = 1
-	response.ProtoMinor = 1
-	response.Header = headers
-	response.Body = io.NopCloser(strings.NewReader(body))
-	response.Request = request
-
-	return response
 }
 
 func TestExtractWebsiteURLsNormalizesDeduplicatesAndSkipsSpecializedHosts(t *testing.T) {
@@ -637,24 +617,6 @@ func TestWebsiteClientFetchRejectsResolvedPrivateHosts(t *testing.T) {
 
 	if !errors.Is(err, errUnsafeWebsiteAddress) {
 		t.Fatalf("expected unsafe address error, got %v", err)
-	}
-}
-
-func assertWebsiteTestCookie(
-	t *testing.T,
-	cookie *http.Cookie,
-	err error,
-	expectedName string,
-	expectedValue string,
-) {
-	t.Helper()
-
-	if err != nil {
-		t.Fatalf("read website test cookie %q: %v", expectedName, err)
-	}
-
-	if cookie.Name != expectedName || cookie.Value != expectedValue {
-		t.Fatalf("unexpected website test cookie: %#v", cookie)
 	}
 }
 
