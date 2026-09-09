@@ -53,9 +53,11 @@ func TestNewMaintenanceCommand(t *testing.T) {
 func TestHandleMaintenanceCommandRequiresOwner(t *testing.T) {
 	t.Parallel()
 
-	var response discordgo.InteractionResponse
+	// Ordered harness: the first request must be the deferred ack
+	// and the second the follow-up edit — any other sequence fails.
+	var capture deferredInteractionCapture
 
-	session := newInteractionTestSession(t, &response)
+	session := newDeferredInteractionTestSession(t, &capture)
 
 	instance := new(bot)
 	instance.maintenanceChannels = make(map[string]struct{})
@@ -67,8 +69,14 @@ func TestHandleMaintenanceCommandRequiresOwner(t *testing.T) {
 		t.Fatalf("handle maintenance command: %v", err)
 	}
 
-	if response.Data == nil || !strings.Contains(response.Data.Content, "do not have permission") {
-		t.Fatalf("unexpected response: %+v", response.Data)
+	assertDeferredInteractionResponse(t, &capture.deferredResponse)
+
+	if capture.requestCount != 2 {
+		t.Fatalf("unexpected interaction request count: got %d want 2", capture.requestCount)
+	}
+
+	if !strings.Contains(capture.editedResponse.Content, "do not have permission") {
+		t.Fatalf("unexpected edited response: %q", capture.editedResponse.Content)
 	}
 
 	if instance.isMaintenanceChannel("channel-123") {
@@ -255,9 +263,11 @@ func TestHandleMaintenanceCommandStopNotEnabled(t *testing.T) {
 func TestHandleMaintenanceCommandRejectsMissingChannelID(t *testing.T) {
 	t.Parallel()
 
-	var response discordgo.InteractionResponse
+	// Ordered harness: the first request must be the deferred ack
+	// and the second the follow-up edit — any other sequence fails.
+	var capture deferredInteractionCapture
 
-	session := newInteractionTestSession(t, &response)
+	session := newDeferredInteractionTestSession(t, &capture)
 
 	instance := new(bot)
 	instance.maintenanceChannels = make(map[string]struct{})
@@ -269,8 +279,14 @@ func TestHandleMaintenanceCommandRejectsMissingChannelID(t *testing.T) {
 		t.Fatalf("handle maintenance command: %v", err)
 	}
 
-	if response.Data == nil || !strings.Contains(response.Data.Content, "channel_id") {
-		t.Fatalf("unexpected response: %+v", response.Data)
+	assertDeferredInteractionResponse(t, &capture.deferredResponse)
+
+	if capture.requestCount != 2 {
+		t.Fatalf("unexpected interaction request count: got %d want 2", capture.requestCount)
+	}
+
+	if !strings.Contains(capture.editedResponse.Content, "channel_id") {
+		t.Fatalf("unexpected edited response: %q", capture.editedResponse.Content)
 	}
 }
 

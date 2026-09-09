@@ -123,9 +123,11 @@ func TestHandleEditChannelNameCommandRequiresOptions(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
-			var response discordgo.InteractionResponse
+			// Ordered harness: the first request must be the deferred ack
+			// and the second the follow-up edit — any other sequence fails.
+			var capture deferredInteractionCapture
 
-			session := newInteractionTestSession(t, &response)
+			session := newDeferredInteractionTestSession(t, &capture)
 			instance := new(bot)
 			interaction := newEditChannelNameCommandInteraction(test.channelID, test.newName)
 
@@ -134,13 +136,15 @@ func TestHandleEditChannelNameCommandRequiresOptions(t *testing.T) {
 				t.Fatalf("handle edit channel name command: %v", err)
 			}
 
-			if response.Data == nil {
-				t.Fatal("expected interaction response data")
+			assertDeferredInteractionResponse(t, &capture.deferredResponse)
+
+			if capture.requestCount != 2 {
+				t.Fatalf("unexpected interaction request count: got %d want 2", capture.requestCount)
 			}
 
 			expectedContent := "Both `channelid` and `newchannelname` are required."
-			if response.Data.Content != expectedContent {
-				t.Fatalf("unexpected response content: got %q want %q", response.Data.Content, expectedContent)
+			if capture.editedResponse.Content != expectedContent {
+				t.Fatalf("unexpected edited response content: got %q want %q", capture.editedResponse.Content, expectedContent)
 			}
 		})
 	}
@@ -343,17 +347,11 @@ func TestHandleCreateChannelCommandCreatesChannelAtGuildRoot(t *testing.T) {
 func TestHandleCreateChannelCommandRequiresChannelName(t *testing.T) {
 	t.Parallel()
 
-	var response discordgo.InteractionResponse
+	// Ordered harness: the first request must be the deferred ack
+	// and the second the follow-up edit — any other sequence fails.
+	var capture deferredInteractionCapture
 
-	session := newCreateChannelTestSession(
-		t,
-		&response,
-		http.StatusOK,
-		`{"id":"current-channel-id","guild_id":"guild-id"}`,
-		http.StatusOK,
-		`{"id":"new-channel-id","name":"new-name","guild_id":"guild-id"}`,
-		nil,
-	)
+	session := newDeferredInteractionTestSession(t, &capture)
 
 	err := new(bot).handleCreateChannelCommand(
 		session,
@@ -363,25 +361,25 @@ func TestHandleCreateChannelCommandRequiresChannelName(t *testing.T) {
 		t.Fatalf("handle create channel command: %v", err)
 	}
 
-	if response.Data == nil || response.Data.Content != "`channelname` is required." {
-		t.Fatalf("unexpected response: %+v", response.Data)
+	assertDeferredInteractionResponse(t, &capture.deferredResponse)
+
+	if capture.requestCount != 2 {
+		t.Fatalf("unexpected interaction request count: got %d want 2", capture.requestCount)
+	}
+
+	if capture.editedResponse.Content != "`channelname` is required." {
+		t.Fatalf("unexpected edited response content: %q", capture.editedResponse.Content)
 	}
 }
 
 func TestHandleCreateChannelCommandRejectsNonGuildInteraction(t *testing.T) {
 	t.Parallel()
 
-	var response discordgo.InteractionResponse
+	// Ordered harness: the first request must be the deferred ack
+	// and the second the follow-up edit — any other sequence fails.
+	var capture deferredInteractionCapture
 
-	session := newCreateChannelTestSession(
-		t,
-		&response,
-		http.StatusOK,
-		`{"id":"current-channel-id","guild_id":"guild-id"}`,
-		http.StatusOK,
-		`{"id":"new-channel-id","name":"new-name","guild_id":"guild-id"}`,
-		nil,
-	)
+	session := newDeferredInteractionTestSession(t, &capture)
 
 	interaction := newCreateChannelCommandInteraction("new-name")
 	interaction.GuildID = ""
@@ -391,8 +389,14 @@ func TestHandleCreateChannelCommandRejectsNonGuildInteraction(t *testing.T) {
 		t.Fatalf("handle create channel command: %v", err)
 	}
 
-	if response.Data == nil || response.Data.Content != "This command can only be used in a guild." {
-		t.Fatalf("unexpected response: %+v", response.Data)
+	assertDeferredInteractionResponse(t, &capture.deferredResponse)
+
+	if capture.requestCount != 2 {
+		t.Fatalf("unexpected interaction request count: got %d want 2", capture.requestCount)
+	}
+
+	if capture.editedResponse.Content != "This command can only be used in a guild." {
+		t.Fatalf("unexpected edited response content: %q", capture.editedResponse.Content)
 	}
 }
 
@@ -775,9 +779,11 @@ func TestHandleMoveChannelCommandRejectsInvalidInput(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
-			var response discordgo.InteractionResponse
+			// Ordered harness: the first request must be the deferred ack
+			// and the second the follow-up edit — any other sequence fails.
+			var capture deferredInteractionCapture
 
-			session := newInteractionTestSession(t, &response)
+			session := newDeferredInteractionTestSession(t, &capture)
 			instance := new(bot)
 			interaction := newMoveChannelCommandInteraction(test.channelID, test.movement, test.howMany)
 
@@ -786,12 +792,14 @@ func TestHandleMoveChannelCommandRejectsInvalidInput(t *testing.T) {
 				t.Fatalf("handle move channel command: %v", err)
 			}
 
-			if response.Data == nil {
-				t.Fatal("expected interaction response data")
+			assertDeferredInteractionResponse(t, &capture.deferredResponse)
+
+			if capture.requestCount != 2 {
+				t.Fatalf("unexpected interaction request count: got %d want 2", capture.requestCount)
 			}
 
-			if response.Data.Content != test.want {
-				t.Fatalf("unexpected response content: got %q want %q", response.Data.Content, test.want)
+			if capture.editedResponse.Content != test.want {
+				t.Fatalf("unexpected edited response content: got %q want %q", capture.editedResponse.Content, test.want)
 			}
 		})
 	}

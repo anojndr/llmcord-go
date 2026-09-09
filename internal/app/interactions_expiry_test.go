@@ -81,3 +81,133 @@ func newGroundingCommandInteraction(userID string) *discordgo.InteractionCreate 
 
 	return result
 }
+
+func TestExpiredInteractionDetailNamesSlashCommandOrComponent(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		interaction *discordgo.InteractionCreate
+		want        []any
+	}{
+		{
+			name: "slash command",
+			interaction: newInteractionCreateWithData(
+				discordgo.InteractionApplicationCommand,
+				discordgo.ApplicationCommandInteractionData{Name: modelCommandName},
+			),
+			want: []any{"command", modelCommandName},
+		},
+		{
+			name: "autocomplete",
+			interaction: newInteractionCreateWithData(
+				discordgo.InteractionApplicationCommandAutocomplete,
+				discordgo.ApplicationCommandInteractionData{Name: searchTypeCommandName},
+			),
+			want: []any{"command", searchTypeCommandName},
+		},
+		{
+			name: "message component",
+			interaction: newInteractionCreateWithData(
+				discordgo.InteractionMessageComponent,
+				discordgo.MessageComponentInteractionData{CustomID: showSourcesButtonCustomID},
+			),
+			want: []any{"custom_id", showSourcesButtonCustomID},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			assertExpiredInteractionDetail(t, test.interaction, test.want)
+		})
+	}
+}
+
+func TestExpiredInteractionDetailReturnsNilWithoutIdentifiableTarget(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		interaction *discordgo.InteractionCreate
+		want        []any
+	}{
+		{
+			name:        "nil interaction",
+			interaction: nil,
+			want:        nil,
+		},
+		{
+			name: "missing data",
+			interaction: func() *discordgo.InteractionCreate {
+				interaction := new(discordgo.Interaction)
+				interaction.Type = discordgo.InteractionApplicationCommand
+
+				result := new(discordgo.InteractionCreate)
+				result.Interaction = interaction
+
+				return result
+			}(),
+			want: nil,
+		},
+		{
+			name: "unrelated type",
+			interaction: newInteractionCreateWithData(
+				discordgo.InteractionPing,
+				discordgo.ApplicationCommandInteractionData{Name: modelCommandName},
+			),
+			want: nil,
+		},
+		{
+			name: "mismatched data type",
+			interaction: newInteractionCreateWithData(
+				discordgo.InteractionApplicationCommand,
+				discordgo.MessageComponentInteractionData{CustomID: showSourcesButtonCustomID},
+			),
+			want: nil,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			assertExpiredInteractionDetail(t, test.interaction, test.want)
+		})
+	}
+}
+
+func newInteractionCreateWithData(
+	interactionType discordgo.InteractionType,
+	data discordgo.InteractionData,
+) *discordgo.InteractionCreate {
+	interaction := new(discordgo.Interaction)
+	interaction.Type = interactionType
+	interaction.Data = data
+
+	result := new(discordgo.InteractionCreate)
+	result.Interaction = interaction
+
+	return result
+}
+
+func assertExpiredInteractionDetail(
+	t *testing.T,
+	interaction *discordgo.InteractionCreate,
+	want []any,
+) {
+	t.Helper()
+
+	got := expiredInteractionDetail(interaction)
+
+	if len(got) != len(want) {
+		t.Fatalf("unexpected detail: got %v want %v", got, want)
+	}
+
+	for index := range got {
+		if got[index] != want[index] {
+			t.Fatalf("unexpected detail: got %v want %v", got, want)
+		}
+	}
+}
