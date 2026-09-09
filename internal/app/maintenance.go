@@ -126,9 +126,22 @@ func (instance *bot) handleMaintenanceCommand(
 		return fmt.Errorf("maintenance interaction is required: %w", os.ErrInvalid)
 	}
 
+	// Defer first: Discord expires the interaction token if the initial
+	// response takes longer than 3 seconds. Every return below must go
+	// through the deferred follow-up edit, never a direct response, so a
+	// slow caller can never push the ack past the expiry window.
+	err := respondInteractionDeferredWithFlags(
+		session,
+		interaction.Interaction,
+		0,
+	)
+	if err != nil {
+		return fmt.Errorf("defer maintenance interaction response: %w", err)
+	}
+
 	invokerID := maintenanceInvokerID(interaction)
 	if invokerID != maintenanceOwnerID {
-		return respondInteractionText(
+		return editInteractionResponseText(
 			session,
 			interaction.Interaction,
 			"You do not have permission to manage maintenance mode.",
@@ -137,7 +150,7 @@ func (instance *bot) handleMaintenanceCommand(
 
 	commandData := interaction.ApplicationCommandData()
 	if len(commandData.Options) == 0 {
-		return respondInteractionText(
+		return editInteractionResponseText(
 			session,
 			interaction.Interaction,
 			"Missing subcommand. Use `/maintenance start` or `/maintenance stop`.",
@@ -148,20 +161,11 @@ func (instance *bot) handleMaintenanceCommand(
 
 	channelID := maintenanceChannelIDFromSubcommand(subcommand)
 	if channelID == "" {
-		return respondInteractionText(
+		return editInteractionResponseText(
 			session,
 			interaction.Interaction,
 			fmt.Sprintf("`%s` is required.", maintenanceChannelIDOptionName),
 		)
-	}
-
-	err := respondInteractionDeferredWithFlags(
-		session,
-		interaction.Interaction,
-		0,
-	)
-	if err != nil {
-		return fmt.Errorf("defer maintenance interaction response: %w", err)
 	}
 
 	switch subcommand.Name {

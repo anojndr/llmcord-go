@@ -15,6 +15,10 @@ import (
 
 const discordUnknownInteractionCode = 10062
 
+// expiredInteractionLogArgsCap reserves the discard log's base attributes
+// plus one optional detail pair (see expiredInteractionDetail).
+const expiredInteractionLogArgsCap = 6
+
 func (instance *bot) handleInteractionCreate(
 	session *discordgo.Session,
 	interaction *discordgo.InteractionCreate,
@@ -36,7 +40,10 @@ func (instance *bot) handleInteractionCreate(
 
 	if err != nil {
 		if isUnknownInteractionError(err) {
-			slog.Info("discard expired interaction", "interaction_id", interaction.ID, "type", interaction.Type)
+			args := make([]any, 0, expiredInteractionLogArgsCap)
+			args = append(args, "interaction_id", interaction.ID, "type", interaction.Type)
+			args = append(args, expiredInteractionDetail(interaction)...)
+			slog.Info("discard expired interaction", args...)
 
 			return
 		}
@@ -717,11 +724,10 @@ func (instance *bot) handleCreateGistButton(
 
 	messageNode, ok := instance.nodes.get(interaction.Message.ID)
 	if !ok {
-		return respondInteractionTextWithFlags(
+		return respondInteractionEphemeralText(
 			session,
 			interaction.Interaction,
 			"No response content available.",
-			discordgo.MessageFlagsEphemeral,
 		)
 	}
 
@@ -732,29 +738,26 @@ func (instance *bot) handleCreateGistButton(
 	messageNode.mu.Unlock()
 
 	if cachedURL != "" {
-		return respondInteractionTextWithFlags(
+		return respondInteractionEphemeralText(
 			session,
 			interaction.Interaction,
 			"View response better on GitHub Gist: <"+cachedURL+">",
-			discordgo.MessageFlagsEphemeral,
 		)
 	}
 
 	if !initialized || strings.TrimSpace(responseText) == "" {
-		return respondInteractionTextWithFlags(
+		return respondInteractionEphemeralText(
 			session,
 			interaction.Interaction,
 			"Response text is not ready yet.",
-			discordgo.MessageFlagsEphemeral,
 		)
 	}
 
 	if instance.gist == nil {
-		return respondInteractionTextWithFlags(
+		return respondInteractionEphemeralText(
 			session,
 			interaction.Interaction,
 			"GitHub Gist is unavailable right now.",
-			discordgo.MessageFlagsEphemeral,
 		)
 	}
 
@@ -1109,19 +1112,10 @@ func interactionOptionString(options []*discordgo.ApplicationCommandInteractionD
 	return options[0].StringValue()
 }
 
-func respondInteractionText(
+func respondInteractionEphemeralText(
 	session *discordgo.Session,
 	interaction *discordgo.Interaction,
 	content string,
-) error {
-	return respondInteractionTextWithFlags(session, interaction, content, 0)
-}
-
-func respondInteractionTextWithFlags(
-	session *discordgo.Session,
-	interaction *discordgo.Interaction,
-	content string,
-	flags discordgo.MessageFlags,
 ) error {
 	return respondInteractionMessage(
 		session,
@@ -1129,7 +1123,7 @@ func respondInteractionTextWithFlags(
 		discordgo.InteractionResponseChannelMessageWithSource,
 		content,
 		nil,
-		flags,
+		discordgo.MessageFlagsEphemeral,
 	)
 }
 
@@ -1238,6 +1232,37 @@ func isUnknownInteractionRESTError(err *discordgo.RESTError) bool {
 		err.Message.Code == discordUnknownInteractionCode
 }
 
+// expiredInteractionDetail names the slash command or component behind an
+// expired interaction token so a discard log always identifies what the user
+// invoked. It performs no I/O and must stay cheap: it runs on the error path
+// before the interaction is dropped.
+func expiredInteractionDetail(interaction *discordgo.InteractionCreate) []any {
+	if interaction == nil || interaction.Interaction == nil {
+		return nil
+	}
+
+	// Comma-ok assertions only: discordgo's Data accessors panic on a
+	// mismatched concrete type, which must never throw on this error path.
+	switch interaction.Type {
+	case discordgo.InteractionApplicationCommand,
+		discordgo.InteractionApplicationCommandAutocomplete:
+		if data, ok := interaction.Data.(discordgo.ApplicationCommandInteractionData); ok && data.Name != "" {
+			return []any{"command", data.Name}
+		}
+	case discordgo.InteractionMessageComponent:
+		if data, ok := interaction.Data.(discordgo.MessageComponentInteractionData); ok && data.CustomID != "" {
+			return []any{"custom_id", data.CustomID}
+		}
+	case discordgo.InteractionPing,
+		discordgo.InteractionModalSubmit:
+		return nil
+	default:
+		return nil
+	}
+
+	return nil
+}
+
 func (instance *bot) handleGroundingCommand(
 	session *discordgo.Session,
 	interaction *discordgo.InteractionCreate,
@@ -1321,6 +1346,18 @@ func (instance *bot) handleCreateChannelCommand(
 	session *discordgo.Session,
 	interaction *discordgo.InteractionCreate,
 ) error {
+	// Defer first: Discord expires the interaction token if the initial
+	// response takes longer than 3 seconds. Validation failures below use
+	// the deferred follow-up edit so the ack is always the first response.
+	err := respondInteractionDeferredWithFlags(
+		session,
+		interaction.Interaction,
+		0,
+	)
+	if err != nil {
+		return fmt.Errorf("defer create channel interaction response: %w", err)
+	}
+
 	commandData := interaction.ApplicationCommandData()
 
 	nameOption := commandData.GetOption(createChannelNameOptionName)
@@ -1331,7 +1368,7 @@ func (instance *bot) handleCreateChannelCommand(
 	}
 
 	if channelName == "" {
-		return respondInteractionText(
+		return editInteractionResponseText(
 			session,
 			interaction.Interaction,
 			"`channelname` is required.",
@@ -1340,20 +1377,11 @@ func (instance *bot) handleCreateChannelCommand(
 
 	guildID := interaction.GuildID
 	if guildID == "" {
-		return respondInteractionText(
+		return editInteractionResponseText(
 			session,
 			interaction.Interaction,
 			"This command can only be used in a guild.",
 		)
-	}
-
-	err := respondInteractionDeferredWithFlags(
-		session,
-		interaction.Interaction,
-		0,
-	)
-	if err != nil {
-		return fmt.Errorf("defer create channel interaction response: %w", err)
 	}
 
 	parentID := ""
@@ -1423,6 +1451,18 @@ func (instance *bot) handleEditChannelNameCommand(
 	session *discordgo.Session,
 	interaction *discordgo.InteractionCreate,
 ) error {
+	// Defer first: Discord expires the interaction token if the initial
+	// response takes longer than 3 seconds. Validation failures below use
+	// the deferred follow-up edit so the ack is always the first response.
+	err := respondInteractionDeferredWithFlags(
+		session,
+		interaction.Interaction,
+		0,
+	)
+	if err != nil {
+		return fmt.Errorf("defer edit channel name interaction response: %w", err)
+	}
+
 	commandData := interaction.ApplicationCommandData()
 
 	channelIDOption := commandData.GetOption(editChannelNameChannelIDOptionName)
@@ -1439,20 +1479,11 @@ func (instance *bot) handleEditChannelNameCommand(
 	}
 
 	if channelID == "" || newName == "" {
-		return respondInteractionText(
+		return editInteractionResponseText(
 			session,
 			interaction.Interaction,
 			"Both `channelid` and `newchannelname` are required.",
 		)
-	}
-
-	err := respondInteractionDeferredWithFlags(
-		session,
-		interaction.Interaction,
-		0,
-	)
-	if err != nil {
-		return fmt.Errorf("defer edit channel name interaction response: %w", err)
 	}
 
 	channelEdit := new(discordgo.ChannelEdit)
@@ -1482,32 +1513,9 @@ func (instance *bot) handleMoveChannelCommand(
 	session *discordgo.Session,
 	interaction *discordgo.InteractionCreate,
 ) error {
-	channelID, movement, howMany := moveChannelInputOptions(interaction.ApplicationCommandData())
-
-	if channelID == "" {
-		return respondInteractionText(
-			session,
-			interaction.Interaction,
-			"`channelid` is required.",
-		)
-	}
-
-	if movement != moveChannelMovementUp && movement != moveChannelMovementDown {
-		return respondInteractionText(
-			session,
-			interaction.Interaction,
-			"`movement` must be `up` or `down`.",
-		)
-	}
-
-	if howMany <= 0 {
-		return respondInteractionText(
-			session,
-			interaction.Interaction,
-			"`howmany` must be a positive integer.",
-		)
-	}
-
+	// Defer first: Discord expires the interaction token if the initial
+	// response takes longer than 3 seconds. Validation failures below use
+	// the deferred follow-up edit so the ack is always the first response.
 	err := respondInteractionDeferredWithFlags(
 		session,
 		interaction.Interaction,
@@ -1515,6 +1523,32 @@ func (instance *bot) handleMoveChannelCommand(
 	)
 	if err != nil {
 		return fmt.Errorf("defer move channel interaction response: %w", err)
+	}
+
+	channelID, movement, howMany := moveChannelInputOptions(interaction.ApplicationCommandData())
+
+	if channelID == "" {
+		return editInteractionResponseText(
+			session,
+			interaction.Interaction,
+			"`channelid` is required.",
+		)
+	}
+
+	if movement != moveChannelMovementUp && movement != moveChannelMovementDown {
+		return editInteractionResponseText(
+			session,
+			interaction.Interaction,
+			"`movement` must be `up` or `down`.",
+		)
+	}
+
+	if howMany <= 0 {
+		return editInteractionResponseText(
+			session,
+			interaction.Interaction,
+			"`howmany` must be a positive integer.",
+		)
 	}
 
 	channel, err := session.Channel(channelID)
