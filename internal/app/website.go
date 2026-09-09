@@ -1907,13 +1907,8 @@ func isFacebookHost(host string) bool {
 // parseWebsiteHTML and its helpers (extractWebsiteTitle, extractWebsiteBodyText,
 // websiteContentCandidates, renderWebsiteText etc.) are retained for direct
 // unit testing (e.g. TestWebsiteClientFetchExtractsMainContentAndIgnoresChrome
-// now calls parseWebsiteHTML directly). The local live-fetch path that used
-// doRequest/websiteFetchHTTPClient/SSRF transport was removed — website
-// extraction now goes exclusively via provider APIs (Firecrawl → TinyFish →
-// Exa → Tavily). Transport helpers below (newSSRFProtectedWebsiteTransport,
-// websiteFetchHTTPClient, doRequest, sendWebsiteRequest, redirectWebsiteRequest,
-// websiteResponseDetails, etc.) are currently dead code and kept only for
-// reference; they will be deleted in a follow-up cleanup.
+// now calls parseWebsiteHTML directly). Website extraction goes exclusively
+// via provider APIs (Firecrawl → TinyFish → Exa → Tavily).
 func parseWebsiteHTML(pageURL string, responseBody []byte) (websitePageContent, error) {
 	document, err := html.Parse(bytes.NewReader(responseBody))
 	if err != nil {

@@ -88,10 +88,6 @@ func newShowImagesInteraction() *discordgo.InteractionCreate {
 	return newComponentInteraction("response-message", showImagesButtonCustomID)
 }
 
-func newShowImagesPageInteraction(messageID string, pageIndex int) *discordgo.InteractionCreate {
-	return newComponentInteraction(messageID, showImagesPageButtonCustomID(messageID, pageIndex))
-}
-
 func TestHandleInteractionCreateRespondsToShowImagesButtonSendsImages(t *testing.T) {
 	t.Parallel()
 
