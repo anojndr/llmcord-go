@@ -18,7 +18,7 @@ const (
 	defaultAutocompressorBaseURL      = "https://autocompressor.net"
 	autocompressorTargetSize          = "8"
 	autocompressorDefaultPollInterval = time.Second
-	autocompressorMaxPollAttempts     = 120
+	autocompressorMaxPollAttempts     = 600
 	autocompressorUserAgent           = "Mozilla/5.0"
 	autocompressorDefaultMIMEType     = "video/mp4"
 )
