@@ -98,6 +98,8 @@ func (instance *bot) handleApplicationCommandInteraction(
 		return instance.handleMoveChannelCommand(session, interaction)
 	case maintenanceCommandName:
 		return instance.handleMaintenanceCommand(session, interaction)
+	case watcherStatusCommandName:
+		return instance.handleWatcherStatusCommand(session, interaction)
 	default:
 		return nil
 	}

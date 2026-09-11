@@ -75,6 +75,12 @@ type bot struct {
 	botStateGeneration           atomic.Uint64
 	botStateSaveMu               sync.Mutex
 	botClosed                    atomic.Bool
+	iphoneReleased               atomic.Bool
+	iphoneCheckCount             atomic.Uint64
+	watcherMu                    sync.Mutex
+	watcherCancel                context.CancelFunc
+	watcherWg                    sync.WaitGroup
+	watcherRunning               bool
 }
 
 func newOptimizedHTTPTransport() *http.Transport {
@@ -207,6 +213,7 @@ func newBot(ctx context.Context, configPath string, loadedConfig config) (*bot, 
 		discordgo.IntentsDirectMessages |
 		discordgo.IntentsMessageContent
 	discordSession.AddHandler(recoverHandler(instance.handleReady))
+	discordSession.AddHandler(recoverHandler(instance.handleResumed))
 	discordSession.AddHandler(recoverHandler(instance.handleConnect))
 	discordSession.AddHandler(recoverHandler(instance.handleChannelUpdate))
 	discordSession.AddHandler(recoverHandler(instance.handleInteractionCreate))
@@ -340,6 +347,8 @@ func (instance *bot) open(ctx context.Context, loadedConfig config) error {
 
 	instance.markSessionConfigured()
 
+	instance.startIPhoneWatcher(ctx)
+
 	if loadedConfig.ClientID != "" {
 		slog.Info(
 			"bot invite url",
@@ -361,6 +370,14 @@ func (instance *bot) handleReady(_ *discordgo.Session, _ *discordgo.Ready) {
 	if gatewayURL != "" {
 		instance.armGatewayProbe(gatewayURL)
 	}
+}
+
+// handleResumed fires when the gateway resumes a saved session instead of
+// fresh-identifying. No READY is dispatched on resume, so without this the
+// online announcement would never print after a graceful restart even
+// though the bot is fully functional.
+func (instance *bot) handleResumed(_ *discordgo.Session, _ *discordgo.Resumed) {
+	instance.markDiscordReady()
 }
 
 // handleConnect runs after a successful (re)connect to the gateway. The
@@ -448,6 +465,7 @@ func (instance *bot) configureSession(loadedConfig config) error {
 func (instance *bot) close() error {
 	instance.botClosed.Store(true)
 	instance.stopReconnectGuard()
+	instance.stopIPhoneWatcher()
 
 	var sessionErr error
 
@@ -492,6 +510,7 @@ func (instance *bot) syncCommands() error {
 	commands = append(commands, newEditChannelNameCommand())
 	commands = append(commands, newMoveChannelCommand())
 	commands = append(commands, newMaintenanceCommand())
+	commands = append(commands, newWatcherStatusCommand())
 
 	_, err := instance.session.ApplicationCommandBulkOverwrite(
 		instance.session.State.User.ID,
