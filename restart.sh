@@ -23,7 +23,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 LOG_FILE="${LLMCORD_LOG_FILE:-llmcord-go.log}"
-ONLINE_TIMEOUT="${LLMCORD_ONLINE_TIMEOUT:-30}"
+ONLINE_TIMEOUT="${LLMCORD_ONLINE_TIMEOUT:-90}"
 
 log() { printf '[restart] %s\n' "$*"; }
 

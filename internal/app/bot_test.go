@@ -216,6 +216,32 @@ func TestReadyAnnouncementWaitsForDiscordReadyWhenConfiguredFirst(t *testing.T) 
 	}
 }
 
+func TestResumedAnnouncementPrintsAfterConfiguration(t *testing.T) {
+	t.Parallel()
+
+	buffer := new(bytes.Buffer)
+	instance := new(bot)
+	instance.onlineOutput = buffer
+
+	instance.markSessionConfigured()
+
+	if buffer.Len() != 0 {
+		t.Fatalf("expected no announcement before resumed event, got %q", buffer.String())
+	}
+
+	instance.handleResumed(nil, nil)
+
+	if buffer.String() != readyMessage+"\n" {
+		t.Fatalf("unexpected announcement after resumed event: %q", buffer.String())
+	}
+
+	instance.handleResumed(nil, nil)
+
+	if buffer.String() != readyMessage+"\n" {
+		t.Fatalf("expected announcement only once, got %q", buffer.String())
+	}
+}
+
 func TestReserveEditDelayUsesSeparateMessageBuckets(t *testing.T) {
 	t.Parallel()
 
