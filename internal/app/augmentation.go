@@ -13,11 +13,14 @@ var (
 	shortAnswerRE       = regexp.MustCompile(`(?i)\bshort\s+answer\b`)
 	dontBeSycophanticRE = regexp.MustCompile(`(?i)\bdon['’]?t\s+be\s+sycophantic\b`)
 	adhdFriendlyRE      = regexp.MustCompile(`(?i)\badhd[-\s]*friendly\b`)
+	alwaysEnglishRE     = regexp.MustCompile(`(?i)\balways\s+in\s+english\b`)
 )
 
 const dontBeSycophanticPhrase = "don't be sycophantic."
 
 const adhdFriendlyPhrase = "make sure your output is adhd-friendly."
+
+const alwaysEnglishPhrase = "make sure your output is always in english unless instructed by the user to use another language."
 
 const (
 	augmentedPromptPrefix        = "Answer the user's query based on "
@@ -591,6 +594,10 @@ func containsADHDFriendlyPhrase(text string) bool {
 	return adhdFriendlyRE.MatchString(text)
 }
 
+func containsAlwaysEnglishPhrase(text string) bool {
+	return alwaysEnglishRE.MatchString(text)
+}
+
 // userQueryFromContent extracts the UserQuery from a chatMessage Content value.
 // Unknown content types return "" and delegate error surfacing to
 // appendContextToConversation (which validates content types and returns
@@ -631,12 +638,14 @@ func latestUserQuery(conversation []chatMessage) (string, bool) {
 // the branching used by both prepareMessageResponse and buildFallbackRequest
 // so the two request builders stay in sync. It supports any combination of
 // auto_append_search_web, auto_append_short_answer,
-// auto_append_dont_be_sycophantic, and auto_append_adhd_friendly, appending
-// missing phrases together with a single paragraph break before the first and
-// single newlines between them (e.g. "search the web.\nshort answer.\ndon't be
-// sycophantic.\nmake sure your output is adhd-friendly.") to match the spec.
+// auto_append_dont_be_sycophantic, auto_append_adhd_friendly, and
+// auto_append_always_english, appending missing phrases together with a
+// single paragraph break before the first and single newlines between them
+// (e.g. "search the web.\nshort answer.\ndon't be sycophantic.\nmake sure your
+// output is adhd-friendly.\nmake sure your output is always in english unless
+// instructed by the user to use another language.") to match the spec.
 func applyAutoAppend(provider providerConfig, conversation []chatMessage) ([]chatMessage, error) {
-	if !provider.AutoAppendSearchWeb && !provider.AutoAppendShortAnswer && !provider.AutoAppendDontBeSycophantic && !provider.AutoAppendADHDFriendly {
+	if !provider.AutoAppendSearchWeb && !provider.AutoAppendShortAnswer && !provider.AutoAppendDontBeSycophantic && !provider.AutoAppendADHDFriendly && !provider.AutoAppendAlwaysEnglish {
 		return conversation, nil
 	}
 
@@ -649,8 +658,9 @@ func applyAutoAppend(provider providerConfig, conversation []chatMessage) ([]cha
 	hasShort := !provider.AutoAppendShortAnswer || containsShortAnswerPhrase(userQuery)
 	hasTruth := !provider.AutoAppendDontBeSycophantic || containsDontBeSycophanticPhrase(userQuery)
 	hasADHD := !provider.AutoAppendADHDFriendly || containsADHDFriendlyPhrase(userQuery)
+	hasEnglish := !provider.AutoAppendAlwaysEnglish || containsAlwaysEnglishPhrase(userQuery)
 
-	if hasSearch && hasShort && hasTruth && hasADHD {
+	if hasSearch && hasShort && hasTruth && hasADHD && hasEnglish {
 		return conversation, nil
 	}
 
@@ -670,6 +680,10 @@ func applyAutoAppend(provider providerConfig, conversation []chatMessage) ([]cha
 
 		if provider.AutoAppendADHDFriendly && !containsADHDFriendlyPhrase(prompt.UserQuery) {
 			toAppend = append(toAppend, adhdFriendlyPhrase)
+		}
+
+		if provider.AutoAppendAlwaysEnglish && !containsAlwaysEnglishPhrase(prompt.UserQuery) {
+			toAppend = append(toAppend, alwaysEnglishPhrase)
 		}
 
 		if len(toAppend) == 0 {
