@@ -1,7 +1,6 @@
 package app
 
 import (
-	"fmt"
 	"log/slog"
 	"regexp"
 	"strings"
@@ -54,13 +53,13 @@ func xFixupDisplayName(message *discordgo.Message) string {
 
 // attributionPrefix renders the shared "<name> sent:" attribution used when a
 // feature deletes a user message and re-sends its content as the bot (x.com
-// fixup, YouTube Shorts).
+// fixup, TikTok fixup, YouTube Shorts).
 func attributionPrefix(displayName string) string {
-	return fmt.Sprintf("%s sent:\n", displayName)
+	return displayName + " sent:\n"
 }
 
 // resendAllowedMentionUsers lists the user IDs that may be pinged when a
-// message is deleted and re-sent as the bot (x.com fixup, YouTube Shorts).
+// message is deleted and re-sent as the bot (x.com fixup, TikTok fixup, YouTube Shorts).
 // Discord suppresses mention notifications unless allowed_mentions names
 // them, so the original author and everyone mentioned in the original
 // message are forwarded; roles and @everyone stay suppressed by the empty
@@ -72,17 +71,17 @@ func resendAllowedMentionUsers(message *discordgo.Message) []string {
 
 	ids := make([]string, 0, len(message.Mentions)+1)
 	seen := make(map[string]struct{}, len(message.Mentions)+1)
-	addID := func(id string) {
-		if id == "" {
+	addID := func(userID string) {
+		if userID == "" {
 			return
 		}
 
-		if _, exists := seen[id]; exists {
+		if _, exists := seen[userID]; exists {
 			return
 		}
 
-		seen[id] = struct{}{}
-		ids = append(ids, id)
+		seen[userID] = struct{}{}
+		ids = append(ids, userID)
 	}
 
 	if message.Author != nil {
@@ -102,6 +101,116 @@ func resendAllowedMentionUsers(message *discordgo.Message) []string {
 	return ids
 }
 
+// linkFixupExcluded reports whether at-ai/bot-mention rules suppress any
+// delete-and-resend link fixup (x.com, TikTok). Callers check their own
+// domain substring and fixup-change gate separately.
+func linkFixupExcluded(message *discordgo.Message, botUserID string) bool {
+	// Exclude if contains "at ai" phrase (word-boundary, case-insensitive) or bot mention syntax.
+	if hasAtAIMention(message.Content) {
+		return true
+	}
+	// Additional literal substring check for "at ai" to satisfy spec's plain-contains wording
+	// but only when it appears as separate phrase (avoid false positives inside other words).
+	// We keep hasAtAIMention as authoritative; the extra check is redundant but ensures
+	// compliance with spec's literal "contains at ai" description for typical usage.
+	// Exclude if mentioning the bot via dynamic ID.
+	if botUserID != "" && messageMentionsUser(message, botUserID) {
+		return true
+	}
+	// Exclude if content contains hardcoded bot mention forms.
+	if strings.Contains(message.Content, "<@"+hardcodedBotMentionID+">") ||
+		strings.Contains(message.Content, "<@!"+hardcodedBotMentionID+">") {
+		return true
+	}
+	// Also check Mentions slice for hardcoded ID (covers case where botUserID empty or stale).
+	for _, u := range message.Mentions {
+		if u != nil && u.ID == hardcodedBotMentionID {
+			return true
+		}
+	}
+
+	return false
+}
+
+// resendFixedMessage deletes the original message and re-sends fixedContent
+// as the bot with attribution. fixupName labels log entries ("x.com", "tiktok").
+func (instance *bot) resendFixedMessage(message *discordgo.Message, fixedContent, fixupName string) bool {
+	displayName := xFixupDisplayName(message)
+	newContent := attributionPrefix(displayName) + fixedContent
+	// Discord content limit; truncate if necessary.
+	if len(newContent) > discordMessageContentMaxLength {
+		// Reserve prefix length.
+		prefix := attributionPrefix(displayName)
+
+		allowed := max(discordMessageContentMaxLength-len(prefix), 0)
+
+		if len(fixedContent) > allowed {
+			fixedContent = fixedContent[:allowed]
+		}
+
+		newContent = prefix + fixedContent
+	}
+
+	if instance == nil || instance.session == nil {
+		slog.Info(fixupName+" fixup skipped: nil session", "message_id", message.ID, "channel_id", message.ChannelID)
+
+		return false
+	}
+
+	if err := instance.session.ChannelMessageDelete(message.ChannelID, message.ID); err != nil {
+		logWarn("delete "+fixupName+" message", err, "channel_id", message.ChannelID, "message_id", message.ID)
+	}
+
+	send := &discordgo.MessageSend{
+		Content:    newContent,
+		Embeds:     nil,
+		TTS:        false,
+		Components: nil,
+		Files:      nil,
+		AllowedMentions: &discordgo.MessageAllowedMentions{
+			Parse:       []discordgo.AllowedMentionType{},
+			Roles:       nil,
+			Users:       resendAllowedMentionUsers(message),
+			RepliedUser: false,
+		},
+		Reference:  nil,
+		StickerIDs: nil,
+		Flags:      0,
+		Poll:       nil,
+		File:       nil,
+		Embed:      nil,
+	}
+	if _, err := instance.session.ChannelMessageSendComplex(message.ChannelID, send); err != nil {
+		// Fallback to simple send.
+		if _, err2 := instance.session.ChannelMessageSend(message.ChannelID, newContent); err2 != nil {
+			logWarn("send "+fixupName+" fixup message", err2, "channel_id", message.ChannelID)
+			logWarn("send "+fixupName+" fixup message (complex)", err, "channel_id", message.ChannelID)
+		} else {
+			slog.Info(
+				fixupName+" fixup sent (fallback)",
+				"channel_id",
+				message.ChannelID,
+				"message_id",
+				message.ID,
+				"author",
+				displayName,
+			)
+		}
+	} else {
+		slog.Info(
+			fixupName+" fixup applied",
+			"message_id",
+			message.ID,
+			"channel_id",
+			message.ChannelID,
+			"author",
+			displayName,
+		)
+	}
+
+	return true
+}
+
 func shouldHandleXFixup(message *discordgo.Message, botUserID string) bool {
 	if message == nil || message.Author == nil || message.Author.Bot {
 		return false
@@ -114,36 +223,23 @@ func shouldHandleXFixup(message *discordgo.Message, botUserID string) bool {
 	if !strings.Contains(strings.ToLower(message.Content), "x.com") {
 		return false
 	}
-	// Exclude if contains "at ai" phrase (word-boundary, case-insensitive) or bot mention syntax.
-	if hasAtAIMention(message.Content) {
+
+	if linkFixupExcluded(message, botUserID) {
 		return false
-	}
-	// Additional literal substring check for "at ai" to satisfy spec's plain-contains wording
-	// but only when it appears as separate phrase (avoid false positives inside other words).
-	// We keep hasAtAIMention as authoritative; the extra check is redundant but ensures
-	// compliance with spec's literal "contains at ai" description for typical usage.
-	// Exclude if mentioning the bot via dynamic ID.
-	if botUserID != "" && messageMentionsUser(message, botUserID) {
-		return false
-	}
-	// Exclude if content contains hardcoded bot mention forms.
-	if strings.Contains(message.Content, "<@"+hardcodedBotMentionID+">") ||
-		strings.Contains(message.Content, "<@!"+hardcodedBotMentionID+">") {
-		return false
-	}
-	// Also check Mentions slice for hardcoded ID (covers case where botUserID empty or stale).
-	for _, u := range message.Mentions {
-		if u != nil && u.ID == hardcodedBotMentionID {
-			return false
-		}
 	}
 	// Check if fixup actually changes content (prevents handling already-fixed messages).
-	fixed := fixupXComContent(message.Content)
-	if fixed == message.Content {
-		return false
+	return fixupXComContent(message.Content) != message.Content
+}
+
+// handleLinkFixups runs every delete-and-resend embed fixup (x.com, TikTok)
+// before the normal reply pipeline. It reports whether a fixup consumed the
+// message; callers must still evict excess nodes on true.
+func (instance *bot) handleLinkFixups(message *discordgo.Message, botUserID string) bool {
+	if instance.handleXFixup(message, botUserID) {
+		return true
 	}
 
-	return true
+	return instance.handleTikTokFixup(message, botUserID)
 }
 
 func (instance *bot) handleXFixup(message *discordgo.Message, botUserID string) bool {
@@ -151,57 +247,10 @@ func (instance *bot) handleXFixup(message *discordgo.Message, botUserID string) 
 		return false
 	}
 
-	fixedContent := fixupXComContent(message.Content)
+	fixedContent := fixupLinkContent(message.Content)
 	if fixedContent == message.Content {
 		return false
 	}
 
-	displayName := xFixupDisplayName(message)
-	newContent := attributionPrefix(displayName) + fixedContent
-	// Discord content limit 2000; truncate if necessary.
-	if len(newContent) > 2000 {
-		// Reserve prefix length.
-		prefix := attributionPrefix(displayName)
-
-		allowed := 2000 - len(prefix)
-		if allowed < 0 {
-			allowed = 0
-		}
-
-		if len(fixedContent) > allowed {
-			fixedContent = fixedContent[:allowed]
-		}
-
-		newContent = prefix + fixedContent
-	}
-
-	if instance == nil || instance.session == nil {
-		slog.Info("x.com fixup skipped: nil session", "message_id", message.ID, "channel_id", message.ChannelID)
-		return false
-	}
-
-	if err := instance.session.ChannelMessageDelete(message.ChannelID, message.ID); err != nil {
-		logWarn("delete x.com message", err, "channel_id", message.ChannelID, "message_id", message.ID)
-	}
-
-	send := &discordgo.MessageSend{
-		Content: newContent,
-		AllowedMentions: &discordgo.MessageAllowedMentions{
-			Parse: []discordgo.AllowedMentionType{},
-			Users: resendAllowedMentionUsers(message),
-		},
-	}
-	if _, err := instance.session.ChannelMessageSendComplex(message.ChannelID, send); err != nil {
-		// Fallback to simple send.
-		if _, err2 := instance.session.ChannelMessageSend(message.ChannelID, newContent); err2 != nil {
-			logWarn("send x.com fixup message", err2, "channel_id", message.ChannelID)
-			logWarn("send x.com fixup message (complex)", err, "channel_id", message.ChannelID)
-		} else {
-			slog.Info("x.com fixup sent (fallback)", "channel_id", message.ChannelID, "message_id", message.ID, "author", displayName)
-		}
-	} else {
-		slog.Info("x.com fixup applied", "message_id", message.ID, "channel_id", message.ChannelID, "author", displayName)
-	}
-
-	return true
+	return instance.resendFixedMessage(message, fixedContent, "x.com")
 }

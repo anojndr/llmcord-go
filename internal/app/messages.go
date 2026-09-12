@@ -74,32 +74,13 @@ func (instance *bot) handleMessageCreate(
 		return
 	}
 
-	if instance.handleXFixup(message, botUserID) {
+	if instance.handleLinkFixups(message, botUserID) {
 		instance.nodes.evictExcess()
 
 		return
 	}
 
-	facebookVideoReply := shouldReplyWithFacebookVideos(message, botUserID)
-	youtubeShortsReply := !facebookVideoReply && shouldReplyWithYouTubeShorts(message, botUserID)
-
-	if shouldIgnoreIncomingMessage(message, botUserID) && !facebookVideoReply && !youtubeShortsReply {
-		return
-	}
-
-	if facebookVideoReply {
-		instance.replyWithFacebookVideos(context.Background(), message)
-
-		instance.nodes.evictExcess()
-
-		return
-	}
-
-	if youtubeShortsReply {
-		instance.replyWithYouTubeShorts(context.Background(), message)
-
-		instance.nodes.evictExcess()
-
+	if instance.handleMessageShortCircuits(message, botUserID) {
 		return
 	}
 
@@ -123,6 +104,36 @@ func (instance *bot) handleMessageCreate(
 	}
 
 	instance.nodes.evictExcess()
+}
+
+// handleMessageShortCircuits runs the pre-LLM reply paths (Facebook videos,
+// YouTube Shorts) and the ignore gate. True means the message is fully
+// handled and the caller must return without responding.
+func (instance *bot) handleMessageShortCircuits(message *discordgo.Message, botUserID string) bool {
+	facebookVideoReply := shouldReplyWithFacebookVideos(message, botUserID)
+	youtubeShortsReply := !facebookVideoReply && shouldReplyWithYouTubeShorts(message, botUserID)
+
+	if shouldIgnoreIncomingMessage(message, botUserID) && !facebookVideoReply && !youtubeShortsReply {
+		return true
+	}
+
+	if facebookVideoReply {
+		instance.replyWithFacebookVideos(context.Background(), message)
+
+		instance.nodes.evictExcess()
+
+		return true
+	}
+
+	if youtubeShortsReply {
+		instance.replyWithYouTubeShorts(context.Background(), message)
+
+		instance.nodes.evictExcess()
+
+		return true
+	}
+
+	return false
 }
 
 func shouldIgnoreIncomingMessage(message *discordgo.Message, botUserID string) bool {
@@ -279,6 +290,26 @@ func (instance *bot) respondToMessage(
 	return nil
 }
 
+// applyFallbackConversation substitutes the attachment-download fallback
+// conversation when the reply chain yields no messages.
+func applyFallbackConversation(
+	messages []chatMessage,
+	warnings []string,
+	message *discordgo.Message,
+) ([]chatMessage, []string) {
+	if len(messages) != 0 {
+		return messages, warnings
+	}
+
+	fallbackMessage, fallbackWarnings := fallbackAttachmentDownloadConversation(message, warnings)
+	if fallbackMessage != nil {
+		messages = append(messages, *fallbackMessage)
+		warnings = fallbackWarnings
+	}
+
+	return messages, warnings
+}
+
 func (instance *bot) prepareMessageResponse(
 	ctx context.Context,
 	loadedConfig config,
@@ -297,16 +328,7 @@ func (instance *bot) prepareMessageResponse(
 			fmt.Errorf("build message conversation: %w", err)
 	}
 
-	if len(messages) == 0 {
-		fallbackMessage, fallbackWarnings := fallbackAttachmentDownloadConversation(
-			message,
-			warnings,
-		)
-		if fallbackMessage != nil {
-			messages = append(messages, *fallbackMessage)
-			warnings = fallbackWarnings
-		}
-	}
+	messages, warnings = applyFallbackConversation(messages, warnings, message)
 
 	progress.advance(requestProgressStageGatheringContext)
 
@@ -406,8 +428,8 @@ func (instance *bot) chainableResponsesPreviousResponse(
 		return "", 0, false
 	}
 
-	sourceNode, ok := instance.nodes.get(strings.TrimSpace(sourceMessage.ID))
-	if !ok || sourceNode == nil {
+	sourceNode, found := instance.nodes.get(strings.TrimSpace(sourceMessage.ID))
+	if !found || sourceNode == nil {
 		return "", 0, false
 	}
 
@@ -944,6 +966,10 @@ func configuredModelProvider(
 	return provider, nil
 }
 
+// preparedAugmentationStageCapacity is the fixed number of conversation
+// augmentation stages run per message.
+const preparedAugmentationStageCapacity = 4
+
 func (instance *bot) augmentConversation(
 	ctx context.Context,
 	loadedConfig config,
@@ -952,8 +978,10 @@ func (instance *bot) augmentConversation(
 	warnings []string,
 	urlExtractionText string,
 ) ([]chatMessage, *searchMetadata, []string, error) {
-	stages := []preparedAugmentationStage{
-		{
+	stages := make([]preparedAugmentationStage, 0, preparedAugmentationStageCapacity)
+	stages = append(
+		stages,
+		preparedAugmentationStage{
 			name: "visual search",
 			prepare: func(taskContext context.Context) (preparedConversationAugmentation, error) {
 				return instance.prepareVisualSearchAugmentation(
@@ -964,10 +992,6 @@ func (instance *bot) augmentConversation(
 				)
 			},
 		},
-	}
-
-	stages = append(
-		stages,
 		preparedAugmentationStage{
 			name: "website",
 			prepare: func(taskContext context.Context) (preparedConversationAugmentation, error) {
@@ -1224,12 +1248,14 @@ func buildChatCompletionRequest(
 			ExtraQuery:      provider.ExtraQuery,
 			ExtraBody:       extraBody,
 		},
-		Model:           modelName,
-		ConfiguredModel: providerSlashModel,
-		SessionID:       "",
-		RequestID:       "",
-		Messages:        messages,
-		Tools:           nil,
+		Model:                 modelName,
+		ConfiguredModel:       providerSlashModel,
+		SessionID:             "",
+		RequestID:             "",
+		Messages:              messages,
+		Tools:                 nil,
+		PreviousResponseID:    "",
+		PreviousResponseCount: 0,
 	}, nil
 }
 

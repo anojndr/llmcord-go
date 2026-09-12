@@ -69,57 +69,63 @@ type xfixupCapture struct {
 	unexpected          []string
 }
 
-func (c *xfixupCapture) recordDelete(path string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+func (capture *xfixupCapture) recordDelete(path string) {
+	capture.mu.Lock()
+	defer capture.mu.Unlock()
 
-	c.deletes = append(c.deletes, path)
+	capture.deletes = append(capture.deletes, path)
 }
 
-func (c *xfixupCapture) recordSend(content string, allowed *capturedAllowedMentions, path string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+func (capture *xfixupCapture) recordSend(content string, allowed *capturedAllowedMentions, path string) {
+	capture.mu.Lock()
+	defer capture.mu.Unlock()
 
-	c.sends = append(c.sends, path)
-	c.sendContents = append(c.sendContents, content)
-	c.sendAllowedMentions = allowed
-}
-func (c *xfixupCapture) recordUnexpected(m, p string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	c.unexpected = append(c.unexpected, m+" "+p)
-}
-func (c *xfixupCapture) snapshot() (deletes []string, sends []string, contents []string, unexpected []string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	return append([]string(nil), c.deletes...), append([]string(nil), c.sends...),
-		append([]string(nil), c.sendContents...), append([]string(nil), c.unexpected...)
+	capture.sends = append(capture.sends, path)
+	capture.sendContents = append(capture.sendContents, content)
+	capture.sendAllowedMentions = allowed
 }
 
-func (c *xfixupCapture) allowedMentionsSnapshot() *capturedAllowedMentions {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+func (capture *xfixupCapture) recordUnexpected(m, p string) {
+	capture.mu.Lock()
+	defer capture.mu.Unlock()
 
-	if c.sendAllowedMentions == nil {
+	capture.unexpected = append(capture.unexpected, m+" "+p)
+}
+
+func (capture *xfixupCapture) snapshot() ([]string, []string, []string, []string) {
+	capture.mu.Lock()
+	defer capture.mu.Unlock()
+
+	deletes := append([]string(nil), capture.deletes...)
+	sends := append([]string(nil), capture.sends...)
+	contents := append([]string(nil), capture.sendContents...)
+	unexpected := append([]string(nil), capture.unexpected...)
+
+	return deletes, sends, contents, unexpected
+}
+
+func (capture *xfixupCapture) allowedMentionsSnapshot() *capturedAllowedMentions {
+	capture.mu.Lock()
+	defer capture.mu.Unlock()
+
+	if capture.sendAllowedMentions == nil {
 		return nil
 	}
 
-	allowed := *c.sendAllowedMentions
+	allowed := *capture.sendAllowedMentions
 	allowed.Parse = append([]string(nil), allowed.Parse...)
 	allowed.Users = append([]string(nil), allowed.Users...)
 
 	return &allowed
 }
 
-func newXFixupCaptureTransport(c *xfixupCapture) roundTripFunc {
+func newXFixupCaptureTransport(capture *xfixupCapture) roundTripFunc {
 	return func(req *http.Request) (*http.Response, error) {
 		// Discordgo uses: DELETE /api/channels/{channelID}/messages/{messageID}
 		// and POST /api/channels/{channelID}/messages
 		switch {
 		case req.Method == http.MethodDelete && strings.Contains(req.URL.Path, "/messages/"):
-			c.recordDelete(req.URL.Path)
+			capture.recordDelete(req.URL.Path)
 			resp := &http.Response{
 				Status:     "204 No Content",
 				StatusCode: http.StatusNoContent,
@@ -138,7 +144,7 @@ func newXFixupCaptureTransport(c *xfixupCapture) roundTripFunc {
 			}
 
 			_ = json.Unmarshal(body, &payload)
-			c.recordSend(payload.Content, payload.AllowedMentions, req.URL.Path)
+			capture.recordSend(payload.Content, payload.AllowedMentions, req.URL.Path)
 			// Return a discord message response
 			msg := &discordgo.Message{ID: "new-msg", ChannelID: "channel-1"}
 			b, _ := json.Marshal(msg)
@@ -153,7 +159,7 @@ func newXFixupCaptureTransport(c *xfixupCapture) roundTripFunc {
 
 			return resp, nil
 		default:
-			c.recordUnexpected(req.Method, req.URL.Path)
+			capture.recordUnexpected(req.Method, req.URL.Path)
 			resp := &http.Response{
 				Status:     "404 Not Found",
 				StatusCode: http.StatusNotFound,
@@ -170,23 +176,55 @@ func newXFixupCaptureTransport(c *xfixupCapture) roundTripFunc {
 func newXFixupSession(t *testing.T, capture *xfixupCapture) *discordgo.Session {
 	t.Helper()
 
-	s, err := discordgo.New("Bot discord-token")
+	session, err := discordgo.New("Bot discord-token")
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
 
-	s.State.User = newDiscordUser("1307756710072549439", true)
+	session.State.User = newDiscordUser("1307756710072549439", true)
 	guild := &discordgo.Guild{ID: "guild-1"}
-	_ = s.State.GuildAdd(guild)
+	_ = session.State.GuildAdd(guild)
 	ch := &discordgo.Channel{ID: "channel-1", GuildID: "guild-1", Type: discordgo.ChannelTypeGuildText}
-	_ = s.State.ChannelAdd(ch)
+	_ = session.State.ChannelAdd(ch)
 	client := &http.Client{Transport: newXFixupCaptureTransport(capture)}
-	s.Client = client
+	session.Client = client
 
-	return s
+	return session
+}
+
+// driveFixupMessage feeds one message through handleMessageCreate with a
+// fixup-capturing session and returns the recorded Discord traffic.
+func driveFixupMessage(
+	t *testing.T,
+	capture *xfixupCapture,
+	messageID, author, content string,
+) ([]string, []string, []string, []string) {
+	t.Helper()
+
+	session := newXFixupSession(t, capture)
+	inst := &bot{
+		configPath: newXFixupTestConfigPath(t),
+		session:    session,
+		nodes:      newMessageNodeStore(10),
+	}
+	// also set httpClient for completeness
+	inst.httpClient = session.Client
+
+	msg := &discordgo.Message{
+		ID:        messageID,
+		ChannelID: "channel-1",
+		GuildID:   "guild-1",
+		Author:    &discordgo.User{ID: "user-999", Username: author, Bot: false},
+		Content:   content,
+	}
+	inst.handleMessageCreate(nil, &discordgo.MessageCreate{Message: msg})
+
+	return capture.snapshot()
 }
 
 func TestFixupXComContent(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		in, want string
 	}{
@@ -212,9 +250,11 @@ func TestFixupXComContent(t *testing.T) {
 }
 
 func TestShouldHandleXFixup(t *testing.T) {
+	t.Parallel()
+
 	botID := "1307756710072549439"
 
-	mk := func(content string, mentions []*discordgo.User, bot bool) *discordgo.Message {
+	makeMessage := func(content string, mentions []*discordgo.User, bot bool) *discordgo.Message {
 		m := &discordgo.Message{
 			Content:   content,
 			Author:    &discordgo.User{ID: "user1", Username: "Tester", Bot: bot},
@@ -225,69 +265,59 @@ func TestShouldHandleXFixup(t *testing.T) {
 
 		return m
 	}
-	if !shouldHandleXFixup(mk("https://x.com/foo check", nil, false), botID) {
+	if !shouldHandleXFixup(makeMessage("https://x.com/foo check", nil, false), botID) {
 		t.Fatal("expected to handle basic x.com")
 	}
 
-	if shouldHandleXFixup(mk("https://fixupx.com/foo", nil, false), botID) {
+	if shouldHandleXFixup(makeMessage("https://fixupx.com/foo", nil, false), botID) {
 		t.Fatal("should not handle already fixed")
 	}
 
-	if shouldHandleXFixup(mk("https://x.com/foo at ai hello", nil, false), botID) {
+	if shouldHandleXFixup(makeMessage("https://x.com/foo at ai hello", nil, false), botID) {
 		t.Fatal("should not handle when contains at ai")
 	}
 
-	if shouldHandleXFixup(mk("AT AI https://x.com/foo", nil, false), botID) {
+	if shouldHandleXFixup(makeMessage("AT AI https://x.com/foo", nil, false), botID) {
 		t.Fatal("should not handle AT AI uppercase")
 	}
 
-	if shouldHandleXFixup(mk("https://x.com/foo", []*discordgo.User{{ID: botID}}, false), botID) {
+	if shouldHandleXFixup(makeMessage("https://x.com/foo", []*discordgo.User{{ID: botID}}, false), botID) {
 		t.Fatal("should not handle bot mention via slice")
 	}
 
-	if shouldHandleXFixup(mk("https://x.com/foo <@1307756710072549439>", nil, false), botID) {
+	if shouldHandleXFixup(makeMessage("https://x.com/foo <@1307756710072549439>", nil, false), botID) {
 		t.Fatal("should not handle hardcoded mention")
 	}
 
-	if shouldHandleXFixup(mk("https://x.com/foo <@!1307756710072549439>", nil, false), botID) {
+	if shouldHandleXFixup(makeMessage("https://x.com/foo <@!1307756710072549439>", nil, false), botID) {
 		t.Fatal("should not handle hardcoded mention with !")
 	}
 
-	if shouldHandleXFixup(mk("https://x.com/foo", nil, true), botID) {
+	if shouldHandleXFixup(makeMessage("https://x.com/foo", nil, true), botID) {
 		t.Fatal("should not handle bot author")
 	}
 
-	if shouldHandleXFixup(mk("hello world", nil, false), botID) {
+	if shouldHandleXFixup(makeMessage("hello world", nil, false), botID) {
 		t.Fatal("should not handle no x.com")
 	}
 	// Ensure hasAtAIMention false for great ai doesn't block
-	if !shouldHandleXFixup(mk("https://x.com/foo great ai", nil, false), botID) {
+	if !shouldHandleXFixup(makeMessage("https://x.com/foo great ai", nil, false), botID) {
 		t.Fatalf("great ai should not block fixup (word boundary)")
 	}
 }
 
 func TestHandleMessageCreateXFixupDeletesAndResends(t *testing.T) {
-	var cap xfixupCapture
+	t.Parallel()
 
-	sess := newXFixupSession(t, &cap)
-	inst := &bot{
-		configPath: newXFixupTestConfigPath(t),
-		session:    sess,
-		nodes:      newMessageNodeStore(10),
-	}
-	// also set httpClient for completeness
-	inst.httpClient = sess.Client
+	var capture xfixupCapture
 
-	msg := &discordgo.Message{
-		ID:        "msg-123",
-		ChannelID: "channel-1",
-		GuildID:   "guild-1",
-		Author:    &discordgo.User{ID: "user-999", Username: "ExtremeBlitz__", Bot: false},
-		Content:   "https://x.com/ExtremeBlitz__/status/2093114939397349597?s=20 check this out",
-	}
-	inst.handleMessageCreate(nil, &discordgo.MessageCreate{Message: msg})
-
-	deletes, sends, contents, unexpected := cap.snapshot()
+	deletes, sends, contents, unexpected := driveFixupMessage(
+		t,
+		&capture,
+		"msg-123",
+		"ExtremeBlitz__",
+		"https://x.com/ExtremeBlitz__/status/2093114939397349597?s=20 check this out",
+	)
 	if len(unexpected) != 0 {
 		t.Fatalf("unexpected requests: %v", unexpected)
 	}
@@ -312,15 +342,17 @@ func TestHandleMessageCreateXFixupDeletesAndResends(t *testing.T) {
 }
 
 func TestHandleMessageCreateXFixupSkipsAtAI(t *testing.T) {
-	var cap xfixupCapture
+	t.Parallel()
 
-	sess := newXFixupSession(t, &cap)
+	var capture xfixupCapture
+
+	session := newXFixupSession(t, &capture)
 	inst := &bot{
 		configPath: newXFixupTestConfigPath(t),
-		session:    sess,
+		session:    session,
 		nodes:      newMessageNodeStore(10),
 	}
-	inst.httpClient = sess.Client
+	inst.httpClient = session.Client
 
 	msg := &discordgo.Message{
 		ID:        "msg-124",
@@ -340,19 +372,21 @@ func TestHandleMessageCreateXFixupSkipsAtAI(t *testing.T) {
 		t.Fatal("handleXFixup should have returned false for at ai")
 	}
 
-	deletes, sends, _, _ := cap.snapshot()
+	deletes, sends, _, _ := capture.snapshot()
 	if len(deletes) != 0 || len(sends) != 0 {
 		t.Fatalf("expected no deletes/sends for at ai, got deletes %v sends %v", deletes, sends)
 	}
 }
 
 func TestHandleMessageCreateXFixupSkipsBotMention(t *testing.T) {
-	var cap xfixupCapture
+	t.Parallel()
 
-	sess := newXFixupSession(t, &cap)
+	var capture xfixupCapture
+
+	session := newXFixupSession(t, &capture)
 	inst := &bot{
 		configPath: newXFixupTestConfigPath(t),
-		session:    sess,
+		session:    session,
 		nodes:      newMessageNodeStore(10),
 	}
 
@@ -368,23 +402,25 @@ func TestHandleMessageCreateXFixupSkipsBotMention(t *testing.T) {
 		t.Fatal("should skip bot mention")
 	}
 
-	deletes, sends, _, _ := cap.snapshot()
+	deletes, sends, _, _ := capture.snapshot()
 	if len(deletes) != 0 || len(sends) != 0 {
 		t.Fatalf("expected no deletes/sends for bot mention, got %v %v", deletes, sends)
 	}
 }
 
 func TestHandleMessageCreateXFixupWorksInAllChannels(t *testing.T) {
-	// Verify that xfixup works even when message would be ignored by shouldIgnore (no mention in guild)
-	var cap xfixupCapture
+	t.Parallel()
 
-	sess := newXFixupSession(t, &cap)
+	// Verify that xfixup works even when message would be ignored by shouldIgnore (no mention in guild)
+	var capture xfixupCapture
+
+	session := newXFixupSession(t, &capture)
 	inst := &bot{
 		configPath: newXFixupTestConfigPath(t),
-		session:    sess,
+		session:    session,
 		nodes:      newMessageNodeStore(10),
 	}
-	inst.httpClient = sess.Client
+	inst.httpClient = session.Client
 
 	// This is a guild message without bot mention, which shouldIgnore would normally skip,
 	// but xfixup should still handle it.
@@ -403,7 +439,7 @@ func TestHandleMessageCreateXFixupWorksInAllChannels(t *testing.T) {
 	// But handleMessageCreate should still do xfixup
 	inst.handleMessageCreate(nil, &discordgo.MessageCreate{Message: msg})
 
-	deletes, sends, contents, _ := cap.snapshot()
+	deletes, sends, contents, _ := capture.snapshot()
 	if len(deletes) != 1 || len(sends) != 1 {
 		t.Fatalf("expected xfixup to run despite shouldIgnore, deletes %v sends %v", deletes, sends)
 	}
@@ -414,9 +450,11 @@ func TestHandleMessageCreateXFixupWorksInAllChannels(t *testing.T) {
 }
 
 func TestHandleMessageCreateXFixupRespectsBlockedChannel(t *testing.T) {
-	var cap xfixupCapture
+	t.Parallel()
 
-	sess := newXFixupSession(t, &cap)
+	var capture xfixupCapture
+
+	session := newXFixupSession(t, &capture)
 	// Config with blocked channel-1
 	blockedConfigPath := filepath.Join(t.TempDir(), "config-blocked.yaml")
 
@@ -436,10 +474,10 @@ func TestHandleMessageCreateXFixupRespectsBlockedChannel(t *testing.T) {
 
 	inst := &bot{
 		configPath: blockedConfigPath,
-		session:    sess,
+		session:    session,
 		nodes:      newMessageNodeStore(10),
 	}
-	inst.httpClient = sess.Client
+	inst.httpClient = session.Client
 	msg := &discordgo.Message{
 		ID:        "msg-blocked",
 		ChannelID: "channel-1",
@@ -449,7 +487,7 @@ func TestHandleMessageCreateXFixupRespectsBlockedChannel(t *testing.T) {
 	}
 	inst.handleMessageCreate(nil, &discordgo.MessageCreate{Message: msg})
 
-	deletes, sends, _, unexpected := cap.snapshot()
+	deletes, sends, _, unexpected := capture.snapshot()
 	if len(unexpected) != 0 {
 		t.Fatalf("unexpected requests: %v", unexpected)
 	}
@@ -460,6 +498,8 @@ func TestHandleMessageCreateXFixupRespectsBlockedChannel(t *testing.T) {
 }
 
 func TestHandleXFixupNilSessionReturnsFalse(t *testing.T) {
+	t.Parallel()
+
 	inst := &bot{
 		configPath: newXFixupTestConfigPath(t),
 		session:    nil,
@@ -479,7 +519,9 @@ func TestHandleXFixupNilSessionReturnsFalse(t *testing.T) {
 }
 
 func TestHandleMessageCreateNilSessionDoesNotSwallowXCom(t *testing.T) {
-	var cap xfixupCapture
+	t.Parallel()
+
+	var capture xfixupCapture
 	// Use non-nil session for capture but instance with nil session to simulate startup race
 	instNil := &bot{
 		configPath: newXFixupTestConfigPath(t),
@@ -502,13 +544,15 @@ func TestHandleMessageCreateNilSessionDoesNotSwallowXCom(t *testing.T) {
 	// (it will attempt to load config and check permissions, then handleXFixup returns false, then falls through to
 	// shouldIgnore/facebook path)
 	// We just ensure no delete occurred via capture (which remains empty because instance has no session)
-	deletes, sends, _, _ := cap.snapshot()
+	deletes, sends, _, _ := capture.snapshot()
 	if len(deletes) != 0 || len(sends) != 0 {
 		t.Fatalf("nil session should not have produced deletes/sends via capture, got %v %v", deletes, sends)
 	}
 }
 
 func TestResendAllowedMentionUsers(t *testing.T) {
+	t.Parallel()
+
 	if got := resendAllowedMentionUsers(nil); got != nil {
 		t.Fatalf("nil message: got %#v want nil", got)
 	}
@@ -532,15 +576,17 @@ func TestResendAllowedMentionUsers(t *testing.T) {
 }
 
 func TestHandleMessageCreateXFixupResendPingsMentionedUsers(t *testing.T) {
-	var cap xfixupCapture
+	t.Parallel()
 
-	sess := newXFixupSession(t, &cap)
+	var capture xfixupCapture
+
+	session := newXFixupSession(t, &capture)
 	inst := &bot{
 		configPath: newXFixupTestConfigPath(t),
-		session:    sess,
+		session:    session,
 		nodes:      newMessageNodeStore(10),
 	}
-	inst.httpClient = sess.Client
+	inst.httpClient = session.Client
 
 	msg := &discordgo.Message{
 		ID:        "msg-mention",
@@ -552,7 +598,7 @@ func TestHandleMessageCreateXFixupResendPingsMentionedUsers(t *testing.T) {
 	}
 	inst.handleMessageCreate(nil, &discordgo.MessageCreate{Message: msg})
 
-	deletes, sends, contents, unexpected := cap.snapshot()
+	deletes, sends, contents, unexpected := capture.snapshot()
 	if len(unexpected) != 0 {
 		t.Fatalf("unexpected requests: %v", unexpected)
 	}
@@ -565,7 +611,7 @@ func TestHandleMessageCreateXFixupResendPingsMentionedUsers(t *testing.T) {
 		t.Fatalf("resent content should keep the mention, got %q", contents[0])
 	}
 
-	allowed := cap.allowedMentionsSnapshot()
+	allowed := capture.allowedMentionsSnapshot()
 	if allowed == nil {
 		t.Fatal("expected allowed_mentions in send payload")
 	}
