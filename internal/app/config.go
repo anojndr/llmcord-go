@@ -296,6 +296,7 @@ type rawProviderConfig struct {
 	AutoAppendShortAnswer       *bool            `yaml:"auto_append_short_answer"`
 	AutoAppendDontBeSycophantic *bool            `yaml:"auto_append_dont_be_sycophantic"`
 	AutoAppendADHDFriendly      *bool            `yaml:"auto_append_adhd_friendly"`
+	AutoAppendAlwaysEnglish     *bool            `yaml:"auto_append_always_english"`
 	ExtraHeaders                map[string]any   `yaml:"extra_headers"`
 	ExtraQuery                  map[string]any   `yaml:"extra_query"`
 	ExtraBody                   map[string]any   `yaml:"extra_body"`
@@ -373,6 +374,7 @@ type providerConfig struct {
 	AutoAppendShortAnswer       bool
 	AutoAppendDontBeSycophantic bool
 	AutoAppendADHDFriendly      bool
+	AutoAppendAlwaysEnglish     bool
 	ExtraHeaders                map[string]any
 	ExtraQuery                  map[string]any
 	ExtraBody                   map[string]any
@@ -798,6 +800,7 @@ func normalizeProviderConfig(providerName string, rawProvider rawProviderConfig)
 		AutoAppendShortAnswer:       boolValueOrDefault(rawProvider.AutoAppendShortAnswer, false),
 		AutoAppendDontBeSycophantic: boolValueOrDefault(rawProvider.AutoAppendDontBeSycophantic, false),
 		AutoAppendADHDFriendly:      boolValueOrDefault(rawProvider.AutoAppendADHDFriendly, false),
+		AutoAppendAlwaysEnglish:     boolValueOrDefault(rawProvider.AutoAppendAlwaysEnglish, false),
 		ExtraHeaders:                rawProvider.ExtraHeaders,
 		ExtraQuery:                  rawProvider.ExtraQuery,
 		ExtraBody:                   rawProvider.ExtraBody,

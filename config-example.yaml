@@ -51,7 +51,7 @@ permissions:
 # Per-provider flags: disable_search_decider (skips web search entirely for
 #   this provider's models; the web_search tool is not offered),
 #   dont_send_system_prompt,
-#   auto_append_search_web, auto_append_short_answer, auto_append_dont_be_sycophantic, auto_append_adhd_friendly, enable_grounding (Gemini only).
+#   auto_append_search_web, auto_append_short_answer, auto_append_dont_be_sycophantic, auto_append_adhd_friendly, auto_append_always_english, enable_grounding (Gemini only).
 # Per-provider reasoning effort for OpenAI-compatible providers:
 #   reasoning_effort: none | minimal | low | medium | high | xhigh | max
 # Maps to reasoning.effort (api: openai-responses) or reasoning_effort
@@ -93,6 +93,8 @@ providers:
     # auto_append_dont_be_sycophantic: true
     # Automatically append "make sure your output is adhd-friendly." to user queries if not already present:
     # auto_append_adhd_friendly: true
+    # Automatically append "make sure your output is always in english unless instructed by the user to use another language." to user queries if not already present:
+    # auto_append_always_english: true
     # Thought summaries are disabled by default. To turn them on:
     # extra_body:
     #   thinkingConfig:
@@ -143,6 +145,8 @@ providers:
     # auto_append_dont_be_sycophantic: true
     # Automatically append "make sure your output is adhd-friendly." to user queries if not already present:
     # auto_append_adhd_friendly: true
+    # Automatically append "make sure your output is always in english unless instructed by the user to use another language." to user queries if not already present:
+    # auto_append_always_english: true
     # Requests through the built-in `openai` provider default to `verbosity:
     # low` and derive a stable reply-chain `prompt_cache_key`, even if you
     # replace `base_url` with another OpenAI-compatible backend.
