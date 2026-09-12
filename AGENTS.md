@@ -2,47 +2,49 @@
 
 ## Project Overview
 
-Go rewrite of `jakobdylanc/llmcord`: single-binary Discord bot turning reply chains (guilds, DMs, threads) into a frontend for OpenAI-compatible chat-completions/Responses APIs plus native Gemini, with streaming embeds, multimodal attachments, URL enrichment, web/visual search, and Postgres-backed history.
+Single-binary Discord bot (`module llmcord-go`, Go `1.26.1`). Discord gateway (`bwmarrin/discordgo`) → reply-chain conversation assembly → provider-agnostic streaming LLM (`google.golang.org/genai`, OpenAI-compatible) → chunked Discord renderer. Features: reply chains, streaming embeds, multimodal (image/audio/doc/video), URL enrichment, FB/YT/TikTok fetchers, Exa/Tavily/TinyFish search, hot-reload config.
 
 ## Architecture & Data Flow
 
-Thin entry, fat pipeline. `cmd/llmcord-go/main.go:runMain` → `internal/app/bot.go:Run` (load config → `newBot` DI → optional health server → `session.Open`) → discordgo handlers (`handleMessageCreate` / `handleInteractionCreate` in `messages.go`, `interactions.go`, all wrapped in `recoverHandler`).
+No public library; everything under `internal/`. DI via constructors over one shared `*http.Client`.
 
-Message path (`messages.go` → `conversation.go` → `augmentation.go` → `providers/chat_client.go` → `response.go`):
+```text
+main/runMain (cmd/llmcord-go/main.go)
+└─ app.Run(ctx, configPath) (internal/app/bot.go)
+   ├─ loadConfig → newBot → startPublicHTTPServer (/ + /healthz)
+   ├─ instance.open: validateDiscordGateway → session.Open → syncCommands + status → watchers
+   ├─ block: ctx.Done | http-server error
+   └─ instance.close: session.Close + persistBotStateSync + nodes.close (errors.Join)
+```
 
-1. Dedup 30s window (`message_dedup.go`) → maintenance/permission gates → trigger (mention / `at ai` / DM vs. auto Facebook-video / YouTube-Shorts / X-fixup rewrite).
-2. `buildConversation`: walk `MessageReference` chain (default `max_messages: 25`); per node fetch attachments (limit 4, Discord-CDN allowlist) + parent in parallel via `runTasksConcurrently` (`concurrency.go`, `sync.WaitGroup.Go`).
-3. `augmentConversation`: video-URL → OOXML/PDF extract → Gemini media-analysis → `<section>` prompt blocks (max 7: YouTube/Reddit/website/document/visual/web).
-4. `ChatCompletionRouter.StreamChatCompletion`: OpenAI vs. Gemini by provider name / `ProviderAPIKind`; round-robin key rotation; retry transient (5×1s) / queue-full 503 (5×3s) / empty (5×1s); never retry after content delta; `web_search` tool loop max 3 rounds.
-5. `response.go` renderer: `**Thinking**` / `**Answer**` split, 2000-char segments, throttled embed edits (1s + `editMu`), buttons (Show Sources/Images/Thinking, Gist), optional `fallback_model` retry.
-6. State: `bot` struct + `messageNodeStore` (in-memory cap 500, `evictExcess`, debounced Postgres snapshot worker); config hot-reloaded per event via `(mtime,size)` stamp — no restart for `config.yaml` tweaks.
+- Message event: `bot.handleMessageCreate` (`internal/app/messages.go`, wrapped in `recoverHandler`) → 30s/1024-entry dedup (`markMessageSeen`) → maintenance gate → `loadConfigCached` → `messageAllowed` perms → short-circuits (`handleXFixup`, facebook-video / youtube-shorts) → `respondToMessage`: progress + typing → `prepareMessageResponse` → `StreamChatCompletion` → live-edit render → `nodes.evictExcess()`.
+- Interaction event: `handleInteractionCreate` (`internal/app/interactions.go`) switches `InteractionType`; commands: `/model /searchtype /grounding /createchannel /editchannelname /movechannel /maintenance /watcherstatus`; buttons via `CustomID` (sources/images/thinking/gist). `10062 unknown interaction` → `slog.Info` discard, not error.
+- Conversation: `buildConversation` (`internal/app/conversation.go`) walks Discord reply chain to `maxMessages` (default 25), `nodes.getOrCreate` + lazy `initializeNode`, `buildMessageContent` per media gates (`maxImages` default 100).
+- Provider streaming: `ChatCompletionRouter.StreamChatCompletion` (`internal/providers/chat_client.go`) rotates `APIKeys` via `APIKeyRotator`, dispatches by `ProviderAPIKind` (OpenAI Chat-Completions SSE vs Responses API vs Gemini `GenerateContentStream`), streams `StreamDelta{Thinking, Content, FinishReason, ProviderResponseID, SearchMetadata, ToolCalls}`. Retry: transient (EOF/5xx/429/reset) 5×/1s, queue-full 503 5×/3s, empty 5×; any `deltaReferencesContent` is final.
+- Rendering: `responseTracker` + `segmentAccumulator` (`internal/app/response.go`) splits at 2000 runes, edits in place with ` ...` indicator; embed green/amber/red; `userFacingErrorMaxRunes=1500`.
 
 ## Key Directories
 
-| Dir | Purpose |
-|---|---|
-| `cmd/llmcord-go/` | Binary entry only (`main.go`, `main_test.go`) |
-| `internal/app/` | Bot runtime: handlers, pipeline, config, store, enrichers (~60 files: `bot.go`, `messages.go`, `conversation.go`, `response.go`, `interactions.go`, `augmentation.go`, `config.go`, `store.go`, `store_persistence.go`, `permissions.go`, `progress.go`, `logging.go`, `concurrency.go`) |
-| `internal/app/` enrichers | Per-source fetchers: `website.go`, `youtube.go`, `youtube_shorts.go`, `reddit.go`, `tiktok.go`, `facebook.go`, `video_url.go`, `media_analysis.go`, `pdf.go`, `ooxml.go`, `attachments.go`, `search.go`, `visual_search.go`, `image_search.go`, `gist.go`, `xfixup.go` |
-| `internal/providers/` | LLM wire clients: `chat_client.go` (router), `openai.go`, `gemini.go`, `tools.go`, `responses.go`, `keys.go`, `errors.go`, `content_parts.go` |
-| `internal/searchtypes/` | Cycle-breaker shared types: `parts.go` (`ContentPart map[string]any`), `sources.go`, `metadata.go`, `consts.go` |
-| `internal/support/` | Leaf pure helpers: `text.go` (`RuneCount`, `JoinNonEmpty`), `parts.go`, `consts.go` |
-
-No `pkg/`, `api/`, `web/`; imports are `llmcord-go/internal/...` only.
+- `cmd/llmcord-go/`: binary entry only (`main.go`, `main_test.go`). Keep minimal (depguard-constrained).
+- `internal/app/`: ~100 files. Discord I/O, pipeline (`bot.go`, `messages.go`, `interactions.go`, `conversation.go`, `response.go`), augmentation (`search.go`, `visual_search.go`, `image_search.go`, `website.go`, `url_context.go`, `media_analysis.go`, `pdf.go`, `ooxml.go`, `tiktok.go`, `facebook.go`, `youtube*.go`, `reddit.go`, `aliexpress.go`), state (`store.go`, `store_persistence.go`, `bot_state_persistence.go`), cross-cutting (`config.go`, `logging.go`, `concurrency.go`, `constants.go`, `permissions.go`, `service_http.go`).
+- `internal/providers/`: LLM wire clients behind router (`types.go`, `chat_client.go`, `keys.go`, `openai.go`, `responses.go`, `gemini.go`, `gemini_cache.go`, `tools.go`, `openai_errors.go`).
+- `internal/searchtypes/`: shared `ContentPart` (`map[string]any`), `SearchMetadata`, source types.
+- `internal/support/`: pure helpers (`RuneCount`, `JoinNonEmpty`).
+- Absent by design: no `tests/`, `testdata/`, `e2e/`, `scripts/`, `tools/`, `docs/`, `.github/`, `Makefile`.
 
 ## Development Commands
 
+Setup: `cp config-example.yaml config.yaml` (fill `bot_token` + ≥1 `providers` + ≥1 `models`), then:
+
 ```bash
-cp config-example.yaml config.yaml  # then set bot_token + providers + models
 go run ./cmd/llmcord-go
 LLMCORD_CONFIG_PATH=/path/to/config.yaml go run ./cmd/llmcord-go
-./restart.sh                         # background, logs to ./llmcord-go.log, waits for "bot is online"
-./restart.sh --foreground            # exec, Ctrl+C stops
 docker compose up --build
-tail -f llmcord-go.log
+./restart.sh                         # code changes only; config hot-reloads, no restart needed
+./restart.sh --foreground
 ```
 
-Quality gate (`README.md` ##Development — run after changes):
+Quality gate (in order, from `README.md` Development):
 
 ```bash
 gofmt -s -w .
@@ -53,35 +55,39 @@ go vet ./...
 golangci-lint run --default=all
 ```
 
-Single target: `go test ./internal/app/ -run TestLoadConfigAppliesDefaultsAndPreservesModelOrder -count=1 -v -race`, package: `go test ./internal/providers/ -count=1`, bench: `go test ./internal/app/ -bench=BenchmarkTruncateRunes -benchmem -run=^$`.
+Single-package: `go test ./internal/app -run TestGistClient -count=1`, `go test ./internal/providers -race -count=1`.
 
 ## Code Conventions & Common Patterns
 
-- **Constructors/naming:** unexported `bot` + `newBot`; `newXxxClient(httpClient)` per fetcher (e.g. `newWebSearchClient`); receivers `instance *bot`, `store *messageNodeStore`; `parseXxx` / `buildXxx` / `resolveXxx` pure helpers; layer aliases in `internal/app/aliases.go` (`chatMessage = providers.ChatMessage`). No `must` helpers. No license/file headers (only `aliases.go` has a package doc).
-- **Errors:** `fmt.Errorf("<verb> <noun>: %w", err)`, lowercase verb-first (`load config`, `open discord session`); sentinels `ErrEmptyModelResponse` + wrapped `os.ErrInvalid/ErrNotExist`; classify with `errors.As(StatusError)` / `errors.Is(io.EOF, UnexpectedEOF, DeadlineExceeded)`; user errors truncated to 1500 runes; swallow Discord `10062 Unknown Interaction` (expired).
-- **Logging:** std `log/slog` via `ConfigureLogging`; `LLMCORD_LOG_LEVEL=debug|info|warn|error`, `LLMCORD_LOG_FORMAT=text|json`; `LogError` (error + `runtime.Callers` stack), `logWarn`/`logInfo`; `safeGo` + `recoverHandler[T]` on every Discord handler.
-- **Concurrency:** field-level `sync.Mutex/RWMutex` on `bot`, per-node `node.mu`, `atomic.Int64/Bool`; generic `runTasksConcurrently[T](ctx, limit, n, task)` (4 attachment, 8 external); `context.Background()` per Discord event, explicit per-backend timeouts (TinyFish 20/30s, Parallel 60s, Discord 20s).
-- **DI/state:** manual injection in `newBot`: one shared `*http.Client` (100 idle/host, forced HTTP/2) passed to all clients; small interfaces (`chatCompletionStreamer`, `webSearcher`) for test fakes; `loadConfigCached` per event, never a global config.
-- **Config:** strict YAML (`yaml.Node` custom `scalarString`, `scalarStringList`, `idList`); unknown keys fail load; `web_search` separators accept `>`, `->`, `→`, `,`; name with `gemini` = native Gemini (never set `api`/`reasoning_effort`); `models` ordered map, first = startup default.
-- **Lint gates (`.golangci.yml` v2):** `wsl_v5`, `testpackage` (same-package `app`/`providers`/`main` only), `funlen` 90 lines/60 stmts, `cyclop` 20, `gocognit` 35, `tagliatelle` snake_case `json`/`yaml`, `depguard` `main` import allowlist (stdlib + `llmcord-go/internal/*` + discordgo, pdf, `lib/pq`, mcp sdk, pdfcpu, `x/net/html`, genai, yaml).
+- Format/lint: `gofmt -s -w .`; `golangci-lint run --default=all` (`.golangci.yml` v2: `wsl_v5`, `cyclop` 20, `funlen` 90 lines/60 stmts, `gocognit` 35, `tagliatelle` json/yaml `snake_case`, `wrapcheck`, `depguard` on `main`). Imports: stdlib → `llmcord-go/internal/...` → third-party.
+- Lint docs: Always use https://golangci-lint.run/docs/ with everything enabled, then fix all of the issues. Make sure to actually fix all of the issues instead of suppressing them.
+- Naming: receiver always `instance *bot`; constructors `newXxxClient(httpClient, ...)`; handlers `handleXxx`, builders `buildXxx`/`newXxxCommand`, resolvers `loadConfigCached`/`channelByID`. Constants in `internal/app/constants.go`, lowerCamel (`embedColorComplete`, `defaultMaxMessages`).
+- Errors: `fmt.Errorf("<verb> <noun>: %w", err)` every layer; sentinels + `errors.As/Is` (`StatusError{StatusCode,Message}`, `IsTransientStreamError`, `IsQueueFullQueueError`, `ErrEmptyModelResponse`); `os.ErrInvalid` for programmer misuse; `io.ErrUnexpectedEOF` for truncated streams. Never drop `%w` (wrapcheck).
+- Logging: `log/slog` only, `AddSource:true`. `LogError(msg, err, attrs...)` (error + 32-frame `captureStack`) for failures, `logWarn` recoverable, `slog.Info/Debug` lifecycle with snake_case keys (`channel_id`, `message_id`).
+- Async/concurrency: one `Mutex`/`RWMutex` per concern + `atomic.Bool/Uint64` flags/counters; `safeGo` + `recoverAndLog`/`recoverHandler` for all background goroutines; bounded pool `runTasksConcurrently[T](ctx, limit, taskCount, task)` (e.g. attachment downloads limit 4); `WaitGroup` + `CancelFunc` for reconnect-guard/watchers/save-worker.
+- Dependency injection: `newBot(ctx, configPath, loadedConfig)` builds tuned transport (100 idle conns/host, 30s dial, HTTP/2) and injects small interfaces (`chatCompletionStreamer`, `webSearcher`, `gistCreator`, ...). Providers mirror: `NewChatCompletionRouter(httpClient)` → `openAIClient` + `geminiClient` + `APIKeyRotator`; `geminiContentStreamer`/`geminiFilesClient` interfaces for tests.
+- State: `messageNodeStore` (mutex map, cap 500, per-node `mu`, `snapshotCache`, debounced `saveRequests` channel → Postgres, background hydrate); `configCache` stamped by mtime+size (`seedConfigCache`/`loadConfigCached`); `botState` (`RWMutex` + atomic generation + `saveMu`).
+- Config: dual `rawXxx` (yaml, `scalarString`/`idList` tolerate scalar-or-list) → resolved structs with defaults in `loadConfig`; strict YAML (unknown keys rejected); `filepath.Clean` all paths; `api_key` string-or-list round-robin; name containing `gemini` = native Gemini (no `base_url`/`api:`).
 
 ## Important Files
 
-- Entry/lifecycle: `cmd/llmcord-go/main.go`, `internal/app/bot.go`, `internal/app/config.go`, `internal/app/logging.go`, `internal/app/concurrency.go`, `internal/app/constants.go`
-- Pipeline: `internal/app/messages.go`, `internal/app/conversation.go`, `internal/app/augmentation.go`, `internal/app/response.go`, `internal/app/interactions.go`, `internal/app/store.go`, `internal/app/store_persistence.go` (inline `CREATE TABLE IF NOT EXISTS message_history_snapshots`)
-- Providers: `internal/providers/chat_client.go`, `internal/providers/types.go`, `internal/searchtypes/parts.go`, `internal/support/text.go`
-- Operator docs: `README.md` (workflows, slash commands, env), `config-example.yaml` (~397 lines, authoritative field docs — copy to `config.yaml`), `restart.sh`
+- Entry: `cmd/llmcord-go/main.go` (`main`, `runMain`: `ConfigureLogging` + `RuntimeConfigPath` + `signal.NotifyContext` + `app.Run`).
+- Config template: `config-example.yaml` (~405 lines, copy to `config.yaml`; strict keys, YAML order irrelevant). Runtime `config.yaml` + `config.yaml.resume-state` (`session_id`/`sequence`/`gateway_url`) are gitignored — never edit/commit.
+- Policy: `internal/app/config.go` (`rawConfig`/`config`, `loadConfig`), `internal/app/constants.go` (env names, tuning), `internal/app/logging.go` + `concurrency.go` (`ConfigureLogging`, `LogError`, `safeGo`).
+- Pipeline: `internal/app/bot.go` (`bot`, `newBot`, `Run`/`open`/`close`), `messages.go`, `interactions.go`, `conversation.go`, `response.go`, `permissions.go` (`messageAllowed`), `service_http.go` (`/`, `/healthz`), `store.go` + `store_persistence.go`.
+- Provider contract: `internal/providers/types.go` (`ChatCompletionRequest`, `StreamDelta`, `ProviderAPIKind`), `chat_client.go` (`ChatCompletionRouter`), `openai.go`/`responses.go`/`gemini.go`.
+- Toolchain: `go.mod` (`go 1.26.1`), `go.sum`, `Dockerfile` (`CGO_ENABLED=0 go build -o /out/llmcord ./cmd/llmcord-go` → `debian:bookworm-slim`), `docker-compose.yaml`, `render.yaml` (`healthCheckPath: /healthz`), `.golangci.yml`, `.gitignore` (whitelist!), `restart.sh`, `README.md`, `.mcp.json`.
 
 ## Runtime/Tooling Preferences
 
-- Go `1.26.1` (`go.mod`), Go modules, no vendor, no Makefile, no CI workflows. Docker: `golang:1.26` build (`CGO_ENABLED=0 go build -o /out/llmcord ./cmd/llmcord-go`) → `debian:bookworm-slim` + ca-certificates/tzdata.
-- Deploy: `docker-compose.yaml` (host network, repo mounted), `render.yaml` (Docker runtime, `healthCheckPath: /healthz`, `LLMCORD_CONFIG_PATH=/etc/secrets/config.yaml`, `TZ=UTC`).
-- Env: `LLMCORD_CONFIG_PATH` (fallback `CONFIG_PATH`, default `config.yaml`); `LLMCORD_HTTP_ADDR`/`PORT` enables `GET /` + `/healthz`; `LLMCORD_LOG_LEVEL/_FORMAT`; `LLMCORD_RECONNECT=0|false` disables gateway guard; `LLMCORD_LOG_FILE`, `LLMCORD_ONLINE_TIMEOUT` (`restart.sh` only).
-- Whitelist `.gitignore` (bare `*` + `!` rules): new file kinds are ignored by default — add an `!` rule when introducing one. Never commit `config.yaml`, `llmcord-go.log`, `config.yaml.resume-state` (live secrets/state).
+- Runtime: Go `1.26+` only (pinned `1.26.1`); no Node/Python. Package manager: Go modules (`go mod tidy`; never hand-edit `go.sum`/`go.mod` versions). Build flags live in `Dockerfile` only. No Makefile/Taskfile/CI (`.github/` absent).
+- Env: `LLMCORD_CONFIG_PATH` (fallback legacy `CONFIG_PATH`, default `config.yaml`); `LLMCORD_HTTP_ADDR` else `PORT` (enables `/` + `/healthz`); `LLMCORD_LOG_LEVEL=debug|info|warn|error` (default `info`); `LLMCORD_LOG_FORMAT=text|json`; `LLMCORD_RECONNECT=0/false` disables gateway guard; `TZ=UTC` on Render. Secrets in `config.yaml` (`bot_token`, `providers.*.api_key`, `database.connection_string`), not env.
+- Constraints: whitelist `.gitignore` — `scripts/`/`tools/` NOT allow-listed (new files there silently ignored); `docs/`/`.github/`/`plans/`/`AGENTS.md` are. `cmd/llmcord-go/main.go` depguard: `$gostd` + `llmcord-go/internal/{app,providers,searchtypes,support}` + named libs only. Gemini providers MUST NOT set `api:`; OpenAI-compatible use `api: openai-chat-completions | openai-responses`. Never `kill -9`; use `restart.sh` (SIGTERM → 10s → SIGKILL, saves resume state).
+- Tooling: Always use codebase-memory-mcp.
 
 ## Testing & QA
 
-- Stdlib `testing` only — no testify/gomock (plain `t.Fatalf`, `t.Parallel`, `t.Run`, `t.TempDir`, `t.Setenv`, `httptest.NewServer`, `roundTripFunc` transport stubs, hand-rolled mutex capture structs). Co-located `foo_test.go` next to `foo.go`: `internal/app/*_test.go` (~50), `internal/providers/*_test.go` (12), `cmd/llmcord-go/main_test.go`; none in `support`/`searchtypes`.
-- Style: same-package white-box (`package app`, `package providers`); `Test<Subject><Behavior>` (e.g. `TestMessageNodeStoreEvictExcessKeepsNewestMessageIDs` in `internal/app/store_test.go`, `TestChatCompletionRouterRotatesKeysAcrossRequests` in `internal/providers/chat_client_test.go`); table-driven `[]struct{name...}` + `t.Run`; helpers call `t.Helper()`; config fixtures via `os.WriteFile(filepath.Join(t.TempDir(), "config.yaml"), ...)` (see `internal/app/config_test.go`, `gist_test.go`, `bot_test.go`, `text_bench_test.go`).
-- No coverage threshold / codecov; no CI. QA = the six gate commands above plus `gofmt -s` and `go mod tidy` before push.
-- Always use `https://golangci-lint.run/docs/` with everything enabled, then fix all of the issues. Make sure to actually fix all of the issues instead of suppressing them.
+- Framework: stdlib `testing` only — no testify/gomock in `go.mod` (only indirect `go-cmp`). Co-located white-box `*_test.go` (~55 in `internal/app`, ~12 in `internal/providers`, 1 in `cmd/`); no `testdata/`/`e2e/`. Keep same-package tests (`package app`), allowed by `testpackage` linter for `app, providers, main`.
+- Fakes: `net/http/httptest` servers (`httptest.NewServer`, `NewRecorder`, `NewRequestWithContext`) + local `roundTripFunc` transport stub (`bot_test.go:31`) + hand-rolled per-file stubs (`stubFacebookScraper`, `testBotStateBackend`, `mockNoteGPTCalls`). No mock generator.
+- Idioms: `Test<Subject><Behavior>` (e.g. `TestGistClientCreateGistPostsJSONAndReturnsURL`), table `testCases`/`cases` + `t.Run`, `t.Parallel()`, `t.Helper()` asserts (`assertGistCreateRequest`), `t.TempDir()` + `os.WriteFile(..., 0o600)` YAML fixtures, `t.Setenv`, `t.Context()`, `sync/atomic` call counters, `BenchmarkXxx` (`internal/app/text_bench_test.go`).
+- Expectations: no coverage threshold/gate; gates are `go vet ./...` + `golangci-lint run --default=all` + race tests + bench smoke. Examples: `internal/app/gist_test.go`, `internal/app/config_test.go`, `internal/providers/chat_client_queue_retry_test.go`, `cmd/llmcord-go/main_test.go`.
