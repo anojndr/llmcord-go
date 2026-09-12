@@ -12,9 +12,12 @@ var (
 	searchWebRE         = regexp.MustCompile(`(?i)\bsearch(?:\s+the)?\s+web\b`)
 	shortAnswerRE       = regexp.MustCompile(`(?i)\bshort\s+answer\b`)
 	dontBeSycophanticRE = regexp.MustCompile(`(?i)\bdon['’]?t\s+be\s+sycophantic\b`)
+	adhdFriendlyRE      = regexp.MustCompile(`(?i)\badhd[-\s]*friendly\b`)
 )
 
 const dontBeSycophanticPhrase = "don't be sycophantic."
+
+const adhdFriendlyPhrase = "make sure your output is adhd-friendly."
 
 const (
 	augmentedPromptPrefix        = "Answer the user's query based on "
@@ -584,6 +587,10 @@ func containsDontBeSycophanticPhrase(text string) bool {
 	return dontBeSycophanticRE.MatchString(text)
 }
 
+func containsADHDFriendlyPhrase(text string) bool {
+	return adhdFriendlyRE.MatchString(text)
+}
+
 // userQueryFromContent extracts the UserQuery from a chatMessage Content value.
 // Unknown content types return "" and delegate error surfacing to
 // appendContextToConversation (which validates content types and returns
@@ -623,12 +630,13 @@ func latestUserQuery(conversation []chatMessage) (string, bool) {
 // applyAutoAppend applies per-provider auto-append suffixes. It consolidates
 // the branching used by both prepareMessageResponse and buildFallbackRequest
 // so the two request builders stay in sync. It supports any combination of
-// auto_append_search_web, auto_append_short_answer, and
-// auto_append_dont_be_sycophantic, appending missing phrases together with a
-// single paragraph break before the first and single newlines between them
-// (e.g. "search the web\nshort answer\ndon't be sycophantic.") to match the spec.
+// auto_append_search_web, auto_append_short_answer,
+// auto_append_dont_be_sycophantic, and auto_append_adhd_friendly, appending
+// missing phrases together with a single paragraph break before the first and
+// single newlines between them (e.g. "search the web.\nshort answer.\ndon't be
+// sycophantic.\nmake sure your output is adhd-friendly.") to match the spec.
 func applyAutoAppend(provider providerConfig, conversation []chatMessage) ([]chatMessage, error) {
-	if !provider.AutoAppendSearchWeb && !provider.AutoAppendShortAnswer && !provider.AutoAppendDontBeSycophantic {
+	if !provider.AutoAppendSearchWeb && !provider.AutoAppendShortAnswer && !provider.AutoAppendDontBeSycophantic && !provider.AutoAppendADHDFriendly {
 		return conversation, nil
 	}
 
@@ -640,23 +648,28 @@ func applyAutoAppend(provider providerConfig, conversation []chatMessage) ([]cha
 	hasSearch := !provider.AutoAppendSearchWeb || containsSearchWebPhrase(userQuery)
 	hasShort := !provider.AutoAppendShortAnswer || containsShortAnswerPhrase(userQuery)
 	hasTruth := !provider.AutoAppendDontBeSycophantic || containsDontBeSycophanticPhrase(userQuery)
+	hasADHD := !provider.AutoAppendADHDFriendly || containsADHDFriendlyPhrase(userQuery)
 
-	if hasSearch && hasShort && hasTruth {
+	if hasSearch && hasShort && hasTruth && hasADHD {
 		return conversation, nil
 	}
 
 	appended, err := appendContextToConversation(conversation, func(prompt *augmentedUserPrompt) {
 		var toAppend []string
 		if provider.AutoAppendSearchWeb && !containsSearchWebPhrase(prompt.UserQuery) {
-			toAppend = append(toAppend, "search the web")
+			toAppend = append(toAppend, "search the web.")
 		}
 
 		if provider.AutoAppendShortAnswer && !containsShortAnswerPhrase(prompt.UserQuery) {
-			toAppend = append(toAppend, "short answer")
+			toAppend = append(toAppend, "short answer.")
 		}
 
 		if provider.AutoAppendDontBeSycophantic && !containsDontBeSycophanticPhrase(prompt.UserQuery) {
 			toAppend = append(toAppend, dontBeSycophanticPhrase)
+		}
+
+		if provider.AutoAppendADHDFriendly && !containsADHDFriendlyPhrase(prompt.UserQuery) {
+			toAppend = append(toAppend, adhdFriendlyPhrase)
 		}
 
 		if len(toAppend) == 0 {
