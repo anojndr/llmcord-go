@@ -1009,17 +1009,17 @@ func responsesCompletedDelta(
 
 	if response.Error != nil {
 		return StreamDelta{
-				Thinking:           "",
-				Content:            "",
-				FinishReason:       "",
-				ProviderResponseID: "",
-				SearchMetadata:     nil,
-				ToolCalls:          nil,
-			}, openAIStreamEventError(
-				response.Error.Message,
-				response.Error.Type,
-				response.Error.Code,
-			)
+			Thinking:           "",
+			Content:            "",
+			FinishReason:       "",
+			ProviderResponseID: "",
+			SearchMetadata:     nil,
+			ToolCalls:          nil,
+		}, openAIStreamEventError(
+			response.Error.Message,
+			response.Error.Type,
+			response.Error.Code,
+		)
 	}
 
 	status := strings.TrimSpace(response.Status)

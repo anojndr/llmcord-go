@@ -259,3 +259,52 @@ func TestAwakeResetSkipsWhenProbeArmedButFailing(t *testing.T) {
 		t.Fatalf("watcher ran %d times while the probe is failing", calls)
 	}
 }
+
+func TestWatchdogStaleSessionHealthySessionDoesNotReconnect(t *testing.T) {
+	t.Parallel()
+
+	instance := new(bot)
+	instance.session, _ = discordgo.New("Bot discord-token")
+	instance.session.Identify.Intents = discordgo.IntentsGuilds
+	instance.session.LastHeartbeatAck = time.Now().UTC()
+	instance.session.LastHeartbeatSent = time.Now().UTC()
+	instance.session.DataReady = true
+
+	closeCalls := new(atomic.Int32)
+	instance.sessionClose = func(_ *discordgo.Session) error {
+		closeCalls.Add(1)
+
+		return nil
+	}
+
+	instance.watchdogStaleSession(discordGatewayHeartbeatInterval)
+
+	if calls := closeCalls.Load(); calls != 0 {
+		t.Fatalf("watchdogStaleSession closed session %d times on healthy session, want 0", calls)
+	}
+}
+
+func TestWatchdogStaleSessionStaleHeartbeatsForcesReconnect(t *testing.T) {
+	t.Parallel()
+
+	instance := new(bot)
+	instance.session, _ = discordgo.New("Bot discord-token")
+	instance.session.Identify.Intents = discordgo.IntentsGuilds
+	staleDuration := 5 * discordGatewayHeartbeatInterval
+	instance.session.LastHeartbeatAck = time.Now().UTC().Add(-staleDuration)
+	instance.session.LastHeartbeatSent = time.Now().UTC().Add(-staleDuration)
+	instance.session.DataReady = true
+
+	closeCalls := new(atomic.Int32)
+	instance.sessionClose = func(_ *discordgo.Session) error {
+		closeCalls.Add(1)
+
+		return nil
+	}
+
+	instance.watchdogStaleSession(discordGatewayHeartbeatInterval)
+
+	if calls := closeCalls.Load(); calls != 1 {
+		t.Fatalf("watchdogStaleSession closed session %d times on stale session, want 1", calls)
+	}
+}

@@ -171,6 +171,7 @@ func TestHandleTikTokFixupNilSessionReturnsFalse(t *testing.T) {
 		Author:    &discordgo.User{ID: "user-1", Username: "Tester"},
 		Content:   "https://www.tiktok.com/@user/video/123",
 	}
+
 	if inst.handleTikTokFixup(msg, "bot-id") {
 		t.Fatal("expected false with nil session")
 	}

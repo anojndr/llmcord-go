@@ -208,7 +208,9 @@ func (client *multiEngineImageSearchClient) searchBing(
 	if err != nil {
 		return nil, fmt.Errorf("perform bing image request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_ = resp.Body.Close()
+	}()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("bing image request returned status: %d", resp.StatusCode)
@@ -344,7 +346,9 @@ func (client *multiEngineImageSearchClient) searchOpenverse(
 	if err != nil {
 		return nil, fmt.Errorf("perform openverse request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_ = resp.Body.Close()
+	}()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("openverse request failed with status: %d", resp.StatusCode)
@@ -446,7 +450,9 @@ func (client *multiEngineImageSearchClient) searchWikimedia(
 	if err != nil {
 		return nil, fmt.Errorf("perform wikimedia request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_ = resp.Body.Close()
+	}()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("wikimedia request failed with status: %d", resp.StatusCode)
@@ -590,7 +596,9 @@ func (client *multiEngineImageSearchClient) downloadImages(
 			if err != nil || resp == nil {
 				return
 			}
-			defer resp.Body.Close()
+			defer func() {
+				_ = resp.Body.Close()
+			}()
 
 			if resp.StatusCode != http.StatusOK {
 				return
