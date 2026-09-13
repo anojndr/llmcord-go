@@ -129,7 +129,7 @@ func (instance *bot) watchdogTick(interval time.Duration) {
 		instance.forceReconnectOnProbeRecovery()
 	}
 
-	instance.watchdogStaleSession(interval)
+	instance.watchdogStaleSession(discordGatewayHeartbeatInterval)
 }
 
 // forceReconnectOnProbeRecovery closes the session so the library's
@@ -188,7 +188,7 @@ func (instance *bot) stopWatchdog() {
 	instance.guardWg.Wait()
 }
 
-func (instance *bot) watchdogStaleSession(interval time.Duration) {
+func (instance *bot) watchdogStaleSession(heartbeatInterval time.Duration) {
 	session := instance.session
 	if session == nil {
 		return
@@ -200,12 +200,12 @@ func (instance *bot) watchdogStaleSession(interval time.Duration) {
 		return
 	}
 
-	missedIntervals := time.Since(session.LastHeartbeatAck) / interval
+	missedIntervals := int64(time.Since(session.LastHeartbeatAck) / heartbeatInterval)
 	if missedIntervals < discordHeartbeatAckMissedIntervals {
 		return
 	}
 
-	sessionSentStale := time.Since(session.LastHeartbeatSent) >= interval*discordHeartbeatAckMissedIntervals
+	sessionSentStale := time.Since(session.LastHeartbeatSent) >= heartbeatInterval*discordHeartbeatAckMissedIntervals
 	if !sessionSentStale && session.DataReady {
 		// Heartbeats were acked recently enough to keep the gateway happy.
 		return

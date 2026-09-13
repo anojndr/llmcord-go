@@ -197,6 +197,7 @@ const (
 	publicHTTPIdleTimeout              = 30 * time.Second
 	discordStartupProbeReadLimit       = 4096
 	errorBodySnippetMaxLength          = 200
+	discordGatewayHeartbeatInterval    = 41250 * time.Millisecond
 	discordHeartbeatAckMissedIntervals = 4
 	discordAwakeProbeTimeout           = 10 * time.Second
 	discordAwakeTestProbeInterval      = 50 * time.Millisecond

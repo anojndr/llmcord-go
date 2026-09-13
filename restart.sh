@@ -60,8 +60,8 @@ stop_bot() {
 
 wait_online() {
   local pid="$1"
-  local start waited=0
-  start="$(wc -l < "$LOG_FILE")"
+  local start="${2:-$(wc -l < "$LOG_FILE")}"
+  local waited=0
   while (( waited < ONLINE_TIMEOUT )); do
     if ! kill -0 "$pid" 2>/dev/null && [[ -z "$(llmcord_pids)" ]]; then
       log "bot exited before coming online; last log lines:"
@@ -87,10 +87,16 @@ start_bot() {
     exec go run ./cmd/llmcord-go
   fi
   : >> "$LOG_FILE"
-  nohup go run ./cmd/llmcord-go >> "$LOG_FILE" 2>&1 &
+  local start
+  start="$(wc -l < "$LOG_FILE")"
+  if command -v setsid >/dev/null 2>&1; then
+    nohup setsid go run ./cmd/llmcord-go </dev/null >> "$LOG_FILE" 2>&1 &
+  else
+    nohup go run ./cmd/llmcord-go </dev/null >> "$LOG_FILE" 2>&1 &
+  fi
   local pid="$!"
   log "started pid $pid; output -> $LOG_FILE (tail -f $LOG_FILE)"
-  wait_online "$pid"
+  wait_online "$pid" "$start"
 }
 
 foreground=0

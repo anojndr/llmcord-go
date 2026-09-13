@@ -338,7 +338,6 @@ func (instance *bot) open(ctx context.Context, loadedConfig config) error {
 	}
 
 	instance.startReconnectGuard(ctx)
-	defer instance.stopReconnectGuard()
 
 	err = instance.configureSession(loadedConfig)
 	if err != nil {
