@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestEncodeMessageNodeSnapshotJSONTruncatesLargeFieldsToAvoidPostgresJSONBOverflow(t *testing.T) {
+func TestEncodeMessageNodeSnapshotJSONTruncatesLargeFieldsToAvoidSizeOverflow(t *testing.T) {
 	t.Parallel()
 
 	nodes := buildOversizedSnapshotForTest()
@@ -197,7 +197,7 @@ func TestEncodeMessageNodeSnapshotJSONEvictsOldestNodesWhenTotalSizeExceedsSafeL
 	}
 }
 
-func TestSaveSnapshotHandlesPostgresJSONBSizeErrorByTrimming(t *testing.T) {
+func TestSaveSnapshotTrimsToFitSizeLimit(t *testing.T) {
 	t.Parallel()
 
 	largeData := make([]byte, 200*1024)
@@ -264,7 +264,7 @@ func (b *sizeFailingTestBackend) saveSnapshot(_ string, snapshot messageNodeStor
 		}
 
 		if len(payloadBytes) > b.safeMax {
-			return &stubPQError{msg: "pq: total size of jsonb object elements exceeds the maximum of 268435455 bytes"}
+			return &stubSizeError{msg: "snapshot exceeds the maximum of 268435455 bytes"}
 		}
 	}
 
@@ -273,6 +273,6 @@ func (b *sizeFailingTestBackend) saveSnapshot(_ string, snapshot messageNodeStor
 	return nil
 }
 
-type stubPQError struct{ msg string }
+type stubSizeError struct{ msg string }
 
-func (e *stubPQError) Error() string { return e.msg }
+func (e *stubSizeError) Error() string { return e.msg }

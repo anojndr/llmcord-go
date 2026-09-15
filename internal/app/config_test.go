@@ -158,7 +158,7 @@ providers:
 models:
   openai/first-model:
 database:
-  connection_string: postgresql://localhost:5432/llmcordgo?sslmode=disable
+  connection_string: llmcord.sqlite
 `
 
 	err := os.WriteFile(configPath, []byte(configText), 0o600)
@@ -171,8 +171,7 @@ database:
 		t.Fatalf("load config: %v", err)
 	}
 
-	if loadedConfig.Database.ConnectionString !=
-		"postgresql://localhost:5432/llmcordgo?sslmode=disable" {
+	if loadedConfig.Database.ConnectionString != "llmcord.sqlite" {
 		t.Fatalf(
 			"unexpected database connection string: %q",
 			loadedConfig.Database.ConnectionString,
@@ -333,7 +332,7 @@ func TestLoadConfigRejectsWhitespaceOnlyDatabaseStoreKey(t *testing.T) {
 	}
 }
 
-func TestLoadConfigRejectsUnsupportedDatabaseConnectionStringScheme(t *testing.T) {
+func TestLoadConfigRejectsURLDatabaseConnectionString(t *testing.T) {
 	t.Parallel()
 
 	tempDir := t.TempDir()
@@ -346,7 +345,7 @@ providers:
 models:
   openai/first-model:
 database:
-  connection_string: mysql://localhost:3306/llmcordgo
+  connection_string: https://example.com/llmcordgo/history
 `
 
 	err := os.WriteFile(configPath, []byte(configText), 0o600)
@@ -356,7 +355,7 @@ database:
 
 	_, err = loadConfig(configPath)
 	if err == nil {
-		t.Fatal("expected unsupported database scheme to fail validation")
+		t.Fatal("expected URL database connection string to fail validation")
 	}
 }
 

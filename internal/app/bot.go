@@ -250,7 +250,7 @@ func (instance *bot) hydratePersistenceInBackground(
 			return
 		}
 
-		backgroundCtx, cancelBackground := context.WithTimeout(context.Background(), postgresMessageNodeStoreStatementTimeout)
+		backgroundCtx, cancelBackground := context.WithTimeout(context.Background(), messageNodeStoreStatementTimeout)
 		defer cancelBackground()
 
 		instance.wireBotStatePersistence(backgroundCtx, loadedConfig)

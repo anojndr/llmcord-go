@@ -31,7 +31,7 @@ linters:
             - github.com/bwmarrin/discordgo
             - github.com/chromedp/chromedp
             - github.com/ledongthuc/pdf
-            - github.com/lib/pq
+            - modernc.org/sqlite
             - github.com/modelcontextprotocol/go-sdk/mcp
             - github.com/pdfcpu/pdfcpu/pkg/api
             - github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model

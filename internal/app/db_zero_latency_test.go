@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -78,9 +79,11 @@ func TestNewBotDoesNotBlockStartupOnUnreachableDatabase(t *testing.T) {
 
 	loadedConfig := testBotStateConfig()
 	loadedConfig.BotToken = "test-token"
-	loadedConfig.Database.ConnectionString = "postgres://127.0.0.1:1/llmcord?sslmode=disable"
+	loadedConfig.Database.ConnectionString = filepath.Join(
+		t.TempDir(),
+		"startup-latency-probe.sqlite",
+	)
 	loadedConfig.Database.StoreKey = "startup-latency-probe"
-
 	done := make(chan *bot, 1)
 
 	go func() {

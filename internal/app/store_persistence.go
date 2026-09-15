@@ -16,44 +16,46 @@ import (
 	"unicode/utf8"
 
 	"github.com/bwmarrin/discordgo"
-	"github.com/lib/pq"
+
+	// Register the SQLite driver for database/sql ("sqlite" driver name).
+	_ "modernc.org/sqlite"
 )
 
 const (
 	messageNodeStoreSnapshotVersion     = 1
 	messageNodeStoreTableName           = "message_history_snapshots"
 	defaultMessageNodeStorePersistDelay = 250 * time.Millisecond
-	postgresJSONTextReplacement         = "\uFFFD"
-	postgresDataCorruptedSQLState       = "XX001"
-	postgresIndexCorruptedSQLState      = "XX002"
+	snapshotJSONTextReplacement         = "\uFFFD"
+	sqliteCorruptErrorSubstring         = "database disk image is malformed"
+	sqliteNotDatabaseErrorSubstring     = "file is not a database"
+	sqliteDatabaseDirPerm               = 0o750
 )
 
 const (
 	messageNodeStorePersistSafeMaxBytes = 200 * 1024 * 1024
-	postgresJSONBSizeExceededSubstring  = "total size of jsonb object elements exceeds"
 	trimSnapshotBinarySearchDivisor     = 2
 )
 
 const (
-	postgresMessageNodeStoreMaxOpenConns     = 4
-	postgresMessageNodeStoreMaxIdleConns     = 4
-	postgresMessageNodeStoreConnMaxLifetime  = 5 * time.Minute
-	postgresMessageNodeStoreConnMaxIdleTime  = 1 * time.Minute
-	postgresMessageNodeStoreStatementTimeout = 30 * time.Second
+	messageNodeStoreMaxOpenConns     = 1
+	messageNodeStoreConnMaxLifetime  = 5 * time.Minute
+	messageNodeStoreConnMaxIdleTime  = 1 * time.Minute
+	messageNodeStoreStatementTimeout = 30 * time.Second
 )
 
 var errMessageNodeStorePersistenceDisabled = errors.New("message history persistence disabled")
 
 const (
-	messageNodeStoreSelectSQL = "SELECT version, snapshot FROM message_history_snapshots WHERE store_key = $1"
+	messageNodeStoreSelectSQL = "SELECT version, snapshot FROM message_history_snapshots WHERE store_key = ?"
 	messageNodeStoreUpsertSQL = "INSERT INTO message_history_snapshots (store_key, version, snapshot, updated_at) " +
-		"VALUES ($1, $2, $3, NOW()) " +
-		"ON CONFLICT (store_key) DO UPDATE SET version = EXCLUDED.version, snapshot = EXCLUDED.snapshot, updated_at = NOW()"
+		"VALUES (?, ?, ?, CURRENT_TIMESTAMP) " +
+		"ON CONFLICT (store_key) DO UPDATE SET version = excluded.version, " +
+		"snapshot = excluded.snapshot, updated_at = CURRENT_TIMESTAMP"
 	messageNodeStoreCreateTableSQL = "CREATE TABLE IF NOT EXISTS message_history_snapshots (" +
 		"store_key TEXT PRIMARY KEY," +
 		"version INTEGER NOT NULL," +
-		"snapshot JSONB NOT NULL," +
-		"updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()" +
+		"snapshot TEXT NOT NULL," +
+		"updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP" +
 		")"
 )
 
@@ -134,35 +136,49 @@ type messageNodeStoreBackend interface {
 	close() error
 }
 
-type postgresMessageNodeStoreBackend struct {
+type sqliteMessageNodeStoreBackend struct {
 	database *sql.DB
 }
 
-func newPostgresMessageNodeStoreBackend(
+func newSQLiteMessageNodeStoreBackend(
 	ctx context.Context,
 	connectionString string,
-) (*postgresMessageNodeStoreBackend, error) {
+) (*sqliteMessageNodeStoreBackend, error) {
 	if ctx == nil {
-		return nil, fmt.Errorf("nil postgres message history context: %w", os.ErrInvalid)
+		return nil, fmt.Errorf("nil sqlite message history context: %w", os.ErrInvalid)
 	}
 
-	trimmedConnectionString := strings.TrimSpace(connectionString)
-	if trimmedConnectionString == "" {
-		return nil, errMessageNodeStorePersistenceDisabled
-	}
-
-	database, err := sql.Open("postgres", trimmedConnectionString)
+	databasePath, err := resolveSQLiteDatabasePath(connectionString)
 	if err != nil {
-		return nil, fmt.Errorf("open postgres message history database: %w", err)
+		return nil, err
 	}
 
-	configurePostgresMessageNodeStorePool(database)
+	database, err := sql.Open("sqlite", databasePath)
+	if err != nil {
+		return nil, fmt.Errorf("open sqlite message history database: %w", err)
+	}
+
+	configureSQLiteMessageNodeStorePool(database)
 
 	err = database.PingContext(ctx)
 	if err != nil {
 		_ = database.Close()
 
-		return nil, fmt.Errorf("ping postgres message history database: %w", err)
+		return nil, fmt.Errorf("ping sqlite message history database: %w", err)
+	}
+
+	_, err = database.ExecContext(ctx, "PRAGMA journal_mode=WAL")
+	if err != nil {
+		_ = database.Close()
+
+		return nil, fmt.Errorf("enable sqlite WAL mode: %w", err)
+	}
+
+	_, err = database.ExecContext(ctx, "PRAGMA busy_timeout = 5000")
+	if err != nil {
+		_ = database.Close()
+
+		return nil, fmt.Errorf("set sqlite busy timeout: %w", err)
 	}
 
 	err = ensureMessageNodeStoreTable(ctx, database)
@@ -172,33 +188,51 @@ func newPostgresMessageNodeStoreBackend(
 		return nil, err
 	}
 
-	backend := new(postgresMessageNodeStoreBackend)
+	backend := new(sqliteMessageNodeStoreBackend)
 	backend.database = database
 
 	return backend, nil
 }
 
-func configurePostgresMessageNodeStorePool(database *sql.DB) {
+func resolveSQLiteDatabasePath(connectionString string) (string, error) {
+	trimmedConnectionString := strings.TrimSpace(connectionString)
+	if trimmedConnectionString == "" {
+		return "", errMessageNodeStorePersistenceDisabled
+	}
+
+	cleanedPath := filepath.Clean(trimmedConnectionString)
+	parentDir := filepath.Dir(cleanedPath)
+
+	if parentDir != "." && parentDir != "" {
+		if err := os.MkdirAll(parentDir, sqliteDatabaseDirPerm); err != nil {
+			return "", fmt.Errorf("create sqlite database directory %q: %w", parentDir, err)
+		}
+	}
+
+	return cleanedPath, nil
+}
+
+func configureSQLiteMessageNodeStorePool(database *sql.DB) {
 	if database == nil {
 		return
 	}
 
-	database.SetMaxOpenConns(postgresMessageNodeStoreMaxOpenConns)
-	database.SetMaxIdleConns(postgresMessageNodeStoreMaxIdleConns)
-	database.SetConnMaxLifetime(postgresMessageNodeStoreConnMaxLifetime)
-	database.SetConnMaxIdleTime(postgresMessageNodeStoreConnMaxIdleTime)
+	database.SetMaxOpenConns(messageNodeStoreMaxOpenConns)
+	database.SetMaxIdleConns(messageNodeStoreMaxOpenConns)
+	database.SetConnMaxLifetime(messageNodeStoreConnMaxLifetime)
+	database.SetConnMaxIdleTime(messageNodeStoreConnMaxIdleTime)
 }
 
 func ensureMessageNodeStoreTable(ctx context.Context, database *sql.DB) error {
 	_, err := database.ExecContext(ctx, messageNodeStoreCreateTableSQL)
 	if err != nil {
-		return fmt.Errorf("create postgres message history table %q: %w", messageNodeStoreTableName, err)
+		return fmt.Errorf("create sqlite message history table %q: %w", messageNodeStoreTableName, err)
 	}
 
 	return nil
 }
 
-func (backend *postgresMessageNodeStoreBackend) loadSnapshot(
+func (backend *sqliteMessageNodeStoreBackend) loadSnapshot(
 	storeKey string,
 	capacity int,
 ) (messageNodeStoreSnapshot, error) {
@@ -206,7 +240,7 @@ func (backend *postgresMessageNodeStoreBackend) loadSnapshot(
 
 	var snapshotBytes []byte
 
-	loadCtx, cancelLoad := context.WithTimeout(context.Background(), postgresMessageNodeStoreStatementTimeout)
+	loadCtx, cancelLoad := context.WithTimeout(context.Background(), messageNodeStoreStatementTimeout)
 	defer cancelLoad()
 
 	err := backend.database.QueryRowContext(
@@ -223,7 +257,7 @@ func (backend *postgresMessageNodeStoreBackend) loadSnapshot(
 		}
 
 		return messageNodeStoreSnapshot{}, fmt.Errorf(
-			"query message history from postgres table %q: %w",
+			"query message history from sqlite table %q: %w",
 			messageNodeStoreTableName,
 			err,
 		)
@@ -251,7 +285,7 @@ func (backend *postgresMessageNodeStoreBackend) loadSnapshot(
 	return snapshot, nil
 }
 
-func (backend *postgresMessageNodeStoreBackend) saveSnapshot(
+func (backend *sqliteMessageNodeStoreBackend) saveSnapshot(
 	storeKey string,
 	snapshot messageNodeStoreSnapshot,
 ) error {
@@ -260,7 +294,7 @@ func (backend *postgresMessageNodeStoreBackend) saveSnapshot(
 		return fmt.Errorf("encode message history snapshot JSON: %w", err)
 	}
 
-	saveCtx, cancelSave := context.WithTimeout(context.Background(), postgresMessageNodeStoreStatementTimeout)
+	saveCtx, cancelSave := context.WithTimeout(context.Background(), messageNodeStoreStatementTimeout)
 	defer cancelSave()
 
 	_, err = backend.database.ExecContext(
@@ -270,65 +304,15 @@ func (backend *postgresMessageNodeStoreBackend) saveSnapshot(
 		snapshot.Version,
 		snapshotBytes,
 	)
-	if err == nil {
-		return nil
-	}
-
-	if !isPostgresJSONBSizeExceededError(err) {
+	if err != nil {
 		return fmt.Errorf(
-			"upsert message history into postgres table %q: %w",
+			"upsert message history into sqlite table %q: %w",
 			messageNodeStoreTableName,
 			err,
 		)
 	}
 
-	trimmedNodes := trimSnapshotToFit(snapshot.Nodes, messageNodeStorePersistSafeMaxBytes)
-
-	trimmedBytes, encodeErr := encodeMessageNodeSnapshotJSON(trimmedNodes)
-	if encodeErr != nil {
-		return fmt.Errorf(
-			"upsert message history into postgres table %q: %w",
-			messageNodeStoreTableName,
-			encodeErr,
-		)
-	}
-
-	retryCtx, cancelRetry := context.WithTimeout(context.Background(), postgresMessageNodeStoreStatementTimeout)
-	defer cancelRetry()
-
-	_, retryErr := backend.database.ExecContext(
-		retryCtx,
-		messageNodeStoreUpsertSQL,
-		storeKey,
-		snapshot.Version,
-		trimmedBytes,
-	)
-	if retryErr != nil {
-		return fmt.Errorf(
-			"upsert message history into postgres table %q: %w",
-			messageNodeStoreTableName,
-			retryErr,
-		)
-	}
-
 	return nil
-}
-
-func isPostgresJSONBSizeExceededError(err error) bool {
-	if err == nil {
-		return false
-	}
-
-	if strings.Contains(err.Error(), postgresJSONBSizeExceededSubstring) {
-		return true
-	}
-
-	var pqErr *pq.Error
-	if errors.As(err, &pqErr) && strings.Contains(pqErr.Message, postgresJSONBSizeExceededSubstring) {
-		return true
-	}
-
-	return false
 }
 
 func decodeMessageNodeSnapshotJSON(
@@ -549,20 +533,20 @@ func sanitizeMessageNodeSnapshotPayload(
 
 	sanitizedNodes := make(map[string]messageNodeSnapshot, len(payload.Nodes))
 	for messageID, snapshot := range payload.Nodes {
-		sanitizedNodes[sanitizePostgresJSONString(messageID)] = sanitizeMessageNodeSnapshot(snapshot)
+		sanitizedNodes[sanitizeSnapshotJSONString(messageID)] = sanitizeMessageNodeSnapshot(snapshot)
 	}
 
 	return messageNodeSnapshotPayload{Nodes: sanitizedNodes}
 }
 
 func sanitizeMessageNodeSnapshot(snapshot messageNodeSnapshot) messageNodeSnapshot {
-	snapshot.Role = sanitizePostgresJSONString(snapshot.Role)
-	snapshot.Text = sanitizePostgresJSONString(snapshot.Text)
-	snapshot.ThinkingText = sanitizePostgresJSONString(snapshot.ThinkingText)
-	snapshot.URLScanText = sanitizePostgresJSONString(snapshot.URLScanText)
-	snapshot.GistURL = sanitizePostgresJSONString(snapshot.GistURL)
-	snapshot.ProviderResponseID = sanitizePostgresJSONString(snapshot.ProviderResponseID)
-	snapshot.ProviderResponseModel = sanitizePostgresJSONString(snapshot.ProviderResponseModel)
+	snapshot.Role = sanitizeSnapshotJSONString(snapshot.Role)
+	snapshot.Text = sanitizeSnapshotJSONString(snapshot.Text)
+	snapshot.ThinkingText = sanitizeSnapshotJSONString(snapshot.ThinkingText)
+	snapshot.URLScanText = sanitizeSnapshotJSONString(snapshot.URLScanText)
+	snapshot.GistURL = sanitizeSnapshotJSONString(snapshot.GistURL)
+	snapshot.ProviderResponseID = sanitizeSnapshotJSONString(snapshot.ProviderResponseID)
+	snapshot.ProviderResponseModel = sanitizeSnapshotJSONString(snapshot.ProviderResponseModel)
 	snapshot.Media = sanitizeContentPartSnapshots(snapshot.Media)
 	snapshot.SearchMetadata = sanitizeSearchMetadata(snapshot.SearchMetadata)
 	snapshot.ParentMessage = sanitizeDiscordMessageSnapshot(snapshot.ParentMessage)
@@ -584,11 +568,11 @@ func sanitizeContentPartSnapshots(snapshots []contentPartSnapshot) []contentPart
 }
 
 func sanitizeContentPartSnapshot(snapshot contentPartSnapshot) contentPartSnapshot {
-	snapshot.Type = sanitizePostgresJSONString(snapshot.Type)
-	snapshot.Text = sanitizePostgresJSONString(snapshot.Text)
-	snapshot.ImageURL = sanitizePostgresJSONString(snapshot.ImageURL)
-	snapshot.MIMEType = sanitizePostgresJSONString(snapshot.MIMEType)
-	snapshot.Filename = sanitizePostgresJSONString(snapshot.Filename)
+	snapshot.Type = sanitizeSnapshotJSONString(snapshot.Type)
+	snapshot.Text = sanitizeSnapshotJSONString(snapshot.Text)
+	snapshot.ImageURL = sanitizeSnapshotJSONString(snapshot.ImageURL)
+	snapshot.MIMEType = sanitizeSnapshotJSONString(snapshot.MIMEType)
+	snapshot.Filename = sanitizeSnapshotJSONString(snapshot.Filename)
 
 	return snapshot
 }
@@ -599,7 +583,7 @@ func sanitizeSearchMetadata(metadata *searchMetadata) *searchMetadata {
 	}
 
 	return &searchMetadata{
-		Queries:             sanitizePostgresJSONStrings(metadata.Queries),
+		Queries:             sanitizeSnapshotJSONStrings(metadata.Queries),
 		Results:             sanitizeWebSearchResults(metadata.Results),
 		MaxURLs:             metadata.MaxURLs,
 		VisualSearchSources: sanitizeVisualSearchSourceGroups(metadata.VisualSearchSources),
@@ -614,8 +598,8 @@ func sanitizeWebSearchResults(results []webSearchResult) []webSearchResult {
 	sanitizedResults := make([]webSearchResult, 0, len(results))
 	for _, result := range results {
 		sanitizedResults = append(sanitizedResults, webSearchResult{
-			Query: sanitizePostgresJSONString(result.Query),
-			Text:  sanitizePostgresJSONString(result.Text),
+			Query: sanitizeSnapshotJSONString(result.Query),
+			Text:  sanitizeSnapshotJSONString(result.Text),
 		})
 	}
 
@@ -632,7 +616,7 @@ func sanitizeVisualSearchSourceGroups(
 	sanitizedGroups := make([]visualSearchSourceGroup, 0, len(sourceGroups))
 	for _, sourceGroup := range sourceGroups {
 		sanitizedGroups = append(sanitizedGroups, visualSearchSourceGroup{
-			Label:   sanitizePostgresJSONString(sourceGroup.Label),
+			Label:   sanitizeSnapshotJSONString(sourceGroup.Label),
 			Sources: sanitizeSearchSources(sourceGroup.Sources),
 		})
 	}
@@ -648,8 +632,8 @@ func sanitizeSearchSources(sources []searchSource) []searchSource {
 	sanitizedSources := make([]searchSource, 0, len(sources))
 	for _, source := range sources {
 		sanitizedSources = append(sanitizedSources, searchSource{
-			Title: sanitizePostgresJSONString(source.Title),
-			URL:   sanitizePostgresJSONString(source.URL),
+			Title: sanitizeSnapshotJSONString(source.Title),
+			URL:   sanitizeSnapshotJSONString(source.URL),
 		})
 	}
 
@@ -662,13 +646,13 @@ func sanitizeDiscordMessageSnapshot(message *discordMessageSnapshot) *discordMes
 	}
 
 	return &discordMessageSnapshot{
-		ID:               sanitizePostgresJSONString(message.ID),
-		ChannelID:        sanitizePostgresJSONString(message.ChannelID),
-		GuildID:          sanitizePostgresJSONString(message.GuildID),
+		ID:               sanitizeSnapshotJSONString(message.ID),
+		ChannelID:        sanitizeSnapshotJSONString(message.ChannelID),
+		GuildID:          sanitizeSnapshotJSONString(message.GuildID),
 		Type:             message.Type,
-		Content:          sanitizePostgresJSONString(message.Content),
+		Content:          sanitizeSnapshotJSONString(message.Content),
 		Author:           sanitizeDiscordUserSnapshot(message.Author),
-		MentionUserIDs:   sanitizePostgresJSONStrings(message.MentionUserIDs),
+		MentionUserIDs:   sanitizeSnapshotJSONStrings(message.MentionUserIDs),
 		Attachments:      sanitizeDiscordAttachmentSnapshots(message.Attachments),
 		Embeds:           sanitizeDiscordEmbedSnapshots(message.Embeds),
 		MessageReference: sanitizeDiscordMessageReferenceSnapshot(message.MessageReference),
@@ -681,7 +665,7 @@ func sanitizeDiscordUserSnapshot(user *discordUserSnapshot) *discordUserSnapshot
 	}
 
 	return &discordUserSnapshot{
-		ID:  sanitizePostgresJSONString(user.ID),
+		ID:  sanitizeSnapshotJSONString(user.ID),
 		Bot: user.Bot,
 	}
 }
@@ -696,9 +680,9 @@ func sanitizeDiscordAttachmentSnapshots(
 	sanitizedAttachments := make([]discordAttachmentSnapshot, 0, len(attachments))
 	for _, attachment := range attachments {
 		sanitizedAttachments = append(sanitizedAttachments, discordAttachmentSnapshot{
-			Filename:    sanitizePostgresJSONString(attachment.Filename),
-			ContentType: sanitizePostgresJSONString(attachment.ContentType),
-			URL:         sanitizePostgresJSONString(attachment.URL),
+			Filename:    sanitizeSnapshotJSONString(attachment.Filename),
+			ContentType: sanitizeSnapshotJSONString(attachment.ContentType),
+			URL:         sanitizeSnapshotJSONString(attachment.URL),
 		})
 	}
 
@@ -713,9 +697,9 @@ func sanitizeDiscordEmbedSnapshots(embeds []discordEmbedSnapshot) []discordEmbed
 	sanitizedEmbeds := make([]discordEmbedSnapshot, 0, len(embeds))
 	for _, embed := range embeds {
 		sanitizedEmbeds = append(sanitizedEmbeds, discordEmbedSnapshot{
-			Title:       sanitizePostgresJSONString(embed.Title),
-			Description: sanitizePostgresJSONString(embed.Description),
-			FooterText:  sanitizePostgresJSONString(embed.FooterText),
+			Title:       sanitizeSnapshotJSONString(embed.Title),
+			Description: sanitizeSnapshotJSONString(embed.Description),
+			FooterText:  sanitizeSnapshotJSONString(embed.FooterText),
 		})
 	}
 
@@ -730,47 +714,47 @@ func sanitizeDiscordMessageReferenceSnapshot(
 	}
 
 	return &discordMessageReferenceSnapshot{
-		MessageID: sanitizePostgresJSONString(reference.MessageID),
-		ChannelID: sanitizePostgresJSONString(reference.ChannelID),
-		GuildID:   sanitizePostgresJSONString(reference.GuildID),
+		MessageID: sanitizeSnapshotJSONString(reference.MessageID),
+		ChannelID: sanitizeSnapshotJSONString(reference.ChannelID),
+		GuildID:   sanitizeSnapshotJSONString(reference.GuildID),
 	}
 }
 
-func sanitizePostgresJSONStrings(values []string) []string {
+func sanitizeSnapshotJSONStrings(values []string) []string {
 	if values == nil {
 		return nil
 	}
 
 	sanitizedValues := make([]string, 0, len(values))
 	for _, value := range values {
-		sanitizedValues = append(sanitizedValues, sanitizePostgresJSONString(value))
+		sanitizedValues = append(sanitizedValues, sanitizeSnapshotJSONString(value))
 	}
 
 	return sanitizedValues
 }
 
-func sanitizePostgresJSONString(value string) string {
+func sanitizeSnapshotJSONString(value string) string {
 	if strings.IndexByte(value, 0) == -1 && utf8.ValidString(value) {
 		return value
 	}
 
-	sanitizedValue := strings.ToValidUTF8(value, postgresJSONTextReplacement)
+	sanitizedValue := strings.ToValidUTF8(value, snapshotJSONTextReplacement)
 
 	return strings.ReplaceAll(
 		sanitizedValue,
 		"\x00",
-		postgresJSONTextReplacement,
+		snapshotJSONTextReplacement,
 	)
 }
 
-func (backend *postgresMessageNodeStoreBackend) close() error {
+func (backend *sqliteMessageNodeStoreBackend) close() error {
 	if backend == nil || backend.database == nil {
 		return nil
 	}
 
 	err := backend.database.Close()
 	if err != nil {
-		return fmt.Errorf("close postgres message history database: %w", err)
+		return fmt.Errorf("close sqlite message history database: %w", err)
 	}
 
 	return nil
@@ -937,10 +921,10 @@ func hydrateMessageHistoryInBackground(
 
 	storeKey := messageNodeStoreKey(configPath, configuredStoreKey)
 
-	loadCtx, cancelLoad := context.WithTimeout(context.Background(), postgresMessageNodeStoreStatementTimeout)
+	loadCtx, cancelLoad := context.WithTimeout(context.Background(), messageNodeStoreStatementTimeout)
 	defer cancelLoad()
 
-	backend, err := newPostgresMessageNodeStoreBackend(loadCtx, connectionString)
+	backend, err := newSQLiteMessageNodeStoreBackend(loadCtx, connectionString)
 	if err != nil {
 		if errors.Is(err, errMessageNodeStorePersistenceDisabled) {
 			return
@@ -1323,8 +1307,7 @@ func annotateMessageHistoryPersistenceError(
 
 	trimmedStoreKey := strings.TrimSpace(storeKey)
 
-	sqlState, corrupted := postgresMessageHistoryCorruptionSQLState(err)
-	if !corrupted {
+	if !isSQLiteCorruptionError(err) {
 		if trimmedStoreKey == "" {
 			return fmt.Errorf("%s: %w", trimmedOperation, err)
 		}
@@ -1334,38 +1317,31 @@ func annotateMessageHistoryPersistenceError(
 
 	if trimmedStoreKey == "" {
 		return fmt.Errorf(
-			"%s: postgres message history storage appears corrupted "+
-				"(SQLSTATE %s); repair or reset table %q before re-enabling persistence: %w",
+			"%s: sqlite message history storage appears corrupted; "+
+				"delete the database file before re-enabling persistence: %w",
 			trimmedOperation,
-			sqlState,
-			messageNodeStoreTableName,
 			err,
 		)
 	}
 
 	return fmt.Errorf(
-		"%s for store key %q: postgres message history storage appears corrupted "+
-			"(SQLSTATE %s); repair or reset table %q before re-enabling persistence: %w",
+		"%s for store key %q: sqlite message history storage appears corrupted; "+
+			"delete the database file before re-enabling persistence: %w",
 		trimmedOperation,
 		trimmedStoreKey,
-		sqlState,
-		messageNodeStoreTableName,
 		err,
 	)
 }
 
-func postgresMessageHistoryCorruptionSQLState(err error) (string, bool) {
-	var pqErr *pq.Error
-	if !errors.As(err, &pqErr) {
-		return "", false
+func isSQLiteCorruptionError(err error) bool {
+	if err == nil {
+		return false
 	}
 
-	switch string(pqErr.Code) {
-	case postgresDataCorruptedSQLState, postgresIndexCorruptedSQLState:
-		return string(pqErr.Code), true
-	default:
-		return "", false
-	}
+	lowered := strings.ToLower(err.Error())
+
+	return strings.Contains(lowered, sqliteCorruptErrorSubstring) ||
+		strings.Contains(lowered, sqliteNotDatabaseErrorSubstring)
 }
 
 func trimSnapshotNodes(
