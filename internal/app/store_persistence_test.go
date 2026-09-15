@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"maps"
 	"os"
 	"slices"
@@ -13,7 +14,6 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
-	"github.com/lib/pq"
 )
 
 const testSharedHomeBotsStoreKey = "shared-home-bots"
@@ -65,14 +65,13 @@ func newFailingMessageNodeStoreBackend() *failingMessageNodeStoreBackend {
 	}
 }
 
-func newTestPQError(code string, message string) *pq.Error {
-	pqErr := new(pq.Error)
-	pqErr.Code = pq.ErrorCode(code)
-	pqErr.Message = message
-
-	return pqErr
+func newTestSQLiteCorruptError() error {
+	return fmt.Errorf("database disk image is malformed: %w", errTestBackendUnavailable)
 }
 
+func newTestSQLiteNotDatabaseError() error {
+	return fmt.Errorf("file is not a database: %w", errTestBackendUnavailable)
+}
 func (backend *testMessageNodeStoreBackend) loadSnapshot(
 	storeKey string,
 	_ int,
@@ -248,7 +247,7 @@ func TestDefaultMessageNodeStoreKeyIsStableForEquivalentPaths(t *testing.T) {
 	}
 }
 
-func TestEncodeMessageNodeSnapshotJSONSanitizesPostgresUnsupportedUnicodeEscapes(t *testing.T) {
+func TestEncodeMessageNodeSnapshotJSONSanitizesSQLiteUnsupportedUnicodeEscapes(t *testing.T) {
 	t.Parallel()
 
 	snapshotBytes, err := encodeMessageNodeSnapshotJSON(testMessageNodeSnapshotsWithNULs())
@@ -267,12 +266,12 @@ func TestEncodeMessageNodeSnapshotJSONSanitizesPostgresUnsupportedUnicodeEscapes
 		t.Fatalf("decode sanitized snapshot JSON: %v", err)
 	}
 
-	decodedSnapshot, ok := decodedNodes["message-"+postgresJSONTextReplacement+"id"]
+	decodedSnapshot, ok := decodedNodes["message-"+snapshotJSONTextReplacement+"id"]
 	if !ok {
 		t.Fatalf("expected sanitized message id key, got %#v", decodedNodes)
 	}
 
-	if decodedSnapshot.Text != "reply"+postgresJSONTextReplacement+"text" {
+	if decodedSnapshot.Text != "reply"+snapshotJSONTextReplacement+"text" {
 		t.Fatalf("unexpected sanitized message text: %q", decodedSnapshot.Text)
 	}
 
@@ -280,7 +279,7 @@ func TestEncodeMessageNodeSnapshotJSONSanitizesPostgresUnsupportedUnicodeEscapes
 		t.Fatal("expected sanitized search metadata")
 	}
 
-	if decodedSnapshot.SearchMetadata.Queries[0] != "query"+postgresJSONTextReplacement+"value" {
+	if decodedSnapshot.SearchMetadata.Queries[0] != "query"+snapshotJSONTextReplacement+"value" {
 		t.Fatalf("unexpected sanitized query: %#v", decodedSnapshot.SearchMetadata.Queries)
 	}
 
@@ -288,19 +287,16 @@ func TestEncodeMessageNodeSnapshotJSONSanitizesPostgresUnsupportedUnicodeEscapes
 		t.Fatal("expected sanitized parent message")
 	}
 
-	if decodedSnapshot.ParentMessage.Content != "parent"+postgresJSONTextReplacement+"content" {
+	if decodedSnapshot.ParentMessage.Content != "parent"+snapshotJSONTextReplacement+"content" {
 		t.Fatalf("unexpected sanitized parent message content: %q", decodedSnapshot.ParentMessage.Content)
 	}
 }
 
-func TestPersistentMessageNodeStoreAnnotatesPostgresCorruptionOnLoad(t *testing.T) {
+func TestPersistentMessageNodeStoreAnnotatesSQLiteCorruptionOnLoad(t *testing.T) {
 	t.Parallel()
 
 	backend := newFailingMessageNodeStoreBackend()
-	backend.loadErr = newTestPQError(
-		postgresDataCorruptedSQLState,
-		"invalid page in block 31535 of relation \"base/16387/16396\"",
-	)
+	backend.loadErr = newTestSQLiteCorruptError()
 
 	_, err := newPersistentMessageNodeStore(10, testSharedHomeBotsStoreKey, backend)
 	if err == nil {
@@ -308,26 +304,22 @@ func TestPersistentMessageNodeStoreAnnotatesPostgresCorruptionOnLoad(t *testing.
 	}
 
 	errorText := err.Error()
-	if !strings.Contains(errorText, "postgres message history storage appears corrupted") {
+	if !strings.Contains(errorText, "sqlite message history storage appears corrupted") {
 		t.Fatalf("expected corruption annotation, got %q", errorText)
 	}
 
-	if !strings.Contains(errorText, postgresDataCorruptedSQLState) {
-		t.Fatalf("expected SQLSTATE in error, got %q", errorText)
-	}
-
-	if !strings.Contains(errorText, messageNodeStoreTableName) {
-		t.Fatalf("expected table name in error, got %q", errorText)
+	if !strings.Contains(errorText, "database file") {
+		t.Fatalf("expected database file hint in error, got %q", errorText)
 	}
 }
 
-func TestMessageNodeStorePersistAnnotatesPostgresCorruption(t *testing.T) {
+func TestMessageNodeStorePersistAnnotatesSQLiteCorruption(t *testing.T) {
 	t.Parallel()
 
 	store := newMessageNodeStore(10)
 	store.storeKey = testSharedHomeBotsStoreKey
 	backend := newFailingMessageNodeStoreBackend()
-	backend.saveErr = newTestPQError(postgresIndexCorruptedSQLState, "index is corrupted")
+	backend.saveErr = newTestSQLiteNotDatabaseError()
 	store.backend = backend
 
 	cacheInitializedStoreNode(store, "message-1", "cached text")
@@ -338,12 +330,8 @@ func TestMessageNodeStorePersistAnnotatesPostgresCorruption(t *testing.T) {
 	}
 
 	errorText := err.Error()
-	if !strings.Contains(errorText, "postgres message history storage appears corrupted") {
+	if !strings.Contains(errorText, "sqlite message history storage appears corrupted") {
 		t.Fatalf("expected corruption annotation, got %q", errorText)
-	}
-
-	if !strings.Contains(errorText, postgresIndexCorruptedSQLState) {
-		t.Fatalf("expected SQLSTATE in error, got %q", errorText)
 	}
 
 	if !strings.Contains(errorText, testSharedHomeBotsStoreKey) {
@@ -397,10 +385,7 @@ func TestAnnotateMessageHistoryPersistenceErrorWithGenericErrorAndEmptyStoreKey(
 func TestAnnotateMessageHistoryPersistenceErrorWithCorruptionAndEmptyStoreKey(t *testing.T) {
 	t.Parallel()
 
-	sourceErr := newTestPQError(
-		postgresDataCorruptedSQLState,
-		"invalid page in block 31535 of relation \"base/16387/16396\"",
-	)
+	sourceErr := newTestSQLiteCorruptError()
 
 	err := annotateMessageHistoryPersistenceError(
 		"load persisted message history",
@@ -416,8 +401,8 @@ func TestAnnotateMessageHistoryPersistenceErrorWithCorruptionAndEmptyStoreKey(t 
 		t.Fatalf("did not expect store key text in wrapped error, got %q", errorText)
 	}
 
-	if !strings.Contains(errorText, messageNodeStoreTableName) {
-		t.Fatalf("expected table name in wrapped error, got %q", errorText)
+	if !strings.Contains(errorText, "database file") {
+		t.Fatalf("expected database file hint in wrapped error, got %q", errorText)
 	}
 }
 
@@ -443,16 +428,15 @@ func TestAnnotateMessageHistoryPersistenceErrorReturnsNilForNilError(t *testing.
 	}
 }
 
-func TestPostgresMessageHistoryCorruptionSQLStateReturnsFalseForGenericError(t *testing.T) {
+func TestIsSQLiteCorruptionErrorReturnsFalseForGenericError(t *testing.T) {
 	t.Parallel()
 
-	sqlState, corrupted := postgresMessageHistoryCorruptionSQLState(errTestBackendUnavailable)
-	if corrupted {
-		t.Fatalf("expected generic error to not be treated as corruption, got SQLSTATE %q", sqlState)
+	if isSQLiteCorruptionError(errTestBackendUnavailable) {
+		t.Fatal("expected generic error to not be treated as corruption")
 	}
 
-	if sqlState != "" {
-		t.Fatalf("expected empty SQLSTATE for generic error, got %q", sqlState)
+	if !isSQLiteCorruptionError(newTestSQLiteCorruptError()) {
+		t.Fatal("expected malformed-image error to be treated as corruption")
 	}
 }
 

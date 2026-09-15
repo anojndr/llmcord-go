@@ -17,15 +17,16 @@ const (
 )
 
 const (
-	botStateSelectSQL = "SELECT version, snapshot FROM bot_state_snapshots WHERE store_key = $1"
+	botStateSelectSQL = "SELECT version, snapshot FROM bot_state_snapshots WHERE store_key = ?"
 	botStateUpsertSQL = "INSERT INTO bot_state_snapshots (store_key, version, snapshot, updated_at) " +
-		"VALUES ($1, $2, $3, NOW()) " +
-		"ON CONFLICT (store_key) DO UPDATE SET version = EXCLUDED.version, snapshot = EXCLUDED.snapshot, updated_at = NOW()"
+		"VALUES (?, ?, ?, CURRENT_TIMESTAMP) " +
+		"ON CONFLICT (store_key) DO UPDATE SET version = excluded.version, " +
+		"snapshot = excluded.snapshot, updated_at = CURRENT_TIMESTAMP"
 	botStateCreateTableSQL = "CREATE TABLE IF NOT EXISTS bot_state_snapshots (" +
 		"store_key TEXT PRIMARY KEY," +
 		"version INTEGER NOT NULL," +
-		"snapshot JSONB NOT NULL," +
-		"updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()" +
+		"snapshot TEXT NOT NULL," +
+		"updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP" +
 		")"
 )
 
@@ -41,7 +42,7 @@ type botStateSnapshot struct {
 	MaintenanceChannels []string `json:"maintenance_channels,omitempty"`
 }
 
-// botStateBackend persists bot runtime state. The postgres implementation
+// botStateBackend persists bot runtime state. The sqlite implementation
 // shares the message-history *sql.DB connection owned by the message store,
 // so it never closes the database itself.
 type botStateBackend interface {
@@ -49,11 +50,11 @@ type botStateBackend interface {
 	saveBotState(storeKey string, snapshot botStateSnapshot) error
 }
 
-type postgresBotStateBackend struct {
+type sqliteBotStateBackend struct {
 	database *sql.DB
 }
 
-func newPostgresBotStateBackend(ctx context.Context, database *sql.DB) (*postgresBotStateBackend, error) {
+func newSQLiteBotStateBackend(ctx context.Context, database *sql.DB) (*sqliteBotStateBackend, error) {
 	if ctx == nil {
 		return nil, fmt.Errorf("nil bot state context: %w", os.ErrInvalid)
 	}
@@ -67,7 +68,7 @@ func newPostgresBotStateBackend(ctx context.Context, database *sql.DB) (*postgre
 		return nil, err
 	}
 
-	backend := new(postgresBotStateBackend)
+	backend := new(sqliteBotStateBackend)
 	backend.database = database
 
 	return backend, nil
@@ -80,18 +81,18 @@ func ensureBotStateTable(ctx context.Context, database *sql.DB) error {
 
 	_, err := database.ExecContext(ctx, botStateCreateTableSQL)
 	if err != nil {
-		return fmt.Errorf("create postgres bot state table %q: %w", botStateTableName, err)
+		return fmt.Errorf("create sqlite bot state table %q: %w", botStateTableName, err)
 	}
 
 	return nil
 }
 
-func (backend *postgresBotStateBackend) loadBotState(storeKey string) (botStateSnapshot, error) {
+func (backend *sqliteBotStateBackend) loadBotState(storeKey string) (botStateSnapshot, error) {
 	var snapshot botStateSnapshot
 
 	var snapshotBytes []byte
 
-	loadCtx, cancelLoad := context.WithTimeout(context.Background(), postgresMessageNodeStoreStatementTimeout)
+	loadCtx, cancelLoad := context.WithTimeout(context.Background(), messageNodeStoreStatementTimeout)
 	defer cancelLoad()
 
 	err := backend.database.QueryRowContext(
@@ -108,7 +109,7 @@ func (backend *postgresBotStateBackend) loadBotState(storeKey string) (botStateS
 		}
 
 		return botStateSnapshot{}, fmt.Errorf(
-			"query bot state from postgres table %q: %w",
+			"query bot state from sqlite table %q: %w",
 			botStateTableName,
 			err,
 		)
@@ -132,7 +133,7 @@ func (backend *postgresBotStateBackend) loadBotState(storeKey string) (botStateS
 	return snapshot, nil
 }
 
-func (backend *postgresBotStateBackend) saveBotState(storeKey string, snapshot botStateSnapshot) error {
+func (backend *sqliteBotStateBackend) saveBotState(storeKey string, snapshot botStateSnapshot) error {
 	snapshot.Version = botStateSnapshotVersion
 
 	snapshotBytes, err := json.Marshal(snapshot)
@@ -140,7 +141,7 @@ func (backend *postgresBotStateBackend) saveBotState(storeKey string, snapshot b
 		return fmt.Errorf("encode bot state snapshot JSON: %w", err)
 	}
 
-	saveCtx, cancelSave := context.WithTimeout(context.Background(), postgresMessageNodeStoreStatementTimeout)
+	saveCtx, cancelSave := context.WithTimeout(context.Background(), messageNodeStoreStatementTimeout)
 	defer cancelSave()
 
 	_, err = backend.database.ExecContext(
@@ -152,7 +153,7 @@ func (backend *postgresBotStateBackend) saveBotState(storeKey string, snapshot b
 	)
 	if err != nil {
 		return fmt.Errorf(
-			"upsert bot state into postgres table %q: %w",
+			"upsert bot state into sqlite table %q: %w",
 			botStateTableName,
 			err,
 		)
@@ -161,20 +162,20 @@ func (backend *postgresBotStateBackend) saveBotState(storeKey string, snapshot b
 	return nil
 }
 
-// postgresDatabase returns the shared postgres handle when the message store
+// sqliteDatabase returns the shared sqlite handle when the message store
 // is persistent, or nil when history persistence is disabled.
-func (store *messageNodeStore) postgresDatabase() *sql.DB {
+func (store *messageNodeStore) sqliteDatabase() *sql.DB {
 	backend, _ := store.backendAndKey()
 	if backend == nil {
 		return nil
 	}
 
-	postgresBackend, ok := backend.(*postgresMessageNodeStoreBackend)
-	if !ok || postgresBackend == nil {
+	sqliteBackend, ok := backend.(*sqliteMessageNodeStoreBackend)
+	if !ok || sqliteBackend == nil {
 		return nil
 	}
 
-	return postgresBackend.database
+	return sqliteBackend.database
 }
 
 // snapshotBotState copies the restart-relevant runtime state under read
@@ -267,7 +268,7 @@ func (instance *bot) applyBotStateSnapshot(snapshot botStateSnapshot, loadedConf
 	}
 }
 
-// loadPersistedBotState hydrates runtime state from postgres. Missing rows
+// loadPersistedBotState hydrates runtime state from sqlite. Missing rows
 // (first run) are a no-op; other failures are logged and keep defaults.
 func (instance *bot) loadPersistedBotState(loadedConfig config) {
 	backend, storeKey := instance.botStateBackendAndKey()
@@ -310,7 +311,7 @@ func (instance *bot) botStateBackendAndKey() (botStateBackend, string) {
 
 // persistBotStateBestEffort saves runtime state without blocking the caller.
 // It flushes on a background goroutine, so Discord handlers never wait on
-// postgres latency or outages. The snapshot is taken inside the serialized
+// sqlite latency or outages. The snapshot is taken inside the serialized
 // save, so concurrent mutations converge on the latest state.
 func (instance *bot) persistBotStateBestEffort() {
 	backend, storeKey := instance.botStateBackendAndKey()
@@ -355,7 +356,7 @@ func (instance *bot) persistBotStateSync() error {
 	return nil
 }
 
-// wireBotStatePersistence shares the message-history postgres connection for
+// wireBotStatePersistence shares the message-history sqlite connection for
 // runtime-state persistence and hydrates the current bot settings. Without a
 // persistent message store, bot state stays in memory.
 func (instance *bot) wireBotStatePersistence(ctx context.Context, loadedConfig config) {
@@ -370,14 +371,14 @@ func (instance *bot) wireBotStatePersistence(ctx context.Context, loadedConfig c
 		return
 	}
 
-	database := instance.nodes.postgresDatabase()
+	database := instance.nodes.sqliteDatabase()
 	if database == nil {
 		return
 	}
 
 	generationBeforeLoad := instance.botStateGeneration.Load()
 
-	backend, err := newPostgresBotStateBackend(ctx, database)
+	backend, err := newSQLiteBotStateBackend(ctx, database)
 	if err != nil {
 		logWarn("configure persisted bot state", err, "store_key", storeKey)
 

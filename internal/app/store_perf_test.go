@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	_ "modernc.org/sqlite"
 )
 
 func TestEncodeMessageNodeSnapshotJSONOmitsEmptyFields(t *testing.T) {
@@ -102,10 +104,10 @@ func TestPersistSkipsUnchangedSnapshotWithoutBackendWrite(t *testing.T) {
 	}
 }
 
-func TestConfigurePostgresMessageNodeStorePoolSetsLimits(t *testing.T) {
+func TestConfigureSQLiteMessageNodeStorePoolSetsLimits(t *testing.T) {
 	t.Parallel()
 
-	database, err := sql.Open("postgres", "postgres://localhost:5432/llmcordgo?sslmode=disable")
+	database, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}
@@ -114,7 +116,7 @@ func TestConfigurePostgresMessageNodeStorePoolSetsLimits(t *testing.T) {
 		_ = database.Close()
 	}()
 
-	configurePostgresMessageNodeStorePool(database)
+	configureSQLiteMessageNodeStorePool(database)
 
 	stats := database.Stats()
 
@@ -131,26 +133,27 @@ func TestConfigurePostgresMessageNodeStorePoolSetsLimits(t *testing.T) {
 	}
 }
 
-func TestSanitizePostgresJSONStringAvoidsAllocationForCleanStrings(t *testing.T) {
+//nolint:paralleltest // testing.AllocsPerRun cannot run inside a parallel test.
+func TestSanitizeSnapshotJSONStringAvoidsAllocationForCleanStrings(t *testing.T) {
 	clean := "hello world, plain ascii message with no weird bytes"
 
 	allocs := testing.AllocsPerRun(100, func() {
-		_ = sanitizePostgresJSONString(clean)
+		_ = sanitizeSnapshotJSONString(clean)
 	})
 
 	if allocs != 0 {
 		t.Fatalf("expected zero allocations sanitizing clean string, got %v", allocs)
 	}
 
-	if got := sanitizePostgresJSONString(clean); got != clean {
+	if got := sanitizeSnapshotJSONString(clean); got != clean {
 		t.Fatalf("clean string changed by sanitize: %q", got)
 	}
 
-	if got := sanitizePostgresJSONString("a\x00b"); strings.ContainsRune(got, 0) {
+	if got := sanitizeSnapshotJSONString("a\x00b"); strings.ContainsRune(got, 0) {
 		t.Fatalf("NUL byte not sanitized: %q", got)
 	}
 
-	if got := sanitizePostgresJSONString("a\xffb"); got == "a\xffb" {
+	if got := sanitizeSnapshotJSONString("a\xffb"); got == "a\xffb" {
 		t.Fatalf("invalid UTF-8 not sanitized: %q", got)
 	}
 }

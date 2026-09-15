@@ -1183,13 +1183,9 @@ func validateDatabaseConfig(loadedConfig databaseConfig) error {
 		return nil
 	}
 
-	parsedURL, err := url.Parse(trimmedConnectionString)
-	if err != nil {
-		return fmt.Errorf("database.connection_string is invalid: %w", err)
-	}
-
-	if parsedURL.Scheme != "postgres" && parsedURL.Scheme != "postgresql" {
-		return fmt.Errorf("database.connection_string must use postgres:// or postgresql://: %w", os.ErrInvalid)
+	lowered := strings.ToLower(trimmedConnectionString)
+	if strings.Contains(lowered, "://") {
+		return fmt.Errorf("database.connection_string must be a sqlite file path, not a URL: %w", os.ErrInvalid)
 	}
 
 	return nil
