@@ -229,17 +229,37 @@ func TestFixupXComContent(t *testing.T) {
 		in, want string
 	}{
 		{"https://x.com/ExtremeBlitz__/status/2093114939397349597?s=20 check this out",
-			"https://fixupx.com/ExtremeBlitz__/status/2093114939397349597?s=20 check this out"},
-		{"https://x.com/foo and https://x.com/bar", "https://fixupx.com/foo and https://fixupx.com/bar"},
-		{"http://x.com/foo", "http://fixupx.com/foo"},
-		{"https://www.x.com/foo", "https://www.fixupx.com/foo"},
-		{"https://WWW.X.COM/foo", "https://WWW.fixupx.com/foo"},
-		{"https://fixupx.com/foo should not change", "https://fixupx.com/foo should not change"},
-		{"https://fixupx.com/foo and https://x.com/bar", "https://fixupx.com/foo and https://fixupx.com/bar"},
-		{"x.com", "fixupx.com"},
-		{"check x.com/foo", "check fixupx.com/foo"},
-		{"Visit https://x.com/test!", "Visit https://fixupx.com/test!"},
-		{"https://x.com/a?x.com=1", "https://fixupx.com/a?fixupx.com=1"},
+			"https://fixupx.com/ExtremeBlitz__/status/2093114939397349597/en?s=20 check this out"},
+		{"https://x.com/foo and https://x.com/bar", "https://fixupx.com/foo/en and https://fixupx.com/bar/en"},
+		{"http://x.com/foo", "http://fixupx.com/foo/en"},
+		{"https://www.x.com/foo", "https://www.fixupx.com/foo/en"},
+		{"https://WWW.X.COM/foo", "https://WWW.fixupx.com/foo/en"},
+		{"https://fixupx.com/foo should gain translation suffix", "https://fixupx.com/foo/en should gain translation suffix"},
+		{"https://fixupx.com/foo/en should not change", "https://fixupx.com/foo/en should not change"},
+		{"https://fixupx.com/i/status/2099580662281859466/en stays", "https://fixupx.com/i/status/2099580662281859466/en stays"},
+		{"https://fixupx.com/foo/EN stays", "https://fixupx.com/foo/EN stays"},
+		{"https://fixupx.com/foo/en/ stays", "https://fixupx.com/foo/en/ stays"},
+		{"https://fixupx.com/foo and https://x.com/bar", "https://fixupx.com/foo/en and https://fixupx.com/bar/en"},
+		{"x.com", "fixupx.com/en"},
+		{"check x.com/foo", "check fixupx.com/foo/en"},
+		{"Visit https://x.com/test!", "Visit https://fixupx.com/test/en!"},
+		{"https://x.com/test.", "https://fixupx.com/test/en."},
+		{"https://x.com/a?x.com=1", "https://fixupx.com/a/en?fixupx.com=1"},
+		{"https://x.com/foo#bar", "https://fixupx.com/foo/en#bar"},
+		{"https://fixupx.com/foo?s=20 gains suffix on path", "https://fixupx.com/foo/en?s=20 gains suffix on path"},
+		{"https://fixupx.com/foo/en?s=20 stays translated", "https://fixupx.com/foo/en?s=20 stays translated"},
+		{"https://fixupx.com/foo/en#bar stays translated", "https://fixupx.com/foo/en#bar stays translated"},
+		{"https://fixupx.com/foo/EN?s=20 stays translated", "https://fixupx.com/foo/EN?s=20 stays translated"},
+		{"https://fixupx.com/foo/en/ stays translated", "https://fixupx.com/foo/en/ stays translated"},
+		{"https://www.fixupx.com/foo gains suffix", "https://www.fixupx.com/foo/en gains suffix"},
+		{"fixupx.com gains suffix", "fixupx.com/en gains suffix"},
+		{"fixupx.com/ root gains suffix", "fixupx.com/en root gains suffix"},
+		{"check www.fixupx.com/foo gains suffix", "check www.fixupx.com/foo/en gains suffix"},
+		{"[https://fixupx.com/foo] gains suffix inside brackets", "[https://fixupx.com/foo/en] gains suffix inside brackets"},
+		{"check fixupx.com/foo gains suffix", "check fixupx.com/foo/en gains suffix"},
+		{"日本語fixupx.com/foo gains suffix after CJK", "日本語fixupx.com/foo/en gains suffix after CJK"},
+		{"🎉fixupx.com/foo gains suffix after emoji", "🎉fixupx.com/foo/en gains suffix after emoji"},
+		{"(https://fixupx.com/foo) gains suffix inside parens", "(https://fixupx.com/foo/en) gains suffix inside parens"},
 	}
 	for _, tc := range tests {
 		got := fixupXComContent(tc.in)
@@ -269,8 +289,32 @@ func TestShouldHandleXFixup(t *testing.T) {
 		t.Fatal("expected to handle basic x.com")
 	}
 
-	if shouldHandleXFixup(makeMessage("https://fixupx.com/foo", nil, false), botID) {
-		t.Fatal("should not handle already fixed")
+	if !shouldHandleXFixup(makeMessage("https://fixupx.com/foo", nil, false), botID) {
+		t.Fatal("should handle fixupx without translation suffix")
+	}
+
+	if shouldHandleXFixup(makeMessage("https://fixupx.com/foo/en", nil, false), botID) {
+		t.Fatal("should not handle already translated")
+	}
+
+	if shouldHandleXFixup(makeMessage("https://fixupx.com/i/status/2099580662281859466/en", nil, false), botID) {
+		t.Fatal("should not handle already translated status link")
+	}
+
+	if shouldHandleXFixup(makeMessage("https://fixupx.com/foo/EN", nil, false), botID) {
+		t.Fatal("should not handle already translated uppercase")
+	}
+
+	if shouldHandleXFixup(makeMessage("https://fixupx.com/foo/en/", nil, false), botID) {
+		t.Fatal("should not handle already translated trailing slash")
+	}
+
+	if shouldHandleXFixup(makeMessage("https://fixupx.com/foo/en?s=20", nil, false), botID) {
+		t.Fatal("should not handle already translated link with query")
+	}
+
+	if shouldHandleXFixup(makeMessage("https://fixupx.com/foo/en#bar", nil, false), botID) {
+		t.Fatal("should not handle already translated link with fragment")
 	}
 
 	if shouldHandleXFixup(makeMessage("https://x.com/foo at ai hello", nil, false), botID) {
@@ -335,9 +379,30 @@ func TestHandleMessageCreateXFixupDeletesAndResends(t *testing.T) {
 	}
 
 	expectedContent := "ExtremeBlitz__ sent:\n" +
-		"https://fixupx.com/ExtremeBlitz__/status/2093114939397349597?s=20 check this out"
+		"https://fixupx.com/ExtremeBlitz__/status/2093114939397349597/en?s=20 check this out"
 	if len(contents) != 1 || contents[0] != expectedContent {
 		t.Fatalf("unexpected send content: got %q want %q", contents[0], expectedContent)
+	}
+}
+
+func TestHandleMessageCreateXFixupIgnoresTranslated(t *testing.T) {
+	t.Parallel()
+
+	var capture xfixupCapture
+
+	deletes, sends, _, unexpected := driveFixupMessage(
+		t,
+		&capture,
+		"msg-translated",
+		"ExtremeBlitz__",
+		"https://fixupx.com/ExtremeBlitz__/status/2093114939397349597/en?s=20 check this out",
+	)
+	if len(unexpected) != 0 {
+		t.Fatalf("unexpected requests: %v", unexpected)
+	}
+
+	if len(deletes) != 0 || len(sends) != 0 {
+		t.Fatalf("translated link must not resend, got deletes %v sends %v", deletes, sends)
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/bwmarrin/discordgo"
 )
@@ -16,6 +17,14 @@ var xComSchemeRegexp = regexp.MustCompile(`(?i)(https?://)(www\.)?x\.com\b`)
 // to avoid double-replacing fixupx.com. It captures the preceding char/anchor.
 var xComBareRegexp = regexp.MustCompile(`(?i)(^|[^a-zA-Z0-9])x\.com\b`)
 
+// fixupxSchemeURLRegexp matches full https://fixupx.com URLs including path,
+// query, and fragment. Appending /en requests English translation from FxEmbed.
+var fixupxSchemeURLRegexp = regexp.MustCompile(`(?i)https?://(?:www\.)?fixupx\.com\b[^\s<>()]*`)
+
+// fixupxBareURLRegexp matches bare fixupx.com URLs with optional www prefix.
+// The leading group preserves the boundary char so ReplaceAllStringFunc keeps it.
+var fixupxBareURLRegexp = regexp.MustCompile(`(?i)(^|[^a-zA-Z0-9])((?:www\.)?fixupx\.com\b[^\s<>()]*)`)
+
 const hardcodedBotMentionID = "1307756710072549439"
 
 func fixupXComContent(content string) string {
@@ -23,8 +32,104 @@ func fixupXComContent(content string) string {
 	content = xComSchemeRegexp.ReplaceAllString(content, "${1}${2}fixupx.com")
 	// Replace bare occurrences.
 	content = xComBareRegexp.ReplaceAllString(content, "${1}fixupx.com")
+	// Request English translation on every fixupx link.
+	content = appendFixupxTranslationSuffix(content)
 
 	return content
+}
+
+// appendFixupxTranslationSuffix ensures every fixupx.com link ends with /en
+// (inserted before query, fragment, and trailing punctuation) so FxEmbed
+// translates non-English posts to English. Already-translated links are kept.
+func appendFixupxTranslationSuffix(content string) string {
+	content = fixupxSchemeURLRegexp.ReplaceAllStringFunc(content, appendEnToFixupxURL)
+
+	return fixupxBareURLRegexp.ReplaceAllStringFunc(content, appendEnToBareFixupxMatch)
+}
+
+// appendEnToBareFixupxMatch preserves the leading boundary char and appends
+// /en to the bare fixupx URL, skipping query/fragment lookalikes such as
+// ?fixupx.com=1 that must not gain a path suffix.
+func appendEnToBareFixupxMatch(match string) string {
+	if match == "" {
+		return match
+	}
+
+	prefix, url := splitBareFixupxPrefix(match)
+	if prefix == "?" || prefix == "&" || prefix == "=" || prefix == "#" {
+		return match
+	}
+
+	return prefix + appendEnToFixupxURL(url)
+}
+
+// splitBareFixupxPrefix separates the leading boundary rune (if any) from the
+// bare fixupx URL. A leading ASCII alphanumeric means ^ matched and there is
+// no prefix. The split is rune-aware so a multibyte boundary char (CJK,
+// emoji) before a bare link is preserved intact instead of split mid-UTF-8.
+func splitBareFixupxPrefix(match string) (string, string) {
+	first, size := utf8.DecodeRuneInString(match)
+	if size == 1 && (first >= 'A' && first <= 'Z' ||
+		first >= 'a' && first <= 'z' ||
+		first >= '0' && first <= '9') {
+		return "", match
+	}
+
+	return match[:size], match[size:]
+}
+
+// appendEnToFixupxURL appends /en to one fixupx URL unless its path already
+// ends with /en (case-insensitive, trailing slash tolerated).
+func appendEnToFixupxURL(raw string) string {
+	core, punct := splitFixupxTrailingPunct(raw)
+	base, query := splitFixupxQueryFragment(core)
+
+	if hasFixupxEnSuffix(base) {
+		return raw
+	}
+
+	if strings.HasSuffix(base, "/") {
+		base += "en"
+	} else {
+		base += "/en"
+	}
+
+	return base + query + punct
+}
+
+// splitFixupxTrailingPunct separates trailing sentence punctuation (.,!?;:)
+// and closers from the URL so /en is inserted before them, not after.
+func splitFixupxTrailingPunct(raw string) (string, string) {
+	end := len(raw)
+	for end > 0 {
+		if strings.IndexByte(".,!?;:')\"]}", raw[end-1]) < 0 {
+			break
+		}
+
+		end--
+	}
+
+	return raw[:end], raw[end:]
+}
+
+// splitFixupxQueryFragment splits a fixupx URL into path and query/fragment
+// so /en lands on the path, e.g. /status/123/en?s=20.
+func splitFixupxQueryFragment(core string) (string, string) {
+	if idx := strings.IndexAny(core, "?#"); idx >= 0 {
+		return core[:idx], core[idx:]
+	}
+
+	return core, ""
+}
+
+// hasFixupxEnSuffix reports whether a fixupx URL path already requests English.
+func hasFixupxEnSuffix(base string) bool {
+	trimmed := strings.TrimRight(base, "/")
+	if len(trimmed) < 3 {
+		return false
+	}
+
+	return strings.EqualFold(trimmed[len(trimmed)-3:], "/en")
 }
 
 func xFixupDisplayName(message *discordgo.Message) string {
