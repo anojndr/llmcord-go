@@ -378,7 +378,7 @@ func (instance *bot) prepareMessageResponse(
 
 	request.RequestID = strings.TrimSpace(message.ID)
 
-	if request.Provider.UseResponsesAPI && providers.OpenAIConfiguredModel(request.ConfiguredModel) {
+	if request.Provider.UseResponsesAPI {
 		if previousResponseID, storedCount, ok := instance.chainableResponsesPreviousResponse(
 			message,
 			request.ConfiguredModel,
