@@ -2409,7 +2409,7 @@ func testSearchConfig() config {
 	loadedConfig := new(config)
 	provider := new(providerConfig)
 	provider.BaseURL = "https://api.example.com/v1"
-
+	provider.ChainPreviousResponse = true
 	loadedConfig.Providers = map[string]providerConfig{
 		"openai": *provider,
 	}

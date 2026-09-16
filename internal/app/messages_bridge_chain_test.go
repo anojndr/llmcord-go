@@ -3,10 +3,84 @@ package app
 import (
 	"context"
 	"testing"
+
+	"github.com/bwmarrin/discordgo"
 )
 
 func TestPrepareMessageResponseChainsBridgeResponsesProvider(t *testing.T) {
 	t.Parallel()
+
+	followUp := newChainedBridgeFollowUp(t, true)
+
+	request, _, _, err := followUp.instance.prepareMessageResponse(
+		context.Background(),
+		followUp.loadedConfig,
+		followUp.sourceMessage,
+		followUp.configuredModel,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("prepare message response: %v", err)
+	}
+
+	if request.PreviousResponseID != followUp.previousResponseID {
+		t.Fatalf(
+			"expected chained previous response %q, got %q",
+			followUp.previousResponseID,
+			request.PreviousResponseID,
+		)
+	}
+
+	if request.PreviousResponseCount != len(request.Messages)-1 {
+		t.Fatalf(
+			"expected only the new tail chained, got stored count %d for %d messages",
+			request.PreviousResponseCount,
+			len(request.Messages),
+		)
+	}
+}
+
+func TestPrepareMessageResponseSkipsChainingWhenProviderOptsOut(t *testing.T) {
+	t.Parallel()
+
+	followUp := newChainedBridgeFollowUp(t, false)
+
+	request, _, _, err := followUp.instance.prepareMessageResponse(
+		context.Background(),
+		followUp.loadedConfig,
+		followUp.sourceMessage,
+		followUp.configuredModel,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("prepare message response: %v", err)
+	}
+
+	if request.PreviousResponseID != "" {
+		t.Fatalf(
+			"expected stateless follow-up with chain_previous_response false, got %q",
+			request.PreviousResponseID,
+		)
+	}
+
+	if request.PreviousResponseCount != 0 {
+		t.Fatalf(
+			"expected zero chained messages with chain_previous_response false, got %d",
+			request.PreviousResponseCount,
+		)
+	}
+}
+
+type chainedBridgeFollowUp struct {
+	instance           *bot
+	loadedConfig       config
+	sourceMessage      *discordgo.Message
+	configuredModel    string
+	previousResponseID string
+}
+
+func newChainedBridgeFollowUp(t *testing.T, chainPreviousResponse bool) chainedBridgeFollowUp {
+	t.Helper()
 
 	const (
 		botUserID          = "bot-user"
@@ -54,35 +128,17 @@ func TestPrepareMessageResponseChainsBridgeResponsesProvider(t *testing.T) {
 	loadedConfig := testSearchConfig()
 	provider := loadedConfig.Providers["openai"]
 	provider.API = "openai-responses"
+	provider.ChainPreviousResponse = chainPreviousResponse
 	loadedConfig.Providers = map[string]providerConfig{"chatgpt_to_openai": provider}
 	loadedConfig.Models = map[string]map[string]any{configuredModel: nil}
 	loadedConfig.ModelOrder = []string{configuredModel}
 	loadedConfig.MaxMessages = defaultMaxMessages
 
-	request, _, _, err := instance.prepareMessageResponse(
-		context.Background(),
-		loadedConfig,
-		sourceMessage,
-		configuredModel,
-		nil,
-	)
-	if err != nil {
-		t.Fatalf("prepare message response: %v", err)
-	}
-
-	if request.PreviousResponseID != previousResponseID {
-		t.Fatalf(
-			"expected chained previous response %q, got %q",
-			previousResponseID,
-			request.PreviousResponseID,
-		)
-	}
-
-	if request.PreviousResponseCount != len(request.Messages)-1 {
-		t.Fatalf(
-			"expected only the new tail chained, got stored count %d for %d messages",
-			request.PreviousResponseCount,
-			len(request.Messages),
-		)
+	return chainedBridgeFollowUp{
+		instance:           instance,
+		loadedConfig:       loadedConfig,
+		sourceMessage:      sourceMessage,
+		configuredModel:    configuredModel,
+		previousResponseID: previousResponseID,
 	}
 }

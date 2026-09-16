@@ -48,10 +48,12 @@ permissions:
 # `api` is only valid for OpenAI-compatible providers; Gemini providers
 # (name contains "gemini" or base_url with generativelanguage.googleapis.com)
 # must not set `api` (validation will fail).
-# Per-provider flags: disable_search_decider (skips web search entirely for
+# Per-provider flags: chain_previous_response (default true; set false when a
+#   Responses API backend rejects or mishandles previous_response_id chaining,
+#   e.g. some third-party bridges),
+#   disable_search_decider (skips web search entirely for
 #   this provider's models; the web_search tool is not offered),
 #   dont_send_system_prompt,
-#   auto_append_search_web, auto_append_short_answer, auto_append_dont_be_sycophantic, auto_append_adhd_friendly, auto_append_always_english, enable_grounding (Gemini only).
 # Per-provider reasoning effort for OpenAI-compatible providers:
 #   reasoning_effort: none | minimal | low | medium | high | xhigh | max
 # Maps to reasoning.effort (api: openai-responses) or reasoning_effort
@@ -127,6 +129,10 @@ providers:
     base_url: https://api.openai.com/v1
     api_key:
     api: openai-responses
+    # Follow-up replies reuse the stored server-side conversation via
+    # previous_response_id (default true). Set false when a Responses API
+    # backend rejects or mishandles chaining:
+    # chain_previous_response: false
     # `api` selects the wire protocol; the built-in `openai` provider defaults
     # to `openai-responses` (POST /responses). Set `api: openai-chat-completions`
     # to use Chat Completions instead (POST /chat/completions).

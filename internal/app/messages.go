@@ -378,7 +378,7 @@ func (instance *bot) prepareMessageResponse(
 
 	request.RequestID = strings.TrimSpace(message.ID)
 
-	if request.Provider.UseResponsesAPI {
+	if provider.ChainPreviousResponse && request.Provider.UseResponsesAPI {
 		if previousResponseID, storedCount, ok := instance.chainableResponsesPreviousResponse(
 			message,
 			request.ConfiguredModel,
@@ -402,15 +402,16 @@ func (instance *bot) prepareMessageResponse(
 }
 
 // chainableResponsesPreviousResponse resolves server-side chaining for a
-// Responses API follow-up. When the source message directly replies to the
+// Responses API follow-up gated by chain_previous_response (default true).
+// When the source message directly replies to the
 // bot's previous assistant message and that turn's stored response ID is
 // available for the same configured model, the follow-up sends only the new
 // tail with previous_response_id (see the OpenAI conversation-state guide)
 // instead of resending the full reply chain. This makes long-chain
 // follow-ups O(1) input tokens on the wire; the provider reuses the stored
 // prefix server-side. Anything unexpected falls back to a full stateless
-// send: non-user tails, non-assistant parents, missing IDs, or model
-// switches all return ok=false.
+// send: opt-out providers, non-user tails, non-assistant parents, missing
+// IDs, or model switches all return ok=false.
 func (instance *bot) chainableResponsesPreviousResponse(
 	sourceMessage *discordgo.Message,
 	configuredModel string,

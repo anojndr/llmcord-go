@@ -289,6 +289,7 @@ type rawProviderConfig struct {
 	API                         scalarString     `yaml:"api"`
 	APIKey                      scalarStringList `yaml:"api_key"`
 	ReasoningEffort             scalarString     `yaml:"reasoning_effort"`
+	ChainPreviousResponse       *bool            `yaml:"chain_previous_response"`
 	EnableGrounding             *bool            `yaml:"enable_grounding"`
 	DisableWebSearch            *bool            `yaml:"disable_search_decider"`
 	DontSendSystemPrompt        *bool            `yaml:"dont_send_system_prompt"`
@@ -367,6 +368,7 @@ type providerConfig struct {
 	APIKey                      string
 	APIKeys                     []string
 	ReasoningEffort             string
+	ChainPreviousResponse       bool
 	EnableGrounding             bool
 	DisableWebSearch            bool
 	DontSendSystemPrompt        bool
@@ -793,6 +795,7 @@ func normalizeProviderConfig(providerName string, rawProvider rawProviderConfig)
 		APIKey:                      firstAPIKey(apiKeys),
 		APIKeys:                     apiKeys,
 		ReasoningEffort:             reasoningEffort,
+		ChainPreviousResponse:       boolValueOrDefault(rawProvider.ChainPreviousResponse, true),
 		EnableGrounding:             boolValueOrDefault(rawProvider.EnableGrounding, false),
 		DisableWebSearch:            boolValueOrDefault(rawProvider.DisableWebSearch, false),
 		DontSendSystemPrompt:        boolValueOrDefault(rawProvider.DontSendSystemPrompt, false),
