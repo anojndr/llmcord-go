@@ -19,6 +19,9 @@ import (
 
 const (
 	defaultYandexVisualSearchEndpoint = "https://yandex.com/images/search"
+	yandexImagesAppRootMarker         = `id="ImagesApp-`
+	yandexImagesStateAttribute        = `data-state="`
+	yandexImagesHydrateAttribute      = `" data-hydrate`
 	visualSearchPartialWarningText    = "Warning: some visual search results were unavailable"
 	visualSearchWarningText           = "Warning: visual search unavailable"
 	visualSearchImageWarningText      = "Warning: visual search needs an image attachment"
@@ -997,6 +1000,8 @@ func parseYandexVisualSearchHTML(
 		result.SiteMatches = parseVisualSearchSiteMatches(searchURL, sitesSection)
 	}
 
+	fillVisualSearchResultFromState(htmlBody, searchURL, &result)
+
 	return result, nil
 }
 
@@ -1114,7 +1119,7 @@ func parseVisualSearchSimilarImages(
 	for _, imageNode := range imageNodes {
 		title := truncateRunes(nodeTextContent(imageNode), maxVisualSearchTitleRunes)
 		if title == "" {
-			title = truncateRunes(strings.TrimSpace(htmlAttribute(imageNode, "aria-label")), maxVisualSearchTitleRunes)
+			title = truncateRunes(visualSearchImageNodeLabel(imageNode), maxVisualSearchTitleRunes)
 		}
 
 		if title == "" {
@@ -1138,6 +1143,50 @@ func parseVisualSearchSimilarImages(
 	}
 
 	return items
+}
+
+func visualSearchImageNodeLabel(root *html.Node) string {
+	var label string
+
+	var walk func(*html.Node)
+
+	walk = func(node *html.Node) {
+		if node == nil || label != "" {
+			return
+		}
+
+		label = visualSearchImageNodeText(node)
+
+		for child := node.FirstChild; child != nil && label == ""; child = child.NextSibling {
+			walk(child)
+		}
+	}
+
+	walk(root)
+
+	return label
+}
+
+func visualSearchImageNodeText(node *html.Node) string {
+	if node == nil || node.Type != html.ElementNode {
+		return ""
+	}
+
+	if text := strings.TrimSpace(htmlAttribute(node, "aria-label")); text != "" {
+		return text
+	}
+
+	if node.Data == "img" {
+		if text := strings.TrimSpace(htmlAttribute(node, "alt")); text != "" {
+			return text
+		}
+	}
+
+	if text := strings.TrimSpace(htmlAttribute(node, "title")); text != "" {
+		return text
+	}
+
+	return ""
 }
 
 func parseVisualSearchSiteMatches(

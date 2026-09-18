@@ -868,6 +868,235 @@ func TestParseYandexVisualSearchHTMLExtractsStructuredResults(t *testing.T) {
 	}
 }
 
+func TestParseYandexVisualSearchHTMLFallsBackToEmbeddedState(t *testing.T) {
+	t.Parallel()
+
+	htmlText := strings.Join([]string{
+		"<html><body>",
+		`  <div class="Root" id="ImagesApp-Q2rExwu" data-state="{&quot;initialState&quot;:{&quot;cbirObjectResponses&quot;:{&quot;objectResponses&quot;:[{&quot;title&quot;:&quot;State Title&quot;,&quot;description&quot;:&quot;State description.&quot;,&quot;sourceName&quot;:&quot;state.example&quot;,&quot;sourceUrl&quot;:&quot;https://state.example/title&quot;}]},&quot;cbirTags&quot;:{&quot;tags&quot;:[{&quot;text&quot;:&quot;state tag&quot;}]},&quot;cbirOcr&quot;:{&quot;plainText&quot;:&quot;STATE OCR&quot;},&quot;cbirSimilar&quot;:{&quot;thumbs&quot;:[{&quot;title&quot;:&quot;State Similar&quot;,&quot;linkUrl&quot;:&quot;/images/search?cbir_page=similar-state&quot;}]},&quot;cbirSites&quot;:{&quot;sites&quot;:[{&quot;title&quot;:&quot;State Site&quot;,&quot;domain&quot;:&quot;state.example&quot;,&quot;description&quot;:&quot;State snippet.&quot;,&quot;url&quot;:&quot;https://state.example/site&quot;}]}}}" data-hydrate-priority="force"></div>`,
+		"</body></html>",
+	}, "\n")
+
+	result, err := parseYandexVisualSearchHTML(
+		"https://yandex.com/images/search?rpt=imageview&url=https%3A%2F%2Fcdn.example.com%2Fimage.png",
+		"https://cdn.example.com/image.png",
+		[]byte(htmlText),
+	)
+	if err != nil {
+		t.Fatalf("parse yandex visual search html: %v", err)
+	}
+
+	if result.TopMatch.Title != "State Title" || result.TopMatch.Source != "state.example" {
+		t.Fatalf("unexpected state top match: %#v", result.TopMatch)
+	}
+
+	if len(result.Tags) != 1 || result.Tags[0] != "state tag" {
+		t.Fatalf("unexpected state tags: %#v", result.Tags)
+	}
+
+	if len(result.TextInImage) != 1 || result.TextInImage[0] != "STATE OCR" {
+		t.Fatalf("unexpected state OCR text: %#v", result.TextInImage)
+	}
+
+	if len(result.SimilarImages) != 1 || result.SimilarImages[0].Title != "State Similar" {
+		t.Fatalf("unexpected state similar images: %#v", result.SimilarImages)
+	}
+
+	if len(result.SiteMatches) != 1 || result.SiteMatches[0].Domain != "state.example" {
+		t.Fatalf("unexpected state site matches: %#v", result.SiteMatches)
+	}
+}
+
+func TestParseYandexVisualSearchHTMLKeepsDOMResultsOverEmbeddedState(t *testing.T) {
+	t.Parallel()
+
+	htmlText := strings.Join([]string{
+		"<html><body>",
+		`  <div class="CbirObjectResponse-Container">`,
+		`    <div class="CbirObjectResponse-Content">`,
+		`      <h2 class="CbirObjectResponse-Title">Sword Art Online</h2>`,
+		`    </div>`,
+		`  </div>`,
+		`  <div class="Root" id="ImagesApp-Q2rExwu" data-state="{&quot;initialState&quot;:{&quot;cbirObjectResponses&quot;:{&quot;objectResponses&quot;:[{&quot;title&quot;:&quot;State Title&quot;}]}}}" data-hydrate-priority="force"></div>`,
+		"</body></html>",
+	}, "\n")
+
+	result, err := parseYandexVisualSearchHTML(
+		"https://yandex.com/images/search?rpt=imageview&url=https%3A%2F%2Fcdn.example.com%2Fimage.png",
+		"https://cdn.example.com/image.png",
+		[]byte(htmlText),
+	)
+	if err != nil {
+		t.Fatalf("parse yandex visual search html: %v", err)
+	}
+
+	if result.TopMatch.Title != testVisualSearchTitle {
+		t.Fatalf("expected DOM top match to win, got %#v", result.TopMatch)
+	}
+}
+
+func TestParseYandexVisualSearchHTMLReadsNestedSimilarImageLabel(t *testing.T) {
+	t.Parallel()
+
+	htmlText := strings.Join([]string{
+		"<html><body>",
+		`  <section class="CbirSection CbirSimilarList">`,
+		`    <a class="Link CbirSimilarList-ThumbImage" href="/images/search?cbir_page=similar-1">`,
+		`      <div class="Image Thumb-Image" role="img" aria-label="AnimePTK"></div>`,
+		`    </a>`,
+		`  </section>`,
+		"</body></html>",
+	}, "\n")
+
+	result, err := parseYandexVisualSearchHTML(
+		"https://yandex.com/images/search?rpt=imageview&url=https%3A%2F%2Fcdn.example.com%2Fimage.png",
+		"https://cdn.example.com/image.png",
+		[]byte(htmlText),
+	)
+	if err != nil {
+		t.Fatalf("parse yandex visual search html: %v", err)
+	}
+
+	if len(result.SimilarImages) != 1 || result.SimilarImages[0].Title != "AnimePTK" {
+		t.Fatalf("unexpected nested similar image label: %#v", result.SimilarImages)
+	}
+}
+
+func TestParseYandexVisualSearchHTMLReadsImageAltAndTitleLabels(t *testing.T) {
+	t.Parallel()
+
+	htmlText := strings.Join([]string{
+		"<html><body>",
+		`  <section class="CbirSection CbirSimilarList">`,
+		`    <a class="Link CbirSimilarList-ThumbImage" href="/images/search?cbir_page=similar-alt">`,
+		`      <img class="Image Thumb-Image" src="https://example.com/alt.png" alt="Alt Title">`,
+		`    </a>`,
+		`    <a class="Link CbirSimilarList-ThumbImage" href="/images/search?cbir_page=similar-title">`,
+		`      <div class="Image Thumb-Image" title="Tooltip Title"></div>`,
+		`    </a>`,
+		`  </section>`,
+		"</body></html>",
+	}, "\n")
+
+	result, err := parseYandexVisualSearchHTML(
+		"https://yandex.com/images/search?rpt=imageview&url=https%3A%2F%2Fcdn.example.com%2Fimage.png",
+		"https://cdn.example.com/image.png",
+		[]byte(htmlText),
+	)
+	if err != nil {
+		t.Fatalf("parse yandex visual search html: %v", err)
+	}
+
+	if len(result.SimilarImages) != 2 {
+		t.Fatalf("unexpected similar image count: %#v", result.SimilarImages)
+	}
+
+	if result.SimilarImages[0].Title != "Alt Title" {
+		t.Fatalf("unexpected img alt label: %#v", result.SimilarImages[0])
+	}
+
+	if result.SimilarImages[1].Title != "Tooltip Title" {
+		t.Fatalf("unexpected title attribute label: %#v", result.SimilarImages[1])
+	}
+}
+
+func TestParseYandexVisualSearchHTMLKeepsAllDOMSectionsOverEmbeddedState(t *testing.T) {
+	t.Parallel()
+
+	htmlText := strings.Join([]string{
+		"<html><body>",
+		`  <div class="CbirObjectResponse-Container">`,
+		`    <div class="CbirObjectResponse-Content">`,
+		`      <h2 class="CbirObjectResponse-Title">Sword Art Online</h2>`,
+		`    </div>`,
+		`  </div>`,
+		`  <section class="CbirSection CbirTags">`,
+		`    <a class="Tags-Item" href="/images/search?text=sword%20art%20online">`,
+		`      <span class="Button-Text">sword art online</span>`,
+		`    </a>`,
+		`  </section>`,
+		`  <section class="CbirSection CbirSimilarList">`,
+		`    <a class="Link CbirSimilarList-ThumbImage"`,
+		`       href="/images/search?cbir_page=similar-1"`,
+		`       aria-label="AnimePTK"></a>`,
+		`  </section>`,
+		`  <section class="CbirSection CbirSitesList">`,
+		`    <ul class="CbirSites-Items">`,
+		`      <li class="CbirSites-Item">`,
+		`        <div class="CbirSites-ItemInfo">`,
+		`          <div class="CbirSites-ItemTitle">`,
+		`            <a href="http://vampireknightptk.blogspot.com/2012/09/indonic-hosting.html">AnimePTK</a>`,
+		`          </div>`,
+		`          <a class="CbirSites-ItemDomain"`,
+		`             href="http://vampireknightptk.blogspot.com/2012/09/indonic-hosting.html">`,
+		`            vampireknightptk.blogspot.com`,
+		`          </a>`,
+		`        </div>`,
+		`      </li>`,
+		`    </ul>`,
+		`  </section>`,
+		`  <div class="Root" id="ImagesApp-Q2rExwu" data-state="{&quot;initialState&quot;:{&quot;cbirObjectResponses&quot;:{&quot;objectResponses&quot;:[{&quot;title&quot;:&quot;State Title&quot;}]},&quot;cbirTags&quot;:{&quot;tags&quot;:[{&quot;text&quot;:&quot;State Tag&quot;}]},&quot;cbirSimilar&quot;:{&quot;thumbs&quot;:[{&quot;title&quot;:&quot;State Similar&quot;,&quot;linkUrl&quot;:&quot;/images/search?cbir_page=similar-state&quot;}]},&quot;cbirSites&quot;:{&quot;sites&quot;:[{&quot;title&quot;:&quot;State Site&quot;,&quot;domain&quot;:&quot;state.example&quot;,&quot;url&quot;:&quot;https://state.example/site&quot;}]}}}" data-hydrate-priority="force"></div>`,
+		"</body></html>",
+	}, "\n")
+
+	result, err := parseYandexVisualSearchHTML(
+		"https://yandex.com/images/search?rpt=imageview&url=https%3A%2F%2Fcdn.example.com%2Fimage.png",
+		"https://cdn.example.com/image.png",
+		[]byte(htmlText),
+	)
+	if err != nil {
+		t.Fatalf("parse yandex visual search html: %v", err)
+	}
+
+	if result.TopMatch.Title != testVisualSearchTitle {
+		t.Fatalf("expected DOM top match to win, got %#v", result.TopMatch)
+	}
+
+	if len(result.Tags) != 1 || result.Tags[0] != "sword art online" {
+		t.Fatalf("expected DOM tags to win, got %#v", result.Tags)
+	}
+
+	if len(result.SimilarImages) != 1 || result.SimilarImages[0].Title != "AnimePTK" {
+		t.Fatalf("expected DOM similar images to win, got %#v", result.SimilarImages)
+	}
+
+	if len(result.SiteMatches) != 1 || result.SiteMatches[0].Domain != testVisualSearchSiteDomain {
+		t.Fatalf("expected DOM site matches to win, got %#v", result.SiteMatches)
+	}
+}
+
+func TestParseYandexVisualSearchHTMLIgnoresMalformedEmbeddedState(t *testing.T) {
+	t.Parallel()
+
+	htmlText := strings.Join([]string{
+		"<html><body>",
+		`  <div class="CbirObjectResponse-Container">`,
+		`    <div class="CbirObjectResponse-Content">`,
+		`      <h2 class="CbirObjectResponse-Title">Sword Art Online</h2>`,
+		`    </div>`,
+		`  </div>`,
+		`  <div class="Root" id="ImagesApp-Q2rExwu" data-state="{invalid json" data-hydrate-priority="force"></div>`,
+		"</body></html>",
+	}, "\n")
+
+	result, err := parseYandexVisualSearchHTML(
+		"https://yandex.com/images/search?rpt=imageview&url=https%3A%2F%2Fcdn.example.com%2Fimage.png",
+		"https://cdn.example.com/image.png",
+		[]byte(htmlText),
+	)
+	if err != nil {
+		t.Fatalf("parse yandex visual search html: %v", err)
+	}
+
+	if result.TopMatch.Title != testVisualSearchTitle {
+		t.Fatalf("expected DOM result to survive malformed state, got %#v", result.TopMatch)
+	}
+
+	if len(result.Tags) != 0 || len(result.SimilarImages) != 0 || len(result.SiteMatches) != 0 {
+		t.Fatalf("expected no state fallback from malformed JSON, got %#v", result)
+	}
+}
+
 func TestExtractVisualSearchSourcesIncludesUniqueURLs(t *testing.T) {
 	t.Parallel()
 
