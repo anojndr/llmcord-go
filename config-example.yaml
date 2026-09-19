@@ -54,6 +54,9 @@ permissions:
 #   disable_search_decider (skips web search entirely for
 #   this provider's models; the web_search tool is not offered),
 #   dont_send_system_prompt,
+#   exa_search_type (pins Exa Search API `type` for this provider's models:
+#   `instant` | `fast` | `auto` | `deep-lite` | `deep` | `deep-reasoning`;
+#   overrides the runtime `/searchtype` fallback for that provider),
 # Per-provider reasoning effort for OpenAI-compatible providers:
 #   reasoning_effort: none | minimal | low | medium | high | xhigh | max
 # Maps to reasoning.effort (api: openai-responses) or reasoning_effort
@@ -143,6 +146,9 @@ providers:
     # api: openai-chat-completions it sends reasoning_effort. Per-model
     # reasoning_effort overrides this; explicit wins over alias suffixes.
     # reasoning_effort: medium
+    # Per-provider Exa search type: instant | fast | auto | deep-lite | deep | deep-reasoning
+    # Pins Exa Search API `type` for this provider's models, overriding the `/searchtype` fallback.
+    # exa_search_type: auto
     # Automatically append "search the web." to user queries if not already present:
     # auto_append_search_web: true
     # Automatically append "short answer." to user queries if not already present:
@@ -298,8 +304,9 @@ web_search:
   # Exa — Search API + Contents API for extraction
   exa:
     # Optional. When set, search uses Exa Search API (otherwise Exa MCP) and
-    # extraction uses Exa Contents API. `/searchtype` switches between
-    # `instant`, `fast`, `auto`, `deep-lite`, `deep`, `deep-reasoning`.
+    # extraction uses Exa Contents API. `/searchtype` selects the fallback
+    # `type` (`instant`, `fast`, `auto`, `deep-lite`, `deep`, `deep-reasoning`);
+    # a provider-level `exa_search_type` overrides it for that provider's models.
     # `api_key` also accepts a YAML list; requests are round-robin.
     # Optional max characters for Exa full page text per result. Default: 5000
     text_max_characters: 5000

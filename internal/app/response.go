@@ -626,6 +626,7 @@ func (instance *bot) generateResponseWithWebSearchTool(
 		augmentedMessages, searchWarnings, searched = instance.runWebSearchToolPhase(
 			ctx,
 			loadedConfig,
+			request.ConfiguredModel,
 			tracker,
 			request.Messages,
 			warnings,

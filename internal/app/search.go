@@ -313,6 +313,18 @@ func (settings exaSearchConfig) searchType() string {
 	return searchType
 }
 
+func (instance *bot) exaSearchTypeForProvider(loadedConfig config, configuredModel string) string {
+	if providerName, _, err := splitConfiguredModel(configuredModel); err == nil {
+		if provider, ok := loadedConfig.Providers[providerName]; ok {
+			if searchType, ok := normalizeExaSearchType(provider.ExaSearchType); ok {
+				return searchType
+			}
+		}
+	}
+
+	return instance.currentExaSearchType()
+}
+
 type tavilySearchRequest struct {
 	Query             string `json:"query"`
 	SearchDepth       string `json:"search_depth"`
@@ -581,14 +593,16 @@ func (instance *bot) webSearchToolEnabled(
 }
 
 // runWebSearchQueries executes the routed TinyFish -> Exa -> Tavily search
-// for the given queries.
+// for the given queries. A provider-level exa_search_type wins over the
+// runtime /searchtype value; /searchtype remains the fallback.
 func (instance *bot) runWebSearchQueries(
 	ctx context.Context,
 	loadedConfig config,
+	configuredModel string,
 	queries []string,
 ) ([]webSearchResult, error) {
 	searchConfig := loadedConfig
-	searchConfig.WebSearch.Exa.SearchType = instance.currentExaSearchType()
+	searchConfig.WebSearch.Exa.SearchType = instance.exaSearchTypeForProvider(loadedConfig, configuredModel)
 
 	return instance.webSearch.search(ctx, searchConfig, queries)
 }
@@ -602,6 +616,7 @@ func (instance *bot) runWebSearchQueries(
 func (instance *bot) runWebSearchToolPhase(
 	ctx context.Context,
 	loadedConfig config,
+	configuredModel string,
 	tracker *responseTracker,
 	requestMessages []chatMessage,
 	warnings []string,
@@ -619,7 +634,7 @@ func (instance *bot) runWebSearchToolPhase(
 		return nil, warnings, false
 	}
 
-	results, err := instance.runWebSearchQueries(ctx, loadedConfig, queries)
+	results, err := instance.runWebSearchQueries(ctx, loadedConfig, configuredModel, queries)
 	if err != nil {
 		logWarn("run web search", err, "queries", queries)
 

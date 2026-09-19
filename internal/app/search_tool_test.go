@@ -752,6 +752,7 @@ func TestRunWebSearchToolPhaseMergesMetadataAndUsesConfiguredExaType(t *testing.
 	_, warnings, searched := instance.runWebSearchToolPhase(
 		context.Background(),
 		newWebSearchToolTestConfig(),
+		testWebSearchMainModel,
 		tracker,
 		requestMessages,
 		nil,
@@ -787,6 +788,67 @@ func TestRunWebSearchToolPhaseMergesMetadataAndUsesConfiguredExaType(t *testing.
 	}
 }
 
+func TestRunWebSearchToolPhasePrefersProviderExaTypeOverRuntime(t *testing.T) {
+	t.Parallel()
+
+	var seenSearchType string
+
+	chatClient := newStubChatClient(func(
+		_ context.Context,
+		_ chatCompletionRequest,
+		_ func(streamDelta) error,
+	) error {
+		return nil
+	})
+
+	webSearch := newStubWebSearchClient(func(
+		_ context.Context,
+		loadedConfig config,
+		_ []string,
+	) ([]webSearchResult, error) {
+		seenSearchType = loadedConfig.WebSearch.Exa.SearchType
+
+		return []webSearchResult{
+			{Query: testWebSearchQueryOne, Text: testWebSearchResultText},
+		}, nil
+	})
+
+	instance := newSearchToolTestBot(t, chatClient, webSearch)
+	instance.setCurrentExaSearchType(exaSearchTypeDeep)
+
+	loadedConfig := newWebSearchToolTestConfig()
+	provider := loadedConfig.Providers["openai"]
+	provider.ExaSearchType = exaSearchTypeFast
+	loadedConfig.Providers["openai"] = provider
+
+	requestMessages := []chatMessage{
+		{Role: messageRoleUser, Content: "<@bot-user> " + testWebSearchQueryOne},
+	}
+	tracker := newResponseTracker(newWebSearchToolSourceMessage(), testWebSearchMainModel)
+
+	_, _, searched := instance.runWebSearchToolPhase(
+		context.Background(),
+		loadedConfig,
+		testWebSearchMainModel,
+		tracker,
+		requestMessages,
+		nil,
+		[]providers.FunctionToolCall{{
+			ID:        "call_1",
+			Name:      providers.WebSearchToolName,
+			Arguments: `{"objective": "Find first query results", "search_queries": ["` + testWebSearchQueryOne + `"]}`,
+		}},
+	)
+
+	if !searched {
+		t.Fatal("expected the tool phase to report usable results")
+	}
+
+	if seenSearchType != exaSearchTypeFast {
+		t.Fatalf("expected the provider exa search type to win, got %q", seenSearchType)
+	}
+}
+
 func TestRunWebSearchToolPhaseWarnsOnSearchFailure(t *testing.T) {
 	t.Parallel()
 
@@ -813,6 +875,7 @@ func TestRunWebSearchToolPhaseWarnsOnSearchFailure(t *testing.T) {
 	_, warnings, searched := instance.runWebSearchToolPhase(
 		context.Background(),
 		newWebSearchToolTestConfig(),
+		testWebSearchMainModel,
 		tracker,
 		[]chatMessage{{Role: messageRoleUser, Content: "query"}},
 		nil,

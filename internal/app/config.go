@@ -290,6 +290,7 @@ type rawProviderConfig struct {
 	APIKey                      scalarStringList `yaml:"api_key"`
 	ReasoningEffort             scalarString     `yaml:"reasoning_effort"`
 	ChainPreviousResponse       *bool            `yaml:"chain_previous_response"`
+	ExaSearchType               scalarString     `yaml:"exa_search_type"`
 	EnableGrounding             *bool            `yaml:"enable_grounding"`
 	DisableWebSearch            *bool            `yaml:"disable_search_decider"`
 	DontSendSystemPrompt        *bool            `yaml:"dont_send_system_prompt"`
@@ -369,6 +370,7 @@ type providerConfig struct {
 	APIKeys                     []string
 	ReasoningEffort             string
 	ChainPreviousResponse       bool
+	ExaSearchType               string
 	EnableGrounding             bool
 	DisableWebSearch            bool
 	DontSendSystemPrompt        bool
@@ -787,7 +789,7 @@ func normalizeProviderConfig(providerName string, rawProvider rawProviderConfig)
 	baseURL := strings.TrimSpace(string(rawProvider.BaseURL))
 	normalizedAPI := strings.ToLower(strings.TrimSpace(string(rawProvider.API)))
 	reasoningEffort := strings.ToLower(strings.TrimSpace(string(rawProvider.ReasoningEffort)))
-
+	exaSearchType := strings.ToLower(strings.TrimSpace(string(rawProvider.ExaSearchType)))
 	return providerConfig{
 		Name:                        strings.TrimSpace(providerName),
 		BaseURL:                     baseURL,
@@ -796,6 +798,7 @@ func normalizeProviderConfig(providerName string, rawProvider rawProviderConfig)
 		APIKeys:                     apiKeys,
 		ReasoningEffort:             reasoningEffort,
 		ChainPreviousResponse:       boolValueOrDefault(rawProvider.ChainPreviousResponse, true),
+		ExaSearchType:               exaSearchType,
 		EnableGrounding:             boolValueOrDefault(rawProvider.EnableGrounding, false),
 		DisableWebSearch:            boolValueOrDefault(rawProvider.DisableWebSearch, false),
 		DontSendSystemPrompt:        boolValueOrDefault(rawProvider.DontSendSystemPrompt, false),
@@ -1319,6 +1322,17 @@ func (provider providerConfig) validate(providerName string) error {
 		case providers.OpenAIAPIChatCompletions, providers.OpenAIAPIResponses:
 		default:
 			return fmt.Errorf("provider %q: api must be %q or %q: %w", providerName, providers.OpenAIAPIChatCompletions, providers.OpenAIAPIResponses, os.ErrInvalid)
+		}
+	}
+
+	if strings.TrimSpace(provider.ExaSearchType) != "" {
+		if _, ok := normalizeExaSearchType(provider.ExaSearchType); !ok {
+			return fmt.Errorf(
+				"provider %q: exa_search_type must be one of %s: %w",
+				providerName,
+				strings.Join(exaSearchTypes(), ", "),
+				os.ErrInvalid,
+			)
 		}
 	}
 
