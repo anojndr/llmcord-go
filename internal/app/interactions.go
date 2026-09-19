@@ -943,11 +943,16 @@ func (instance *bot) handleSearchTypeCommand(
 
 	currentSearchType := instance.currentExaSearchType()
 
-	responseText := fmt.Sprintf("Current Exa search type: `%s`", currentSearchType)
+	responseText := fmt.Sprintf(
+		"Current Exa search type fallback: `%s` (providers with `exa_search_type` override it)",
+		currentSearchType,
+	)
 	if requestedSearchType != currentSearchType {
 		instance.setCurrentExaSearchType(requestedSearchType)
-		responseText = fmt.Sprintf("Exa search type switched to: `%s`", requestedSearchType)
-		slog.Info("search type switched", "type", requestedSearchType)
+		responseText = fmt.Sprintf(
+			"Exa search type fallback switched to: `%s` (providers with `exa_search_type` override it)",
+			requestedSearchType,
+		)
 	}
 
 	if err := editInteractionResponseText(session, interaction.Interaction, responseText); err != nil {

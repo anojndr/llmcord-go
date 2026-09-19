@@ -74,7 +74,7 @@ Providers are declared with `base_url` (OpenAI-compatible). The provider name se
 
 | Setting | Purpose |
 | --- | --- |
-| `providers` | Keyed by name. OpenAI-compatible providers use `base_url` and `api: openai-chat-completions` or `api: openai-responses` (built-in `openai` defaults to `openai-responses`, others default to `openai-chat-completions`); names containing `gemini` use the native Gemini API (with `enable_grounding: true` for the Google Search tool). Per-provider `chain_previous_response: false` disables Responses API `previous_response_id` chaining for that provider's models (follow-ups resend the full reply chain statelessly); defaults to `true`. Per-provider `disable_search_decider: true` disables web search entirely for a provider's models (the `web_search` tool is not offered); defaults to `false`. Per-provider `dont_send_system_prompt: true` skips prepending the global `system_prompt` to that provider's requests; defaults to `false`. |
+| `providers` | Keyed by name. OpenAI-compatible providers use `base_url` and `api: openai-chat-completions` or `api: openai-responses` (built-in `openai` defaults to `openai-responses`, others default to `openai-chat-completions`); names containing `gemini` use the native Gemini API (with `enable_grounding: true` for the Google Search tool). Per-provider `chain_previous_response: false` disables Responses API `previous_response_id` chaining for that provider's models (follow-ups resend the full reply chain statelessly); defaults to `true`. Per-provider `disable_search_decider: true` disables web search entirely for a provider's models (the `web_search` tool is not offered); defaults to `false`. Per-provider `exa_search_type: deep` pins the Exa Search API `type` for that provider's models (`instant`, `fast`, `auto`, `deep-lite`, `deep`, `deep-reasoning`), overriding the `/searchtype` fallback. Per-provider `dont_send_system_prompt: true` skips prepending the global `system_prompt` to that provider's requests; defaults to `false`. |
 | `models` | Ordered `<provider>/<model>` map. The first entry is the startup default. `:vision` is a local hint for image-capability heuristics. |
 | `channel_model_locks` | Map of channel IDs to configured models. `/model` is disabled in locked channels. |
 | `media_analysis_model` | Gemini model used to preprocess audio and video for non-Gemini replies; auto-selected when unset. |
@@ -117,7 +117,7 @@ Generic website URL extraction runs Firecrawl Scrape first when `web_search.fire
 - Mention the bot in a guild channel, or write `at ai`
 - Reply to a message to continue the conversation
 - `/model`: switch the main reply model
-- `/searchtype`: switch Exa Search mode (`instant`, `fast`, `auto`, `deep-lite`, `deep`, `deep-reasoning`; lowest to highest latency)
+- `/searchtype`: switch the fallback Exa Search mode (`instant`, `fast`, `auto`, `deep-lite`, `deep`, `deep-reasoning`; lowest to highest latency; providers with `exa_search_type` override it)
 - `/grounding`: toggle native Gemini grounding
 - `/createchannel <channelname>`: create a text channel in the category you are currently in (requires `Manage Channels`)
 - `/editchannelname <channelid> <newchannelname>`: rename a channel (requires `Manage Channels`)

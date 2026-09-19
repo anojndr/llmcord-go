@@ -987,7 +987,45 @@ web_search:
 
 	assertDeferredInteractionResponse(t, &capture.deferredResponse)
 
-	expectedContent := fmt.Sprintf("Exa search type switched to: `%s`", exaSearchTypeDeepReasoning)
+	expectedContent := fmt.Sprintf(
+		"Exa search type fallback switched to: `%s` (providers with `exa_search_type` override it)",
+		exaSearchTypeDeepReasoning,
+	)
+	if capture.editedResponse.Content != expectedContent {
+		t.Fatalf("unexpected response content: got %q want %q", capture.editedResponse.Content, expectedContent)
+	}
+}
+
+func TestHandleSearchTypeCommandReportsCurrentFallbackWhenUnchanged(t *testing.T) {
+	t.Parallel()
+
+	configPath := writeModelConfigWithExtra(
+		t,
+		`
+web_search:
+  exa:
+    api_key: exa-key
+`,
+	)
+
+	var capture deferredInteractionCapture
+
+	session := newDeferredInteractionTestSession(t, &capture)
+	instance := newModelTestBot(configPath)
+	instance.setCurrentExaSearchType(exaSearchTypeFast)
+	interaction := newSearchTypeCommandInteraction("member-user", exaSearchTypeFast)
+
+	err := instance.handleSearchTypeCommand(session, interaction)
+	if err != nil {
+		t.Fatalf("handle search type command: %v", err)
+	}
+
+	assertDeferredInteractionResponse(t, &capture.deferredResponse)
+
+	expectedContent := fmt.Sprintf(
+		"Current Exa search type fallback: `%s` (providers with `exa_search_type` override it)",
+		exaSearchTypeFast,
+	)
 	if capture.editedResponse.Content != expectedContent {
 		t.Fatalf("unexpected response content: got %q want %q", capture.editedResponse.Content, expectedContent)
 	}
