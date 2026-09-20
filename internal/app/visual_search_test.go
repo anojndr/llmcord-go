@@ -9,6 +9,7 @@ import (
 	providers "llmcord-go/internal/providers"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -29,6 +30,349 @@ const (
 	testVisualSearchSiteDomain      = "vampireknightptk.blogspot.com"
 	testVisualSearchSiteMatchURL    = "http://vampireknightptk.blogspot.com/2012/09/indonic-hosting.html"
 )
+
+func visualSearchFetchTestResult() visualSearchResult {
+	result := newStructuredVisualSearchResult("")
+	result.TopMatch = visualSearchTopMatch{
+		Title:  "Example Article",
+		Source: "example.com",
+		URL:    "https://example.com/article",
+	}
+	result.SiteMatches = []visualSearchSiteMatch{
+		{
+			Title:   "Example Video",
+			Domain:  "youtube.com",
+			Snippet: "snippet",
+			URL:     "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+		},
+		{
+			Title:   "Example Thread",
+			Domain:  "reddit.com",
+			Snippet: "snippet",
+			URL:     "https://www.reddit.com/r/testing/comments/abc123/thread-title/",
+		},
+	}
+
+	return result
+}
+
+func TestCollectVisualSearchFetchURLsKeepsTopAndSiteMatches(t *testing.T) {
+	t.Parallel()
+
+	urls := collectVisualSearchFetchURLs([]visualSearchResult{visualSearchFetchTestResult()})
+
+	expected := []string{
+		"https://example.com/article",
+		"https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+		"https://www.reddit.com/r/testing/comments/abc123/thread-title/",
+	}
+	if !slices.Equal(urls, expected) {
+		t.Fatalf("unexpected fetch urls: %#v", urls)
+	}
+}
+
+func TestPartitionVisualSearchFetchURLsRoutesByHost(t *testing.T) {
+	t.Parallel()
+
+	partitioned := partitionVisualSearchFetchURLs([]string{
+		"https://www.facebook.com/reel/123",
+		"https://www.tiktok.com/@user/video/123",
+		"https://www.youtube.com/shorts/dQw4w9WgXcQ",
+		"https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+		"https://www.reddit.com/r/testing/comments/abc123/thread-title/",
+		"https://example.com/article",
+	})
+
+	if len(partitioned.facebook) != 1 || len(partitioned.tiktok) != 1 || len(partitioned.shorts) != 1 ||
+		len(partitioned.youtube) != 1 || len(partitioned.reddit) != 1 || len(partitioned.website) != 1 {
+		t.Fatalf("unexpected partition: %#v", partitioned)
+	}
+}
+
+func TestCollectVisualSearchFetchURLsCapsURLCount(t *testing.T) {
+	t.Parallel()
+
+	results := make([]visualSearchResult, 0, maxVisualSearchFetchURLs+2)
+	for index := range maxVisualSearchFetchURLs + 2 {
+		results = append(results, visualSearchResult{
+			TopMatch: visualSearchTopMatch{URL: fmt.Sprintf("https://example.com/article-%d", index)},
+		})
+	}
+
+	urls := collectVisualSearchFetchURLs(results)
+	if len(urls) != maxVisualSearchFetchURLs {
+		t.Fatalf("unexpected capped url count: %d", len(urls))
+	}
+
+	if urls[0] != "https://example.com/article-0" {
+		t.Fatalf("expected first-seen order, got %#v", urls)
+	}
+}
+
+func TestFormatVisualSearchFetchedContentsCapsTotalRunes(t *testing.T) {
+	t.Parallel()
+
+	contents := visualSearchURLContents{
+		website: []websitePageContent{{
+			URL:     "https://example.com/article",
+			Title:   "Example",
+			Content: strings.Repeat("a", maxVisualSearchFetchedContentRunes+100),
+		}},
+	}
+
+	formatted := formatVisualSearchFetchedContents(contents)
+	if runeCount(formatted) > maxVisualSearchFetchedContentRunes {
+		t.Fatalf("unexpected uncapped length: %d", runeCount(formatted))
+	}
+}
+
+func TestMergeVisualSearchFetchWarningsSortsAndDedups(t *testing.T) {
+	t.Parallel()
+
+	merged := mergeVisualSearchFetchWarnings(
+		[]string{youtubeWarningText, websiteWarningText},
+		[]string{websiteWarningText, redditWarningText},
+	)
+
+	expected := []string{redditWarningText, websiteWarningText, youtubeWarningText}
+	expected = append([]string(nil), expected...)
+	slices.Sort(expected)
+
+	if !slices.Equal(merged, expected) {
+		t.Fatalf("unexpected merged warnings: %#v", merged)
+	}
+}
+
+func TestPrepareVisualSearchAugmentationFetchesResultURLsConcurrently(t *testing.T) {
+	t.Parallel()
+
+	sourceMessage := newVisualSearchSourceMessage("message-fetch", "123")
+
+	visualSearch := new(stubVisualSearchClient)
+	visualSearch.searchFn = func(_ context.Context, imageURL string) (visualSearchResult, error) {
+		return visualSearchFetchTestResult(), nil
+	}
+
+	gate := newConcurrentFetchGate(3)
+
+	instance := new(bot)
+	instance.visualSearch = visualSearch
+	instance.website = newStubWebsiteContentClient(func(
+		ctx context.Context,
+		_ config,
+		rawURL string,
+	) (websitePageContent, error) {
+		if err := gate.wait(ctx); err != nil {
+			return websitePageContent{}, err
+		}
+
+		return websitePageContent{URL: rawURL, Title: "Example", Content: "Body"}, nil
+	})
+	instance.youtube = newStubYouTubeContentClient(func(
+		ctx context.Context,
+		rawURL string,
+	) (youtubeVideoContent, error) {
+		if err := gate.wait(ctx); err != nil {
+			return youtubeVideoContent{}, err
+		}
+
+		return youtubeVideoContent{URL: rawURL, Title: "Video", Transcript: "Transcript"}, nil
+	})
+	instance.reddit = newStubRedditContentClient(func(
+		ctx context.Context,
+		rawURL string,
+	) (redditThreadContent, error) {
+		if err := gate.wait(ctx); err != nil {
+			return redditThreadContent{}, err
+		}
+
+		return redditThreadContent{URL: rawURL, Title: "Thread", Body: "Body"}, nil
+	})
+	instance.nodes = newMessageNodeStore(10)
+
+	loadedConfig := testMediaAnalysisConfig()
+	loadedConfig.MaxMessages = defaultMaxMessages
+
+	conversation := []chatMessage{{Role: messageRoleUser, Content: testVisualSearchPrompt}}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	prepared, err := instance.prepareVisualSearchAugmentation(
+		ctx,
+		loadedConfig,
+		sourceMessage,
+		conversation,
+		"openai/gpt-5",
+	)
+	if err != nil {
+		t.Fatalf("prepare visual search augmentation: %v", err)
+	}
+
+	if len(prepared.warnings) != 0 {
+		t.Fatalf("unexpected warnings: %#v", prepared.warnings)
+	}
+
+	augmentedConversation, err := applyPreparedConversationAugmentation(conversation, prepared)
+	if err != nil {
+		t.Fatalf("apply augmentation: %v", err)
+	}
+
+	content, ok := augmentedConversation[0].Content.(string)
+	if !ok {
+		t.Fatalf("unexpected content type: %T", augmentedConversation[0].Content)
+	}
+
+	prompt := parseAugmentedUserPrompt(content)
+	for _, fragment := range []string{"Example Article", "Fetched page content", "Body", "Transcript", "Thread"} {
+		if !strings.Contains(prompt.VisualSearch, fragment) {
+			t.Fatalf("expected %q in visual search section: %q", fragment, prompt.VisualSearch)
+		}
+	}
+
+	if got := len(instance.website.(*stubWebsiteContentClient).calls); got != 1 {
+		t.Fatalf("unexpected website calls: %d", got)
+	}
+
+	if got := len(instance.youtube.(*stubYouTubeContentClient).calls); got != 1 {
+		t.Fatalf("unexpected youtube calls: %d", got)
+	}
+
+	if got := len(instance.reddit.(*stubRedditContentClient).calls); got != 1 {
+		t.Fatalf("unexpected reddit calls: %d", got)
+	}
+}
+func TestFetchVisualSearchURLContentsResolvesVideoGroupsConcurrently(t *testing.T) {
+	t.Parallel()
+
+	gate := newConcurrentFetchGate(3)
+
+	videoPart := func(filename string) contentPart {
+		return contentPart{
+			"type":               contentTypeVideoData,
+			contentFieldBytes:    []byte(testVideoBody),
+			contentFieldMIMEType: testVideoMIMEType,
+			contentFieldFilename: filename,
+		}
+	}
+
+	instance := new(bot)
+	instance.facebook = newStubFacebookContentClient(func(
+		ctx context.Context,
+		rawURL string,
+	) (facebookVideoContent, error) {
+		if err := gate.wait(ctx); err != nil {
+			return facebookVideoContent{}, err
+		}
+
+		return facebookVideoContent{ResolvedURL: rawURL, MediaPart: videoPart("facebook.mp4")}, nil
+	})
+	instance.tiktok = newStubTikTokContentClient(func(
+		ctx context.Context,
+		rawURL string,
+	) (tiktokVideoContent, error) {
+		if err := gate.wait(ctx); err != nil {
+			return tiktokVideoContent{}, err
+		}
+
+		return tiktokVideoContent{ResolvedURL: rawURL, MediaPart: videoPart("tiktok.mp4")}, nil
+	})
+	instance.youtubeShorts = newStubYouTubeShortsContentClient(func(
+		ctx context.Context,
+		rawURL string,
+	) (youtubeShortsVideoContent, error) {
+		if err := gate.wait(ctx); err != nil {
+			return youtubeShortsVideoContent{}, err
+		}
+
+		return youtubeShortsVideoContent{ResolvedURL: rawURL, MediaPart: videoPart("shorts.mp4")}, nil
+	})
+
+	loadedConfig := testMediaAnalysisConfig()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	contents := instance.fetchVisualSearchURLContents(
+		ctx,
+		loadedConfig,
+		testMediaAnalysisModel,
+		[]string{
+			"https://www.facebook.com/reel/823513456342882",
+			"https://www.tiktok.com/@user/video/7614735539660442893",
+			testYouTubeShortsCanonicalURL,
+		},
+	)
+
+	if len(contents.warnings) != 0 {
+		t.Fatalf("unexpected warnings: %#v", contents.warnings)
+	}
+
+	if len(contents.media) != 3 {
+		t.Fatalf("unexpected media count: %d", len(contents.media))
+	}
+
+	if len(contents.analyses) != 0 {
+		t.Fatalf("expected no analyses for gemini reply model, got %#v", contents.analyses)
+	}
+
+	filenames := make([]string, 0, len(contents.media))
+	for _, part := range contents.media {
+		filename, _ := part[contentFieldFilename].(string)
+		filenames = append(filenames, filename)
+	}
+
+	slices.Sort(filenames)
+
+	expected := []string{"facebook.mp4", "shorts.mp4", "tiktok.mp4"}
+	if !slices.Equal(filenames, expected) {
+		t.Fatalf("unexpected media filenames: %#v", filenames)
+	}
+}
+
+func TestFetchVisualSearchURLContentsAnalyzesVideosForNonGeminiModel(t *testing.T) {
+	t.Parallel()
+
+	videoPart := contentPart{
+		"type":               contentTypeVideoData,
+		contentFieldBytes:    []byte(testVideoBody),
+		contentFieldMIMEType: testVideoMIMEType,
+		contentFieldFilename: "clip.mp4",
+	}
+
+	analysis := "Video analysis for facebook clip"
+	chatClient, _ := newGeminiMediaAnalysisChatClient(t, []string{analysis})
+
+	instance := new(bot)
+	instance.chatCompletions = chatClient
+	instance.facebook = newStubFacebookContentClient(func(
+		_ context.Context,
+		rawURL string,
+	) (facebookVideoContent, error) {
+		return facebookVideoContent{ResolvedURL: rawURL, MediaPart: videoPart}, nil
+	})
+
+	loadedConfig := testMediaAnalysisConfig()
+
+	contents := instance.fetchVisualSearchURLContents(
+		context.Background(),
+		loadedConfig,
+		"openai/gpt-5",
+		[]string{"https://www.facebook.com/reel/823513456342882"},
+	)
+
+	if len(contents.warnings) != 0 {
+		t.Fatalf("unexpected warnings: %#v", contents.warnings)
+	}
+
+	if len(contents.media) != 0 {
+		t.Fatalf("expected analyses instead of media, got %#v", contents.media)
+	}
+
+	if len(contents.analyses) != 1 || contents.analyses[0] != analysis {
+		t.Fatalf("unexpected analyses: %#v", contents.analyses)
+	}
+}
 
 type visualSearchAugmentResult struct {
 	conversation []chatMessage
@@ -218,6 +562,7 @@ func runVisualSearchAugmentAsync(
 			loadedConfig,
 			sourceMessage,
 			conversation,
+			"openai/main-model",
 		)
 		if err == nil {
 			augmentedConversation, applyErr := applyPreparedConversationAugmentation(
@@ -396,6 +741,7 @@ func TestMaybeAugmentConversationWithVisualSearchAddsResultsAndStripsPrefix(t *t
 		testSearchConfig(),
 		sourceMessage,
 		conversation,
+		"openai/main-model",
 	)
 	if err != nil {
 		t.Fatalf("maybe augment conversation with visual search: %v", err)
@@ -468,6 +814,7 @@ func TestMaybeAugmentConversationWithVisualSearchWarnsWhenImageMissing(t *testin
 		testSearchConfig(),
 		new(discordgo.Message),
 		conversation,
+		"openai/main-model",
 	)
 	if err != nil {
 		t.Fatalf("maybe augment conversation with visual search: %v", err)
@@ -523,6 +870,7 @@ func TestMaybeAugmentConversationWithVisualSearchReturnsWarningOnSearchFailure(t
 		testSearchConfig(),
 		sourceMessage,
 		conversation,
+		"openai/main-model",
 	)
 	if err != nil {
 		t.Fatalf("maybe augment conversation with visual search: %v", err)
@@ -648,6 +996,7 @@ func TestMaybeAugmentConversationWithVisualSearchReturnsWarningWhenOneProviderFa
 		loadedConfig,
 		sourceMessage,
 		conversation,
+		"openai/main-model",
 	)
 	if err != nil {
 		t.Fatalf("maybe augment conversation with visual search: %v", err)

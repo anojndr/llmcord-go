@@ -1532,12 +1532,13 @@ providers:
 models:
   openai/first-model:
 extraction_order:
-  firecrawl > tinyfish > exa > tavily
+  firecrawl > tinyfish > exa > parallel > tavily
 `,
 			wantOrder: []webExtractionProvider{
 				webExtractionProviderFirecrawl,
 				webExtractionProviderTinyFish,
 				webExtractionProviderExa,
+				webExtractionProviderParallel,
 				webExtractionProviderTavily,
 			},
 		},

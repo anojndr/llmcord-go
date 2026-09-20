@@ -55,6 +55,7 @@ type websiteClient struct {
 	tavilyExtractEndpoint   string
 	firecrawlScrapeEndpoint string
 	tinyFishFetchEndpoint   string
+	parallelExtractEndpoint string
 	lookupIP                websiteLookupIPFunc
 	keys                    *apiKeyRotator
 	tinyFishFetchCache      *tinyFishFetchCache
@@ -75,6 +76,7 @@ func newWebsiteClient(httpClient *http.Client) websiteClient {
 		tavilyExtractEndpoint:   defaultTavilyExtractEndpoint,
 		firecrawlScrapeEndpoint: defaultFirecrawlScrapeEndpoint,
 		tinyFishFetchEndpoint:   defaultTinyFishFetchEndpoint,
+		parallelExtractEndpoint: defaultParallelExtractEndpoint,
 		lookupIP:                defaultWebsiteLookupIP,
 		keys:                    newAPIKeyRotator(),
 		tinyFishFetchCache:      newTinyFishFetchCache(),
@@ -651,6 +653,27 @@ func (client websiteClient) fetch(
 			}
 
 			attemptErrs = append(attemptErrs, exaErr)
+		case webExtractionProviderParallel:
+			parallelAPIKeys := loadedConfig.WebSearch.Parallel.apiKeys()
+			if len(parallelAPIKeys) == 0 {
+				continue
+			}
+
+			attemptsCount++
+
+			pageContent, parallelErr := tryAllAPIKeys(ctx, client.keys, parallelAPIKeys, func(apiKey string) (websitePageContent, error) {
+				return client.fetchWithParallelExtract(
+					ctx,
+					normalizedURL,
+					apiKey,
+					loadedConfig.WebSearch.Parallel.maxCharsPerResult(),
+				)
+			})
+			if parallelErr == nil {
+				return pageContent, nil
+			}
+
+			attemptErrs = append(attemptErrs, parallelErr)
 		case webExtractionProviderTavily:
 			tavilyAPIKeys := loadedConfig.WebSearch.Tavily.apiKeys()
 			if len(tavilyAPIKeys) == 0 {
@@ -1225,6 +1248,143 @@ func (client websiteClient) fetchWithTavilyExtractOnce(
 	rawContent := truncateRunes(strings.TrimSpace(result.RawContent), maxCharsPerResult)
 
 	return newWebsitePageContent(firstNonEmptyString(result.URL, requestURL), "", "", rawContent)
+}
+
+// fetchWithParallelExtract performs a single-URL Extract request: Parallel
+// serves cached index content (fetch_policy stays unset, mirroring search
+// enrichment), with full_content enabled so the whole page body is returned
+// instead of excerpts alone.
+func (client websiteClient) fetchWithParallelExtract(
+	ctx context.Context,
+	requestURL string,
+	apiKey string,
+	maxCharsPerResult int,
+) (websitePageContent, error) {
+	ctx, cancel := context.WithTimeout(ctx, parallelExtractRequestTimeout)
+	defer cancel()
+
+	requestBody := parallelExtractRequest{
+		URLs: []string{requestURL},
+		AdvancedSettings: &parallelExtractSettings{
+			ExcerptSettings: &parallelExcerptSettings{
+				MaxCharsPerResult: maxCharsPerResult,
+			},
+			FullContent: &parallelExtractFullContentSettings{
+				MaxCharsPerResult: maxCharsPerResult,
+			},
+		},
+	}
+
+	requestBytes, err := json.Marshal(requestBody)
+	if err != nil {
+		return websitePageContent{}, fmt.Errorf("marshal Parallel extract request for %q: %w", requestURL, err)
+	}
+
+	extractEndpoint := strings.TrimSpace(client.parallelExtractEndpoint)
+	if extractEndpoint == "" {
+		extractEndpoint = defaultParallelExtractEndpoint
+	}
+
+	httpRequest, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodPost,
+		extractEndpoint,
+		bytes.NewReader(requestBytes),
+	)
+	if err != nil {
+		return websitePageContent{}, fmt.Errorf("create Parallel extract request for %q: %w", requestURL, err)
+	}
+
+	httpRequest.Header.Set("Accept", applicationJSONContentType)
+	httpRequest.Header.Set("X-Api-Key", strings.TrimSpace(apiKey))
+	httpRequest.Header.Set(contentTypeHeader, applicationJSONContentType)
+
+	httpResponse, err := client.httpClient.Do(httpRequest)
+	if err != nil {
+		return websitePageContent{}, fmt.Errorf("send Parallel extract request for %q: %w", requestURL, err)
+	}
+
+	defer func() {
+		_ = httpResponse.Body.Close()
+	}()
+
+	if httpResponse.StatusCode < http.StatusOK || httpResponse.StatusCode >= http.StatusMultipleChoices {
+		responseBody, readErr := io.ReadAll(httpResponse.Body)
+		if readErr != nil {
+			return websitePageContent{}, fmt.Errorf(
+				"read Parallel extract error response for %q after status %d: %w",
+				requestURL,
+				httpResponse.StatusCode,
+				readErr,
+			)
+		}
+
+		return websitePageContent{}, parallelStatusError{
+			StatusCode: httpResponse.StatusCode,
+			Message: fmt.Sprintf(
+				"Parallel extract request failed for %q with status %d: %s",
+				requestURL,
+				httpResponse.StatusCode,
+				strings.TrimSpace(extractStructuredAPIErrorMessage(responseBody)),
+			),
+			Err: os.ErrInvalid,
+		}
+	}
+
+	var extractResponse parallelExtractResponse
+
+	if err := json.NewDecoder(httpResponse.Body).Decode(&extractResponse); err != nil {
+		return websitePageContent{}, fmt.Errorf("decode Parallel extract response for %q: %w", requestURL, err)
+	}
+
+	for _, extractErr := range extractResponse.Errors {
+		if strings.EqualFold(strings.TrimSpace(extractErr.URL), requestURL) {
+			return websitePageContent{}, fmt.Errorf(
+				"parallel extract reported an error for %q: %s: %w",
+				requestURL,
+				strings.TrimSpace(extractErr.ErrorType),
+				os.ErrInvalid,
+			)
+		}
+	}
+
+	result, resultFound := parallelExtractResultForURL(extractResponse, requestURL)
+	if !resultFound {
+		return websitePageContent{}, fmt.Errorf(
+			"parallel extract response contained no result for %q: %w",
+			requestURL,
+			os.ErrNotExist,
+		)
+	}
+
+	content := strings.TrimSpace(trimmedOptionalString(result.FullContent))
+	if content == "" && len(result.Excerpts) > 0 {
+		content = strings.TrimSpace(strings.Join(result.Excerpts, "\n\n"))
+	}
+
+	content = truncateRunes(content, maxCharsPerResult)
+	title := strings.TrimSpace(trimmedOptionalString(result.Title))
+
+	return newWebsitePageContent(firstNonEmptyString(result.URL, requestURL), title, "", content)
+}
+
+func parallelExtractResultForURL(
+	response parallelExtractResponse,
+	requestURL string,
+) (parallelExtractResult, bool) {
+	for _, result := range response.Results {
+		if strings.EqualFold(strings.TrimSpace(result.URL), requestURL) {
+			return result, true
+		}
+	}
+
+	if len(response.Results) == 0 {
+		var emptyResult parallelExtractResult
+
+		return emptyResult, false
+	}
+
+	return response.Results[0], true
 }
 
 // tavilyExtractRequestBody keeps extraction minimal: basic depth is the

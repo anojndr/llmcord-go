@@ -784,6 +784,7 @@ func TestAugmentConversationFetchesIndependentContextConcurrently(t *testing.T) 
 		fixture.conversation,
 		nil,
 		messageContentText(fixture.conversation[0].Content),
+		testMediaAnalysisModel,
 	)
 	if err != nil {
 		t.Fatalf("augment conversation: %v", err)

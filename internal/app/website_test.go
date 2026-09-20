@@ -58,6 +58,7 @@ func newWebsiteTestClient(httpClient *http.Client, exaURL string, tavilyURL stri
 		tavilyExtractEndpoint:   tavilyURL,
 		firecrawlScrapeEndpoint: "",
 		tinyFishFetchEndpoint:   defaultTinyFishFetchEndpoint,
+		parallelExtractEndpoint: defaultParallelExtractEndpoint,
 		lookupIP:                testWebsiteLookupIP,
 		keys:                    newAPIKeyRotator(),
 		tinyFishFetchCache:      newTinyFishFetchCache(),
@@ -1622,6 +1623,7 @@ func TestWebsiteClientFetchCustomExtractionOrder(t *testing.T) {
 			firecrawlScrapeEndpoint: firecrawlServer.URL + "/v2/scrape",
 			tinyFishFetchEndpoint:   tinyFishServer.URL,
 			exaContentsEndpoint:     exaServer.URL,
+			parallelExtractEndpoint: defaultParallelExtractEndpoint,
 			tavilyExtractEndpoint:   tavilyServer.URL,
 			lookupIP:                testWebsiteLookupIP,
 			keys:                    newAPIKeyRotator(),
@@ -1663,6 +1665,7 @@ func TestWebsiteClientFetchCustomExtractionOrder(t *testing.T) {
 			firecrawlScrapeEndpoint: firecrawlServer.URL + "/v2/scrape",
 			tinyFishFetchEndpoint:   tinyFishServer.URL,
 			exaContentsEndpoint:     exaServer.URL,
+			parallelExtractEndpoint: defaultParallelExtractEndpoint,
 			tavilyExtractEndpoint:   tavilyServer.URL,
 			lookupIP:                testWebsiteLookupIP,
 			keys:                    newAPIKeyRotator(),
@@ -1847,5 +1850,193 @@ func assertTavilyExtractRequest(t *testing.T, request map[string]any, requestURL
 
 	if _, hasTTL := request["ttl"]; hasTTL {
 		t.Fatalf("expected Tavily extract request to omit ttl, got %#v", request["ttl"])
+	}
+}
+func assertParallelWebsiteExtractRequest(t *testing.T, request map[string]any, requestURL string) {
+	t.Helper()
+
+	rawURLs, urlsOK := request["urls"].([]any)
+	if !urlsOK || len(rawURLs) != 1 || rawURLs[0] != requestURL {
+		t.Fatalf("unexpected Parallel extract urls: %#v", request["urls"])
+	}
+
+	advanced, ok := request["advanced_settings"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing Parallel extract advanced_settings: %#v", request["advanced_settings"])
+	}
+
+	if _, hasFullContent := advanced["full_content"]; !hasFullContent {
+		t.Fatalf("missing Parallel extract full_content: %#v", advanced)
+	}
+
+	if _, hasFetchPolicy := advanced["fetch_policy"]; hasFetchPolicy {
+		t.Fatalf("expected Parallel extract request to omit fetch_policy, got %#v", advanced["fetch_policy"])
+	}
+}
+
+func TestWebsiteClientFetchUsesParallelExtractWhenConfigured(t *testing.T) {
+	t.Parallel()
+
+	var parallelCalls int
+
+	parallelServer := httptest.NewServer(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		request *http.Request,
+	) {
+		parallelCalls++
+
+		var body map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Fatalf("decode Parallel extract request: %v", err)
+		}
+
+		assertParallelWebsiteExtractRequest(t, body, testWebsiteArticleURL)
+		responseWriter.Header().Set("Content-Type", "application/json")
+
+		responseBody := map[string]any{
+			"extract_id": "extract_parallel",
+			"results": []map[string]any{{
+				"url":          testWebsiteArticleURL,
+				"title":        "Parallel Article",
+				"full_content": "# Parallel Article\n\nParallel extracted body.",
+			}},
+			"errors": []any{},
+		}
+
+		if err := json.NewEncoder(responseWriter).Encode(responseBody); err != nil {
+			t.Fatalf("encode Parallel extract response: %v", err)
+		}
+	}))
+	defer parallelServer.Close()
+
+	exaServer := httptest.NewServer(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		_ *http.Request,
+	) {
+		http.Error(responseWriter, "unexpected Exa call", http.StatusInternalServerError)
+	}))
+	defer exaServer.Close()
+
+	tavilyServer := httptest.NewServer(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		_ *http.Request,
+	) {
+		http.Error(responseWriter, "unexpected Tavily call", http.StatusInternalServerError)
+	}))
+	defer tavilyServer.Close()
+
+	loadedConfig := testSearchConfig()
+	loadedConfig.WebSearch.ExtractionOrder = []webExtractionProvider{webExtractionProviderParallel}
+	loadedConfig.WebSearch.Parallel = parallelSearchConfig{
+		APIKey:  "pal-key",
+		APIKeys: []string{"pal-key"},
+	}
+
+	client := newWebsiteTestClient(exaServer.Client(), exaServer.URL, tavilyServer.URL)
+	client.parallelExtractEndpoint = parallelServer.URL
+	client.httpClient = parallelServer.Client()
+
+	result, err := client.fetch(context.Background(), loadedConfig, testWebsiteArticleURL)
+	if err != nil {
+		t.Fatalf("fetch with Parallel: %v", err)
+	}
+
+	if result.Title != "Parallel Article" {
+		t.Fatalf("unexpected title: %q", result.Title)
+	}
+
+	if !containsFold(result.Content, "Parallel extracted body.") {
+		t.Fatalf("unexpected content: %q", result.Content)
+	}
+
+	if parallelCalls != 1 {
+		t.Fatalf("unexpected Parallel call count: %d", parallelCalls)
+	}
+}
+
+func TestWebsiteClientFetchFallsBackToTavilyWhenParallelExtractFails(t *testing.T) {
+	t.Parallel()
+
+	var (
+		parallelCalls int
+		tavilyCalls   int
+	)
+
+	parallelServer := httptest.NewServer(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		_ *http.Request,
+	) {
+		parallelCalls++
+
+		http.Error(responseWriter, "extract boom", http.StatusInternalServerError)
+	}))
+	defer parallelServer.Close()
+
+	exaServer := httptest.NewServer(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		_ *http.Request,
+	) {
+		http.Error(responseWriter, "unexpected Exa call", http.StatusInternalServerError)
+	}))
+	defer exaServer.Close()
+
+	tavilyServer := httptest.NewServer(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		request *http.Request,
+	) {
+		tavilyCalls++
+
+		var body map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Fatalf("decode Tavily extract request: %v", err)
+		}
+
+		assertTavilyExtractRequest(t, body, testWebsiteArticleURL)
+		responseWriter.Header().Set("Content-Type", "application/json")
+
+		responseBody := map[string]any{
+			"results": []map[string]any{{
+				"url":         testWebsiteArticleURL,
+				"raw_content": "Tavily fallback body.",
+			}},
+			"failed_results": []any{},
+		}
+
+		if err := json.NewEncoder(responseWriter).Encode(responseBody); err != nil {
+			t.Fatalf("encode Tavily extract response: %v", err)
+		}
+	}))
+	defer tavilyServer.Close()
+
+	loadedConfig := testSearchConfig()
+	loadedConfig.WebSearch.ExtractionOrder = []webExtractionProvider{
+		webExtractionProviderParallel,
+		webExtractionProviderTavily,
+	}
+	loadedConfig.WebSearch.Parallel = parallelSearchConfig{
+		APIKey:  "pal-key",
+		APIKeys: []string{"pal-key"},
+	}
+	loadedConfig.WebSearch.Tavily = tavilySearchConfig{
+		APIKey:  "tvly-key",
+		APIKeys: []string{"tvly-key"},
+	}
+
+	client := newWebsiteTestClient(exaServer.Client(), exaServer.URL, tavilyServer.URL)
+	client.parallelExtractEndpoint = parallelServer.URL
+	client.httpClient = parallelServer.Client()
+	client.tavilyExtractEndpoint = tavilyServer.URL
+
+	result, err := client.fetch(context.Background(), loadedConfig, testWebsiteArticleURL)
+	if err != nil {
+		t.Fatalf("fetch with Parallel fallback: %v", err)
+	}
+
+	if !containsFold(result.Content, "Tavily fallback body.") {
+		t.Fatalf("unexpected content: %q", result.Content)
+	}
+
+	if parallelCalls != 1 || tavilyCalls != 1 {
+		t.Fatalf("unexpected call counts: parallel=%d tavily=%d", parallelCalls, tavilyCalls)
 	}
 }

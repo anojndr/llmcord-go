@@ -140,6 +140,7 @@ const (
 	webExtractionProviderFirecrawl webExtractionProvider = "firecrawl"
 	webExtractionProviderTinyFish  webExtractionProvider = "tinyfish"
 	webExtractionProviderExa       webExtractionProvider = "exa"
+	webExtractionProviderParallel  webExtractionProvider = "parallel"
 	webExtractionProviderTavily    webExtractionProvider = "tavily"
 )
 
@@ -147,6 +148,7 @@ var defaultWebExtractionOrder = []webExtractionProvider{
 	webExtractionProviderFirecrawl,
 	webExtractionProviderTinyFish,
 	webExtractionProviderExa,
+	webExtractionProviderParallel,
 	webExtractionProviderTavily,
 }
 
@@ -218,6 +220,8 @@ func parseWebExtractionOrder(orderStr string) ([]webExtractionProvider, error) {
 			provider = webExtractionProviderTinyFish
 		case "exa":
 			provider = webExtractionProviderExa
+		case "parallel", "parallel_ai", "parallelai", "pal":
+			provider = webExtractionProviderParallel
 		case "tavily", "tvly":
 			provider = webExtractionProviderTavily
 		default:

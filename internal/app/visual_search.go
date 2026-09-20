@@ -18,28 +18,31 @@ import (
 )
 
 const (
-	defaultYandexVisualSearchEndpoint = "https://yandex.com/images/search"
-	yandexImagesAppRootMarker         = `id="ImagesApp-`
-	yandexImagesStateAttribute        = `data-state="`
-	yandexImagesHydrateAttribute      = `" data-hydrate`
-	visualSearchPartialWarningText    = "Warning: some visual search results were unavailable"
-	visualSearchWarningText           = "Warning: visual search unavailable"
-	visualSearchImageWarningText      = "Warning: visual search needs an image attachment"
-	visualSearchResponseByteLimit     = 4 * 1024 * 1024
-	maxVisualSearchRelatedContent     = 5
-	serpAPIGoogleLensMatchDetailCap   = 5
-	maxVisualSearchDescriptionRunes   = 500
-	maxVisualSearchSnippetRunes       = 280
-	maxVisualSearchTitleRunes         = 180
-	maxVisualSearchTags               = 5
-	maxVisualSearchSimilarItems       = 5
-	maxVisualSearchSiteMatches        = 5
-	visualSearchLabelPartCapacity     = 2
-	visualSearchProviderCapacity      = 2
-	visualSearchTopMatchLineCapacity  = 5
-	defaultVisualSearchQuery          = "what is in this image?"
-	serpAPIVisualSearchProviderName   = "SerpApi Google Lens"
-	yandexVisualSearchProviderName    = "Yandex Images"
+	defaultYandexVisualSearchEndpoint  = "https://yandex.com/images/search"
+	yandexImagesAppRootMarker          = `id="ImagesApp-`
+	yandexImagesStateAttribute         = `data-state="`
+	yandexImagesHydrateAttribute       = `" data-hydrate`
+	visualSearchPartialWarningText     = "Warning: some visual search results were unavailable"
+	visualSearchWarningText            = "Warning: visual search unavailable"
+	visualSearchImageWarningText       = "Warning: visual search needs an image attachment"
+	visualSearchResponseByteLimit      = 4 * 1024 * 1024
+	maxVisualSearchRelatedContent      = 5
+	serpAPIGoogleLensMatchDetailCap    = 5
+	maxVisualSearchDescriptionRunes    = 500
+	maxVisualSearchSnippetRunes        = 280
+	maxVisualSearchTitleRunes          = 180
+	maxVisualSearchTags                = 5
+	maxVisualSearchSimilarItems        = 5
+	maxVisualSearchSiteMatches         = 5
+	maxVisualSearchFetchURLs           = 5
+	maxVisualSearchFetchedContentRunes = 12000
+	visualSearchFetchedSectionCapacity = 3
+	visualSearchLabelPartCapacity      = 2
+	visualSearchProviderCapacity       = 2
+	visualSearchTopMatchLineCapacity   = 5
+	defaultVisualSearchQuery           = "what is in this image?"
+	serpAPIVisualSearchProviderName    = "SerpApi Google Lens"
+	yandexVisualSearchProviderName     = "Yandex Images"
 )
 
 const (
@@ -623,6 +626,7 @@ func (instance *bot) prepareVisualSearchAugmentation(
 	loadedConfig config,
 	sourceMessage *discordgo.Message,
 	conversation []chatMessage,
+	providerSlashModel string,
 ) (preparedConversationAugmentation, error) {
 	if instance.visualSearch == nil && instance.serpAPIVisualSearch == nil {
 		return emptyPreparedConversationAugmentation(), nil
@@ -674,7 +678,18 @@ func (instance *bot) prepareVisualSearchAugmentation(
 		), nil
 	}
 
+	fetchedContents := instance.fetchVisualSearchURLContents(
+		ctx,
+		loadedConfig,
+		providerSlashModel,
+		collectVisualSearchFetchURLs(results),
+	)
+	warnings = mergeVisualSearchFetchWarnings(warnings, fetchedContents.warnings)
+
 	formattedResults := formatVisualSearchResults(results)
+	if fetchedText := strings.TrimSpace(formatVisualSearchFetchedContents(fetchedContents)); fetchedText != "" {
+		formattedResults += "\n\nFetched page content:\n" + fetchedText
+	}
 
 	return newPreparedConversationAugmentation(
 		warnings,
@@ -697,6 +712,29 @@ func (instance *bot) prepareVisualSearchAugmentation(
 					"append visual search results to conversation: %w",
 					appendErr,
 				)
+			}
+
+			if len(fetchedContents.media) > 0 {
+				augmentedConversation, appendErr = appendMediaPartsToConversation(
+					augmentedConversation,
+					fetchedContents.media,
+				)
+				if appendErr != nil {
+					return nil, fmt.Errorf(
+						"append visual search video media to conversation: %w",
+						appendErr,
+					)
+				}
+			}
+
+			if len(fetchedContents.analyses) > 0 {
+				augmentedConversation, appendErr = appendMediaAnalysesToConversation(
+					augmentedConversation,
+					fetchedContents.analyses,
+				)
+				if appendErr != nil {
+					return nil, fmt.Errorf("append visual search media analyses: %w", appendErr)
+				}
 			}
 
 			return augmentedConversation, nil
@@ -859,6 +897,22 @@ func visualSearchWarnings(fetchFailed bool, resultCount int) []string {
 	}
 
 	return []string{warningText}
+}
+
+// mergeVisualSearchFetchWarnings merges fetch warnings into provider warnings
+// with dedup and stable sort: fetch groups complete in nondeterministic order,
+// so raw append would surface warnings in random order across runs.
+func mergeVisualSearchFetchWarnings(warnings []string, fetchWarnings []string) []string {
+	warningSet := make(map[string]struct{}, len(warnings)+len(fetchWarnings))
+	for _, warning := range warnings {
+		appendUniqueWarning(warningSet, warning)
+	}
+
+	for _, warning := range fetchWarnings {
+		appendUniqueWarning(warningSet, warning)
+	}
+
+	return sortedWarnings(warningSet)
 }
 
 func appendImageAttachmentURLs(

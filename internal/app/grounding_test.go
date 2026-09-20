@@ -215,6 +215,7 @@ func TestAugmentConversationDoesNotRunWebSearch(t *testing.T) {
 		messages,
 		nil,
 		"",
+		"gemini/gemini-3.6-flash",
 	)
 	if err != nil {
 		t.Fatalf("augmentConversation failed: %v", err)

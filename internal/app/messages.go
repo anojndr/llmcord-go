@@ -635,6 +635,7 @@ func (instance *bot) augmentPreparedMessageResponse(
 		messages,
 		warnings,
 		urlExtractionText,
+		providerSlashModel,
 	)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("augment conversation: %w", err)
@@ -978,10 +979,10 @@ func (instance *bot) augmentConversation(
 	messages []chatMessage,
 	warnings []string,
 	urlExtractionText string,
+	providerSlashModel string,
 ) ([]chatMessage, *searchMetadata, []string, error) {
 	stages := make([]preparedAugmentationStage, 0, preparedAugmentationStageCapacity)
-	stages = append(
-		stages,
+	stages = append(stages,
 		preparedAugmentationStage{
 			name: "visual search",
 			prepare: func(taskContext context.Context) (preparedConversationAugmentation, error) {
@@ -990,6 +991,7 @@ func (instance *bot) augmentConversation(
 					loadedConfig,
 					sourceMessage,
 					messages,
+					providerSlashModel,
 				)
 			},
 		},

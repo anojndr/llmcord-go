@@ -98,19 +98,19 @@ Model notes:
 ### Search and Visual Search
 
 Web search order is configurable in `config.yaml` via `web_search_order` (or `web_search.order`): `tinyfish > exa > tavily` (default: TinyFish -> Exa -> Tavily; also supports `parallel`).
-Website extraction order is configurable in `config.yaml` via `extraction_order` (or `web_search.extraction_order`): `firecrawl > tinyfish > exa > tavily` (default: Firecrawl -> TinyFish -> Exa -> Tavily).
+Website extraction order is configurable in `config.yaml` via `extraction_order` (or `web_search.extraction_order`): `firecrawl > tinyfish > exa > parallel > tavily` (default: Firecrawl -> TinyFish -> Exa -> Parallel -> Tavily).
 | Setting | Purpose |
 | --- | --- |
 | `web_search.max_urls` | Max URLs per query and in `Show Sources`. Default: `5`. |
 | `web_search.exa.api_key` | Enables Exa Search API; without it, Exa uses its MCP endpoint. |
 | `web_search.exa.text_max_characters` | Max full-page text from Exa per result. Default: `15000`. |
 | `web_search.tavily.api_key` | Enables Tavily search and Tavily Extract fallback. |
-| `web_search.parallel.api_key` | Enables Parallel Search API (`https://api.parallel.ai/v1/search`) with full content per URL via the Extract API (`https://api.parallel.ai/v1/extract`, `advanced_settings.full_content`). |
+| `web_search.parallel.api_key` | Enables Parallel Search API (`https://api.parallel.ai/v1/search`) with full content per URL via the Extract API (`https://api.parallel.ai/v1/extract`, `advanced_settings.full_content`), and Parallel Extract in the website extraction chain. |
 | `web_search.firecrawl.api_key` | Makes Firecrawl Scrape the main extractor for generic website URLs (TikTok, YouTube, Facebook, and Reddit URLs are excluded). |
 | `web_search.firecrawl.max_markdown_characters` | Max markdown characters kept per Firecrawl scrape. Default: `12000`. |
-| `visual_search.serpapi.api_key` | Enables concurrent Google Lens results for `vsearch`. |
+| `visual_search.serpapi.api_key` | Enables concurrent Google Lens results for `vsearch`. `vsearch` result URLs are fetched concurrently: Facebook/TikTok/YouTube Shorts videos download as media, long-form YouTube goes through transcripts, Reddit threads expand inline, and everything else uses the website extraction chain. |
 
-Generic website URL extraction runs Firecrawl Scrape first when `web_search.firecrawl.api_key` is set, then Exa Contents (when `web_search.exa.api_key` is set), then Tavily Extract (when a Tavily key is set), then the in-process HTML fetcher as a last resort. TikTok, YouTube, Facebook, and Reddit URLs never use Firecrawl; dedicated fetchers handle them. The in-process fetcher renders readable text from HTML with SSRF protection (it rejects localhost, private, link-local, and unsafe redirects).
+Generic website URL extraction follows `extraction_order` (default Firecrawl -> TinyFish -> Exa -> Parallel -> Tavily), skipping providers without API keys. TikTok, YouTube, Facebook, and Reddit URLs never use generic extraction; dedicated fetchers handle them. Website fetching rejects localhost, private, link-local, and unsafe redirects.
 
 ## Usage
 
