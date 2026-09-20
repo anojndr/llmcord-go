@@ -1756,6 +1756,15 @@ func assertExaContentsRequest(t *testing.T, request map[string]any, requestURL s
 			mapIntValue(request, "livecrawlTimeout"),
 		)
 	}
+
+	// No live/subpage/synthesis knobs on extraction either: the wire shape
+	// stays urls + maxAgeHours -1 + bounded text, and any live-fetch-adjacent
+	// field must fail loudly here.
+	for _, key := range []string{"livecrawl", "livecrawlTimeout", "snapshotAsOf", "subpages", "subpageTarget", "summary", "highlights", "context"} {
+		if _, hasKey := request[key]; hasKey {
+			t.Fatalf("expected cache-only Exa contents request to omit %s, got %#v", key, request[key])
+		}
+	}
 }
 
 const testWebsiteArticleURL = "https://example.com/article"
@@ -1823,7 +1832,7 @@ func assertTavilyExtractRequest(t *testing.T, request map[string]any, requestURL
 		t.Fatalf("unexpected Tavily extract urls: %#v", request["urls"])
 	}
 
-	if mapStringValue(request, "extract_depth") != "advanced" {
+	if mapStringValue(request, "extract_depth") != "basic" {
 		t.Fatalf("unexpected Tavily extract depth: %q", mapStringValue(request, "extract_depth"))
 	}
 

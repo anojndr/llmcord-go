@@ -325,11 +325,14 @@ func (instance *bot) exaSearchTypeForProvider(loadedConfig config, configuredMod
 	return instance.currentExaSearchType()
 }
 
+// tavilySearchRequest follows https://docs.tavily.com/documentation/api-reference/endpoint/search.
+// Snippets-only: include_raw_content stays unset so search never live-extracts
+// result pages (Tavily search has no cache-only mode; omitting it keeps search
+// to index snippets and leaves full-page reads to the extraction chain).
 type tavilySearchRequest struct {
-	Query             string `json:"query"`
-	SearchDepth       string `json:"search_depth"`
-	MaxResults        int    `json:"max_results"`
-	IncludeRawContent string `json:"include_raw_content"`
+	Query       string `json:"query"`
+	SearchDepth string `json:"search_depth"`
+	MaxResults  int    `json:"max_results"`
 }
 
 type tavilySearchResponse struct {
@@ -1543,10 +1546,9 @@ func (client tavilySearchClient) searchQueryOnce(
 	maxCharsPerResult int,
 ) (webSearchResult, error) {
 	requestBody := tavilySearchRequest{
-		Query:             query,
-		SearchDepth:       "advanced",
-		MaxResults:        maxURLs,
-		IncludeRawContent: messageTextKey,
+		Query:       query,
+		SearchDepth: "advanced",
+		MaxResults:  maxURLs,
 	}
 
 	requestBytes, err := json.Marshal(requestBody)

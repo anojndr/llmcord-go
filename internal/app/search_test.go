@@ -159,6 +159,13 @@ func assertExaSearchRequest(t *testing.T, args map[string]any) {
 	default:
 		t.Fatalf("unexpected Exa numResults type %T with value %#v", value, value)
 	}
+
+	// web_search_exa exposes only query/numResults: the keyless MCP path has
+	// no freshness/live switches to set, so any extra arg (a future freshness
+	// knob routed through MCP) must fail loudly here.
+	if len(args) != 2 {
+		t.Fatalf("unexpected Exa MCP arguments: %#v", args)
+	}
 }
 
 func assertExaAPISearchRequest(
@@ -238,7 +245,24 @@ func TestExaSearchRequestUsesCacheOnlyContents(t *testing.T) {
 	if _, hasLivecrawlTimeout := rawContents["livecrawlTimeout"]; hasLivecrawlTimeout {
 		t.Fatalf("expected cache-only Exa search request to omit livecrawl timeout, got %#v", rawContents["livecrawlTimeout"])
 	}
+
+	// No subpages/subpageTarget crawling, no summary synthesis, and no
+	// snapshot pinning: the wire shape stays highlights + bounded full text
+	// on a cache-only snapshot, and any live-fetch-adjacent knob must fail
+	// loudly here.
+	for _, key := range []string{"livecrawl", "snapshotAsOf", "subpages", "subpageTarget", "summary"} {
+		if _, hasKey := rawContents[key]; hasKey {
+			t.Fatalf("expected cache-only Exa search contents to omit %s, got %#v", key, rawContents[key])
+		}
+	}
+
+	for _, key := range []string{"livecrawl", "livecrawlTimeout", "snapshotAsOf", "subpages", "subpageTarget", "summary", "outputSchema", "startPublishedDate", "endPublishedDate", "includeDomains", "excludeDomains", "category"} {
+		if _, hasKey := rawRequest[key]; hasKey {
+			t.Fatalf("expected cache-only Exa search request to omit %s, got %#v", key, rawRequest[key])
+		}
+	}
 }
+
 func testExaAPISearchSuccessResponse() map[string]any {
 	publishedDate := "2026-03-20T00:00:00.000Z"
 	author := "Example Author"
@@ -834,6 +858,50 @@ func TestTinyFishFetchBatchSendsPerURLTimeout(t *testing.T) {
 	}
 }
 
+func TestTinyFishSearchQueryOmitsLiveOnlyParameters(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		request *http.Request,
+	) {
+		if request.Method != http.MethodGet {
+			t.Fatalf("unexpected TinyFish search method: %q", request.Method)
+		}
+
+		queryValues := request.URL.Query()
+		if queryValues.Get("query") != "test query" {
+			t.Fatalf("unexpected TinyFish search query: %q", queryValues.Get("query"))
+		}
+
+		for _, key := range []string{"recency_minutes", "after_date", "before_date", "page", "ttl"} {
+			if _, hasKey := queryValues[key]; hasKey {
+				t.Fatalf("expected TinyFish search request to omit %s, got %q", key, queryValues.Get(key))
+			}
+		}
+
+		responseWriter.Header().Set("Content-Type", "application/json")
+
+		response := map[string]any{
+			"query":         "test query",
+			"results":       []any{},
+			"total_results": 0,
+			"page":          0,
+		}
+		if err := json.NewEncoder(responseWriter).Encode(response); err != nil {
+			t.Fatalf("encode TinyFish search response: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	client := newTinyFishSearchClient(server.Client())
+	client.searchEndpoint = server.URL
+
+	if _, err := client.searchQuery(t.Context(), "tf-test-key", "test query"); err != nil {
+		t.Fatalf("searchQuery returned error: %v", err)
+	}
+}
+
 func TestTinyFishSearchQuerySendsBoundedDeadline(t *testing.T) {
 	t.Parallel()
 
@@ -1343,7 +1411,7 @@ func TestTavilySearchClientSearchRotatesAPIKeysAcrossCalls(t *testing.T) {
 	}
 }
 
-func TestTavilySearchClientSearchOmitsTTL(t *testing.T) {
+func TestTavilySearchClientSearchIsCacheOnly(t *testing.T) {
 	t.Parallel()
 
 	var capturedRequest map[string]any
@@ -1381,14 +1449,34 @@ func TestTavilySearchClientSearchOmitsTTL(t *testing.T) {
 		t.Fatalf("search: %v", err)
 	}
 
-	if _, hasTTL := capturedRequest["ttl"]; hasTTL {
-		t.Fatalf("expected Tavily search request to omit ttl, got %#v", capturedRequest["ttl"])
+	assertTavilySearchCacheOnlyRequest(t, capturedRequest)
+}
+
+func assertTavilySearchCacheOnlyRequest(t *testing.T, capturedRequest map[string]any) {
+	t.Helper()
+
+	// Tavily search has no cache-only mode: the closest no-live posture is
+	// snippets-only. include_raw_content live-extracts each result's page, so
+	// it must stay unset and full-page reads stay in the extraction chain.
+	if _, hasRawContent := capturedRequest["include_raw_content"]; hasRawContent {
+		t.Fatalf("expected Tavily search request to omit include_raw_content, got %#v", capturedRequest["include_raw_content"])
 	}
 
-	for _, freshnessKey := range []string{"time_range", "start_date", "end_date", "days"} {
-		if _, hasKey := capturedRequest[freshnessKey]; hasKey {
-			t.Fatalf("expected Tavily search request to omit %s, got %#v", freshnessKey, capturedRequest[freshnessKey])
+	if _, hasRawContent := capturedRequest["includeRawContent"]; hasRawContent {
+		t.Fatalf("expected Tavily search request to omit includeRawContent, got %#v", capturedRequest["includeRawContent"])
+	}
+
+	// No date/recency filters (time_range, start_date, end_date) and no
+	// auto_parameters/exact_match: unlisted knobs must not sneak a live path
+	// or a behavior change back in.
+	for _, key := range []string{"time_range", "start_date", "end_date", "days", "auto_parameters", "exact_match"} {
+		if _, hasKey := capturedRequest[key]; hasKey {
+			t.Fatalf("expected Tavily search request to omit %s, got %#v", key, capturedRequest[key])
 		}
+	}
+
+	if _, hasTTL := capturedRequest["ttl"]; hasTTL {
+		t.Fatalf("expected Tavily search request to omit ttl, got %#v", capturedRequest["ttl"])
 	}
 }
 
@@ -1717,10 +1805,24 @@ func assertParallelSearchOmitsFetchPolicy(t *testing.T, rawBody []byte) {
 		t.Fatalf("expected Parallel search request to omit ttl, got %#v", rawMap["ttl"])
 	}
 
-	if advanced, ok := rawMap["advanced_settings"].(map[string]any); ok {
-		if _, hasFetchPolicy := advanced["fetch_policy"]; hasFetchPolicy {
-			t.Fatalf("expected Parallel search request to omit fetch_policy, got %#v", advanced["fetch_policy"])
-		}
+	advanced, ok := rawMap["advanced_settings"].(map[string]any)
+	if !ok {
+		t.Fatal("expected Parallel search request to carry advanced_settings")
+	}
+
+	if _, hasFetchPolicy := advanced["fetch_policy"]; hasFetchPolicy {
+		t.Fatalf("expected Parallel search request to omit fetch_policy, got %#v", advanced["fetch_policy"])
+	}
+
+	// No source_policy freshness floor (after_date) and no location: the
+	// only freshness signal Parallel offers is fetch_policy (omitted above),
+	// so any future recency knob must fail loudly here.
+	if _, hasSourcePolicy := advanced["source_policy"]; hasSourcePolicy {
+		t.Fatalf("expected Parallel search request to omit source_policy, got %#v", advanced["source_policy"])
+	}
+
+	if _, hasLocation := advanced["location"]; hasLocation {
+		t.Fatalf("expected Parallel search request to omit location, got %#v", advanced["location"])
 	}
 }
 

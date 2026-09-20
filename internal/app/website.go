@@ -1227,10 +1227,14 @@ func (client websiteClient) fetchWithTavilyExtractOnce(
 	return newWebsitePageContent(firstNonEmptyString(result.URL, requestURL), "", "", rawContent)
 }
 
+// tavilyExtractRequestBody keeps extraction minimal: basic depth is the
+// cheapest/fastest live fallback (1 credit per 5 URLs) and timeout bounds the
+// origin fetch. Extract has no cache-only mode; Exa contents (maxAgeHours -1)
+// remains the only true cache-only extractor, so Tavily stays last resort.
 func tavilyExtractRequestBody(requestURL string) map[string]any {
 	return map[string]any{
 		"urls":          []string{requestURL},
-		"extract_depth": "advanced",
+		"extract_depth": "basic",
 		"format":        "markdown",
 		"timeout":       tavilyExtractTimeoutSeconds,
 	}
