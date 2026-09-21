@@ -24,8 +24,10 @@ type tinyFishFetchCacheEntry struct {
 // resolved request and final URLs are stored alongside so cache hits rebuild
 // the exact same page URL and title fallback a live fetch would produce.
 type tinyFishFetchCache struct {
-	mu      sync.Mutex
-	entries map[string]tinyFishFetchCacheEntry
+	mu          sync.Mutex
+	entries     map[string]tinyFishFetchCacheEntry
+	redisClient redisClient
+	redisPrefix string
 }
 
 func newTinyFishFetchCache() *tinyFishFetchCache {
@@ -39,6 +41,14 @@ func normalizeTinyFishFetchCacheKey(rawURL string) string {
 }
 
 func (cache *tinyFishFetchCache) lookup(rawURL string) (text, title, description, resolvedURL, finalURL string, ok bool) {
+	if text, title, description, resolvedURL, finalURL, ok := cache.lookupMemory(rawURL); ok {
+		return text, title, description, resolvedURL, finalURL, true
+	}
+
+	return cache.lookupRedis(rawURL)
+}
+
+func (cache *tinyFishFetchCache) lookupMemory(rawURL string) (text, title, description, resolvedURL, finalURL string, ok bool) {
 	if cache == nil {
 		return "", "", "", "", "", false
 	}
@@ -101,6 +111,20 @@ func (cache *tinyFishFetchCache) store(rawURL, finalURL, text, title, descriptio
 
 	expiresAt := time.Now().Add(tinyFishFetchCacheTTL)
 
+	entry := tinyFishFetchCacheEntry{
+		text:        text,
+		title:       strings.TrimSpace(title),
+		description: strings.TrimSpace(description),
+		url:         trimmedRawURL,
+		finalURL:    trimmedFinalURL,
+		expiresAt:   expiresAt,
+	}
+
+	cache.storeMemory(keys, entry)
+	cache.storeRedis(keys, entry)
+}
+
+func (cache *tinyFishFetchCache) storeMemory(keys []string, entry tinyFishFetchCacheEntry) {
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
 
@@ -117,15 +141,6 @@ func (cache *tinyFishFetchCache) store(rawURL, finalURL, text, title, descriptio
 	// Evict enough entries so that adding all new keys cannot exceed MaxEntries.
 	for len(cache.entries)+newKeysCount > tinyFishFetchCacheMaxEntries && len(cache.entries) > 0 {
 		cache.evictOldestLocked()
-	}
-
-	entry := tinyFishFetchCacheEntry{
-		text:        text,
-		title:       strings.TrimSpace(title),
-		description: strings.TrimSpace(description),
-		url:         trimmedRawURL,
-		finalURL:    trimmedFinalURL,
-		expiresAt:   expiresAt,
 	}
 
 	for _, key := range keys {

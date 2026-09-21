@@ -16,6 +16,8 @@ type serviceHealth struct {
 	Ready             bool   `json:"ready"`
 	DiscordReady      bool   `json:"discord_ready"`
 	SessionConfigured bool   `json:"session_configured"`
+	RedisConfigured   bool   `json:"redis_configured"`
+	RedisReachable    bool   `json:"redis_reachable"`
 }
 
 // RuntimeConfigPath resolves the config path from the environment.
@@ -146,11 +148,18 @@ func (instance *bot) serviceHealth() serviceHealth {
 	sessionConfigured := instance.sessionConfigured
 	instance.startupMu.Unlock()
 
+	reachable := instance.redisReachable.Load()
+	if instance.redisConfigured.Load() {
+		reachable = instance.probeRedisReachable(context.Background())
+	}
+
 	return serviceHealth{
 		Status:            "ok",
 		Service:           "llmcord-go",
 		Ready:             discordReady && sessionConfigured,
 		DiscordReady:      discordReady,
 		SessionConfigured: sessionConfigured,
+		RedisConfigured:   instance.redisConfigured.Load(),
+		RedisReachable:    reachable,
 	}
 }

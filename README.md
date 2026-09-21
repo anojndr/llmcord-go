@@ -13,7 +13,7 @@ It turns Discord reply chains into a frontend for OpenAI-compatible chat-complet
 - Automatic Facebook video downloads: any message containing a Facebook or fb.watch link (no bot mention needed) gets a reply with the MP4 attached; oversized videos are compressed to 8 MB first and fall back to the direct download link if compression fails
 - Automatic YouTube Shorts downloads: any message containing a YouTube Shorts link (no bot mention needed) is deleted and re-sent by the bot as "<username> sent:" with the MP4 attached, preserving any surrounding text; oversized videos are compressed to 8 MB first and fall back to the direct download link (temporary resolver URL) if compression fails
 - Web-search augmentation (Exa by default), reverse-image lookup (`vsearch`), and native Gemini grounding
-- Hot-reloaded `config.yaml`, permissions, channel model locks, and SQLite-backed history and bot state
+- Hot-reloaded `config.yaml`, permissions, channel model locks, SQLite-backed history and bot state, and optional Redis sharing (dedup, fetch cache, history/bot-state mirror)
 
 ## Quick Start
 
@@ -81,6 +81,10 @@ Providers are declared with `base_url` (OpenAI-compatible). The provider name se
 | `fallback_model` | Model to fall back to before returning an error (defaults to `9router/stable_model:vision` when configured in `models`). The fallback attempt gets the `web_search` tool under the same conditions as the primary. |
 | `database.connection_string` | SQLite file path for persisted history and bot state (for example `llmcord.sqlite`). Without it, reply history and operator selections (`/model`, `/searchtype`, `/grounding`, `/maintenance`) live only in memory and are lost on restart. |
 | `database.store_key` | Logical key selecting the persisted history and bot-state rows. |
+| `redis.address` | Optional Redis `host:port` (for example `127.0.0.1:6379`). Blank disables Redis. When set, message dedup uses cluster-wide `SET NX`, TinyFish fetch results share across instances, and history plus bot state mirror into Redis with a 30-day TTL alongside SQLite. |
+| `redis.password` | Optional Redis password (requirepass / ACL user). |
+| `redis.db` | Redis logical database `0`-`15` (default `0`). |
+| `redis.key_prefix` | Namespace prefix for every key (default `llmcord`). |
 | `gist.api_key` | GitHub personal access token (with the `gist` scope) used by the "View response better on GitHub Gist" button. Get one at https://github.com/settings/tokens. Accepts a string or a YAML list, round-robin across multiple tokens. Publishing is disabled without a key. |
 | `gist.endpoint` | GitHub REST API endpoint used to create gists. Default: `https://api.github.com/gists`. |
 | `gist.public` | Whether created gists are public (default `false`, secret). |

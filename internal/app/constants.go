@@ -151,6 +151,15 @@ const (
 	// memory to a few hundred pages.
 	tinyFishFetchCacheTTL              = 10 * time.Minute
 	tinyFishFetchCacheMaxEntries       = 200
+	redisConnectTimeout                = 2 * time.Second
+	redisReadTimeout                   = 5 * time.Second
+	redisWriteTimeout                  = 5 * time.Second
+	redisFastOpTimeout                 = 500 * time.Millisecond
+	redisPersistenceOpTimeout          = 5 * time.Second
+	defaultRedisDatabase               = 0
+	redisMaxDatabase                   = 15
+	defaultRedisKeyPrefix              = "llmcord"
+	redisHistoryTTL                    = 30 * 24 * time.Hour
 	parallelSearchRequestTimeout       = 20 * time.Second
 	parallelExtractRequestTimeout      = 60 * time.Second
 	parallelExtractMaxURLsPerRequest   = 20

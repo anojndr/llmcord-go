@@ -386,6 +386,25 @@ database:
   store_key:
 
 # -----------------------------------------------------------------------------
+# Redis — optional shared tier for dedup, fetch cache, history, bot state
+# -----------------------------------------------------------------------------
+redis:
+  # Optional host:port of a Redis instance (for example 127.0.0.1:6379).
+  # Leave blank to disable (in-memory + SQLite behavior unchanged). When set,
+  # the bot shares message dedup and TinyFish fetch results across instances
+  # and mirrors history plus bot state into Redis with a 30-day TTL.
+  # address:
+  # Optional password (Redis requirepass / ACL user password). Sent over the
+  # Redis connection; use a private network or TLS-terminating proxy.
+  # password:
+  # Logical Redis database index (0-15). Default: 0
+  # db: 0
+  # Namespace prefix for every key (<prefix>:dedup:<id>,
+  # <prefix>:fetch:<sha256>, <prefix>:history:<store-key>,
+  # <prefix>:botstate:<store-key>). Default: llmcord
+  # key_prefix: llmcord
+
+# -----------------------------------------------------------------------------
 # Integrations — Gist publishing for long replies
 # -----------------------------------------------------------------------------
 gist:

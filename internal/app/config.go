@@ -474,6 +474,7 @@ type rawConfig struct {
 	WebExtractionOrder webExtractionOrder           `yaml:"web_extraction_order"`
 	VisualSearch       rawVisualSearchConfig        `yaml:"visual_search"`
 	Database           rawDatabaseConfig            `yaml:"database"`
+	Redis              rawRedisConfig               `yaml:"redis"`
 	Gist               rawGistConfig                `yaml:"gist"`
 	Models             map[string]map[string]any    `yaml:"models"`
 	ChannelModelLocks  map[string]scalarString      `yaml:"channel_model_locks"`
@@ -494,6 +495,7 @@ type config struct {
 	WebSearch          webSearchConfig
 	VisualSearch       visualSearchConfig
 	Database           databaseConfig
+	Redis              redisConfig
 	Gist               gistConfig
 	Models             map[string]map[string]any
 	ModelOrder         []string
@@ -571,6 +573,7 @@ func buildLoadedConfig(
 			},
 		},
 		Database:           normalizeDatabaseConfig(rawLoadedConfig.Database),
+		Redis:              normalizeRedisConfig(rawLoadedConfig.Redis),
 		Gist:               normalizeGistConfig(rawLoadedConfig.Gist),
 		Models:             rawLoadedConfig.Models,
 		ModelOrder:         modelOrder,
@@ -794,6 +797,7 @@ func normalizeProviderConfig(providerName string, rawProvider rawProviderConfig)
 	normalizedAPI := strings.ToLower(strings.TrimSpace(string(rawProvider.API)))
 	reasoningEffort := strings.ToLower(strings.TrimSpace(string(rawProvider.ReasoningEffort)))
 	exaSearchType := strings.ToLower(strings.TrimSpace(string(rawProvider.ExaSearchType)))
+
 	return providerConfig{
 		Name:                        strings.TrimSpace(providerName),
 		BaseURL:                     baseURL,
@@ -1001,6 +1005,11 @@ func validateConfig(loadedConfig config) error {
 	}
 
 	err = validateDatabaseConfig(loadedConfig.Database)
+	if err != nil {
+		return err
+	}
+
+	err = validateRedisConfig(loadedConfig.Redis)
 	if err != nil {
 		return err
 	}

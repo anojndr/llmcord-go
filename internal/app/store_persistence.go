@@ -984,6 +984,41 @@ func (store *messageNodeStore) backendAndKey() (messageNodeStoreBackend, string)
 	return store.backend, store.storeKey
 }
 
+// wrapHistoryBackend swaps the attached backend in place, keeping the store
+// key and save worker. Used when Redis chains after SQLite already attached:
+// the SQLite handle moves inside the chained backend instead of being refused
+// and closed.
+func (store *messageNodeStore) wrapHistoryBackend(storeKey string, backend messageNodeStoreBackend) bool {
+	if store == nil || backend == nil {
+		if backend != nil {
+			_ = backend.close()
+		}
+
+		return false
+	}
+
+	trimmedStoreKey := strings.TrimSpace(storeKey)
+	if trimmedStoreKey == "" {
+		_ = backend.close()
+
+		return false
+	}
+
+	store.backendMu.Lock()
+	defer store.backendMu.Unlock()
+
+	if store.closed.Load() || store.backend == nil || strings.TrimSpace(store.storeKey) == "" {
+		_ = backend.close()
+
+		return false
+	}
+
+	store.storeKey = trimmedStoreKey
+	store.backend = backend
+
+	return true
+}
+
 func (store *messageNodeStore) persistBestEffort() {
 	backend, storeKey := store.backendAndKey()
 	if store == nil || strings.TrimSpace(storeKey) == "" || backend == nil {

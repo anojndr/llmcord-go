@@ -58,6 +58,8 @@ type bot struct {
 	nextEditAtByMessage          map[string]time.Time
 	messageDedupMu               sync.Mutex
 	messageProcessedAt           map[string]time.Time
+	redisDedupClient             redisClient
+	redisDedupPrefix             string
 	maintenanceMu                sync.RWMutex
 	maintenanceChannels          map[string]struct{}
 	startupMu                    sync.Mutex
@@ -74,6 +76,10 @@ type bot struct {
 	botStateBackend              botStateBackend
 	botStateGeneration           atomic.Uint64
 	botStateSaveMu               sync.Mutex
+	redisClient                  redisClient
+	redisPrefix                  string
+	redisConfigured              atomic.Bool
+	redisReachable               atomic.Bool
 	botClosed                    atomic.Bool
 	iphoneReleased               atomic.Bool
 	iphoneCheckCount             atomic.Uint64
@@ -174,7 +180,17 @@ func newBot(ctx context.Context, configPath string, loadedConfig config) (*bot, 
 	instance.session = discordSession
 	instance.httpClient = httpClient
 	instance.chatCompletions = providers.NewChatCompletionRouter(httpClient)
-	instance.webSearch = newWebSearchClient(httpClient)
+	instance.redisClient, instance.redisPrefix = connectRedis(ctx, loadedConfig.Redis)
+	instance.redisConfigured.Store(loadedConfig.Redis.enabled())
+
+	if instance.redisClient != nil {
+		instance.redisReachable.Store(true)
+		instance.redisDedupClient = instance.redisClient
+		instance.redisDedupPrefix = instance.redisPrefix
+	}
+
+	sharedFetchCache := newTinyFishFetchCacheWithRedis(instance.redisClient, instance.redisPrefix)
+	instance.webSearch = newWebSearchClient(httpClient, sharedFetchCache)
 	instance.visualSearch = newVisualSearchClient(httpClient)
 	instance.serpAPIVisualSearch = newSerpAPIVisualSearchClient(httpClient)
 	instance.imageSearch = newImageSearchClient(httpClient)
@@ -192,7 +208,7 @@ func newBot(ctx context.Context, configPath string, loadedConfig config) (*bot, 
 	instance.youtubeShorts = newYouTubeShortsClient(httpClient)
 	instance.youtube = newYouTubeClient(httpClient)
 	instance.reddit = newRedditClient(httpClient)
-	instance.website = newWebsiteClient(httpClient)
+	instance.website = newWebsiteClient(httpClient, sharedFetchCache)
 	instance.nodes = newMessageNodeStore(maxMessageNodes)
 
 	instance.currentModel = loadedConfig.firstModel()
@@ -227,7 +243,14 @@ func (instance *bot) hydratePersistenceInBackground(
 	configPath, configuredStoreKey, connectionString string,
 	loadedConfig config,
 ) {
-	if instance == nil || strings.TrimSpace(connectionString) == "" {
+	if instance == nil {
+		return
+	}
+
+	if strings.TrimSpace(connectionString) == "" {
+		redisStoreKey := messageNodeStoreKey(configPath, configuredStoreKey)
+		instance.wireRedisPersistence(redisStoreKey)
+
 		return
 	}
 
@@ -250,11 +273,105 @@ func (instance *bot) hydratePersistenceInBackground(
 			return
 		}
 
+		// Chain Redis after SQLite attaches so the SQLite backend is captured
+		// as the chained sibling instead of being refused and closed.
+		redisStoreKey := messageNodeStoreKey(configPath, configuredStoreKey)
+		instance.wireRedisPersistence(redisStoreKey)
+
+		if instance.botClosed.Load() {
+			return
+		}
+
 		backgroundCtx, cancelBackground := context.WithTimeout(context.Background(), messageNodeStoreStatementTimeout)
 		defer cancelBackground()
 
 		instance.wireBotStatePersistence(backgroundCtx, loadedConfig)
 	})
+}
+
+// wireRedisPersistence installs the Redis history and bot-state backends when
+// a live Redis client exists. History keeps its SQLite load path so a Redis
+// outage never loses locally restorable rows; Redis becomes a parallel
+// write-through tier on persist and a fallback read tier on cold start.
+func (instance *bot) wireRedisPersistence(storeKey string) {
+	if instance == nil || instance.nodes == nil || instance.redisClient == nil {
+		return
+	}
+
+	if strings.TrimSpace(storeKey) == "" {
+		return
+	}
+
+	backend := instance.redisHistoryBackend()
+	if backend == nil {
+		return
+	}
+
+	snapshot, err := backend.loadSnapshot(storeKey, maxMessageNodes)
+	if err == nil {
+		instance.nodes.mergeLoadedHistory(snapshot.Nodes)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		logWarn("load redis message history", err, "store_key", storeKey)
+	}
+
+	// Capture the sibling backend before chaining: when SQLite hydration runs
+	// later it merges into the chained tier instead of replacing it, so neither
+	// tier is refused nor closed. If SQLite already attached first, wrap it in
+	// place so its rows stay readable and future persists fan out to Redis.
+	existing, _ := instance.nodes.backendAndKey()
+	if existing != nil {
+		instance.nodes.wrapHistoryBackend(storeKey, newRedisChainedHistoryBackend(backend, existing))
+		instance.wireRedisBotState(storeKey)
+
+		return
+	}
+
+	instance.nodes.attachPersistentBackend(storeKey, newRedisChainedHistoryBackend(backend, existing), nil)
+	instance.wireRedisBotState(storeKey)
+}
+
+// redisHistoryBackend builds the caller-owned Redis history backend directly
+// from the shared client, bypassing attach noise for one-shot loads.
+func (instance *bot) redisHistoryBackend() *redisMessageNodeStoreBackend {
+	if instance == nil || instance.redisClient == nil {
+		return nil
+	}
+
+	return newRedisMessageNodeStoreBackend(instance.redisClient, instance.redisPrefix)
+}
+
+func (instance *bot) wireRedisBotState(storeKey string) {
+	if instance == nil || instance.redisClient == nil {
+		return
+	}
+
+	backend := newRedisBotStateBackend(instance.redisClient, instance.redisPrefix)
+	if backend == nil {
+		return
+	}
+
+	instance.botStateMu.Lock()
+	instance.botStateKey = storeKey
+	instance.botStateBackend = backend
+	instance.botStateMu.Unlock()
+
+	snapshot, err := backend.loadBotState(storeKey)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			logWarn("load redis bot state", err, "store_key", storeKey)
+		}
+
+		return
+	}
+
+	loadedConfig, err := instance.loadConfigCached()
+	if err != nil {
+		logWarn("load config for redis bot state", err, "store_key", storeKey)
+
+		return
+	}
+
+	instance.applyBotStateSnapshot(snapshot, loadedConfig)
 }
 
 // Run starts the bot until the context is cancelled.
@@ -492,6 +609,8 @@ func (instance *bot) close() error {
 			nodesErr = fmt.Errorf("close message store: %w", err)
 		}
 	}
+
+	instance.closeRedisClient()
 
 	return errors.Join(sessionErr, botStateErr, nodesErr)
 }

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"strings"
 	"time"
 )
@@ -15,6 +16,10 @@ const messageSeenWindow = 30 * time.Second
 func (instance *bot) markMessageSeen(messageID string) bool {
 	if strings.TrimSpace(messageID) == "" {
 		return true
+	}
+
+	if !instance.reserveMessageSeenCluster(messageID) {
+		return false
 	}
 
 	now := time.Now()
@@ -39,7 +44,29 @@ func (instance *bot) markMessageSeen(messageID string) bool {
 	return true
 }
 
-// messageDedupMapSizeLimit bounds the dedup map before a prune sweep.
+// reserveMessageSeenCluster claims the message ID cluster-wide via Redis
+// SET NX. False means another instance already claimed it. Redis errors fall
+// back to local-only dedup so a Redis outage never drops messages.
+func (instance *bot) reserveMessageSeenCluster(messageID string) bool {
+	if instance == nil {
+		return true
+	}
+
+	client := instance.redisDedupClient
+	if client == nil {
+		return true
+	}
+
+	first, err := reserveMessageDedup(context.Background(), client, instance.redisDedupPrefix, messageID)
+	if err != nil {
+		logWarn("reserve message dedup", err, "message_id", messageID)
+
+		return true
+	}
+
+	return first
+}
+
 const messageDedupMapSizeLimit = 1024
 
 // expireMessageSeen drops entries older than the dedup window so the map

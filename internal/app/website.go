@@ -68,7 +68,12 @@ type websitePageContent struct {
 	Content     string
 }
 
-func newWebsiteClient(httpClient *http.Client) websiteClient {
+func newWebsiteClient(httpClient *http.Client, fetchCache ...*tinyFishFetchCache) websiteClient {
+	cache := newTinyFishFetchCache()
+	if len(fetchCache) > 0 && fetchCache[0] != nil {
+		cache = fetchCache[0]
+	}
+
 	return websiteClient{
 		httpClient:              httpClient,
 		userAgent:               youtubeUserAgent,
@@ -79,7 +84,7 @@ func newWebsiteClient(httpClient *http.Client) websiteClient {
 		parallelExtractEndpoint: defaultParallelExtractEndpoint,
 		lookupIP:                defaultWebsiteLookupIP,
 		keys:                    newAPIKeyRotator(),
-		tinyFishFetchCache:      newTinyFishFetchCache(),
+		tinyFishFetchCache:      cache,
 	}
 }
 

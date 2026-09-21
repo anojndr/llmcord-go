@@ -488,19 +488,24 @@ func newParallelSearchClient(httpClient *http.Client) parallelSearchClient {
 	}
 }
 
-func newTinyFishSearchClient(httpClient *http.Client) tinyFishSearchClient {
+func newTinyFishSearchClient(httpClient *http.Client, fetchCache ...*tinyFishFetchCache) tinyFishSearchClient {
+	cache := newTinyFishFetchCache()
+	if len(fetchCache) > 0 && fetchCache[0] != nil {
+		cache = fetchCache[0]
+	}
+
 	return tinyFishSearchClient{
 		searchEndpoint: defaultTinyFishSearchEndpoint,
 		fetchEndpoint:  defaultTinyFishFetchEndpoint,
 		httpClient:     httpClient,
 		keys:           newAPIKeyRotator(),
-		fetchCache:     newTinyFishFetchCache(),
+		fetchCache:     cache,
 	}
 }
 
-func newWebSearchClient(httpClient *http.Client) routedWebSearchClient {
+func newWebSearchClient(httpClient *http.Client, fetchCache ...*tinyFishFetchCache) routedWebSearchClient {
 	return routedWebSearchClient{
-		tinyFish: newTinyFishSearchClient(httpClient),
+		tinyFish: newTinyFishSearchClient(httpClient, fetchCache...),
 		exa:      newExaSearchClient(httpClient),
 		tavily:   newTavilySearchClient(httpClient),
 		parallel: newParallelSearchClient(httpClient),

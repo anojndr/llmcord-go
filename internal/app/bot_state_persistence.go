@@ -170,6 +170,10 @@ func (store *messageNodeStore) sqliteDatabase() *sql.DB {
 		return nil
 	}
 
+	if chained, ok := backend.(*redisChainedHistoryBackend); ok && chained != nil && chained.other != nil {
+		backend = chained.other
+	}
+
 	sqliteBackend, ok := backend.(*sqliteMessageNodeStoreBackend)
 	if !ok || sqliteBackend == nil {
 		return nil
@@ -332,7 +336,27 @@ func (instance *bot) persistBotStateBestEffort() {
 		if err := backend.saveBotState(storeKey, snapshot); err != nil {
 			logWarn("persist bot state", err, "store_key", storeKey)
 		}
+
+		instance.persistBotStateRedisLocked(storeKey, snapshot)
 	})
+}
+
+// persistBotStateRedisLocked mirrors the snapshot to Redis when a live client
+// exists. Callers hold botStateSaveMu. Failures only log: SQLite remains the
+// durable tier and the next mutation retries.
+func (instance *bot) persistBotStateRedisLocked(storeKey string, snapshot botStateSnapshot) {
+	if instance == nil || instance.redisClient == nil {
+		return
+	}
+
+	backend := newRedisBotStateBackend(instance.redisClient, instance.redisPrefix)
+	if backend == nil {
+		return
+	}
+
+	if err := backend.saveBotState(storeKey, snapshot); err != nil {
+		logWarn("persist redis bot state", err, "store_key", storeKey)
+	}
 }
 
 // persistBotStateSync saves runtime state and reports the error for shutdown
@@ -352,6 +376,8 @@ func (instance *bot) persistBotStateSync() error {
 	if err != nil {
 		return fmt.Errorf("persist bot state for store key %q: %w", storeKey, err)
 	}
+
+	instance.persistBotStateRedisLocked(storeKey, snapshot)
 
 	return nil
 }
@@ -373,6 +399,8 @@ func (instance *bot) wireBotStatePersistence(ctx context.Context, loadedConfig c
 
 	database := instance.nodes.sqliteDatabase()
 	if database == nil {
+		// Redis-only deployments have no SQLite handle; the Redis bot-state
+		// backend was already wired and hydrated by wireRedisBotState.
 		return
 	}
 
