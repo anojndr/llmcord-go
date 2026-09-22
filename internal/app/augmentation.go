@@ -14,6 +14,7 @@ var (
 	dontBeSycophanticRE = regexp.MustCompile(`(?i)\bdon['’]?t\s+be\s+sycophantic\b`)
 	adhdFriendlyRE      = regexp.MustCompile(`(?i)\badhd[-\s]*friendly\b`)
 	alwaysEnglishRE     = regexp.MustCompile(`(?i)\balways\s+in\s+english\b`)
+	crossCheckRE        = regexp.MustCompile(`(?i)\bcross[-\s]*check\b`)
 )
 
 const dontBeSycophanticPhrase = "don't be sycophantic."
@@ -21,6 +22,8 @@ const dontBeSycophanticPhrase = "don't be sycophantic."
 const adhdFriendlyPhrase = "make sure your output is adhd-friendly."
 
 const alwaysEnglishPhrase = "make sure your output is always in english unless instructed by the user to use another language."
+
+const crossCheckPhrase = "always cross-check to ensure accuracy."
 
 const (
 	augmentedPromptPrefix        = "Answer the user's query based on "
@@ -598,6 +601,10 @@ func containsAlwaysEnglishPhrase(text string) bool {
 	return alwaysEnglishRE.MatchString(text)
 }
 
+func containsCrossCheckPhrase(text string) bool {
+	return crossCheckRE.MatchString(text)
+}
+
 // userQueryFromContent extracts the UserQuery from a chatMessage Content value.
 // Unknown content types return "" and delegate error surfacing to
 // appendContextToConversation (which validates content types and returns
@@ -634,18 +641,57 @@ func latestUserQuery(conversation []chatMessage) (string, bool) {
 	return userQueryFromContent(conversation[index].Content), true
 }
 
+// autoAppendEnabled reports whether any auto-append suffix is configured.
+func autoAppendEnabled(provider providerConfig) bool {
+	return provider.AutoAppendSearchWeb || provider.AutoAppendShortAnswer ||
+		provider.AutoAppendDontBeSycophantic || provider.AutoAppendADHDFriendly ||
+		provider.AutoAppendAlwaysEnglish || provider.AutoAppendCrossCheck
+}
+
+// missingAutoAppendPhrases returns the configured auto-append suffixes absent
+// from userQuery, in append order.
+func missingAutoAppendPhrases(provider providerConfig, userQuery string) []string {
+	var missing []string
+	if provider.AutoAppendSearchWeb && !containsSearchWebPhrase(userQuery) {
+		missing = append(missing, "search the web.")
+	}
+
+	if provider.AutoAppendShortAnswer && !containsShortAnswerPhrase(userQuery) {
+		missing = append(missing, "short answer.")
+	}
+
+	if provider.AutoAppendDontBeSycophantic && !containsDontBeSycophanticPhrase(userQuery) {
+		missing = append(missing, dontBeSycophanticPhrase)
+	}
+
+	if provider.AutoAppendADHDFriendly && !containsADHDFriendlyPhrase(userQuery) {
+		missing = append(missing, adhdFriendlyPhrase)
+	}
+
+	if provider.AutoAppendAlwaysEnglish && !containsAlwaysEnglishPhrase(userQuery) {
+		missing = append(missing, alwaysEnglishPhrase)
+	}
+
+	if provider.AutoAppendCrossCheck && !containsCrossCheckPhrase(userQuery) {
+		missing = append(missing, crossCheckPhrase)
+	}
+
+	return missing
+}
+
 // applyAutoAppend applies per-provider auto-append suffixes. It consolidates
 // the branching used by both prepareMessageResponse and buildFallbackRequest
 // so the two request builders stay in sync. It supports any combination of
 // auto_append_search_web, auto_append_short_answer,
-// auto_append_dont_be_sycophantic, auto_append_adhd_friendly, and
-// auto_append_always_english, appending missing phrases together with a
-// single paragraph break before the first and single newlines between them
-// (e.g. "search the web.\nshort answer.\ndon't be sycophantic.\nmake sure your
-// output is adhd-friendly.\nmake sure your output is always in english unless
-// instructed by the user to use another language.") to match the spec.
+// auto_append_dont_be_sycophantic, auto_append_adhd_friendly,
+// auto_append_always_english, and auto_append_cross_check, appending missing
+// phrases together with a single paragraph break before the first and single
+// newlines between them (e.g. "search the web.\nshort answer.\ndon't be
+// sycophantic.\nmake sure your output is adhd-friendly.\nmake sure your output
+// is always in english unless instructed by the user to use another
+// language.\nalways cross-check to ensure accuracy.") to match the spec.
 func applyAutoAppend(provider providerConfig, conversation []chatMessage) ([]chatMessage, error) {
-	if !provider.AutoAppendSearchWeb && !provider.AutoAppendShortAnswer && !provider.AutoAppendDontBeSycophantic && !provider.AutoAppendADHDFriendly && !provider.AutoAppendAlwaysEnglish {
+	if !autoAppendEnabled(provider) {
 		return conversation, nil
 	}
 
@@ -654,38 +700,12 @@ func applyAutoAppend(provider providerConfig, conversation []chatMessage) ([]cha
 		return conversation, nil
 	}
 
-	hasSearch := !provider.AutoAppendSearchWeb || containsSearchWebPhrase(userQuery)
-	hasShort := !provider.AutoAppendShortAnswer || containsShortAnswerPhrase(userQuery)
-	hasTruth := !provider.AutoAppendDontBeSycophantic || containsDontBeSycophanticPhrase(userQuery)
-	hasADHD := !provider.AutoAppendADHDFriendly || containsADHDFriendlyPhrase(userQuery)
-	hasEnglish := !provider.AutoAppendAlwaysEnglish || containsAlwaysEnglishPhrase(userQuery)
-
-	if hasSearch && hasShort && hasTruth && hasADHD && hasEnglish {
+	if len(missingAutoAppendPhrases(provider, userQuery)) == 0 {
 		return conversation, nil
 	}
 
 	appended, err := appendContextToConversation(conversation, func(prompt *augmentedUserPrompt) {
-		var toAppend []string
-		if provider.AutoAppendSearchWeb && !containsSearchWebPhrase(prompt.UserQuery) {
-			toAppend = append(toAppend, "search the web.")
-		}
-
-		if provider.AutoAppendShortAnswer && !containsShortAnswerPhrase(prompt.UserQuery) {
-			toAppend = append(toAppend, "short answer.")
-		}
-
-		if provider.AutoAppendDontBeSycophantic && !containsDontBeSycophanticPhrase(prompt.UserQuery) {
-			toAppend = append(toAppend, dontBeSycophanticPhrase)
-		}
-
-		if provider.AutoAppendADHDFriendly && !containsADHDFriendlyPhrase(prompt.UserQuery) {
-			toAppend = append(toAppend, adhdFriendlyPhrase)
-		}
-
-		if provider.AutoAppendAlwaysEnglish && !containsAlwaysEnglishPhrase(prompt.UserQuery) {
-			toAppend = append(toAppend, alwaysEnglishPhrase)
-		}
-
+		toAppend := missingAutoAppendPhrases(provider, prompt.UserQuery)
 		if len(toAppend) == 0 {
 			return
 		}
