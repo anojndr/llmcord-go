@@ -1711,3 +1711,175 @@ func TestBuildChatCompletionRequestBodyNormalizesImagesForOpenAICompatible(t *te
 const testOpenAIBaseURL = "https://api.example.com/v1"
 
 const testOfficialOpenAIBaseURL = "https://api.openai.com/v1"
+
+func TestOpenAIStreamPayloadDeltaParsesRefusalAndLegacyFunctionCall(t *testing.T) {
+	t.Parallel()
+
+	payload := []byte(`{
+		"choices": [
+			{
+				"delta": {
+					"content": null,
+					"refusal": "I cannot help with that.",
+					"function_call": {"name": "get_weather", "arguments": "{\"location\":\"Paris\"}"}
+				},
+				"finish_reason": null
+			}
+		]
+	}`)
+
+	accumulator := newChatCompletionsToolCallAccumulator()
+
+	delta, err := openAIStreamPayloadDelta(payload, accumulator)
+	if err != nil {
+		t.Fatalf("decode stream Payload: %v", err)
+	}
+
+	if delta.Content != "I cannot help with that." {
+		t.Fatalf("unexpected refusal content: %q", delta.Content)
+	}
+
+	calls := accumulator.finalize()
+	if len(calls) != 1 || calls[0].Name != "get_weather" {
+		t.Fatalf("expected legacy function_call to accumulate a tool call: %#v", calls)
+	}
+
+	if calls[0].Arguments != "{\"location\":\"Paris\"}" {
+		t.Fatalf("unexpected function_call arguments: %q", calls[0].Arguments)
+	}
+}
+
+func TestOpenAIContentPartWithCacheBreakpointSupportsNativeParts(t *testing.T) {
+	t.Parallel()
+
+	content := []ContentPart{
+		{searchtypes.MessageTypeKey: searchtypes.ContentTypeText, searchtypes.MessageTextKey: "stable prefix"},
+	}
+
+	breakpointContent, added := openAIContentPartWithCacheBreakpoint(content)
+	if !added {
+		t.Fatal("expected breakpoint to be added to native content parts")
+	}
+
+	parts, partsOK := breakpointContent.([]ContentPart)
+	if !partsOK || len(parts) != 1 {
+		t.Fatalf("unexpected breakpoint content: %#v", breakpointContent)
+	}
+
+	breakpoint, breakpointOK := parts[0]["prompt_cache_breakpoint"].(map[string]any)
+	if !breakpointOK || breakpoint["mode"] != "explicit" {
+		t.Fatalf("unexpected prompt_cache_breakpoint: %#v", parts[0]["prompt_cache_breakpoint"])
+	}
+}
+
+func TestOpenAIStreamPayloadDeltaContentRefusalVariants(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name     string
+		payload  string
+		expected string
+	}{
+		{
+			name:     "null content and null refusal yields empty",
+			payload:  `{"choices": [{"delta": {"content": null, "refusal": null}, "finish_reason": null}]}`,
+			expected: "",
+		},
+		{
+			name:     "absent content and refusal yields empty",
+			payload:  `{"choices": [{"delta": {}, "finish_reason": null}]}`,
+			expected: "",
+		},
+		{
+			name:     "empty refusal is ignored",
+			payload:  `{"choices": [{"delta": {"content": "Hi", "refusal": ""}, "finish_reason": null}]}`,
+			expected: "Hi",
+		},
+		{
+			name:     "content and refusal concatenate in order",
+			payload:  `{"choices": [{"delta": {"content": "Hello ", "refusal": "denied"}, "finish_reason": null}]}`,
+			expected: "Hello denied",
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			delta, decodeErr := openAIStreamPayloadDelta([]byte(testCase.payload), newChatCompletionsToolCallAccumulator())
+			if decodeErr != nil {
+				t.Fatalf("decode stream Payload: %v", decodeErr)
+			}
+
+			if delta.Content != testCase.expected {
+				t.Fatalf("unexpected content: got %q want %q", delta.Content, testCase.expected)
+			}
+		})
+	}
+}
+
+func TestOpenAIStreamPayloadDeltaLegacyFunctionCallSplitArguments(t *testing.T) {
+	t.Parallel()
+
+	accumulator := newChatCompletionsToolCallAccumulator()
+
+	first := []byte(`{"choices": [{"delta": {"function_call": ` +
+		`{"name": "get_weather", "arguments": "{\"location\":"}}, "finish_reason": null}]}`)
+	second := []byte(`{"choices": [{"delta": {"function_call": ` +
+		`{"name": "", "arguments": "\"Paris\"}"}}, "finish_reason": null}]}`)
+
+	for _, payload := range [][]byte{first, second} {
+		_, decodeErr := openAIStreamPayloadDelta(payload, accumulator)
+		if decodeErr != nil {
+			t.Fatalf("decode stream Payload: %v", decodeErr)
+		}
+	}
+
+	calls := accumulator.finalize()
+	if len(calls) != 1 {
+		t.Fatalf("expected split function_call fragments to merge into one call: %#v", calls)
+	}
+
+	if calls[0].Name != "get_weather" {
+		t.Fatalf("unexpected function_call name: %q", calls[0].Name)
+	}
+
+	if calls[0].Arguments != "{\"location\":\"Paris\"}" {
+		t.Fatalf("unexpected merged function_call arguments: %q", calls[0].Arguments)
+	}
+}
+
+func TestOpenAIContentPartWithCacheBreakpointNativeEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	if _, added := openAIContentPartWithCacheBreakpoint([]ContentPart{}); added {
+		t.Fatal("expected empty native parts to skip the breakpoint")
+	}
+
+	original := []ContentPart{
+		{searchtypes.MessageTypeKey: searchtypes.ContentTypeText, searchtypes.MessageTextKey: "first"},
+		{searchtypes.MessageTypeKey: searchtypes.ContentTypeText, searchtypes.MessageTextKey: "stable tail"},
+	}
+
+	breakpointContent, added := openAIContentPartWithCacheBreakpoint(original)
+	if !added {
+		t.Fatal("expected breakpoint to be added to native content parts")
+	}
+
+	parts, partsOK := breakpointContent.([]ContentPart)
+	if !partsOK || len(parts) != len(original) {
+		t.Fatalf("unexpected breakpoint content: %#v", breakpointContent)
+	}
+
+	if _, marked := original[len(original)-1]["prompt_cache_breakpoint"]; marked {
+		t.Fatal("expected input slice to remain unmutated")
+	}
+
+	if _, marked := parts[0]["prompt_cache_breakpoint"]; marked {
+		t.Fatalf("expected breakpoint only on the last part: %#v", parts[0])
+	}
+
+	if _, addedAgain := openAIContentPartWithCacheBreakpoint(parts); addedAgain {
+		t.Fatal("expected already-marked native parts to skip the breakpoint")
+	}
+}

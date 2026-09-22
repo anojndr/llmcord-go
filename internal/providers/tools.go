@@ -98,13 +98,21 @@ func WebSearchTool(maxQueries int) FunctionTool {
 // may carry a new call id/name or a continuation of the streamed JSON
 // arguments.
 type openAIStreamToolCall struct {
-	Index    int    `json:"index"`
-	ID       string `json:"id"`
-	Function struct {
-		Name      string `json:"name"`
-		Arguments string `json:"arguments"`
-	} `json:"function"`
+	Index    int                         `json:"index"`
+	ID       string                      `json:"id"`
+	Function openAIStreamFunctionPayload `json:"function"`
 }
+
+// openAIStreamFunctionPayload is the name/arguments Payload shared by
+// tool_calls fragments and the deprecated function_call delta.
+type openAIStreamFunctionPayload struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+}
+
+// openAIStreamFunctionCall is one streamed Chat Completions legacy
+// function_call delta fragment (deprecated alias of tool_calls).
+type openAIStreamFunctionCall = openAIStreamFunctionPayload
 
 // openAIToolDefinitions serializes function tools for the Chat Completions
 // wire format (nested under a "function" object).

@@ -301,6 +301,24 @@ func openAIContentPartWithCacheBreakpoint(content any) (any, bool) {
 			},
 		}, true
 
+	case []ContentPart:
+		if len(typedContent) == 0 {
+			return content, false
+		}
+
+		parts := make([]ContentPart, len(typedContent))
+		copy(parts, typedContent)
+
+		if _, alreadyMarked := parts[len(parts)-1][openAICacheBreakpointKey]; alreadyMarked {
+			return content, false
+		}
+
+		markedPart := cloneContentPart(parts[len(parts)-1])
+		markedPart[openAICacheBreakpointKey] = map[string]any{openAICacheOptionsModeKey: openAICacheBreakpointModeExplicit}
+		parts[len(parts)-1] = markedPart
+
+		return parts, true
+
 	case []map[string]any:
 		if len(typedContent) == 0 {
 			return content, false
@@ -749,8 +767,10 @@ func openAIStreamPayloadDelta(
 	toolCalls *chatCompletionsToolCallAccumulator,
 ) (StreamDelta, error) {
 	type streamChoiceDelta struct {
-		Content   string                 `json:"content"`
-		ToolCalls []openAIStreamToolCall `json:"tool_calls,omitempty"`
+		Content      *string                   `json:"content"`
+		Refusal      *string                   `json:"refusal"`
+		FunctionCall *openAIStreamFunctionCall `json:"function_call,omitempty"`
+		ToolCalls    []openAIStreamToolCall    `json:"tool_calls,omitempty"`
 	}
 
 	type streamChoice struct {
@@ -795,7 +815,24 @@ func openAIStreamPayloadDelta(
 	}
 
 	choice := envelope.Choices[0]
-	delta.Content = choice.Delta.Content
+	if choice.Delta.Content != nil {
+		delta.Content = *choice.Delta.Content
+	}
+
+	if choice.Delta.Refusal != nil && *choice.Delta.Refusal != "" {
+		delta.Content += *choice.Delta.Refusal
+	}
+
+	if choice.Delta.FunctionCall != nil && toolCalls != nil {
+		toolCalls.observe([]openAIStreamToolCall{{
+			Index: 0,
+			ID:    "",
+			Function: openAIStreamFunctionPayload{
+				Name:      choice.Delta.FunctionCall.Name,
+				Arguments: choice.Delta.FunctionCall.Arguments,
+			},
+		}})
+	}
 
 	if len(choice.Delta.ToolCalls) > 0 && toolCalls != nil {
 		toolCalls.observe(choice.Delta.ToolCalls)
