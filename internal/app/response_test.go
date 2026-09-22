@@ -215,83 +215,15 @@ func TestVisibleResponseSegmentsOmitsThinking(t *testing.T) {
 	}
 }
 
-func TestSplitInlineThinkingAnswer(t *testing.T) {
+func TestVisibleResponseTextStoresAnswerOnly(t *testing.T) {
 	t.Parallel()
 
-	cases := []struct {
-		name         string
-		raw          string
-		wantThinking string
-		wantAnswer   string
-	}{
-		{
-			name:         "thinking and answer",
-			raw:          "**Thinking**\nPlan first.\n\n**Answer**\nFinal answer.",
-			wantThinking: "Plan first.",
-			wantAnswer:   "Final answer.",
-		},
-		{
-			name:         "thinking only without separator",
-			raw:          "**Thinking**\nPlan first.",
-			wantThinking: "Plan first.",
-			wantAnswer:   "",
-		},
-		{
-			name:         "normal answer untouched",
-			raw:          "Final answer.",
-			wantThinking: "",
-			wantAnswer:   "Final answer.",
-		},
-		{
-			name:         "bold answer untouched",
-			raw:          "**bold** text",
-			wantThinking: "",
-			wantAnswer:   "**bold** text",
-		},
-		{
-			name:         "partial thinking marker withheld",
-			raw:          "**Th",
-			wantThinking: "",
-			wantAnswer:   "",
-		},
-		{
-			name:         "partial answer separator withheld",
-			raw:          "**Thinking**\nPlan first.\n\n**Answer**",
-			wantThinking: "Plan first.",
-			wantAnswer:   "",
-		},
+	if got := visibleResponseText("", "Final answer."); got != "Final answer." {
+		t.Fatalf("unexpected stored text without thinking: %q", got)
 	}
 
-	for _, testCase := range cases {
-		t.Run(testCase.name, func(t *testing.T) {
-			t.Parallel()
-
-			thinking, answer := splitInlineThinkingAnswer(testCase.raw)
-			if thinking != testCase.wantThinking {
-				t.Fatalf("unexpected thinking: got %q want %q", thinking, testCase.wantThinking)
-			}
-
-			if answer != testCase.wantAnswer {
-				t.Fatalf("unexpected answer: got %q want %q", answer, testCase.wantAnswer)
-			}
-		})
-	}
-}
-
-func TestAssistantHistoryAnswerTextStripsWrapper(t *testing.T) {
-	t.Parallel()
-
-	storedText := visibleResponseText("Plan first.", "Final answer.")
-	if answer := assistantHistoryAnswerText(storedText); answer != "Final answer." {
-		t.Fatalf("unexpected history answer: %q", answer)
-	}
-
-	if answer := assistantHistoryAnswerText("Final answer."); answer != "Final answer." {
-		t.Fatalf("unexpected passthrough history answer: %q", answer)
-	}
-
-	if answer := assistantHistoryAnswerText(visibleResponseText("Plan first.", "")); answer != "" {
-		t.Fatalf("expected empty history answer, got %q", answer)
+	if got := visibleResponseText("Plan first.", "Final answer."); got != "Final answer." {
+		t.Fatalf("expected thinking kept out of stored text, got %q", got)
 	}
 }
 
@@ -421,7 +353,6 @@ func TestHandleGeneratedStreamDeltaMergesSearchMetadataFromStream(t *testing.T) 
 		thinkingAccumulator: &segmentAccumulator{maxLength: embedResponseMaxLength, segments: []string{""}},
 		finishReason:        &finishReason,
 		lastRenderTime:      &lastRenderTime,
-		rawAnswerText:       "",
 		renderedAnswerText:  "",
 	}
 
@@ -1795,13 +1726,16 @@ func TestGenerateAndSendResponseDoesNotStreamThinkingOnlyFinalAnswer(t *testing.
 		t.Fatalf("unexpected pending response count: %d", len(tracker.pendingResponses))
 	}
 
-	expectedStoredText := visibleResponseText(thoughtText, answerText)
-	if tracker.pendingResponses[0].node.text != expectedStoredText {
+	if tracker.pendingResponses[0].node.text != answerText {
 		t.Fatalf("unexpected stored assistant text: %q", tracker.pendingResponses[0].node.text)
+	}
+
+	if strings.TrimSpace(tracker.pendingResponses[0].node.thinkingText) != thoughtText {
+		t.Fatalf("unexpected stored thinking: %q", tracker.pendingResponses[0].node.thinkingText)
 	}
 }
 
-func TestGenerateAndSendResponseStripsInlineThinkingPrefix(t *testing.T) {
+func TestGenerateAndSendResponseTreatsThinkingOnlyStreamAsEmpty(t *testing.T) {
 	t.Parallel()
 
 	const (
@@ -1811,67 +1745,7 @@ func TestGenerateAndSendResponseStripsInlineThinkingPrefix(t *testing.T) {
 		sourceMessageID    = "user-message-1"
 		assistantMessageID = "assistant-message-1"
 		thoughtText        = "Plan first."
-		answerText         = "Final answer."
 	)
-
-	inlineDeltas := []streamDelta{
-		{
-			Thinking:     "",
-			Content:      "**Thinking**\n" + thoughtText + "\n\n**Answer**\n" + answerText,
-			FinishReason: "",
-		},
-		{
-			Thinking:     "",
-			Content:      "",
-			FinishReason: finishReasonStop,
-		},
-	}
-
-	chunkedDeltas := []streamDelta{
-		{Thinking: "", Content: "**Th"},
-		{Thinking: "", Content: "inking**\nPlan"},
-		{Thinking: "", Content: " first.\n\n**An"},
-		{Thinking: "", Content: "swer**\n" + answerText},
-		{Thinking: "", Content: "", FinishReason: finishReasonStop},
-	}
-
-	for _, testCase := range []struct {
-		name   string
-		deltas []streamDelta
-	}{
-		{name: "single delta", deltas: inlineDeltas},
-		{name: "split across chunks", deltas: chunkedDeltas},
-	} {
-		t.Run(testCase.name, func(t *testing.T) {
-			t.Parallel()
-
-			assertInlineThinkingPrefixStripped(
-				t,
-				testCase.deltas,
-				sourceMessageID,
-				assistantMessageID,
-				channelID,
-				userID,
-				botUserID,
-				thoughtText,
-				answerText,
-			)
-		})
-	}
-}
-
-func assertInlineThinkingPrefixStripped(
-	t *testing.T,
-	deltas []streamDelta,
-	sourceMessageID string,
-	assistantMessageID string,
-	channelID string,
-	userID string,
-	botUserID string,
-	thoughtText string,
-	answerText string,
-) {
-	t.Helper()
 
 	sourceMessage := newPromptMessage(sourceMessageID, channelID, userID, botUserID)
 	assistantMessage := newAssistantReplyMessage(
@@ -1896,7 +1770,70 @@ func assertInlineThinkingPrefixStripped(
 	instance.session = session
 	instance.nodes = newMessageNodeStore(10)
 	instance.chatCompletions = fakeChatCompletionClient{
-		deltas: deltas,
+		deltas: []streamDelta{
+			{Thinking: thoughtText, Content: "", FinishReason: ""},
+			{Thinking: "", Content: "", FinishReason: finishReasonStop},
+		},
+	}
+
+	tracker := newResponseTracker(sourceMessage, "")
+
+	err := instance.generateAndSendResponse(
+		context.Background(),
+		config{},
+		chatCompletionRequest{},
+		tracker,
+		nil,
+	)
+	if err == nil {
+		t.Fatal("expected empty-response error for thinking-only stream")
+	}
+
+	if !errors.Is(err, errEmptyModelResponse) {
+		t.Fatalf("unexpected error: %v, expected errEmptyModelResponse", err)
+	}
+}
+
+func TestGenerateAndSendResponseKeepsProviderThinkingOutOfVisibleAnswer(t *testing.T) {
+	t.Parallel()
+
+	const (
+		botUserID          = "bot-user"
+		channelID          = "channel-1"
+		userID             = "user-1"
+		sourceMessageID    = "user-message-1"
+		assistantMessageID = "assistant-message-1"
+		thoughtText        = "Plan first."
+		answerText         = "Final answer."
+	)
+
+	sourceMessage := newPromptMessage(sourceMessageID, channelID, userID, botUserID)
+	assistantMessage := newAssistantReplyMessage(
+		assistantMessageID,
+		newDiscordUser(botUserID, true),
+		sourceMessage,
+	)
+	messageDescriptions := make([]string, 0, 2)
+	patchDescriptions := make([]string, 0, 2)
+	messageSendCount := 0
+	session := newPartialFailureResponseSession(
+		t,
+		channelID,
+		botUserID,
+		assistantMessage,
+		&messageDescriptions,
+		&patchDescriptions,
+		&messageSendCount,
+	)
+
+	// Reasoning travels on the provider Thinking channel (Responses
+	// reasoning summary/text, or reasoning_content on compatible Chat
+	// Completions backends), never as custom markers inside Content.
+	instance := new(bot)
+	instance.session = session
+	instance.nodes = newMessageNodeStore(10)
+	instance.chatCompletions = fakeChatCompletionClient{
+		deltas: thinkingAnswerResponseDeltas(thoughtText, answerText),
 	}
 
 	tracker := newResponseTracker(sourceMessage, "")
@@ -1912,11 +1849,11 @@ func assertInlineThinkingPrefixStripped(
 		t.Fatalf("generate and send response: %v", err)
 	}
 
-	assertInlineThinkingNotRendered(t, messageDescriptions, patchDescriptions, thoughtText)
-	assertInlineThinkingStored(t, instance, tracker, assistantMessage, userID, channelID, thoughtText, answerText)
+	assertProviderThinkingNotRendered(t, messageDescriptions, patchDescriptions, thoughtText)
+	assertAnswerStored(t, instance, tracker, assistantMessage, userID, channelID, thoughtText, answerText)
 }
 
-func assertInlineThinkingNotRendered(
+func assertProviderThinkingNotRendered(
 	t *testing.T,
 	messageDescriptions []string,
 	patchDescriptions []string,
@@ -1930,16 +1867,12 @@ func assertInlineThinkingNotRendered(
 
 	for _, rendered := range append(append([]string{}, messageDescriptions...), patchDescriptions...) {
 		if containsFold(rendered, thoughtText) {
-			t.Fatalf("expected rendered response without inline thinking: %q", rendered)
-		}
-
-		if containsFold(rendered, "**Thinking**") || containsFold(rendered, "**Answer**") {
-			t.Fatalf("expected rendered response without thinking markers: %q", rendered)
+			t.Fatalf("expected rendered response without provider thinking: %q", rendered)
 		}
 	}
 }
 
-func assertInlineThinkingStored(
+func assertAnswerStored(
 	t *testing.T,
 	instance *bot,
 	tracker *responseTracker,
@@ -1960,8 +1893,7 @@ func assertInlineThinkingStored(
 		t.Fatalf("unexpected stored thinking: %q", pending.node.thinkingText)
 	}
 
-	expectedStoredText := visibleResponseText(thoughtText, answerText)
-	if pending.node.text != expectedStoredText {
+	if pending.node.text != answerText {
 		t.Fatalf("unexpected stored assistant text: %q", pending.node.text)
 	}
 
@@ -1984,7 +1916,7 @@ func assertInlineThinkingStored(
 	assertConversationHistory(t, conversation, answerText)
 }
 
-func TestRunGenerationRoundStripsInlineMarkersAfterPrefillBase(t *testing.T) {
+func TestRunGenerationRoundPreservesPrefillAcrossToolRounds(t *testing.T) {
 	t.Parallel()
 
 	const (
@@ -2019,7 +1951,8 @@ func TestRunGenerationRoundStripsInlineMarkersAfterPrefillBase(t *testing.T) {
 	instance.nodes = newMessageNodeStore(10)
 	instance.chatCompletions = fakeChatCompletionClient{
 		deltas: []streamDelta{
-			newStreamDelta("**Thinking**\nFollow-up plan.\n\n**Answer**\nFollow-up answer.", ""),
+			{Thinking: "Follow-up plan. ", Content: "", FinishReason: ""},
+			newStreamDelta("Follow-up answer.", ""),
 			newStreamDelta("", finishReasonStop),
 		},
 	}
@@ -2038,8 +1971,8 @@ func TestRunGenerationRoundStripsInlineMarkersAfterPrefillBase(t *testing.T) {
 		t.Fatalf("run generation round: %v", err)
 	}
 
-	if containsFold(round.rawAnswer, "**Thinking**") || containsFold(round.rawAnswer, "**Answer**") {
-		t.Fatalf("expected follow-up markers stripped, got %q", round.rawAnswer)
+	if !containsFold(round.rawAnswer, "Partial answer. ") {
+		t.Fatalf("expected prefill answer preserved, got %q", round.rawAnswer)
 	}
 
 	if !containsFold(round.rawAnswer, "Follow-up answer.") {
@@ -2047,7 +1980,7 @@ func TestRunGenerationRoundStripsInlineMarkersAfterPrefillBase(t *testing.T) {
 	}
 
 	if !containsFold(round.thinking, "Follow-up plan.") {
-		t.Fatalf("expected follow-up thinking routed to thinking channel, got %q", round.thinking)
+		t.Fatalf("expected follow-up thinking preserved, got %q", round.thinking)
 	}
 
 	if !containsFold(round.thinking, "Earlier plan.") {
@@ -2055,7 +1988,7 @@ func TestRunGenerationRoundStripsInlineMarkersAfterPrefillBase(t *testing.T) {
 	}
 }
 
-func TestGenerateAndSendResponseStripsInlineThinkingWithBridgeAppendix(t *testing.T) {
+func TestGenerateAndSendResponseKeepsThinkingWithBridgeAppendix(t *testing.T) {
 	t.Parallel()
 
 	const (
@@ -2093,7 +2026,7 @@ func TestGenerateAndSendResponseStripsInlineThinkingWithBridgeAppendix(t *testin
 	instance.session = session
 	instance.nodes = newMessageNodeStore(10)
 	instance.chatCompletions = fakeChatCompletionClient{
-		deltas: newInlineThinkingAppendixDeltas(thoughtText, answerText, sourceURL),
+		deltas: newProviderThinkingAppendixDeltas(thoughtText, answerText, sourceURL),
 	}
 
 	tracker := newResponseTracker(sourceMessage, "")
@@ -2109,7 +2042,7 @@ func TestGenerateAndSendResponseStripsInlineThinkingWithBridgeAppendix(t *testin
 		t.Fatalf("generate and send response: %v", err)
 	}
 
-	assertInlineThinkingNotRendered(t, messageDescriptions, patchDescriptions, thoughtText)
+	assertProviderThinkingNotRendered(t, messageDescriptions, patchDescriptions, thoughtText)
 	assertRenderedDescriptionsHideSources(
 		t,
 		sourceURL,
@@ -2125,8 +2058,7 @@ func TestGenerateAndSendResponseStripsInlineThinkingWithBridgeAppendix(t *testin
 		t.Fatalf("unexpected stored thinking: %q", pending.node.thinkingText)
 	}
 
-	expectedStoredText := visibleResponseText(thoughtText, answerText)
-	if pending.node.text != expectedStoredText {
+	if pending.node.text != answerText {
 		t.Fatalf("unexpected stored assistant text: %q", pending.node.text)
 	}
 
@@ -2135,9 +2067,10 @@ func TestGenerateAndSendResponseStripsInlineThinkingWithBridgeAppendix(t *testin
 	}
 }
 
-func newInlineThinkingAppendixDeltas(thoughtText, answerText, sourceURL string) []streamDelta {
+func newProviderThinkingAppendixDeltas(thoughtText, answerText, sourceURL string) []streamDelta {
 	return []streamDelta{
-		newStreamDelta("**Thinking**\n"+thoughtText+"\n\n**Answer**\n"+answerText, ""),
+		{Thinking: thoughtText, Content: "", FinishReason: ""},
+		newStreamDelta(answerText, ""),
 		newStreamDelta("\n", ""),
 		newStreamDelta("\n### ", ""),
 		newStreamDelta("Sources:\n1. [Example Source]("+sourceURL+")", ""),

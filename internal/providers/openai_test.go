@@ -182,6 +182,83 @@ func TestOpenAIClientStreamChatCompletion(t *testing.T) {
 	}
 }
 
+func TestOpenAIClientStreamChatCompletionSurfacesReasoningContent(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		_ *http.Request,
+	) {
+		t.Helper()
+
+		responseWriter.Header().Set("Content-Type", "text/event-stream")
+
+		flusher, ok := responseWriter.(http.Flusher)
+		if !ok {
+			t.Fatal("expected response writer to support flushing")
+		}
+
+		writeStreamChunk(t, responseWriter, "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"Plan \"}}]}\n\n")
+		flusher.Flush()
+		writeStreamChunk(t, responseWriter, "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"first.\"}}]}\n\n")
+		flusher.Flush()
+		writeStreamChunk(t, responseWriter, "data: {\"choices\":[{\"delta\":{\"content\":\"Final answer.\"}}]}\n\n")
+		flusher.Flush()
+		writeStreamChunk(t, responseWriter, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
+		flusher.Flush()
+		writeStreamChunk(t, responseWriter, "data: [DONE]\n\n")
+		flusher.Flush()
+	}))
+	defer server.Close()
+
+	client := newOpenAIClient(server.Client())
+	request := ChatCompletionRequest{
+		Provider: ProviderRequestConfig{
+			API:             "",
+			APIKind:         ProviderAPIKindOpenAI,
+			BaseURL:         server.URL + "/v1",
+			APIKey:          "test-key",
+			APIKeys:         nil,
+			UseResponsesAPI: false,
+			EnableGrounding: false,
+			ExtraHeaders:    nil,
+			ExtraQuery:      nil,
+			ExtraBody:       nil,
+		},
+		Model:           "deepseek-reasoner",
+		ConfiguredModel: "compat/deepseek-reasoner",
+		SessionID:       "",
+		RequestID:       "",
+		Tools:           nil,
+		Messages: []ChatMessage{
+			{Role: "user", Content: "hello"},
+		},
+	}
+
+	var (
+		joinedThinking strings.Builder
+		joinedContent  strings.Builder
+	)
+
+	err := client.streamChatCompletion(context.Background(), request, func(delta StreamDelta) error {
+		joinedThinking.WriteString(delta.Thinking)
+		joinedContent.WriteString(delta.Content)
+
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("stream chat completion: %v", err)
+	}
+
+	if joinedThinking.String() != "Plan first." {
+		t.Fatalf("unexpected streamed thinking: %q", joinedThinking.String())
+	}
+
+	if joinedContent.String() != "Final answer." {
+		t.Fatalf("unexpected streamed content: %q", joinedContent.String())
+	}
+}
+
 func TestBuildChatCompletionRequestBodyAddsPlaceholderForImageOnlyUserMessage(t *testing.T) {
 	t.Parallel()
 
@@ -772,6 +849,34 @@ func TestOpenAIClientStreamResponsesSuppressesStreamedReasoningSummary(t *testin
 		completedEvent   string
 		expectedThinking string
 	}{
+		{
+			name: "emits raw reasoning text without streamed deltas",
+			events: []string{
+				`{"type":"response.output_item.done","item":{"id":"rs_1",` +
+					`"type":"reasoning","content":[{"type":"reasoning_text",` +
+					`"text":"Check the plan."}]}}`,
+			},
+			expectedThinking: "Check the plan.\n\n",
+		},
+		{
+			name: "emits streamed raw reasoning text deltas",
+			events: []string{
+				`{"type":"response.reasoning_text.delta",` +
+					`"item_id":"rs_1","delta":"Check the plan."}`,
+				`{"type":"response.reasoning_text.done","item_id":"rs_1"}`,
+			},
+			expectedThinking: "Check the plan.\n\n",
+		},
+		{
+			name: "prefers summary over raw reasoning text",
+			events: []string{
+				`{"type":"response.output_item.done","item":{"id":"rs_1",` +
+					`"type":"reasoning","summary":[{"type":"summary_text",` +
+					`"text":"Plan the search."}],"content":[{"type":"reasoning_text",` +
+					`"text":"Check the plan."}]}}`,
+			},
+			expectedThinking: "Plan the search.\n\n",
+		},
 		{
 			name: "emits full summary without streamed deltas",
 			events: []string{

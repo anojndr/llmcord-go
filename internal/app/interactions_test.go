@@ -1459,7 +1459,7 @@ func TestHandleInteractionCreateRespondsToShowThinkingButton(t *testing.T) {
 
 	node := instance.nodes.getOrCreate("response-message")
 	node.mu.Lock()
-	node.text = visibleResponseText("Plan first.", "Final answer.")
+	node.text = "Final answer."
 	node.thinkingText = "Plan first."
 	node.initialized = true
 	node.mu.Unlock()
@@ -1489,7 +1489,7 @@ func TestHandleInteractionCreateRespondsToShowThinkingButton(t *testing.T) {
 	}
 }
 
-func TestHandleInteractionCreateRespondsToShowThinkingButtonUsingPersistedFallback(t *testing.T) {
+func TestHandleInteractionCreateReportsMissingThinkingWhenStoreEmpty(t *testing.T) {
 	t.Parallel()
 
 	var response discordgo.InteractionResponse
@@ -1500,7 +1500,7 @@ func TestHandleInteractionCreateRespondsToShowThinkingButtonUsingPersistedFallba
 
 	node := instance.nodes.getOrCreate("response-message")
 	node.mu.Lock()
-	node.text = visibleResponseText("Plan first.", "Final answer.")
+	node.text = "Final answer."
 	node.initialized = true
 	node.mu.Unlock()
 
@@ -1512,8 +1512,8 @@ func TestHandleInteractionCreateRespondsToShowThinkingButtonUsingPersistedFallba
 		t.Fatal("expected interaction response data")
 	}
 
-	if !containsFold(response.Data.Content, "Plan first.") {
-		t.Fatalf("expected extracted thinking content in response: %q", response.Data.Content)
+	if !containsFold(response.Data.Content, "No thinking process available.") {
+		t.Fatalf("expected unavailable thinking notice, got %q", response.Data.Content)
 	}
 }
 

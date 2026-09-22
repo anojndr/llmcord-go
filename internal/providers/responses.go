@@ -43,6 +43,7 @@ const (
 	responsesOutputTypeImage                      = "image_generation_call"
 	responsesOutputTypeReasoning                  = "reasoning"
 	responsesReasoningSummaryTextType             = "summary_text"
+	responsesReasoningTextType                    = "reasoning_text"
 	responsesOutputTypeFunctionCall               = "function_call"
 	responsesStatusCompleted                      = "completed"
 )
@@ -71,6 +72,10 @@ type responsesOutputItem struct {
 	Prompt        string          `json:"prompt"`
 	RevisedPrompt string          `json:"revised_prompt"`
 	Summary       json.RawMessage `json:"summary"`
+	// Content holds raw reasoning text parts (type reasoning_text) per
+	// the Responses create reference. Reasoning items carry either
+	// summary parts in Summary or reasoning text parts in Content.
+	Content json.RawMessage `json:"content"`
 }
 
 type responsesStreamResponse struct {
@@ -1192,35 +1197,47 @@ func responsesReasoningSummaryText(item *responsesOutputItem) string {
 		return ""
 	}
 
-	if len(item.Summary) == 0 || string(item.Summary) == "null" {
+	if summary := responsesReasoningPartsText(item.Summary, responsesReasoningSummaryTextType); summary != "" {
+		return summary
+	}
+
+	return responsesReasoningPartsText(item.Content, responsesReasoningTextType)
+}
+
+// responsesReasoningPartsText joins text parts of one reasoning item
+// channel. Per the Responses create reference, reasoning output items
+// carry summary parts (type summary_text, populated when
+// reasoning.summary is set) in summary and raw reasoning text parts
+// (type reasoning_text) in content; other part types never belong on
+// the thinking channel.
+func responsesReasoningPartsText(raw json.RawMessage, partType string) string {
+	if len(raw) == 0 || string(raw) == "null" {
 		return ""
 	}
 
-	var summaryText string
+	var text string
 
-	err := json.Unmarshal(item.Summary, &summaryText)
+	err := json.Unmarshal(raw, &text)
 	if err == nil {
-		return strings.TrimSpace(summaryText)
+		return strings.TrimSpace(text)
 	}
 
-	var summaryParts []struct {
+	var parts []struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
 	}
 
-	err = json.Unmarshal(item.Summary, &summaryParts)
+	err = json.Unmarshal(raw, &parts)
 	if err != nil {
 		return ""
 	}
 
 	var builder strings.Builder
 
-	for _, part := range summaryParts {
-		partType := strings.TrimSpace(part.Type)
-
+	for _, part := range parts {
 		text := strings.TrimSpace(part.Text)
 		if text == "" ||
-			(partType != "" && !strings.EqualFold(partType, responsesReasoningSummaryTextType)) {
+			(strings.TrimSpace(part.Type) != "" && !strings.EqualFold(strings.TrimSpace(part.Type), partType)) {
 			continue
 		}
 

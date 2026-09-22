@@ -23,7 +23,9 @@ const (
 	OpenAIReasoningSummaryAuto = "auto"
 	// OpenAIReasoningSummaryConcise uses concise summaries.
 	OpenAIReasoningSummaryConcise = "concise"
-	openAIReasoningModelGPT51     = "gpt-5.1"
+	// OpenAIReasoningSummaryDetailed uses detailed summaries.
+	OpenAIReasoningSummaryDetailed = "detailed"
+	openAIReasoningModelGPT51      = "gpt-5.1"
 	// OpenAIReasoningModelGPT54 is the gpt-5.4 model id.
 	OpenAIReasoningModelGPT54 = "gpt-5.4"
 )
@@ -38,6 +40,21 @@ func IsValidOpenAIReasoningEffort(effort string) bool {
 		OpenAIReasoningEffortHigh,
 		openAIReasoningEffortXHigh,
 		OpenAIReasoningEffortMax:
+		return true
+	default:
+		return false
+	}
+}
+
+// IsValidOpenAIReasoningSummary reports whether summary is a valid OpenAI
+// reasoning summary verbosity. Per the Responses create reference,
+// reasoning.summary accepts auto, concise, and detailed (generate_summary
+// is deprecated in favor of summary).
+func IsValidOpenAIReasoningSummary(summary string) bool {
+	switch strings.ToLower(strings.TrimSpace(summary)) {
+	case OpenAIReasoningSummaryAuto,
+		OpenAIReasoningSummaryConcise,
+		OpenAIReasoningSummaryDetailed:
 		return true
 	default:
 		return false
@@ -79,10 +96,12 @@ func ApplyDedicatedReasoningEffort(
 		normalizedExtraBody["reasoning"] = reasoningConfig
 		delete(normalizedExtraBody, "reasoning_effort")
 		delete(normalizedExtraBody, "reasoning_summary")
+		delete(normalizedExtraBody, "generate_summary")
 	} else {
 		normalizedExtraBody["reasoning_effort"] = normalizedEffort
 		delete(normalizedExtraBody, "reasoning")
 		delete(normalizedExtraBody, "reasoning_summary")
+		delete(normalizedExtraBody, "generate_summary")
 	}
 
 	return normalizedExtraBody
@@ -153,6 +172,17 @@ func NormalizeOpenAIResponsesExtraBody(model string, extraBody map[string]any) m
 		delete(normalizedExtraBody, "reasoning_summary")
 	}
 
+	// generate_summary is the deprecated Responses alias for
+	// reasoning.summary; explicit summary wins when both are set.
+	if generateSummary, ok := normalizedExtraBody["generate_summary"]; ok {
+		reasoningConfig := nestedRequestBodyMap(normalizedExtraBody, "reasoning")
+		if _, exists := reasoningConfig["summary"]; !exists {
+			reasoningConfig["summary"] = generateSummary
+		}
+
+		delete(normalizedExtraBody, "generate_summary")
+	}
+
 	existingReasoningConfig, reasoningConfigExists := normalizedExtraBody["reasoning"]
 	if !reasoningConfigExists || existingReasoningConfig == nil {
 		normalizedExtraBody["reasoning"] = map[string]any{
@@ -172,6 +202,10 @@ func NormalizeOpenAIResponsesExtraBody(model string, extraBody map[string]any) m
 		clonedReasoningConfig["effort"] = normalizeOpenAIReasoningEffort(model, effort)
 	}
 
+	if summary, summaryOK := clonedReasoningConfig["summary"].(string); summaryOK {
+		clonedReasoningConfig["summary"] = normalizeOpenAIReasoningSummary(summary)
+	}
+
 	if _, summaryExists := clonedReasoningConfig["summary"]; !summaryExists {
 		clonedReasoningConfig["summary"] = OpenAIReasoningSummaryAuto
 	}
@@ -179,6 +213,17 @@ func NormalizeOpenAIResponsesExtraBody(model string, extraBody map[string]any) m
 	normalizedExtraBody["reasoning"] = clonedReasoningConfig
 
 	return normalizedExtraBody
+}
+
+// normalizeOpenAIReasoningSummary lowercases valid summary verbosity and
+// falls back to auto for unknown values so a typo never disables the
+// reasoning summaries behind the Show Thinking button.
+func normalizeOpenAIReasoningSummary(summary string) string {
+	if IsValidOpenAIReasoningSummary(summary) {
+		return strings.ToLower(strings.TrimSpace(summary))
+	}
+
+	return OpenAIReasoningSummaryAuto
 }
 
 func openAIReasoningEffortAlias(model string) (string, string, bool) {

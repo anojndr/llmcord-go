@@ -179,7 +179,7 @@ providers:
     #   verbosity: medium
     #   reasoning:
     #     effort: high
-    #     summary: none
+    #     summary: auto
     #   prompt_cache_options:
     #     mode: implicit  # or "explicit" for breakpoint-only caching
     #     ttl: 30m        # only supported value

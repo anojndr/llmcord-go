@@ -740,12 +740,13 @@ func TestMessageContentOptionsAllowsDocumentPartRespectsAllowedMIMETypes(t *test
 	}
 }
 
-func TestBuildMessageContentStripsThinkingWrapperFromAssistantHistory(t *testing.T) {
+func TestBuildMessageContentKeepsAnswerOnlyAssistantHistory(t *testing.T) {
 	t.Parallel()
 
 	node := new(messageNode)
 	node.role = messageRoleAssistant
-	node.text = visibleResponseText("Plan first.", "Final answer.")
+	node.text = "Final answer."
+	node.thinkingText = "Plan first."
 
 	content, _ := buildMessageContent(node, messageContentOptions{
 		maxImages:                0,
@@ -763,26 +764,6 @@ func TestBuildMessageContentStripsThinkingWrapperFromAssistantHistory(t *testing
 
 	if contentText != "Final answer." {
 		t.Fatalf("expected answer-only assistant history, got %q", contentText)
-	}
-}
-
-func TestBuildMessageContentOmitsThinkingOnlyAssistantHistory(t *testing.T) {
-	t.Parallel()
-
-	node := new(messageNode)
-	node.role = messageRoleAssistant
-	node.text = visibleResponseText("Plan first.", "")
-
-	content, _ := buildMessageContent(node, messageContentOptions{
-		maxImages:                0,
-		allowAudio:               false,
-		allowDocuments:           false,
-		allowFiles:               false,
-		allowedDocumentMIMETypes: nil,
-		allowVideo:               false,
-	})
-	if content != nil {
-		t.Fatalf("expected thinking-only history to be omitted, got %#v", content)
 	}
 }
 

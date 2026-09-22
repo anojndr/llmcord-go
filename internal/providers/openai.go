@@ -722,6 +722,22 @@ func handleStreamPayload(
 		return err
 	}
 
+	if delta.Thinking != "" {
+		thinkingDelta := StreamDelta{
+			Thinking:           delta.Thinking,
+			Content:            "",
+			FinishReason:       "",
+			ProviderResponseID: "",
+			SearchMetadata:     nil,
+			ToolCalls:          nil,
+		}
+
+		err = handle(thinkingDelta)
+		if err != nil {
+			return fmt.Errorf(handleStreamDeltaErrorFormat, err)
+		}
+	}
+
 	if delta.Content != "" {
 		contentDelta := StreamDelta{
 			Thinking:           "",
@@ -767,10 +783,11 @@ func openAIStreamPayloadDelta(
 	toolCalls *chatCompletionsToolCallAccumulator,
 ) (StreamDelta, error) {
 	type streamChoiceDelta struct {
-		Content      *string                   `json:"content"`
-		Refusal      *string                   `json:"refusal"`
-		FunctionCall *openAIStreamFunctionCall `json:"function_call,omitempty"`
-		ToolCalls    []openAIStreamToolCall    `json:"tool_calls,omitempty"`
+		Content          *string                   `json:"content"`
+		ReasoningContent *string                   `json:"reasoning_content"`
+		Refusal          *string                   `json:"refusal"`
+		FunctionCall     *openAIStreamFunctionCall `json:"function_call,omitempty"`
+		ToolCalls        []openAIStreamToolCall    `json:"tool_calls,omitempty"`
 	}
 
 	type streamChoice struct {
@@ -821,6 +838,15 @@ func openAIStreamPayloadDelta(
 
 	if choice.Delta.Refusal != nil && *choice.Delta.Refusal != "" {
 		delta.Content += *choice.Delta.Refusal
+	}
+
+	// The official Chat Completions chunk schema exposes only content,
+	// refusal, role, and tool calls: reasoning tokens are never exposed.
+	// OpenAI-compatible reasoning backends (DeepSeek/OpenRouter-style)
+	// emit a reasoning_content delta extension; surface it on the
+	// Thinking channel so the Show Thinking button works there too.
+	if choice.Delta.ReasoningContent != nil {
+		delta.Thinking = *choice.Delta.ReasoningContent
 	}
 
 	if choice.Delta.FunctionCall != nil && toolCalls != nil {

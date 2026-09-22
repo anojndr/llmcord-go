@@ -5,9 +5,30 @@ import (
 	"testing"
 )
 
-func TestOpenAIReasoningEffortAliasMax(t *testing.T) {
+func TestIsValidOpenAIReasoningSummary(t *testing.T) {
 	t.Parallel()
 
+	for _, summary := range []string{
+		OpenAIReasoningSummaryAuto,
+		OpenAIReasoningSummaryConcise,
+		OpenAIReasoningSummaryDetailed,
+		"DETAILED",
+	} {
+		if !IsValidOpenAIReasoningSummary(summary) {
+			t.Fatalf("expected valid reasoning summary: %q", summary)
+		}
+	}
+
+	if IsValidOpenAIReasoningSummary("none") {
+		t.Fatal("expected none to be rejected as a reasoning summary")
+	}
+
+	if normalizeOpenAIReasoningSummary("verbose") != OpenAIReasoningSummaryAuto {
+		t.Fatalf("expected invalid summary to fall back to auto")
+	}
+}
+
+func TestOpenAIReasoningEffortAliasMax(t *testing.T) {
 	resolvedModel, reasoningEffort, hasAlias := openAIReasoningEffortAlias("openai/gpt-5.4-max")
 	if !hasAlias {
 		t.Fatal("expected -max alias to resolve")

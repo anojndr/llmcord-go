@@ -414,12 +414,7 @@ func (instance *bot) thinkingTextForMessage(messageID string) string {
 	messageNode.mu.Lock()
 	defer messageNode.mu.Unlock()
 
-	thinkingText := strings.TrimSpace(messageNode.thinkingText)
-	if thinkingText != "" {
-		return thinkingText
-	}
-
-	return extractThinkingText(messageNode.text)
+	return strings.TrimSpace(messageNode.thinkingText)
 }
 
 func (instance *bot) imageSearchQueryForMessage(messageID string) string {
