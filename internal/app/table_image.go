@@ -359,6 +359,14 @@ func indexTableImageEmojiStrike(
 			continue
 		}
 
+		if _, err := png.Decode(bytes.NewReader(record.data)); err != nil {
+			continue
+		}
+
+		if tableImageEmojiBitmapIsMonochrome(record.data) {
+			continue
+		}
+
 		resolved[textRune] = record
 	}
 
@@ -524,6 +532,41 @@ func (emoji *tableImageEmojiFont) has(textRune rune) bool {
 	_, ok := emoji.glyphs[textRune]
 
 	return ok
+}
+
+// tableImageEmojiBitmapIsMonochrome rejects monochrome keycap/flag-component
+// strikes. Noto stores keycap base glyphs (digits, #, *) as black-on-
+// transparent PNGs meant to combine with U+20E3; claiming them as color
+// emoji would render date digits as faint emoji bitmaps instead of vector
+// text. A strike is monochrome when every opaque pixel is near-gray.
+func tableImageEmojiBitmapIsMonochrome(pngData []byte) bool {
+	decoded, err := png.Decode(bytes.NewReader(pngData))
+	if err != nil {
+		return true
+	}
+
+	bounds := decoded.Bounds()
+	checked := 0
+
+	for y := bounds.Min.Y; y < bounds.Max.Y; y += 4 {
+		for x := bounds.Min.X; x < bounds.Max.X; x += 4 {
+			channelRed, channelGreen, channelBlue, alpha := decoded.At(x, y).RGBA()
+			if alpha < 0x8000 {
+				continue
+			}
+
+			channelRed, channelGreen, channelBlue = channelRed>>8, channelGreen>>8, channelBlue>>8
+			checked++
+
+			if absInt(int(channelRed)-int(channelGreen)) > 24 ||
+				absInt(int(channelGreen)-int(channelBlue)) > 24 ||
+				absInt(int(channelRed)-int(channelBlue)) > 24 {
+				return false
+			}
+		}
+	}
+
+	return checked > 0
 }
 
 func (emoji *tableImageEmojiFont) advancePixels(lineHeight int) int {
