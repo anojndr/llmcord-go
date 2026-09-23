@@ -359,6 +359,24 @@ type rawDatabaseConfig struct {
 	StoreKey         scalarString `yaml:"store_key"`
 }
 
+type rawAutoAppendPhrasesConfig struct {
+	SearchWeb         scalarString `yaml:"search_web"`
+	ShortAnswer       scalarString `yaml:"short_answer"`
+	DontBeSycophantic scalarString `yaml:"dont_be_sycophantic"`
+	ADHDFriendly      scalarString `yaml:"adhd_friendly"`
+	AlwaysEnglish     scalarString `yaml:"always_english"`
+	CrossCheck        scalarString `yaml:"cross_check"`
+}
+
+type autoAppendPhrasesConfig struct {
+	SearchWeb         string
+	ShortAnswer       string
+	DontBeSycophantic string
+	ADHDFriendly      string
+	AlwaysEnglish     string
+	CrossCheck        string
+}
+
 type rawGistConfig struct {
 	APIKey      scalarStringList `yaml:"api_key"`
 	Endpoint    scalarString     `yaml:"endpoint"`
@@ -478,6 +496,7 @@ type rawConfig struct {
 	Database           rawDatabaseConfig            `yaml:"database"`
 	Redis              rawRedisConfig               `yaml:"redis"`
 	Gist               rawGistConfig                `yaml:"gist"`
+	AutoAppendPhrases  rawAutoAppendPhrasesConfig   `yaml:"auto_append_phrases"`
 	Models             map[string]map[string]any    `yaml:"models"`
 	ChannelModelLocks  map[string]scalarString      `yaml:"channel_model_locks"`
 	MediaAnalysisModel scalarString                 `yaml:"media_analysis_model"`
@@ -499,6 +518,7 @@ type config struct {
 	Database           databaseConfig
 	Redis              redisConfig
 	Gist               gistConfig
+	AutoAppendPhrases  autoAppendPhrasesConfig
 	Models             map[string]map[string]any
 	ModelOrder         []string
 	ChannelModelLocks  map[string]string
@@ -577,6 +597,7 @@ func buildLoadedConfig(
 		Database:           normalizeDatabaseConfig(rawLoadedConfig.Database),
 		Redis:              normalizeRedisConfig(rawLoadedConfig.Redis),
 		Gist:               normalizeGistConfig(rawLoadedConfig.Gist),
+		AutoAppendPhrases:  normalizeAutoAppendPhrases(rawLoadedConfig.AutoAppendPhrases),
 		Models:             rawLoadedConfig.Models,
 		ModelOrder:         modelOrder,
 		ChannelModelLocks:  channelModelLocks,
@@ -841,6 +862,17 @@ func normalizeDatabaseConfig(rawLoadedConfig rawDatabaseConfig) databaseConfig {
 	return databaseConfig{
 		ConnectionString: strings.TrimSpace(string(rawLoadedConfig.ConnectionString)),
 		StoreKey:         string(rawLoadedConfig.StoreKey),
+	}
+}
+
+func normalizeAutoAppendPhrases(rawPhrases rawAutoAppendPhrasesConfig) autoAppendPhrasesConfig {
+	return autoAppendPhrasesConfig{
+		SearchWeb:         strings.TrimSpace(string(rawPhrases.SearchWeb)),
+		ShortAnswer:       strings.TrimSpace(string(rawPhrases.ShortAnswer)),
+		DontBeSycophantic: strings.TrimSpace(string(rawPhrases.DontBeSycophantic)),
+		ADHDFriendly:      strings.TrimSpace(string(rawPhrases.ADHDFriendly)),
+		AlwaysEnglish:     strings.TrimSpace(string(rawPhrases.AlwaysEnglish)),
+		CrossCheck:        strings.TrimSpace(string(rawPhrases.CrossCheck)),
 	}
 }
 

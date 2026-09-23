@@ -353,7 +353,7 @@ func (instance *bot) prepareMessageResponse(
 	unmutatedMessages := append([]chatMessage(nil), messages...)
 
 	if autoAppendEnabled(provider) {
-		appendedMessages, appendErr := applyAutoAppend(provider, messages)
+		appendedMessages, appendErr := applyAutoAppend(provider, loadedConfig.AutoAppendPhrases, messages)
 		if appendErr != nil {
 			return chatCompletionRequest{}, nil, nil, appendErr
 		}
@@ -513,7 +513,7 @@ func (instance *bot) buildFallbackRequest(
 	}
 
 	if autoAppendEnabled(fallbackProvider) {
-		appendedMessages, appendErr := applyAutoAppend(fallbackProvider, messages)
+		appendedMessages, appendErr := applyAutoAppend(fallbackProvider, loadedConfig.AutoAppendPhrases, messages)
 		if appendErr != nil {
 			return chatCompletionRequest{}, appendErr
 		}

@@ -1976,3 +1976,90 @@ fallback_model: openai/undefined-model
 		t.Fatal("expected undefined fallback model to fail validation")
 	}
 }
+func TestLoadConfigUsesConfiguredAutoAppendPhrases(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	configText := `
+bot_token: discord-token
+providers:
+  openai:
+    base_url: https://api.example.com/v1
+models:
+  openai/first-model:
+auto_append_phrases:
+  search_web: "look it up."
+  short_answer: "be brief."
+  dont_be_sycophantic: "be honest."
+  adhd_friendly: "use bullets."
+  always_english: "reply in english."
+  cross_check: "double-check."
+`
+
+	err := os.WriteFile(configPath, []byte(configText), 0o600)
+	if err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	loadedConfig, err := loadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	phrases := loadedConfig.AutoAppendPhrases
+	if phrases.SearchWeb != "look it up." {
+		t.Fatalf("unexpected search_web phrase: %q", phrases.SearchWeb)
+	}
+
+	if phrases.ShortAnswer != "be brief." {
+		t.Fatalf("unexpected short_answer phrase: %q", phrases.ShortAnswer)
+	}
+
+	if phrases.DontBeSycophantic != "be honest." {
+		t.Fatalf("unexpected dont_be_sycophantic phrase: %q", phrases.DontBeSycophantic)
+	}
+
+	if phrases.ADHDFriendly != "use bullets." {
+		t.Fatalf("unexpected adhd_friendly phrase: %q", phrases.ADHDFriendly)
+	}
+
+	if phrases.AlwaysEnglish != "reply in english." {
+		t.Fatalf("unexpected always_english phrase: %q", phrases.AlwaysEnglish)
+	}
+
+	if phrases.CrossCheck != "double-check." {
+		t.Fatalf("unexpected cross_check phrase: %q", phrases.CrossCheck)
+	}
+}
+
+func TestLoadConfigDefaultsAutoAppendPhrasesToBlank(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	configText := `
+bot_token: discord-token
+providers:
+  openai:
+    base_url: https://api.example.com/v1
+models:
+  openai/first-model:
+`
+
+	err := os.WriteFile(configPath, []byte(configText), 0o600)
+	if err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	loadedConfig, err := loadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	phrases := loadedConfig.AutoAppendPhrases
+	if phrases.SearchWeb != "" || phrases.ShortAnswer != "" || phrases.DontBeSycophantic != "" ||
+		phrases.ADHDFriendly != "" || phrases.AlwaysEnglish != "" || phrases.CrossCheck != "" {
+		t.Fatalf("expected blank phrases (built-in defaults apply at use), got %#v", phrases)
+	}
+}

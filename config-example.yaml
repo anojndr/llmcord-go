@@ -78,8 +78,18 @@ providers:
     api_key:
     # api: openai-chat-completions  # or openai-responses
     # reasoning_effort: low  # OpenAI only: none | minimal | low | medium | high | xhigh | max (minimal→low for gpt-5.2/5.3/5.4, xhigh/max→high for gpt-5.1)
+    # Automatically append "search the web." to user queries if not already present:
+    # auto_append_search_web: true
     # Automatically append "short answer." to user queries if not already present:
     # auto_append_short_answer: true
+    # Automatically append "don't be sycophantic." to user queries if not already present:
+    # auto_append_dont_be_sycophantic: true
+    # Automatically append "make sure your output is adhd-friendly." to user queries if not already present:
+    # auto_append_adhd_friendly: true
+    # Automatically append "make sure your output is always in english unless instructed by the user to use another language." to user queries if not already present:
+    # auto_append_always_english: true
+    # Automatically append "always cross-check to ensure accuracy." to user queries if not already present:
+    # auto_append_cross_check: true
     extra_query:
       api-version: 2024-12-01-preview
 
@@ -125,16 +135,36 @@ providers:
     api_key:
     # api: openai-chat-completions  # default; or openai-responses for compatible backends
     # reasoning_effort: low  # OpenAI only: none | minimal | low | medium | high | xhigh | max
+    # Automatically append "search the web." to user queries if not already present:
+    # auto_append_search_web: true
     # Automatically append "short answer." to user queries if not already present:
     # auto_append_short_answer: true
+    # Automatically append "don't be sycophantic." to user queries if not already present:
+    # auto_append_dont_be_sycophantic: true
+    # Automatically append "make sure your output is adhd-friendly." to user queries if not already present:
+    # auto_append_adhd_friendly: true
+    # Automatically append "make sure your output is always in english unless instructed by the user to use another language." to user queries if not already present:
+    # auto_append_always_english: true
+    # Automatically append "always cross-check to ensure accuracy." to user queries if not already present:
+    # auto_append_cross_check: true
 
   mistral:
     base_url: https://api.mistral.ai/v1
     api_key:
     # api: openai-chat-completions  # or openai-responses
     # reasoning_effort: low  # OpenAI only: none | minimal | low | medium | high | xhigh | max
+    # Automatically append "search the web." to user queries if not already present:
+    # auto_append_search_web: true
     # Automatically append "short answer." to user queries if not already present:
     # auto_append_short_answer: true
+    # Automatically append "don't be sycophantic." to user queries if not already present:
+    # auto_append_dont_be_sycophantic: true
+    # Automatically append "make sure your output is adhd-friendly." to user queries if not already present:
+    # auto_append_adhd_friendly: true
+    # Automatically append "make sure your output is always in english unless instructed by the user to use another language." to user queries if not already present:
+    # auto_append_always_english: true
+    # Automatically append "always cross-check to ensure accuracy." to user queries if not already present:
+    # auto_append_cross_check: true
 
   openai:
     base_url: https://api.openai.com/v1
@@ -202,8 +232,18 @@ providers:
     api_key:
     # api: openai-chat-completions  # or openai-responses if the backend supports it
     # reasoning_effort: low  # OpenAI only: none | minimal | low | medium | high | xhigh | max
+    # Automatically append "search the web." to user queries if not already present:
+    # auto_append_search_web: true
     # Automatically append "short answer." to user queries if not already present:
     # auto_append_short_answer: true
+    # Automatically append "don't be sycophantic." to user queries if not already present:
+    # auto_append_dont_be_sycophantic: true
+    # Automatically append "make sure your output is adhd-friendly." to user queries if not already present:
+    # auto_append_adhd_friendly: true
+    # Automatically append "make sure your output is always in english unless instructed by the user to use another language." to user queries if not already present:
+    # auto_append_always_english: true
+    # Automatically append "always cross-check to ensure accuracy." to user queries if not already present:
+    # auto_append_cross_check: true
     # Requests to OpenRouter default to `transforms: ["middle-out"]`.
     # To disable that default for this provider, uncomment:
     # extra_body:
@@ -218,22 +258,52 @@ providers:
     base_url: http://localhost:1234/v1
     # api: openai-chat-completions  # or openai-responses
     # reasoning_effort: low  # OpenAI only: none | minimal | low | medium | high | xhigh | max
+    # Automatically append "search the web." to user queries if not already present:
+    # auto_append_search_web: true
     # Automatically append "short answer." to user queries if not already present:
     # auto_append_short_answer: true
+    # Automatically append "don't be sycophantic." to user queries if not already present:
+    # auto_append_dont_be_sycophantic: true
+    # Automatically append "make sure your output is adhd-friendly." to user queries if not already present:
+    # auto_append_adhd_friendly: true
+    # Automatically append "make sure your output is always in english unless instructed by the user to use another language." to user queries if not already present:
+    # auto_append_always_english: true
+    # Automatically append "always cross-check to ensure accuracy." to user queries if not already present:
+    # auto_append_cross_check: true
 
   ollama:
     base_url: http://localhost:11434/v1
     # api: openai-chat-completions  # or openai-responses
     # reasoning_effort: low  # OpenAI only: none | minimal | low | medium | high | xhigh | max
+    # Automatically append "search the web." to user queries if not already present:
+    # auto_append_search_web: true
     # Automatically append "short answer." to user queries if not already present:
     # auto_append_short_answer: true
+    # Automatically append "don't be sycophantic." to user queries if not already present:
+    # auto_append_dont_be_sycophantic: true
+    # Automatically append "make sure your output is adhd-friendly." to user queries if not already present:
+    # auto_append_adhd_friendly: true
+    # Automatically append "make sure your output is always in english unless instructed by the user to use another language." to user queries if not already present:
+    # auto_append_always_english: true
+    # Automatically append "always cross-check to ensure accuracy." to user queries if not already present:
+    # auto_append_cross_check: true
 
   vllm:
     base_url: http://localhost:8000/v1
     # api: openai-chat-completions  # or openai-responses
     # reasoning_effort: low  # OpenAI only: none | minimal | low | medium | high | xhigh | max
+    # Automatically append "search the web." to user queries if not already present:
+    # auto_append_search_web: true
     # Automatically append "short answer." to user queries if not already present:
     # auto_append_short_answer: true
+    # Automatically append "don't be sycophantic." to user queries if not already present:
+    # auto_append_dont_be_sycophantic: true
+    # Automatically append "make sure your output is adhd-friendly." to user queries if not already present:
+    # auto_append_adhd_friendly: true
+    # Automatically append "make sure your output is always in english unless instructed by the user to use another language." to user queries if not already present:
+    # auto_append_always_english: true
+    # Automatically append "always cross-check to ensure accuracy." to user queries if not already present:
+    # auto_append_cross_check: true
 
 # -----------------------------------------------------------------------------
 # Models — ordered map `<provider>/<model>`; first entry is default.
@@ -450,6 +520,20 @@ system_prompt: |
   Today's date is {date}. The current time is {time}.
 
   User messages are prefixed with their Discord ID as <@ID>. Use this format to mention users.
+
+# -----------------------------------------------------------------------------
+# Auto-append phrases — added to the end of the user's message for providers
+# that set the matching `auto_append_<name>: true` flag (see providers above).
+# Edit freely (hot-reloads); keep the quotes. Blank = built-in default.
+# Skipped when the message already contains the phrase (case-insensitive);
+# these built-in defaults also skip variants like "search web"/"cross check".
+auto_append_phrases:
+  search_web: "search the web."
+  short_answer: "short answer."
+  dont_be_sycophantic: "don't be sycophantic."
+  adhd_friendly: "make sure your output is adhd-friendly."
+  always_english: "make sure your output is always in english unless instructed by the user to use another language."
+  cross_check: "always cross-check to ensure accuracy."
 
 # -----------------------------------------------------------------------------
 # Environment variables (reference — not YAML fields)

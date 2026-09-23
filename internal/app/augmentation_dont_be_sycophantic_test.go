@@ -31,7 +31,7 @@ func TestApplyAutoAppendDontBeSycophantic(t *testing.T) {
 		{Role: messageRoleUser, Content: "explain this"},
 	}
 
-	appended, err := applyAutoAppend(providerConfig{AutoAppendDontBeSycophantic: true}, conversation)
+	appended, err := applyAutoAppend(providerConfig{AutoAppendDontBeSycophantic: true}, autoAppendPhrasesConfig{}, conversation)
 	if err != nil {
 		t.Fatalf("apply auto append: %v", err)
 	}

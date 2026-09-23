@@ -17,6 +17,10 @@ var (
 	crossCheckRE        = regexp.MustCompile(`(?i)\bcross[-\s]*check\b`)
 )
 
+const searchWebPhrase = "search the web."
+
+const shortAnswerPhrase = "short answer."
+
 const dontBeSycophanticPhrase = "don't be sycophantic."
 
 const adhdFriendlyPhrase = "make sure your output is adhd-friendly."
@@ -648,32 +652,87 @@ func autoAppendEnabled(provider providerConfig) bool {
 		provider.AutoAppendAlwaysEnglish || provider.AutoAppendCrossCheck
 }
 
+// autoAppendPhrasesForProvider resolves the effective auto-append suffixes:
+// configured auto_append_phrases.<name> values win, built-in defaults fill
+// blanks. Blank means the built-in default, so setting every value explicitly
+// keeps behavior; clearing a single phrase requires its flag off.
+func autoAppendPhrasesForProvider(phrases autoAppendPhrasesConfig) autoAppendPhrasesConfig {
+	if phrases.SearchWeb == "" {
+		phrases.SearchWeb = searchWebPhrase
+	}
+
+	if phrases.ShortAnswer == "" {
+		phrases.ShortAnswer = shortAnswerPhrase
+	}
+
+	if phrases.DontBeSycophantic == "" {
+		phrases.DontBeSycophantic = dontBeSycophanticPhrase
+	}
+
+	if phrases.ADHDFriendly == "" {
+		phrases.ADHDFriendly = adhdFriendlyPhrase
+	}
+
+	if phrases.AlwaysEnglish == "" {
+		phrases.AlwaysEnglish = alwaysEnglishPhrase
+	}
+
+	if phrases.CrossCheck == "" {
+		phrases.CrossCheck = crossCheckPhrase
+	}
+
+	return phrases
+}
+
+// phrasePresent reports whether userQuery already contains phrase, falling back
+// to the built-in variant matcher for default phrases so "search web" still
+// skips "search the web." but custom text matches case-insensitively.
+func phrasePresent(matchDefault func(string) bool, defaultPhrase, phrase, userQuery string) bool {
+	if phrase == defaultPhrase {
+		return matchDefault(userQuery)
+	}
+
+	return containsFold(userQuery, phrase)
+}
+
 // missingAutoAppendPhrases returns the configured auto-append suffixes absent
 // from userQuery, in append order.
-func missingAutoAppendPhrases(provider providerConfig, userQuery string) []string {
+func missingAutoAppendPhrases(
+	provider providerConfig,
+	phrases autoAppendPhrasesConfig,
+	userQuery string,
+) []string {
+	effective := autoAppendPhrasesForProvider(phrases)
+
 	var missing []string
-	if provider.AutoAppendSearchWeb && !containsSearchWebPhrase(userQuery) {
-		missing = append(missing, "search the web.")
+	if provider.AutoAppendSearchWeb &&
+		!phrasePresent(containsSearchWebPhrase, searchWebPhrase, effective.SearchWeb, userQuery) {
+		missing = append(missing, effective.SearchWeb)
 	}
 
-	if provider.AutoAppendShortAnswer && !containsShortAnswerPhrase(userQuery) {
-		missing = append(missing, "short answer.")
+	if provider.AutoAppendShortAnswer &&
+		!phrasePresent(containsShortAnswerPhrase, shortAnswerPhrase, effective.ShortAnswer, userQuery) {
+		missing = append(missing, effective.ShortAnswer)
 	}
 
-	if provider.AutoAppendDontBeSycophantic && !containsDontBeSycophanticPhrase(userQuery) {
-		missing = append(missing, dontBeSycophanticPhrase)
+	if provider.AutoAppendDontBeSycophantic &&
+		!phrasePresent(containsDontBeSycophanticPhrase, dontBeSycophanticPhrase, effective.DontBeSycophantic, userQuery) {
+		missing = append(missing, effective.DontBeSycophantic)
 	}
 
-	if provider.AutoAppendADHDFriendly && !containsADHDFriendlyPhrase(userQuery) {
-		missing = append(missing, adhdFriendlyPhrase)
+	if provider.AutoAppendADHDFriendly &&
+		!phrasePresent(containsADHDFriendlyPhrase, adhdFriendlyPhrase, effective.ADHDFriendly, userQuery) {
+		missing = append(missing, effective.ADHDFriendly)
 	}
 
-	if provider.AutoAppendAlwaysEnglish && !containsAlwaysEnglishPhrase(userQuery) {
-		missing = append(missing, alwaysEnglishPhrase)
+	if provider.AutoAppendAlwaysEnglish &&
+		!phrasePresent(containsAlwaysEnglishPhrase, alwaysEnglishPhrase, effective.AlwaysEnglish, userQuery) {
+		missing = append(missing, effective.AlwaysEnglish)
 	}
 
-	if provider.AutoAppendCrossCheck && !containsCrossCheckPhrase(userQuery) {
-		missing = append(missing, crossCheckPhrase)
+	if provider.AutoAppendCrossCheck &&
+		!phrasePresent(containsCrossCheckPhrase, crossCheckPhrase, effective.CrossCheck, userQuery) {
+		missing = append(missing, effective.CrossCheck)
 	}
 
 	return missing
@@ -690,7 +749,13 @@ func missingAutoAppendPhrases(provider providerConfig, userQuery string) []strin
 // sycophantic.\nmake sure your output is adhd-friendly.\nmake sure your output
 // is always in english unless instructed by the user to use another
 // language.\nalways cross-check to ensure accuracy.") to match the spec.
-func applyAutoAppend(provider providerConfig, conversation []chatMessage) ([]chatMessage, error) {
+// Custom auto_append_phrases.<name> values replace the appended text; default
+// phrases also skip their built-in variants ("search web", "cross check").
+func applyAutoAppend(
+	provider providerConfig,
+	phrases autoAppendPhrasesConfig,
+	conversation []chatMessage,
+) ([]chatMessage, error) {
 	if !autoAppendEnabled(provider) {
 		return conversation, nil
 	}
@@ -700,12 +765,12 @@ func applyAutoAppend(provider providerConfig, conversation []chatMessage) ([]cha
 		return conversation, nil
 	}
 
-	if len(missingAutoAppendPhrases(provider, userQuery)) == 0 {
+	if len(missingAutoAppendPhrases(provider, phrases, userQuery)) == 0 {
 		return conversation, nil
 	}
 
 	appended, err := appendContextToConversation(conversation, func(prompt *augmentedUserPrompt) {
-		toAppend := missingAutoAppendPhrases(provider, prompt.UserQuery)
+		toAppend := missingAutoAppendPhrases(provider, phrases, prompt.UserQuery)
 		if len(toAppend) == 0 {
 			return
 		}
