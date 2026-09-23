@@ -114,6 +114,8 @@ const (
 	showSourcesNextButtonLabel           = "Next"
 	createGistButtonCustomID             = "create_gist"
 	createGistButtonLabel                = "View response better on GitHub Gist"
+	exportSessionButtonCustomID          = "export_session"
+	exportSessionButtonLabel             = "Export"
 	messageRoleAssistant                 = "assistant"
 	finishReasonStop                     = "stop"
 	finishReasonLength                   = "length"

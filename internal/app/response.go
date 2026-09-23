@@ -31,6 +31,7 @@ type responseActions struct {
 	showImages   bool
 	showThinking bool
 	showGist     bool
+	showExport   bool
 }
 
 type pendingResponse struct {
@@ -985,7 +986,7 @@ func (instance *bot) sendFailureResponse(
 	sentMessage, pending, err := instance.sendEmbedMessage(
 		failureTracker,
 		failureEmbed,
-		responseActions{showSources: false, showThinking: false, showGist: false},
+		responseActions{showSources: false, showThinking: false, showGist: false, showExport: true},
 	)
 	if err != nil {
 		if renderErr != nil {
@@ -1043,6 +1044,7 @@ func buildRenderSpecs(
 				showImages:   final && index == len(segments)-1,
 				showThinking: final && hasThinking && index == len(segments)-1,
 				showGist:     final && index == len(segments)-1,
+				showExport:   final && index == len(segments)-1,
 			},
 			footerText: "",
 		}
@@ -1553,7 +1555,7 @@ func buildEmbedComponents(actions responseActions) []discordgo.MessageComponent 
 }
 
 func buildResponseButtons(actions responseActions) []discordgo.MessageComponent {
-	const maxResponseButtons = 4
+	const maxResponseButtons = 5
 
 	buttons := make([]discordgo.MessageComponent, 0, maxResponseButtons)
 
@@ -1588,6 +1590,15 @@ func buildResponseButtons(actions responseActions) []discordgo.MessageComponent 
 		button := new(discordgo.Button)
 		button.CustomID = createGistButtonCustomID
 		button.Label = createGistButtonLabel
+		button.Style = discordgo.SecondaryButton
+
+		buttons = append(buttons, button)
+	}
+
+	if actions.showExport {
+		button := new(discordgo.Button)
+		button.CustomID = exportSessionButtonCustomID
+		button.Label = exportSessionButtonLabel
 		button.Style = discordgo.SecondaryButton
 
 		buttons = append(buttons, button)

@@ -120,6 +120,8 @@ func (instance *bot) handleMessageComponentInteraction(
 		return instance.handleShowThinkingButton(session, interaction)
 	case componentData.CustomID == createGistButtonCustomID:
 		return instance.handleCreateGistButton(session, interaction)
+	case componentData.CustomID == exportSessionButtonCustomID:
+		return instance.handleExportSessionButton(session, interaction)
 	case strings.HasPrefix(componentData.CustomID, showSourcesPageButtonCustomIDPrefix):
 		return instance.handleShowSourcesPageButton(session, interaction)
 	case strings.HasPrefix(componentData.CustomID, showImagesPageButtonCustomIDPrefix):

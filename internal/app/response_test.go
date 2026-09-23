@@ -281,11 +281,21 @@ func TestBuildRenderSpecsAddsSourcesButtonOnlyToFinalSearchedSegment(t *testing.
 		t.Fatalf("unexpected spec count: %#v", specs)
 	}
 
-	if specs[0].actions.showSources || specs[0].actions.showThinking || specs[0].actions.showGist || specs[0].actions.showImages {
+	firstActions := specs[0].actions
+
+	hasFirstButton := firstActions.showSources || firstActions.showThinking || firstActions.showGist
+	hasFirstButton = hasFirstButton || firstActions.showImages || firstActions.showExport
+
+	if hasFirstButton {
 		t.Fatalf("expected no action buttons on first segment: %#v", specs[0])
 	}
 
-	if !specs[1].actions.showSources || specs[1].actions.showThinking || !specs[1].actions.showGist || !specs[1].actions.showImages {
+	finalActions := specs[1].actions
+
+	missingFinalButton := !finalActions.showSources || !finalActions.showGist || !finalActions.showImages
+	missingFinalButton = missingFinalButton || !finalActions.showExport || finalActions.showThinking
+
+	if missingFinalButton {
 		t.Fatalf("expected sources, images, and gist buttons on final segment: %#v", specs[1])
 	}
 }
@@ -302,7 +312,12 @@ func TestBuildRenderSpecsAddsGistButtonToFinalNonSearchedSegment(t *testing.T) {
 		t.Fatalf("expected no sources button on non-searched response: %#v", specs[0])
 	}
 
-	if !specs[0].actions.showGist || !specs[0].actions.showImages {
+	finalOnlyActions := specs[0].actions
+
+	missingOnlyButton := !finalOnlyActions.showGist || !finalOnlyActions.showImages
+	missingOnlyButton = missingOnlyButton || !finalOnlyActions.showExport
+
+	if missingOnlyButton {
 		t.Fatalf("expected gist and images button on final non-searched response: %#v", specs[0])
 	}
 }

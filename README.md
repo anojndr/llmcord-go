@@ -7,7 +7,7 @@ It turns Discord reply chains into a frontend for OpenAI-compatible chat-complet
 ## Highlights
 
 - Reply-chain conversations in guilds, DMs, and public threads; triggered by bot mentions or `at ai`
-- Real-time streaming replies with a live progress embed (stage checklist, progress bar, elapsed timer), plus `Show Thinking`, `Show Sources`, and `View response better on GitHub Gist` (publishes the full reply as a GitHub Gist)
+- Real-time streaming replies with a live progress embed (stage checklist, progress bar, elapsed timer), plus `Show Thinking`, `Show Sources`, `View response better on GitHub Gist` (publishes the full reply as a GitHub Gist), and `Export` (downloads the reply chain as a standalone HTML file)
 - Multimodal input: images, audio, video, PDFs, DOCX, PPTX, and generic file attachments
 - URL enrichment for TikTok, Facebook, YouTube, Reddit, and generic websites (Firecrawl Scrape when a Firecrawl key is set)
 - Automatic Facebook video downloads: any message containing a Facebook or fb.watch link (no bot mention needed) gets a reply with the MP4 attached; oversized videos are compressed to 8 MB first and fall back to the direct download link if compression fails
@@ -134,6 +134,7 @@ Generic website URL extraction follows `extraction_order` (default Firecrawl -> 
 - Start a prompt with `vsearch` for reverse-image lookup
 - `Show Sources` on replies to inspect cited URLs (including pagination)
 - `View response better on GitHub Gist` on replies to publish the full text as a GitHub Gist
+- `Export` on replies to download the reply chain as a standalone HTML file with thinking and sources
 
 ## Operational Notes
 
