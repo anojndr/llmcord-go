@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -52,6 +53,8 @@ type responseTracker struct {
 	progressActive     bool
 	responseVisible    bool
 	originalMessages   []chatMessage
+	tableImages        [][]renderedTableImage
+	tableImagesSent    []bool
 }
 
 const (
@@ -754,6 +757,8 @@ func (instance *bot) attemptFallbackResponse(
 	tracker.modelName = fallbackModel
 	tracker.providerResponseID = ""
 	tracker.renderedSpecs = nil
+	tracker.tableImages = nil
+	tracker.tableImagesSent = nil
 
 	fallbackWarnings := appendFallbackWarning(warnings, fallbackModel)
 
@@ -895,17 +900,32 @@ func (instance *bot) renderFinalResponse(
 	thinkingText string,
 	finishReason string,
 ) error {
+	segments := accumulator.renderSegments()
+
+	if len(tracker.tableImages) != len(segments) || len(tracker.tableImagesSent) != len(segments) {
+		tracker.tableImages = make([][]renderedTableImage, len(segments))
+		tracker.tableImagesSent = make([]bool, len(segments))
+
+		for index, segment := range segments {
+			tracker.tableImages[index] = renderMarkdownTableImages(segment)
+		}
+	}
+
 	err := instance.renderEmbedResponse(
 		ctx,
 		tracker,
 		warnings,
-		accumulator.renderSegments(),
+		segments,
 		finishReason,
 		true,
 		strings.TrimSpace(thinkingText) != "",
 	)
 	if err != nil {
 		return fmt.Errorf("render final embed response: %w", err)
+	}
+
+	if isGoodFinishReason(finishReason) {
+		instance.sendTableImageReplies(tracker)
 	}
 
 	instance.sendIiliURLReplies(tracker, accumulator.joined())
@@ -1182,6 +1202,14 @@ func (instance *bot) trimExtraEmbedResponses(
 		tracker.renderedSpecs = tracker.renderedSpecs[:keepCount]
 	}
 
+	if len(tracker.tableImages) > keepCount {
+		tracker.tableImages = tracker.tableImages[:keepCount]
+	}
+
+	if len(tracker.tableImagesSent) > keepCount {
+		tracker.tableImagesSent = tracker.tableImagesSent[:keepCount]
+	}
+
 	return nil
 }
 
@@ -1389,6 +1417,63 @@ func (instance *bot) sendIiliURLReplies(tracker *responseTracker, answerText str
 		}
 
 		instance.cacheAuxiliaryAssistantReply(sentMessage, responseMessage, tracker)
+	}
+}
+
+// sendTableImageReplies posts rendered markdown-table PNGs as follow-up
+// replies after the tracker's final embed. Each image reply is cached as an
+// empty auxiliary assistant node, so the images never enter model history:
+// buildMessageContent returns nil for empty nodes and buildConversation
+// omits them from the assembled messages. Each segment is flagged sent only
+// after all of its images post, so a partial failure retries just the
+// segments that never completed instead of resending or dropping images.
+func (instance *bot) sendTableImageReplies(tracker *responseTracker) {
+	if instance == nil || instance.session == nil || tracker == nil {
+		return
+	}
+
+	if len(tracker.responseMessages) == 0 {
+		return
+	}
+
+	parentMessage := tracker.responseMessages[len(tracker.responseMessages)-1]
+	embedParent := parentMessage
+
+	for segmentIndex, images := range tracker.tableImages {
+		if segmentIndex < len(tracker.tableImagesSent) && tracker.tableImagesSent[segmentIndex] {
+			continue
+		}
+
+		segmentComplete := true
+
+		for imageIndex, tableImage := range images {
+			if len(tableImage.data) == 0 {
+				continue
+			}
+
+			send := newReplyMessage(parentMessage)
+			send.Files = []*discordgo.File{{
+				Name:        tableImage.filename,
+				ContentType: "image/png",
+				Reader:      bytes.NewReader(tableImage.data),
+			}}
+
+			sentMessage, err := instance.session.ChannelMessageSendComplex(parentMessage.ChannelID, send)
+			if err != nil {
+				logWarn("send table image reply", err, "table_index", imageIndex)
+
+				segmentComplete = false
+
+				break
+			}
+
+			parentMessage = sentMessage
+			instance.cacheAuxiliaryAssistantReply(sentMessage, embedParent, tracker)
+		}
+
+		if segmentComplete && segmentIndex < len(tracker.tableImagesSent) {
+			tracker.tableImagesSent[segmentIndex] = true
+		}
 	}
 }
 
