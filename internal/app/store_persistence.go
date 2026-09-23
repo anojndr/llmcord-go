@@ -1469,6 +1469,7 @@ func (snapshot messageNodeSnapshot) messageNode() *messageNode {
 			continue
 		}
 
+		downscaleContentPartImage(part)
 		node.media = append(node.media, part)
 	}
 

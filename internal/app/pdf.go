@@ -3,7 +3,6 @@ package app
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -498,17 +497,7 @@ func pdfImagePart(extractedImage model.Image) (contentPart, error) {
 		return nil, err
 	}
 
-	part := make(contentPart)
-	part[messageTypeKey] = contentTypeImageURL
-	part["image_url"] = map[string]string{
-		messageURLKey: fmt.Sprintf(
-			"data:%s;base64,%s",
-			mimeType,
-			base64.StdEncoding.EncodeToString(imageBytes),
-		),
-	}
-
-	return part, nil
+	return makeImageContentPart(mimeType, imageBytes), nil
 }
 
 func pdfImageMIMEType(fileType string, imageBytes []byte) (string, error) {

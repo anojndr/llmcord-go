@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
 	"io"
 	providers "llmcord-go/internal/providers"
@@ -528,17 +527,7 @@ func attachmentPayloadToContentPart(payload attachmentPayload) (contentPart, boo
 
 	switch partType {
 	case contentTypeImageURL:
-		part := make(contentPart)
-		part[messageTypeKey] = contentTypeImageURL
-		part["image_url"] = map[string]string{
-			messageURLKey: fmt.Sprintf(
-				"data:%s;base64,%s",
-				contentType,
-				base64.StdEncoding.EncodeToString(payload.body),
-			),
-		}
-
-		return part, true
+		return makeImageContentPart(contentType, payload.body), true
 	case contentTypeAudioData, contentTypeDocument, contentTypeFileData, contentTypeVideoData:
 		return binaryAttachmentContentPart(partType, payload, contentType), true
 	default:

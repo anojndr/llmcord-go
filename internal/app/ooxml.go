@@ -3,7 +3,6 @@ package app
 import (
 	"archive/zip"
 	"bytes"
-	"encoding/base64"
 	"encoding/xml"
 	"errors"
 	"fmt"
@@ -299,17 +298,7 @@ func ooxmlImagePart(archiveFile *zip.File) (contentPart, bool, error) {
 		return contentPart{}, false, nil
 	}
 
-	part := make(contentPart)
-	part[messageTypeKey] = contentTypeImageURL
-	part["image_url"] = map[string]string{
-		messageURLKey: fmt.Sprintf(
-			"data:%s;base64,%s",
-			mimeType,
-			base64.StdEncoding.EncodeToString(imageBytes),
-		),
-	}
-
-	return part, true, nil
+	return makeImageContentPart(mimeType, imageBytes), true, nil
 }
 
 func ooxmlImageMIMEType(fileName string, imageBytes []byte) (string, bool) {
