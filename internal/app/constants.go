@@ -8,7 +8,6 @@ const (
 	healthCheckPath                   = "/healthz"
 	defaultExaSearchEndpoint          = "https://api.exa.ai/search"
 	defaultExaContentsEndpoint        = "https://api.exa.ai/contents"
-	defaultExaMCPEndpoint             = "https://mcp.exa.ai/mcp?tools=web_search_exa"
 	defaultSerpAPIGoogleLensEndpoint  = "https://serpapi.com/search.json"
 	defaultTavilySearchEndpoint       = "https://api.tavily.com/search"
 	defaultTavilyExtractEndpoint      = "https://api.tavily.com/extract"

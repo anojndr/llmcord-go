@@ -56,7 +56,7 @@ When `PORT` or `LLMCORD_HTTP_ADDR` is set, the bot exposes JSON health responses
 
 ## Configuration
 
-Providers are declared with `base_url` (OpenAI-compatible). The provider name selects the API kind: names containing `gemini` use the Gemini API (no `base_url` needed); all others are OpenAI-compatible and use `api` to choose the wire protocol (`api: openai-chat-completions` for `POST {base_url}/chat/completions`, `api: openai-responses` for `POST {base_url}/responses`). The built-in `openai` provider defaults to `openai-responses`; every other OpenAI-compatible provider defaults to `openai-chat-completions`. `api_key` accepts a string or a YAML list; when multiple keys are configured, the bot round-robins them across requests that spread over every key. The same round-robin applies to `web_search.exa.api_key`, `web_search.tavily.api_key`, `web_search.firecrawl.api_key`, and `visual_search.serpapi.api_key`. Web search runs Exa by default (MCP, or its Search API with `web_search.exa.api_key`); generic website extraction runs Firecrawl Scrape (with `web_search.firecrawl.api_key`), then Exa Contents (with an Exa API key), then Tavily Extract, then the in-process HTML fetcher. See the "Search and Visu…al Search" section.
+Providers are declared with `base_url` (OpenAI-compatible). The provider name selects the API kind: names containing `gemini` use the Gemini API (no `base_url` needed); all others are OpenAI-compatible and use `api` to choose the wire protocol (`api: openai-chat-completions` for `POST {base_url}/chat/completions`, `api: openai-responses` for `POST {base_url}/responses`). The built-in `openai` provider defaults to `openai-responses`; every other OpenAI-compatible provider defaults to `openai-chat-completions`. `api_key` accepts a string or a YAML list; when multiple keys are configured, the bot round-robins them across requests that spread over every key. The same round-robin applies to `web_search.exa.api_key`, `web_search.tavily.api_key`, `web_search.firecrawl.api_key`, and `visual_search.serpapi.api_key`. Web search uses the Exa Search API (with `web_search.exa.api_key`); generic website extraction runs Firecrawl Scrape (with `web_search.firecrawl.api_key`), then Exa Contents (with an Exa API key), then Tavily Extract, then the in-process HTML fetcher. See the "Search and Visu…al Search" section.
 
 ### Discord and Runtime
 
@@ -107,7 +107,7 @@ Website extraction order is configurable in `config.yaml` via `extraction_order`
 | Setting | Purpose |
 | --- | --- |
 | `web_search.max_urls` | Max URLs per query and in `Show Sources`. Default: `5`. |
-| `web_search.exa.api_key` | Enables Exa Search API; without it, Exa uses its MCP endpoint. |
+| `web_search.exa.api_key` | Enables Exa Search API and Exa Contents extraction. |
 | `web_search.exa.text_max_characters` | Max full-page text from Exa per result. Default: `15000`. |
 | `web_search.tavily.api_key` | Enables Tavily search and Tavily Extract fallback. |
 | `web_search.parallel.api_key` | Enables Parallel Search API (`https://api.parallel.ai/v1/search`) with full content per URL via the Extract API (`https://api.parallel.ai/v1/extract`, `advanced_settings.full_content`), and Parallel Extract in the website extraction chain. |

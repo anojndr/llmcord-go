@@ -983,10 +983,6 @@ func (loadedConfig webSearchConfig) maxURLs() int {
 	return loadedConfig.MaxURLs
 }
 
-func (loadedConfig webSearchConfig) exaUsesAPI() bool {
-	return len(loadedConfig.Exa.apiKeys()) > 0
-}
-
 // hasWebSearchAPIKeys reports whether any routed web search provider
 // (TinyFish, Exa, or Tavily) has API keys configured.
 func (loadedConfig webSearchConfig) hasWebSearchAPIKeys() bool {

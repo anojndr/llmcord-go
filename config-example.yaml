@@ -391,10 +391,10 @@ web_search:
 
   # Exa — Search API + Contents API for extraction
   exa:
-    # Optional. When set, search uses Exa Search API (otherwise Exa MCP) and
-    # extraction uses Exa Contents API. `/searchtype` selects the fallback
-    # `type` (`instant`, `fast`, `auto`, `deep-lite`, `deep`, `deep-reasoning`);
-    # a provider-level `exa_search_type` overrides it for that provider's models.
+    # Optional. When set, search uses Exa Search API and extraction uses Exa
+    # Contents API. `/searchtype` selects the fallback `type` (`instant`,
+    # `fast`, `auto`, `deep-lite`, `deep`, `deep-reasoning`); a provider-level
+    # `exa_search_type` overrides it for that provider's models.
     # `api_key` also accepts a YAML list; requests are round-robin.
     # Optional max characters for Exa full page text per result. Default: 5000
     text_max_characters: 5000

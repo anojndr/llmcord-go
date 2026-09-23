@@ -32,7 +32,6 @@ linters:
             - github.com/chromedp/chromedp
             - github.com/ledongthuc/pdf
             - modernc.org/sqlite
-            - github.com/modelcontextprotocol/go-sdk/mcp
             - github.com/pdfcpu/pdfcpu/pkg/api
             - github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model
             - github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types

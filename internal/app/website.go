@@ -639,13 +639,14 @@ func (client websiteClient) fetch(
 			attemptErrs = append(attemptErrs, tinyFishErr)
 
 		case webExtractionProviderExa:
-			if !loadedConfig.WebSearch.exaUsesAPI() {
+			exaAPIKeys := loadedConfig.WebSearch.Exa.apiKeys()
+			if len(exaAPIKeys) == 0 {
 				continue
 			}
 
 			attemptsCount++
 
-			pageContent, exaErr := tryAllAPIKeys(ctx, client.keys, loadedConfig.WebSearch.Exa.apiKeys(), func(apiKey string) (websitePageContent, error) {
+			pageContent, exaErr := tryAllAPIKeys(ctx, client.keys, exaAPIKeys, func(apiKey string) (websitePageContent, error) {
 				return client.fetchWithExaContents(
 					ctx,
 					normalizedURL,
