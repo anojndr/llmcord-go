@@ -15,14 +15,9 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-
-	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 const (
-	exaSearchToolName            = "web_search_exa"
-	searchQueryArgumentKey       = "query"
-	exaNumResultsKey             = "numResults"
 	searchWarningText            = "Warning: web search unavailable"
 	searchSourcesSectionCapacity = 2
 	searchSourcesUnavailableText = "No sources available."
@@ -49,8 +44,6 @@ const (
 	webSearchToolMaxQueries = 0
 )
 
-var errExaSearchTool = errors.New("exa MCP search tool returned an error")
-
 type chatCompletionStreamer interface {
 	StreamChatCompletion(
 		ctx context.Context,
@@ -70,7 +63,6 @@ type visualSearchSourceGroup = searchtypes.VisualSearchSourceGroup
 
 type exaSearchClient struct {
 	apiEndpoint string
-	mcpEndpoint string
 	httpClient  *http.Client
 	keys        *apiKeyRotator
 }
@@ -465,7 +457,6 @@ func (err tinyFishStatusError) Unwrap() error {
 func newExaSearchClient(httpClient *http.Client) exaSearchClient {
 	return exaSearchClient{
 		apiEndpoint: defaultExaSearchEndpoint,
-		mcpEndpoint: defaultExaMCPEndpoint,
 		httpClient:  httpClient,
 		keys:        newAPIKeyRotator(),
 	}
@@ -761,8 +752,7 @@ type searchAttemptError struct {
 
 // search implements the configurable web search fallback chain specified in
 // loadedConfig.WebSearch.Order (default: TinyFish -> Exa -> Tavily).
-// Providers without configured API keys are skipped if they require keys
-// (TinyFish and Tavily); Exa can run keyless via MCP endpoint.
+// Providers without configured API keys are skipped.
 func (client routedWebSearchClient) search(
 	ctx context.Context,
 	loadedConfig config,
@@ -798,6 +788,10 @@ func (client routedWebSearchClient) search(
 			})
 
 		case webSearchProviderExa:
+			if len(loadedConfig.WebSearch.Exa.apiKeys()) == 0 {
+				continue
+			}
+
 			if client.exa == nil {
 				continue
 			}
@@ -807,13 +801,8 @@ func (client routedWebSearchClient) search(
 				return results, nil
 			}
 
-			exaName := "Exa MCP"
-			if loadedConfig.WebSearch.exaUsesAPI() {
-				exaName = "Exa Search API"
-			}
-
 			failedAttempts = append(failedAttempts, searchAttemptError{
-				providerName: exaName,
+				providerName: "Exa Search API",
 				err:          err,
 			})
 
@@ -1247,6 +1236,11 @@ func (client exaSearchClient) search(
 	loadedConfig config,
 	queries []string,
 ) ([]webSearchResult, error) {
+	exaAPIKeys := loadedConfig.WebSearch.Exa.apiKeys()
+	if len(exaAPIKeys) == 0 {
+		return nil, fmt.Errorf("exa search is not configured: %w", os.ErrNotExist)
+	}
+
 	maxURLs := loadedConfig.WebSearch.maxURLs()
 	searchType := loadedConfig.WebSearch.Exa.searchType()
 
@@ -1254,20 +1248,16 @@ func (client exaSearchClient) search(
 		queryContext context.Context,
 		query string,
 	) (webSearchResult, error) {
-		if loadedConfig.WebSearch.exaUsesAPI() {
-			return tryAllAPIKeys(queryContext, client.keys, loadedConfig.WebSearch.Exa.apiKeys(), func(apiKey string) (webSearchResult, error) {
-				return client.searchAPIQuery(
-					queryContext,
-					apiKey,
-					query,
-					maxURLs,
-					searchType,
-					loadedConfig.WebSearch.Exa.textMaxCharacters(),
-				)
-			})
-		}
-
-		return client.searchMCPQuery(queryContext, query, maxURLs)
+		return tryAllAPIKeys(queryContext, client.keys, exaAPIKeys, func(apiKey string) (webSearchResult, error) {
+			return client.searchAPIQuery(
+				queryContext,
+				apiKey,
+				query,
+				maxURLs,
+				searchType,
+				loadedConfig.WebSearch.Exa.textMaxCharacters(),
+			)
+		})
 	})
 }
 
@@ -1339,55 +1329,6 @@ func searchQueriesConcurrently[T any](
 	}
 
 	return results, nil
-}
-
-func (client exaSearchClient) searchMCPQuery(
-	ctx context.Context,
-	query string,
-	maxURLs int,
-) (webSearchResult, error) {
-	implementation := new(mcp.Implementation)
-	implementation.Name = providers.GeminiCacheDefaultDisplayName
-	implementation.Version = "1.0.0"
-
-	searchClient := mcp.NewClient(implementation, nil)
-
-	transport := new(mcp.StreamableClientTransport)
-	transport.Endpoint = client.mcpEndpoint
-	transport.HTTPClient = client.httpClient
-	transport.MaxRetries = -1
-	transport.DisableStandaloneSSE = true
-
-	session, err := searchClient.Connect(ctx, transport, nil)
-	if err != nil {
-		return webSearchResult{}, fmt.Errorf("connect to Exa MCP: %w", err)
-	}
-
-	defer func() {
-		_ = session.Close()
-	}()
-
-	params := new(mcp.CallToolParams)
-	params.Name = exaSearchToolName
-	params.Arguments = map[string]any{
-		searchQueryArgumentKey: query,
-		exaNumResultsKey:       maxURLs,
-	}
-
-	result, err := session.CallTool(ctx, params)
-	if err != nil {
-		return webSearchResult{}, fmt.Errorf("call Exa MCP search tool for %q: %w", query, err)
-	}
-
-	resultText := mcpResultText(result)
-	if result.IsError {
-		return webSearchResult{}, fmt.Errorf("%w for %q: %s", errExaSearchTool, query, resultText)
-	}
-
-	return webSearchResult{
-		Query: query,
-		Text:  resultText,
-	}, nil
 }
 
 func (client exaSearchClient) searchAPIQuery(
@@ -2705,23 +2646,4 @@ func mapStringSliceValue(values map[string]any, key string) []string {
 	}
 
 	return stringValues
-}
-
-func mcpResultText(result *mcp.CallToolResult) string {
-	textParts := make([]string, 0, len(result.Content))
-
-	for _, content := range result.Content {
-		textContent, ok := content.(*mcp.TextContent)
-		if !ok {
-			continue
-		}
-
-		if strings.TrimSpace(textContent.Text) == "" {
-			continue
-		}
-
-		textParts = append(textParts, textContent.Text)
-	}
-
-	return joinNonEmpty(textParts)
 }

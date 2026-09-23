@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
-	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 var errSearchBackendUnavailable = errors.New("search backend unavailable")
@@ -133,38 +132,73 @@ func newExaAPISearchTestClient(handler http.HandlerFunc) (exaSearchClient, func(
 
 	return exaSearchClient{
 		apiEndpoint: httpServer.URL,
-		mcpEndpoint: defaultExaMCPEndpoint,
 		httpClient:  httpServer.Client(),
 		keys:        newAPIKeyRotator(),
 	}, httpServer.Close
 }
 
-func assertExaSearchRequest(t *testing.T, args map[string]any) {
-	t.Helper()
+func TestExaSearchClientSearchRunsAPIQueriesConcurrentlyAndKeepsOrder(t *testing.T) {
+	t.Parallel()
 
-	query, ok := args["query"].(string)
-	if !ok || strings.TrimSpace(query) == "" {
-		t.Fatalf("unexpected Exa query argument: %#v", args["query"])
+	var (
+		receivedQueries []string
+		queriesMu       sync.Mutex
+	)
+
+	client, closeServer := newExaAPISearchTestClient(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		request *http.Request,
+	) {
+		var requestBody exaSearchRequest
+
+		if err := json.NewDecoder(request.Body).Decode(&requestBody); err != nil {
+			t.Errorf("decode Exa request body: %v", err)
+		}
+
+		queriesMu.Lock()
+		receivedQueries = append(receivedQueries, requestBody.Query)
+		queriesMu.Unlock()
+
+		responseWriter.Header().Set("Content-Type", "application/json")
+
+		err := json.NewEncoder(responseWriter).Encode(map[string]any{
+			"error": "",
+			"results": []map[string]any{
+				{
+					"title": "Example Source",
+					"url":   "https://example.com/source",
+					"text":  "result for " + requestBody.Query,
+				},
+			},
+		})
+		if err != nil {
+			t.Errorf("encode Exa response: %v", err)
+		}
+	}))
+	defer closeServer()
+
+	results, err := client.search(context.Background(), testExaAPIWebSearchConfig(), []string{"alpha", "beta"})
+	if err != nil {
+		t.Fatalf("search: %v", err)
 	}
 
-	switch value := args["numResults"].(type) {
-	case int:
-		if value != testWebSearchMaxURLs {
-			t.Fatalf("unexpected Exa numResults: %d", value)
-		}
-	case float64:
-		if value != float64(testWebSearchMaxURLs) {
-			t.Fatalf("unexpected Exa numResults: %v", value)
-		}
-	default:
-		t.Fatalf("unexpected Exa numResults type %T with value %#v", value, value)
+	if len(results) != 2 {
+		t.Fatalf("unexpected result count: %d", len(results))
 	}
 
-	// web_search_exa exposes only query/numResults: the keyless MCP path has
-	// no freshness/live switches to set, so any extra arg (a future freshness
-	// knob routed through MCP) must fail loudly here.
-	if len(args) != 2 {
-		t.Fatalf("unexpected Exa MCP arguments: %#v", args)
+	if results[0].Query != "alpha" || !strings.Contains(results[0].Text, "result for alpha") {
+		t.Fatalf("unexpected first result: %#v", results[0])
+	}
+
+	if results[1].Query != "beta" || !strings.Contains(results[1].Text, "result for beta") {
+		t.Fatalf("unexpected second result: %#v", results[1])
+	}
+
+	queriesMu.Lock()
+	defer queriesMu.Unlock()
+
+	if len(receivedQueries) != 2 {
+		t.Fatalf("unexpected Exa API request count: %d", len(receivedQueries))
 	}
 }
 
@@ -468,87 +502,27 @@ func TestAppendWebSearchResultsToConversationPreservesMultimodalParts(t *testing
 	}
 }
 
-func TestExaSearchClientSearchRunsMCPQueriesConcurrentlyAndKeepsOrderWhenNoAPIKeysConfigured(t *testing.T) {
+func TestExaSearchClientSearchRequiresAPIKeys(t *testing.T) {
 	t.Parallel()
 
-	var (
-		startedCount int
-		startedMu    sync.Mutex
-		release      = make(chan struct{})
-	)
+	client, closeServer := newExaAPISearchTestClient(http.HandlerFunc(func(
+		responseWriter http.ResponseWriter,
+		request *http.Request,
+	) {
+		t.Error("Exa API must not be called without API keys")
 
-	implementation := new(mcp.Implementation)
-	implementation.Name = "exa-test"
-	implementation.Version = "1.0.0"
+		responseWriter.Header().Set("Content-Type", "application/json")
 
-	server := mcp.NewServer(implementation, nil)
-
-	tool := new(mcp.Tool)
-	tool.Name = exaSearchToolName
-
-	mcp.AddTool(server, tool, func(
-		ctx context.Context,
-		_ *mcp.CallToolRequest,
-		args map[string]any,
-	) (*mcp.CallToolResult, any, error) {
-		assertExaSearchRequest(t, args)
-
-		query, _ := args["query"].(string)
-
-		startedMu.Lock()
-		startedCount++
-
-		if startedCount == 2 {
-			close(release)
+		err := json.NewEncoder(responseWriter).Encode(testExaAPISearchSuccessResponse())
+		if err != nil {
+			t.Errorf("encode Exa response: %v", err)
 		}
-		startedMu.Unlock()
+	}))
+	defer closeServer()
 
-		select {
-		case <-release:
-		case <-ctx.Done():
-			return nil, nil, ctx.Err()
-		}
-
-		result := new(mcp.CallToolResult)
-		textContent := new(mcp.TextContent)
-		textContent.Text = "result for " + query
-		result.Content = []mcp.Content{textContent}
-
-		return result, nil, nil
-	})
-
-	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
-		return server
-	}, newStreamableHTTPOptions())
-
-	httpServer := httptest.NewServer(handler)
-	defer httpServer.Close()
-
-	client := exaSearchClient{
-		apiEndpoint: defaultExaSearchEndpoint,
-		mcpEndpoint: httpServer.URL,
-		httpClient:  httpServer.Client(),
-		keys:        newAPIKeyRotator(),
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	results, err := client.search(ctx, testTavilySearchConfig(), []string{"alpha", "beta"})
-	if err != nil {
-		t.Fatalf("search: %v", err)
-	}
-
-	if len(results) != 2 {
-		t.Fatalf("unexpected result count: %d", len(results))
-	}
-
-	if results[0].Query != "alpha" || results[0].Text != "result for alpha" {
-		t.Fatalf("unexpected first result: %#v", results[0])
-	}
-
-	if results[1].Query != "beta" || results[1].Text != "result for beta" {
-		t.Fatalf("unexpected second result: %#v", results[1])
+	_, err := client.search(context.Background(), testSearchConfig(), []string{"alpha", "beta"})
+	if err == nil {
+		t.Fatal("expected error without Exa API keys, got nil")
 	}
 }
 
@@ -715,7 +689,7 @@ func TestExaSearchClientSearchRotatesAPIKeysAcrossCalls(t *testing.T) {
 	}
 }
 
-func TestRoutedWebSearchClientFallsBackToTavilyWhenMCPFails(t *testing.T) {
+func TestRoutedWebSearchClientFallsBackToTavilyWhenExaFails(t *testing.T) {
 	t.Parallel()
 
 	exaClient := newStubWebSearchClient(func(
@@ -743,9 +717,11 @@ func TestRoutedWebSearchClientFallsBackToTavilyWhenMCPFails(t *testing.T) {
 		tavily: tavilyClient,
 	}
 
+	loadedConfig := testExaAPIWebSearchConfig()
+
 	const query = "latest ai news"
 
-	results, err := client.search(context.Background(), testSearchConfig(), []string{query})
+	results, err := client.search(context.Background(), loadedConfig, []string{query})
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
@@ -981,6 +957,7 @@ func TestRoutedWebSearchClientHardcodedTinyFishExaTavilyChain(t *testing.T) {
 	tests := []struct {
 		name             string
 		tinyFishAPIKeys  []string
+		exaAPIKeys       []string
 		tinyFishSucceeds bool
 		exaSucceeds      bool
 		tavilySucceeds   bool
@@ -993,6 +970,7 @@ func TestRoutedWebSearchClientHardcodedTinyFishExaTavilyChain(t *testing.T) {
 		{
 			name:             "tinyfish success short-circuits exa and tavily",
 			tinyFishAPIKeys:  []string{"tf-key"},
+			exaAPIKeys:       []string{"exa-key"},
 			tinyFishSucceeds: true,
 			exaSucceeds:      true,
 			tavilySucceeds:   true,
@@ -1004,6 +982,7 @@ func TestRoutedWebSearchClientHardcodedTinyFishExaTavilyChain(t *testing.T) {
 		{
 			name:             "tinyfish fails falls back to exa",
 			tinyFishAPIKeys:  []string{"tf-key"},
+			exaAPIKeys:       []string{"exa-key"},
 			tinyFishSucceeds: false,
 			exaSucceeds:      true,
 			tavilySucceeds:   true,
@@ -1015,6 +994,7 @@ func TestRoutedWebSearchClientHardcodedTinyFishExaTavilyChain(t *testing.T) {
 		{
 			name:             "tinyfish and exa fail falls back to tavily",
 			tinyFishAPIKeys:  []string{"tf-key"},
+			exaAPIKeys:       []string{"exa-key"},
 			tinyFishSucceeds: false,
 			exaSucceeds:      false,
 			tavilySucceeds:   true,
@@ -1026,6 +1006,7 @@ func TestRoutedWebSearchClientHardcodedTinyFishExaTavilyChain(t *testing.T) {
 		{
 			name:            "no tinyfish keys skips tinyfish and uses exa",
 			tinyFishAPIKeys: nil,
+			exaAPIKeys:      []string{"exa-key"},
 			exaSucceeds:     true,
 			tavilySucceeds:  true,
 			wantText:        "exa result",
@@ -1036,12 +1017,25 @@ func TestRoutedWebSearchClientHardcodedTinyFishExaTavilyChain(t *testing.T) {
 		{
 			name:            "no tinyfish exa fails uses tavily",
 			tinyFishAPIKeys: nil,
+			exaAPIKeys:      []string{"exa-key"},
 			exaSucceeds:     false,
 			tavilySucceeds:  true,
 			wantText:        "tavily result",
 			wantTinyCalls:   0,
 			wantExaCalls:    1,
 			wantTavilyCalls: 1,
+		},
+		{
+			name:             "no exa keys skips exa and uses tavily",
+			tinyFishAPIKeys:  []string{"tf-key"},
+			exaAPIKeys:       nil,
+			tinyFishSucceeds: false,
+			exaSucceeds:      true,
+			tavilySucceeds:   true,
+			wantText:         "tavily result",
+			wantTinyCalls:    1,
+			wantExaCalls:     0,
+			wantTavilyCalls:  1,
 		},
 	}
 
@@ -1075,6 +1069,10 @@ func TestRoutedWebSearchClientHardcodedTinyFishExaTavilyChain(t *testing.T) {
 			if len(tc.tinyFishAPIKeys) > 0 {
 				loadedConfig.WebSearch.TinyFish.APIKey = tc.tinyFishAPIKeys[0]
 				loadedConfig.WebSearch.TinyFish.APIKeys = tc.tinyFishAPIKeys
+			}
+			if len(tc.exaAPIKeys) > 0 {
+				loadedConfig.WebSearch.Exa.APIKey = tc.exaAPIKeys[0]
+				loadedConfig.WebSearch.Exa.APIKeys = tc.exaAPIKeys
 			}
 
 			client := routedWebSearchClient{
@@ -1139,6 +1137,7 @@ func TestRoutedWebSearchClientCustomOrder(t *testing.T) {
 			webSearchProviderTinyFish,
 		}
 		loadedConfig.WebSearch.TinyFish.APIKeys = []string{"tf-key"}
+		loadedConfig.WebSearch.Exa.APIKeys = []string{"exa-key"}
 		loadedConfig.WebSearch.Tavily.APIKeys = []string{"tvly-key"}
 
 		client := routedWebSearchClient{
@@ -1180,6 +1179,7 @@ func TestRoutedWebSearchClientCustomOrder(t *testing.T) {
 			webSearchProviderTinyFish,
 		}
 		loadedConfig.WebSearch.TinyFish.APIKeys = []string{"tf-key"}
+		loadedConfig.WebSearch.Exa.APIKeys = []string{"exa-key"}
 		loadedConfig.WebSearch.Tavily.APIKeys = []string{"tvly-key"}
 
 		client := routedWebSearchClient{
@@ -1251,67 +1251,53 @@ func TestRoutedWebSearchClientHardcodedErrorMessagesAndExaName(t *testing.T) {
 	t.Run("all fail with tinyfish uses TinyFish Search and Exa branch", func(t *testing.T) {
 		t.Parallel()
 
-		for _, tc := range []struct {
-			name       string
-			exaAPIKeys []string
-			wantExa    string
-		}{
-			{"exa MCP when no api key", nil, "Exa MCP"},
-			{"exa Search API when key set", []string{"exa-key"}, "Exa Search API"},
-		} {
-			t.Run(tc.name, func(t *testing.T) {
-				t.Parallel()
+		tinyFishClient := newStubWebSearchClient(func(_ context.Context, _ config, _ []string) ([]webSearchResult, error) {
+			return nil, errTinyFish
+		})
+		exaClient := newStubWebSearchClient(func(_ context.Context, _ config, _ []string) ([]webSearchResult, error) {
+			return nil, errExa
+		})
+		tavilyClient := newStubWebSearchClient(func(_ context.Context, _ config, _ []string) ([]webSearchResult, error) {
+			return nil, errTavily
+		})
 
-				tinyFishClient := newStubWebSearchClient(func(_ context.Context, _ config, _ []string) ([]webSearchResult, error) {
-					return nil, errTinyFish
-				})
-				exaClient := newStubWebSearchClient(func(_ context.Context, _ config, _ []string) ([]webSearchResult, error) {
-					return nil, errExa
-				})
-				tavilyClient := newStubWebSearchClient(func(_ context.Context, _ config, _ []string) ([]webSearchResult, error) {
-					return nil, errTavily
-				})
+		loadedConfig := testSearchConfig()
+		loadedConfig.WebSearch.TinyFish.APIKey = "tf-key"
+		loadedConfig.WebSearch.TinyFish.APIKeys = []string{"tf-key"}
+		loadedConfig.WebSearch.Exa.APIKey = "exa-key"
+		loadedConfig.WebSearch.Exa.APIKeys = []string{"exa-key"}
 
-				loadedConfig := testSearchConfig()
-				loadedConfig.WebSearch.TinyFish.APIKey = "tf-key"
+		client := routedWebSearchClient{tinyFish: tinyFishClient, exa: exaClient, tavily: tavilyClient}
 
-				loadedConfig.WebSearch.TinyFish.APIKeys = []string{"tf-key"}
-				if len(tc.exaAPIKeys) > 0 {
-					loadedConfig.WebSearch.Exa.APIKey = tc.exaAPIKeys[0]
-					loadedConfig.WebSearch.Exa.APIKeys = tc.exaAPIKeys
-				}
+		_, err := client.search(context.Background(), loadedConfig, []string{"q"})
+		if err == nil {
+			t.Fatal("expected error")
+		}
 
-				client := routedWebSearchClient{tinyFish: tinyFishClient, exa: exaClient, tavily: tavilyClient}
+		msg := err.Error()
+		if !strings.Contains(msg, "TinyFish Search") {
+			t.Fatalf("error missing TinyFish Search: %q", msg)
+		}
 
-				_, err := client.search(context.Background(), loadedConfig, []string{"q"})
-				if err == nil {
-					t.Fatal("expected error")
-				}
+		if !strings.Contains(msg, "Exa Search API") {
+			t.Fatalf("error missing %q: %q", "Exa Search API", msg)
+		}
 
-				msg := err.Error()
-				if !strings.Contains(msg, "TinyFish Search") {
-					t.Fatalf("error missing TinyFish Search: %q", msg)
-				}
+		if !strings.Contains(msg, "Tavily") {
+			t.Fatalf("error missing Tavily: %q", msg)
+		}
 
-				if !strings.Contains(msg, tc.wantExa) {
-					t.Fatalf("error missing %q: %q", tc.wantExa, msg)
-				}
-
-				if !strings.Contains(msg, "Tavily") {
-					t.Fatalf("error missing Tavily: %q", msg)
-				}
-
-				if !errors.Is(err, errTinyFish) || !errors.Is(err, errExa) || !errors.Is(err, errTavily) {
-					t.Fatalf("expected joined errors, got %v", err)
-				}
-			})
+		if !errors.Is(err, errTinyFish) || !errors.Is(err, errExa) || !errors.Is(err, errTavily) {
+			t.Fatalf("expected joined errors, got %v", err)
 		}
 	})
 
-	t.Run("all fail without tinyfish omits tinyfish and uses Exa branch", func(t *testing.T) {
+	t.Run("unkeyed exa is skipped in routed errors", func(t *testing.T) {
 		t.Parallel()
 
 		exaClient := newStubWebSearchClient(func(_ context.Context, _ config, _ []string) ([]webSearchResult, error) {
+			t.Error("unkeyed Exa must be skipped, not called")
+
 			return nil, errExa
 		})
 		tavilyClient := newStubWebSearchClient(func(_ context.Context, _ config, _ []string) ([]webSearchResult, error) {
@@ -1334,12 +1320,16 @@ func TestRoutedWebSearchClientHardcodedErrorMessagesAndExaName(t *testing.T) {
 			t.Fatalf("error should not contain TinyFish when not configured: %q", msg)
 		}
 
-		if !strings.Contains(msg, "Exa MCP") {
-			t.Fatalf("error missing Exa MCP: %q", msg)
+		if strings.Contains(msg, "Exa") {
+			t.Fatalf("error should not contain Exa when unkeyed: %q", msg)
 		}
 
 		if !strings.Contains(msg, "Tavily") {
 			t.Fatalf("error missing Tavily: %q", msg)
+		}
+
+		if len(exaClient.calls) != 0 {
+			t.Fatalf("unexpected Exa call count: %d", len(exaClient.calls))
 		}
 	})
 }
@@ -2538,12 +2528,4 @@ func testSearchConfig() config {
 	loadedConfig.MaxMessages = defaultMaxMessages
 
 	return *loadedConfig
-}
-
-func newStreamableHTTPOptions() *mcp.StreamableHTTPOptions {
-	options := new(mcp.StreamableHTTPOptions)
-	options.Stateless = true
-	options.JSONResponse = true
-
-	return options
 }

@@ -916,7 +916,7 @@ func (instance *bot) handleSearchTypeCommand(
 		)
 	}
 
-	if !loadedConfig.WebSearch.exaUsesAPI() {
+	if len(loadedConfig.WebSearch.Exa.apiKeys()) == 0 {
 		return editInteractionResponseText(
 			session,
 			interaction.Interaction,
