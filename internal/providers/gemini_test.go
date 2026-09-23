@@ -2,6 +2,7 @@ package providers
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -745,6 +746,55 @@ func TestBuildGeminiGenerateContentRequestUploadsOnlyPDFDocuments(t *testing.T) 
 		t.Fatalf("unexpected uploaded PDF file part: %#v", part)
 	}
 }
+func TestBuildGeminiGenerateContentRequestUploadsLargeImageWithUltraHighResolution(t *testing.T) {
+	t.Parallel()
+
+	largeImageBytes := make([]byte, geminiInlineImageByteLimit+1)
+	for index := range largeImageBytes {
+		largeImageBytes[index] = byte(index)
+	}
+
+	state := new(geminiUploadState)
+	files := newGeminiMediaUploadStub(t, state)
+	request := newSimpleGeminiStreamRequest()
+	request.Messages = []ChatMessage{
+		{
+			Role: searchtypes.MessageRoleUser,
+			Content: []ContentPart{
+				{"type": searchtypes.ContentTypeText, "text": "<@123>: what is this?"},
+				{
+					"type": searchtypes.ContentTypeImageURL,
+					"image_url": map[string]string{
+						"url": "data:image/png;base64," + base64.StdEncoding.EncodeToString(largeImageBytes),
+					},
+				},
+			},
+		},
+	}
+
+	contents, _, err := BuildGeminiGenerateContentRequest(context.Background(), request, files)
+	if err != nil {
+		t.Fatalf("build gemini generate content request: %v", err)
+	}
+
+	if len(state.calls) != 1 {
+		t.Fatalf("expected large image to upload via Files API, got %d calls", len(state.calls))
+	}
+
+	if len(contents) != 1 || len(contents[0].Parts) != 2 {
+		t.Fatalf("unexpected gemini content shape: %#v", contents)
+	}
+
+	uploadedPart := contents[0].Parts[1]
+	if uploadedPart.FileData == nil {
+		t.Fatalf("expected uploaded file part for large image: %#v", uploadedPart)
+	}
+
+	if uploadedPart.MediaResolution == nil ||
+		uploadedPart.MediaResolution.Level != genai.PartMediaResolutionLevelMediaResolutionUltraHigh {
+		t.Fatalf("expected ultra high media resolution on uploaded image: %#v", uploadedPart.MediaResolution)
+	}
+}
 
 func TestBuildGeminiGenerateContentRequestUploadsGenericFiles(t *testing.T) {
 	t.Parallel()
@@ -1061,6 +1111,11 @@ func assertGeminiConvertedContents(t *testing.T, contents []*genai.Content) {
 
 	if string(contents[0].Parts[1].InlineData.Data) != testGeminiHelloPrompt {
 		t.Fatalf("unexpected image bytes: %q", string(contents[0].Parts[1].InlineData.Data))
+	}
+
+	if contents[0].Parts[1].MediaResolution == nil ||
+		contents[0].Parts[1].MediaResolution.Level != genai.PartMediaResolutionLevelMediaResolutionUltraHigh {
+		t.Fatalf("expected ultra high image media resolution: %#v", contents[0].Parts[1].MediaResolution)
 	}
 
 	if contents[1].Role != string(genai.RoleModel) {

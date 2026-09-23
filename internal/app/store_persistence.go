@@ -33,7 +33,11 @@ const (
 
 const (
 	messageNodeStorePersistSafeMaxBytes = 200 * 1024 * 1024
-	trimSnapshotBinarySearchDivisor     = 2
+	// singleNodeImageURLByteLimit drops (never slices) an image_url data URL
+	// that alone would dominate the single-node fallback budget. Slicing a
+	// base64 data URL corrupts the payload on restore.
+	singleNodeImageURLByteLimit     = 512 * 1024
+	trimSnapshotBinarySearchDivisor = 2
 )
 
 const (
@@ -480,9 +484,19 @@ func truncateSingleHugeNodeToFit(nodes map[string]messageNodeSnapshot, maxBytes 
 		for _, part := range snapshot.Media {
 			part.Text = truncateStringToBytes(part.Text, 64*1024)
 
-			part.ImageURL = truncateStringToBytes(part.ImageURL, 512*1024)
+			// A sliced data: URL no longer base64-decodes, so a truncated
+			// image restores as corrupt bytes the providers then reject.
+			// Drop the image (text survives) instead of corrupting it.
+			if len(part.ImageURL) > singleNodeImageURLByteLimit {
+				part.ImageURL = ""
+			}
+
 			if len(part.Data) > 256*1024 {
 				part.Data = part.Data[:256*1024]
+			}
+
+			if part.Type == contentTypeImageURL && strings.TrimSpace(part.ImageURL) == "" {
+				continue
 			}
 
 			truncatedMedia = append(truncatedMedia, part)
@@ -1469,7 +1483,6 @@ func (snapshot messageNodeSnapshot) messageNode() *messageNode {
 			continue
 		}
 
-		downscaleContentPartImage(part)
 		node.media = append(node.media, part)
 	}
 

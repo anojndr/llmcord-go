@@ -36,7 +36,7 @@ const (
 	responsesStreamEventReasoningTextDelta        = "response.reasoning_text.delta"
 	responsesStreamEventReasoningSummaryPartDone  = "response.reasoning_summary_part.done"
 	responsesStreamEventReasoningSummaryTextDelta = "response.reasoning_summary_text.delta"
-	responsesImageDetailAuto                      = "auto"
+	responsesImageDetailHigh                      = "high"
 	responsesInputFileType                        = "input_file"
 	responsesInputImageType                       = "input_image"
 	responsesInputTextType                        = "input_text"
@@ -642,7 +642,7 @@ func responsesUserPart(part ContentPart) (map[string]any, bool, error) {
 		return map[string]any{
 			searchtypes.MessageTypeKey:   responsesInputImageType,
 			"image_url":                  imageURL,
-			searchtypes.MessageDetailKey: responsesImageDetailAuto,
+			searchtypes.MessageDetailKey: responsesImageDetailHigh,
 		}, true, nil
 	case searchtypes.ContentTypeDocument, searchtypes.ContentTypeFileData:
 		documentBytes, mimeType, filename, err := support.AttachmentBytes(part)

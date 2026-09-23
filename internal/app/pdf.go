@@ -497,7 +497,12 @@ func pdfImagePart(extractedImage model.Image) (contentPart, error) {
 		return nil, err
 	}
 
-	return makeImageContentPart(mimeType, imageBytes), nil
+	imagePart, ok := makeImageContentPart(mimeType, imageBytes)
+	if !ok {
+		return contentPart{}, nil
+	}
+
+	return imagePart, nil
 }
 
 func pdfImageMIMEType(fileType string, imageBytes []byte) (string, error) {

@@ -2,6 +2,7 @@ package app
 
 import (
 	"encoding/json"
+	"maps"
 	"strings"
 	"testing"
 )
@@ -195,6 +196,47 @@ func TestEncodeMessageNodeSnapshotJSONEvictsOldestNodesWhenTotalSizeExceedsSafeL
 	if _, ok := fitted[lastID]; !ok {
 		t.Fatalf("expected newest node %s to be kept", lastID)
 	}
+}
+func TestTruncateSingleHugeNodeDropsOversizedImageInsteadOfSlicing(t *testing.T) {
+	t.Parallel()
+
+	oversizedImageURL := "data:image/png;base64," + strings.Repeat("Z", singleNodeImageURLByteLimit+1)
+	nodes := singleNodeWithImageForTest(oversizedImageURL)
+
+	fitted := truncateSingleHugeNodeToFit(maps.Clone(nodes), 2*1024*1024)
+
+	fittedSnapshot, ok := fitted["1234567890123456789"]
+	if !ok {
+		t.Fatal("expected single node to survive image drop")
+	}
+
+	if len(fittedSnapshot.Media) != 0 {
+		t.Fatalf("expected oversized image dropped, got %d media parts", len(fittedSnapshot.Media))
+	}
+
+	if fittedSnapshot.Text != "kept text" {
+		t.Fatalf("expected text to survive image drop, got %q", fittedSnapshot.Text)
+	}
+}
+
+func singleNodeWithImageForTest(imageURL string) map[string]messageNodeSnapshot {
+	node := testAssistantMessageNodeSnapshot()
+	node.Text = "kept text"
+	node.Media = []contentPartSnapshot{testImagePartSnapshotForTest(imageURL)}
+
+	return map[string]messageNodeSnapshot{"1234567890123456789": node}
+}
+
+func testImagePartSnapshotForTest(imageURL string) contentPartSnapshot {
+	part, ok := contentPartSnapshotFromPart(contentPart{
+		messageTypeKey: contentTypeImageURL,
+		"image_url":    map[string]string{messageURLKey: imageURL},
+	})
+	if !ok {
+		panic("test image part snapshot must decode")
+	}
+
+	return part
 }
 
 func TestSaveSnapshotTrimsToFitSizeLimit(t *testing.T) {

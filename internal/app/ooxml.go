@@ -298,7 +298,12 @@ func ooxmlImagePart(archiveFile *zip.File) (contentPart, bool, error) {
 		return contentPart{}, false, nil
 	}
 
-	return makeImageContentPart(mimeType, imageBytes), true, nil
+	imagePart, imageOK := makeImageContentPart(mimeType, imageBytes)
+	if !imageOK {
+		return contentPart{}, false, nil
+	}
+
+	return imagePart, true, nil
 }
 
 func ooxmlImageMIMEType(fileName string, imageBytes []byte) (string, bool) {

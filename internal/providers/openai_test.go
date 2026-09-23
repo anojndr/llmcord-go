@@ -1426,7 +1426,7 @@ func assertOpenAIResponsesUserMessage(t *testing.T, rawMessage any) {
 		t.Fatalf("unexpected image_url: %#v", secondPart["image_url"])
 	}
 
-	if secondPart["detail"] != responsesImageDetailAuto {
+	if secondPart["detail"] != responsesImageDetailHigh {
 		t.Fatalf("unexpected image detail: %#v", secondPart["detail"])
 	}
 }
@@ -1745,7 +1745,7 @@ func TestOpenAINormalizeRequestMessages(t *testing.T) {
 	}
 
 	image1, ok1 := parts[1]["image_url"].(map[string]string)
-	if !ok1 || image1["url"] != "https://example.com/test.png" || image1["detail"] != "auto" {
+	if !ok1 || image1["url"] != "https://example.com/test.png" || image1["detail"] != "high" {
 		t.Fatalf("unexpected image 1 normalized image_url: %#v", parts[1]["image_url"])
 	}
 
@@ -1755,7 +1755,7 @@ func TestOpenAINormalizeRequestMessages(t *testing.T) {
 	}
 
 	image3, ok3 := parts[3]["image_url"].(map[string]string)
-	if !ok3 || image3["url"] != "https://example.com/test3.png" || image3["detail"] != "auto" {
+	if !ok3 || image3["url"] != "https://example.com/test3.png" || image3["detail"] != "high" {
 		t.Fatalf("unexpected image 3 normalized image_url: %#v", parts[3]["image_url"])
 	}
 }
@@ -1808,8 +1808,8 @@ func TestBuildChatCompletionRequestBodyNormalizesImagesForOpenAICompatible(t *te
 	}
 
 	imagePart, imageOK := parts[1]["image_url"].(map[string]string)
-	if !imageOK || imagePart["url"] != "data:image/png;base64,abc" || imagePart["detail"] != "auto" {
-		t.Fatalf("expected OpenAI-compatible provider request to include detail: auto, got: %#v", parts[1]["image_url"])
+	if !imageOK || imagePart["url"] != "data:image/png;base64,abc" || imagePart["detail"] != "high" {
+		t.Fatalf("expected OpenAI-compatible provider request to include detail: high, got: %#v", parts[1]["image_url"])
 	}
 }
 

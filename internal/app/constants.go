@@ -192,17 +192,6 @@ const (
 	showThinkingPageBodyMaxLength      = showThinkingMessageMaxLength - 64
 	geminiFilePollInterval             = 500 * time.Millisecond
 	geminiInlineImageByteLimit         = 4 * 1024 * 1024
-	// attachmentImageMaxDimension caps the longest side of images kept for
-	// the model. Discord attachments arrive at phone-camera resolution
-	// (often 4000px+); models see a downscaled variant anyway, so shrinking
-	// once at ingest cuts base64 payload, prefill tokens, JSON persistence,
-	// and snapshot-cache copies on every follow-up.
-	attachmentImageMaxDimension = 1536
-	// attachmentImageJPEGQuality is the JPEG quality used when a downscaled
-	// image must be re-encoded. PNG/GIF sources stay lossless; lossy
-	// sources re-encode as JPEG so a 12MP screenshot stops costing ~30MB
-	// of base64 per turn.
-	attachmentImageJPEGQuality         = 85
 	openRouterHost                     = "openrouter.ai"
 	openRouterTransformsField          = "transforms"
 	openRouterMiddleOutTransform       = "middle-out"

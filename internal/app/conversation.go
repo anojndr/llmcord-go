@@ -386,7 +386,8 @@ func (instance *bot) initializeNode(
 		node.text = attachmentDownloadFallbackText
 	}
 
-	node.hasBadAttachments = len(message.Attachments) > supportedAttachmentCount(message.Attachments)
+	node.hasBadAttachments = len(message.Attachments) > supportedAttachmentCount(message.Attachments) ||
+		rejectedImagePayloadCount(payloads) > 0
 	node.parentMessage = parentMessage
 	node.fetchParentFailed = fetchParentFailed
 	node.initialized = true
@@ -521,13 +522,32 @@ func buildMediaParts(payloads []attachmentPayload) []contentPart {
 	return parts
 }
 
+// rejectedImagePayloadCount counts image payloads dropped by ingest guards
+// (oversized or provider-unsupported MIME) so the existing unsupported
+// attachment warning fires instead of silently swallowing them.
+func rejectedImagePayloadCount(payloads []attachmentPayload) int {
+	rejected := 0
+
+	for _, payload := range payloads {
+		if attachmentContentPartType(attachmentPayloadContentType(payload)) != contentTypeImageURL {
+			continue
+		}
+
+		if _, ok := attachmentPayloadToContentPart(payload); !ok {
+			rejected++
+		}
+	}
+
+	return rejected
+}
+
 func attachmentPayloadToContentPart(payload attachmentPayload) (contentPart, bool) {
 	contentType := attachmentPayloadContentType(payload)
 	partType := attachmentContentPartType(contentType)
 
 	switch partType {
 	case contentTypeImageURL:
-		return makeImageContentPart(contentType, payload.body), true
+		return makeImageContentPart(contentType, payload.body)
 	case contentTypeAudioData, contentTypeDocument, contentTypeFileData, contentTypeVideoData:
 		return binaryAttachmentContentPart(partType, payload, contentType), true
 	default:

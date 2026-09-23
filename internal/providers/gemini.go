@@ -1256,6 +1256,10 @@ func geminiImagePart(
 			return nil, false, uploadErr
 		}
 
+		if uploadedPart != nil {
+			uploadedPart.MediaResolution = newGeminiUltraHighMediaResolution()
+		}
+
 		return uploadedPart, uploadedPart != nil, nil
 	}
 
@@ -1264,7 +1268,20 @@ func geminiImagePart(
 		return nil, false, fmt.Errorf("decode gemini image data: %w", err)
 	}
 
-	return genai.NewPartFromBytes(imageBytes, imageData.MimeType), true, nil
+	imagePart := genai.NewPartFromBytes(imageBytes, imageData.MimeType)
+	imagePart.MediaResolution = newGeminiUltraHighMediaResolution()
+
+	return imagePart, true, nil
+}
+
+// newGeminiUltraHighMediaResolution pins image parts to the highest
+// per-content tokenization level so Gemini sees the original pixels instead
+// of a provider-side downscale.
+func newGeminiUltraHighMediaResolution() *genai.PartMediaResolution {
+	return &genai.PartMediaResolution{
+		Level:     genai.PartMediaResolutionLevelMediaResolutionUltraHigh,
+		NumTokens: nil,
+	}
 }
 
 func geminiSupportsDocumentPart(part ContentPart) bool {
