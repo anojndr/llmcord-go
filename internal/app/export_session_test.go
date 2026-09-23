@@ -115,6 +115,56 @@ func newExportInteractionSession(
 	}))
 }
 
+func TestExportSessionEntryKeepsFullAugmentedPrompt(t *testing.T) {
+	t.Parallel()
+
+	instance := new(bot)
+	instance.nodes = newMessageNodeStore(10)
+
+	augmentedText := "Answer the user's query based on the web search results.\n\n" +
+		"User query:\nnow make a random markdown table\n\nsearch the web.\n\n" +
+		"Web search results:\nQuery: planets\nResults:\nTitle: Example\nURL: https://example.com/source\n"
+
+	sourceMessage := &discordgo.Message{ID: "user-1", Author: newDiscordUser("user-1", false)}
+	node := instance.nodes.getOrCreate(sourceMessage.ID)
+	node.role = messageRoleUser
+	node.text = augmentedText
+	node.initialized = true
+
+	entry, _ := instance.exportSessionEntry(sourceMessage, "")
+	if entry.Text != strings.TrimSpace(augmentedText) {
+		t.Fatalf("expected full augmented prompt, got %q", entry.Text)
+	}
+}
+
+func TestNormalizeExportThinkingRepairsDeltaSeam(t *testing.T) {
+	t.Parallel()
+
+	got := normalizeExportThinking("accurate table.User wants a random table.")
+	if got != "accurate table. User wants a random table." {
+		t.Fatalf("expected repaired seam, got %q", got)
+	}
+
+	if got := normalizeExportThinking("Step 5.Next step"); got != "Step 5. Next step" {
+		t.Fatalf("expected numeric seam repaired, got %q", got)
+	}
+
+	for _, untouched := range []string{"value 3.14Next", "wait...Next", "v2.6Flash"} {
+		if normalizeExportThinking(untouched) != untouched {
+			t.Fatalf("expected %q untouched, got %q", untouched, normalizeExportThinking(untouched))
+		}
+	}
+}
+
+func TestExportSessionAuthorStripsVisionSuffix(t *testing.T) {
+	t.Parallel()
+
+	message := &discordgo.Message{ID: "reply-1", Author: newDiscordUser("bot-1", true)}
+	if got := exportSessionAuthor(message, messageRoleAssistant, "xiaomi/oc/mimo-v2.6-flash-free:vision"); got != "xiaomi/oc/mimo-v2.6-flash-free" {
+		t.Fatalf("expected vision suffix stripped, got %q", got)
+	}
+}
+
 func TestBuildExportSessionHTMLRendersChronologicalTurns(t *testing.T) {
 	t.Parallel()
 
@@ -130,7 +180,7 @@ func TestBuildExportSessionHTMLRendersChronologicalTurns(t *testing.T) {
 			Text:      "reply with **markdown**",
 			Thinking:  "private reasoning",
 			Sources:   []exportSessionSource{{Title: "Example", URL: "https://example.com/source"}},
-			Model:     "",
+			Model:     "openai/gpt-test:vision",
 			Timestamp: "",
 		},
 	}, testExportTime())
@@ -143,6 +193,8 @@ func TestBuildExportSessionHTMLRendersChronologicalTurns(t *testing.T) {
 		"https://example.com/source",
 		"theme-select",
 		"marked.min.js",
+		`title="openai/gpt-test:vision"`,
+		"renderMarkdown();",
 	} {
 		if !strings.Contains(exportHTML, fragment) {
 			t.Fatalf("expected fragment %q in export HTML", fragment)

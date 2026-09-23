@@ -6,11 +6,14 @@ import (
 	"fmt"
 	"html"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
 )
+
+var exportSentenceSeamRegexp = regexp.MustCompile(`([^.!?\s])([.!?])([A-Z])`)
 
 const (
 	exportSessionHTMLContentType = "text/html"
@@ -158,7 +161,8 @@ func (instance *bot) exportSessionEntry(
 	botUserID string,
 ) (exportSessionMessage, *discordgo.Message) {
 	entry := exportSessionMessage{
-		ID: message.ID, Role: "", Author: "", Text: "", Model: "", Thinking: "", Sources: nil, Timestamp: "",
+		ID: message.ID, Role: "", Author: "", Text: "", Model: "",
+		Thinking: "", Sources: nil, Timestamp: "",
 	}
 
 	if !message.Timestamp.IsZero() {
@@ -193,7 +197,7 @@ func (instance *bot) exportSessionEntry(
 
 	entry.Role = role
 	entry.Text = strings.TrimSpace(text)
-	entry.Thinking = strings.TrimSpace(thinking)
+	entry.Thinking = strings.TrimSpace(normalizeExportThinking(thinking))
 	entry.Model = strings.TrimSpace(model)
 	entry.Sources = exportSourcesFromMetadata(metadata)
 	entry.Author = exportSessionAuthor(message, role, entry.Model)
@@ -201,18 +205,43 @@ func (instance *bot) exportSessionEntry(
 	return entry, parent
 }
 
-// exportSessionAuthor names the turn: the model for assistant replies, the
-// Discord display name otherwise.
+// normalizeExportThinking repairs the missing separator where two thinking
+// deltas join without whitespace ("table.User"): streamed thinking chunks
+// concatenate verbatim, so a chunk ending in sentence punctuation followed
+// by a chunk starting with a capital renders as one glued token. The match
+// requires a non-punctuation, non-whitespace character before the mark and a
+// capital after it, so decimals, ellipses, version strings, and URLs (whose
+// punctuation is followed by a lowercase letter or digit) are untouched.
+func normalizeExportThinking(thinking string) string {
+	return exportSentenceSeamRegexp.ReplaceAllString(thinking, "$1$2 $3")
+}
+
+// exportSessionAuthor names the turn: the display model for assistant
+// replies (local routing suffixes like ":vision" stripped, matching the
+// Discord embed author), the Discord display name otherwise.
 func exportSessionAuthor(message *discordgo.Message, role, model string) string {
 	if role == messageRoleAssistant {
-		if model != "" {
-			return model
+		if display := strings.TrimSpace(trimConfiguredModelLocalSuffixes(model)); display != "" {
+			return display
 		}
 
 		return "Assistant"
 	}
 
 	return xFixupDisplayName(message)
+}
+
+// exportSessionAuthorSpan renders the author with the full configured model
+// as hover text when a local routing suffix was stripped, so the card shows
+// one clean name while preserving the exact provider/model route.
+func exportSessionAuthorSpan(message exportSessionMessage) string {
+	title := message.Author
+	if message.Model != "" && message.Model != message.Author {
+		title = message.Model
+	}
+
+	return `<span class="author" title="` + html.EscapeString(title) + `">` +
+		html.EscapeString(message.Author) + `</span>`
 }
 
 // exportSourcesFromMetadata flattens web and visual search metadata into a
@@ -318,6 +347,7 @@ func buildExportSessionHTML(messages []exportSessionMessage, generatedAt time.Ti
 	builder.WriteString(`</main>`)
 	builder.WriteString(`<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/15.0.4/marked.min.js"`)
 	builder.WriteString(` crossorigin="anonymous" referrerpolicy="no-referrer"></script>`)
+	builder.WriteString(`<script>`)
 	builder.WriteString(exportSessionJS)
 	builder.WriteString(`</script></body></html>`)
 
@@ -335,9 +365,8 @@ func exportSessionMessageCard(message exportSessionMessage, index int) string {
 	_, _ = fmt.Fprintf(&builder, `<article class="message %s" data-index="%d">`, roleClass, index)
 	builder.WriteString(`<div class="meta"><span class="role">`)
 	builder.WriteString(html.EscapeString(exportSessionRoleLabel(message.Role)))
-	builder.WriteString(`</span><span class="author">`)
-	builder.WriteString(html.EscapeString(message.Author))
 	builder.WriteString(`</span>`)
+	builder.WriteString(exportSessionAuthorSpan(message))
 
 	if message.Timestamp != "" {
 		builder.WriteString(`<span class="time">`)
@@ -432,17 +461,22 @@ const exportSessionJS = `(function(){` +
 	`var v=select.value;` +
 	`if(v==="light"||v==="dark"){root.dataset.theme=v;}else{delete root.dataset.theme;}` +
 	`try{localStorage.setItem("llmcord-export-theme",v);}catch(e){}});}` +
-	`var filter=document.getElementById("filter");` +
-	`if(filter){filter.addEventListener("input",function(){` +
-	`var q=filter.value.toLowerCase();` +
-	`Array.prototype.forEach.call(document.querySelectorAll(".message"),function(card){` +
-	`var text=card.textContent.toLowerCase();` +
-	`card.style.display=text.indexOf(q)===-1?"none":"";});});}` +
 	`function decode(b){try{return decodeURIComponent(escape(atob(b)));}catch(e){return "";}}` +
-	`if(window.marked){Array.prototype.forEach.call(document.querySelectorAll(".rendered"),` +
+	`function renderMarkdown(){` +
+	`if(!window.marked)return false;` +
+	`Array.prototype.forEach.call(document.querySelectorAll(".rendered"),` +
 	`function(node){var raw=decode(node.getAttribute("data-markdown")||"");` +
 	`if(!raw)return;` +
 	`node.innerHTML=window.marked.parse(raw,{breaks:true});` +
 	`var fallback=node.previousElementSibling;` +
-	`if(fallback&&fallback.classList.contains("fallback"))fallback.style.display="none";});}` +
+	`if(fallback&&fallback.classList.contains("fallback"))fallback.style.display="none";});` +
+	`return true;}` +
+	`var filter=document.getElementById("filter");` +
+	`if(filter){filter.addEventListener("input",function(){` +
+	`renderMarkdown();` +
+	`var q=filter.value.toLowerCase();` +
+	`Array.prototype.forEach.call(document.querySelectorAll(".message"),function(card){` +
+	`var text=card.textContent.toLowerCase();` +
+	`card.style.display=text.indexOf(q)===-1?"none":"";});});}` +
+	`renderMarkdown();` +
 	`})();`
