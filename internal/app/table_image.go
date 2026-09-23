@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"image"
@@ -18,6 +19,7 @@ import (
 	"golang.org/x/image/font/gofont/gobold"
 	"golang.org/x/image/font/gofont/goregular"
 	"golang.org/x/image/font/opentype"
+	"golang.org/x/image/font/sfnt"
 	"golang.org/x/image/math/fixed"
 )
 
@@ -44,6 +46,8 @@ const (
 	tableImageSystemFontDir        = "/usr/share/fonts"
 	tableImageSystemFontRegular    = "NotoSans-Regular.ttf"
 	tableImageSystemFontBold       = "NotoSans-Bold.ttf"
+	tableImageEmojiFontFile        = "NotoColorEmoji.ttf"
+	tableImageEmojiStrikePixels    = 128
 )
 
 var tableImageFallbackFontOrder = []string{
@@ -94,12 +98,14 @@ type tableImageFontSet struct {
 	regular   font.Face
 	bold      font.Face
 	fallbacks []font.Face
+	emoji     *tableImageEmojiFont
 }
 
 type tableImageFontLoader struct {
 	root          string
 	regularSuffix string
 	boldSuffix    string
+	emojiFile     string
 }
 
 var (
@@ -127,6 +133,7 @@ func newTableImageFontSet() (tableImageFontSet, error) {
 		root:          tableImageSystemFontDir,
 		regularSuffix: tableImageSystemFontRegular,
 		boldSuffix:    tableImageSystemFontBold,
+		emojiFile:     tableImageEmojiFontFile,
 	}
 
 	return loader.load()
@@ -156,6 +163,12 @@ func (loader tableImageFontLoader) load() (tableImageFontSet, error) {
 	}
 
 	fonts.fallbacks = loader.loadFallbackFaces()
+
+	if emoji, err := loader.loadEmojiFont(); err != nil {
+		logWarn("load table emoji font", err)
+	} else if emoji != nil {
+		fonts.emoji = emoji
+	}
 
 	return fonts, nil
 }
@@ -194,6 +207,400 @@ func (loader tableImageFontLoader) parseFirstFont(suffix string, fallback []byte
 	}
 
 	return parsed, nil
+}
+
+func (loader tableImageFontLoader) loadEmojiFont() (*tableImageEmojiFont, error) {
+	path, ok := firstTableImageFontPath(loader.root, loader.emojiFile)
+	if !ok {
+		return nil, fmt.Errorf("no table font matching %q: %w", loader.emojiFile, errTableImageFontAbsent)
+	}
+
+	fontBytes, err := readTableImageFontFile(path)
+	if err != nil {
+		return nil, err
+	}
+
+	parsed, err := sfnt.Parse(fontBytes)
+	if err != nil {
+		return nil, fmt.Errorf("parse table emoji font %q: %w", path, err)
+	}
+
+	emoji, err := newTableImageEmojiFont(parsed, fontBytes)
+	if err != nil {
+		return nil, fmt.Errorf("index table emoji font %q: %w", path, err)
+	}
+
+	return emoji, nil
+}
+
+// tableImageEmojiFont serves Noto Color Emoji CBDT/CBLC bitmap strikes.
+// opentype faces report these glyphs as colored (ErrColoredGlyph) and
+// render them as tofu boxes; the embedded PNG strikes are the only
+// full-color source, decoded once per glyph and cached.
+type tableImageEmojiFont struct {
+	parsed   *sfnt.Font
+	fontData []byte
+	strike   tableImageEmojiStrike
+	glyphs   map[rune]tableImageEmojiGlyph
+	cache    map[rune]image.Image
+	mu       sync.Mutex
+}
+
+type tableImageEmojiStrike struct {
+	dataOffset   int
+	entries      []tableImageEmojiIndexEntry
+	ppem         int
+	strikePixels int
+}
+
+type tableImageEmojiIndexEntry struct {
+	firstGlyph uint16
+	lastGlyph  uint16
+	base       int
+}
+
+type tableImageEmojiGlyph struct {
+	data     []byte
+	bearingX int
+	bearingY int
+	advance  int
+	width    int
+	height   int
+}
+
+// newTableImageEmojiFont indexes the single 128px CBDT/CBLC bitmap strike
+// in Noto Color Emoji. Only format-1 index subtables with format-17/18
+// small-glyph PNG records are supported, which covers the Noto strike.
+func newTableImageEmojiFont(parsed *sfnt.Font, fontData []byte) (*tableImageEmojiFont, error) {
+	strike, glyphs, err := indexTableImageEmojiStrike(parsed, fontData)
+	if err != nil {
+		return nil, err
+	}
+
+	return &tableImageEmojiFont{
+		parsed:   parsed,
+		fontData: fontData,
+		strike:   strike,
+		glyphs:   glyphs,
+		cache:    make(map[rune]image.Image),
+	}, nil
+}
+
+func indexTableImageEmojiStrike(
+	parsed *sfnt.Font,
+	fontData []byte,
+) (tableImageEmojiStrike, map[rune]tableImageEmojiGlyph, error) {
+	var strike tableImageEmojiStrike
+
+	cblcOffset, cblcLength, found := tableImageFontTable(fontData, "CBLC")
+	if !found {
+		return strike, nil, fmt.Errorf("emoji font missing CBLC table: %w", errTableImageFontAbsent)
+	}
+
+	cbdtOffset, _, found := tableImageFontTable(fontData, "CBDT")
+	if !found {
+		return strike, nil, fmt.Errorf("emoji font missing CBDT table: %w", errTableImageFontAbsent)
+	}
+
+	if cblcLength < 8 {
+		return strike, nil, fmt.Errorf("emoji CBLC table truncated: %w", errTableImageFontAbsent)
+	}
+
+	sizeCount := int(binary.BigEndian.Uint32(fontData[cblcOffset+4 : cblcOffset+8]))
+	if sizeCount <= 0 || 8+sizeCount*48 > cblcLength {
+		return strike, nil, fmt.Errorf("emoji CBLC size table invalid: %w", errTableImageFontAbsent)
+	}
+
+	best := -1
+
+	for index := range sizeCount {
+		ppemX, ppemY := tableImageEmojiStrikePPEM(fontData, cblcOffset+8+index*48)
+		pixels := max(ppemX, ppemY)
+
+		if best < 0 || absInt(pixels-tableImageEmojiStrikePixels) <
+			absInt(strike.strikePixels-tableImageEmojiStrikePixels) {
+			best = index
+			strike.strikePixels = pixels
+			strike.ppem = pixels
+		}
+	}
+
+	sizeBase := cblcOffset + 8 + best*48
+	subArrayOffset := int(binary.BigEndian.Uint32(fontData[sizeBase : sizeBase+4]))
+	subCount := int(binary.BigEndian.Uint32(fontData[sizeBase+8 : sizeBase+12]))
+
+	entries := make([]tableImageEmojiIndexEntry, 0, subCount)
+
+	for index := range subCount {
+		entryBase := cblcOffset + subArrayOffset + index*8
+		first := binary.BigEndian.Uint16(fontData[entryBase : entryBase+2])
+		last := binary.BigEndian.Uint16(fontData[entryBase+2 : entryBase+4])
+		additional := int(binary.BigEndian.Uint32(fontData[entryBase+4 : entryBase+8]))
+		entries = append(entries, tableImageEmojiIndexEntry{
+			firstGlyph: first,
+			lastGlyph:  last,
+			base:       cblcOffset + subArrayOffset + additional,
+		})
+	}
+
+	strike.entries = entries
+	strike.dataOffset = cbdtOffset
+
+	glyphs, err := tableImageEmojiGlyphRanges(parsed, strike)
+	if err != nil {
+		return strike, nil, err
+	}
+
+	resolved := make(map[rune]tableImageEmojiGlyph, len(glyphs))
+
+	for textRune, glyphIndex := range glyphs {
+		record, ok := tableImageEmojiGlyphRecord(fontData, strike, glyphIndex)
+		if !ok {
+			continue
+		}
+
+		resolved[textRune] = record
+	}
+
+	if len(resolved) == 0 {
+		return strike, nil, fmt.Errorf("emoji strike has no resolvable glyphs: %w", errTableImageFontAbsent)
+	}
+
+	return strike, resolved, nil
+}
+
+func tableImageEmojiStrikePPEM(fontData []byte, sizeBase int) (int, int) {
+	return int(fontData[sizeBase+16]), int(fontData[sizeBase+17])
+}
+
+func absInt(value int) int {
+	if value < 0 {
+		return -value
+	}
+
+	return value
+}
+
+func tableImageFontTable(fontData []byte, tag string) (int, int, bool) {
+	if len(fontData) < 12 || len(tag) != 4 {
+		return 0, 0, false
+	}
+
+	tableCount := int(binary.BigEndian.Uint16(fontData[4:6]))
+
+	for index := range tableCount {
+		base := 12 + index*16
+		if base+16 > len(fontData) {
+			return 0, 0, false
+		}
+
+		if string(fontData[base:base+4]) != tag {
+			continue
+		}
+
+		offset := int(binary.BigEndian.Uint32(fontData[base+8 : base+12]))
+		length := int(binary.BigEndian.Uint32(fontData[base+12 : base+16]))
+
+		if offset < 0 || length <= 0 || offset+length > len(fontData) {
+			return 0, 0, false
+		}
+
+		return offset, length, true
+	}
+
+	return 0, 0, false
+}
+
+func tableImageEmojiGlyphRanges(
+	parsed *sfnt.Font,
+	strike tableImageEmojiStrike,
+) (map[rune]uint32, error) {
+	covered := make(map[uint32]struct{})
+
+	for _, entry := range strike.entries {
+		for glyph := int(entry.firstGlyph); glyph <= int(entry.lastGlyph); glyph++ {
+			covered[uint32(glyph)] = struct{}{}
+		}
+	}
+
+	var buffer sfnt.Buffer
+
+	resolved := make(map[rune]uint32)
+
+	for textRune := rune(0x20); textRune <= rune(0x1FAFF); textRune++ {
+		glyph, err := parsed.GlyphIndex(&buffer, textRune)
+		if err != nil || glyph == 0 {
+			continue
+		}
+
+		if _, ok := covered[uint32(glyph)]; !ok {
+			continue
+		}
+
+		resolved[textRune] = uint32(glyph)
+	}
+
+	if len(resolved) == 0 {
+		return nil, fmt.Errorf("emoji font has no mappable glyphs: %w", errTableImageFontAbsent)
+	}
+
+	return resolved, nil
+}
+
+func tableImageEmojiGlyphRecord(
+	fontData []byte,
+	strike tableImageEmojiStrike,
+	glyphIndex uint32,
+) (tableImageEmojiGlyph, bool) {
+	var empty tableImageEmojiGlyph
+
+	for _, entry := range strike.entries {
+		if glyphIndex < uint32(entry.firstGlyph) || glyphIndex > uint32(entry.lastGlyph) {
+			continue
+		}
+
+		indexFormat := binary.BigEndian.Uint16(fontData[entry.base : entry.base+2])
+		imageFormat := binary.BigEndian.Uint16(fontData[entry.base+2 : entry.base+4])
+		imageOffset := int(binary.BigEndian.Uint32(fontData[entry.base+4 : entry.base+8]))
+
+		if indexFormat != 1 || (imageFormat != 17 && imageFormat != 18) {
+			continue
+		}
+
+		slot := int(glyphIndex) - int(entry.firstGlyph)
+		offsetBase := entry.base + 8 + slot*4
+		start := int(binary.BigEndian.Uint32(fontData[offsetBase : offsetBase+4]))
+		end := int(binary.BigEndian.Uint32(fontData[offsetBase+4 : offsetBase+8]))
+
+		if end <= start {
+			continue
+		}
+
+		recordBase := strike.dataOffset + imageOffset + start
+		if recordBase+8 > len(fontData) || recordBase+end-start > len(fontData) {
+			continue
+		}
+
+		record := fontData[recordBase : recordBase+(end-start)]
+		if len(record) < 8 {
+			continue
+		}
+
+		height := int(record[0])
+		width := int(record[1])
+
+		pngStart := -1
+
+		for offset := range min(16, len(record)) {
+			if len(record[offset:]) >= 4 && string(record[offset:offset+4]) == "\x89PNG" {
+				pngStart = offset
+
+				break
+			}
+		}
+
+		if pngStart < 0 || width <= 0 || height <= 0 {
+			continue
+		}
+
+		return tableImageEmojiGlyph{
+			data:     record[pngStart:],
+			bearingX: int(int8(record[2])),
+			bearingY: int(int8(record[3])),
+			advance:  int(record[4]),
+			width:    width,
+			height:   height,
+		}, true
+	}
+
+	return empty, false
+}
+
+func (emoji *tableImageEmojiFont) has(textRune rune) bool {
+	if emoji == nil {
+		return false
+	}
+
+	_, ok := emoji.glyphs[textRune]
+
+	return ok
+}
+
+func (emoji *tableImageEmojiFont) advancePixels(lineHeight int) int {
+	if emoji == nil {
+		return 0
+	}
+
+	return max(lineHeight, int(float64(lineHeight)*1.1))
+}
+
+func (emoji *tableImageEmojiFont) decoded(textRune rune) (image.Image, bool) {
+	if emoji == nil {
+		return nil, false
+	}
+
+	emoji.mu.Lock()
+	defer emoji.mu.Unlock()
+
+	if cached, ok := emoji.cache[textRune]; ok {
+		return cached, true
+	}
+
+	record, ok := emoji.glyphs[textRune]
+	if !ok || len(record.data) == 0 {
+		return nil, false
+	}
+
+	decoded, err := png.Decode(bytes.NewReader(record.data))
+	if err != nil {
+		delete(emoji.glyphs, textRune)
+
+		return nil, false
+	}
+
+	emoji.cache[textRune] = decoded
+
+	return decoded, true
+}
+
+func (emoji *tableImageEmojiFont) draw(
+	dst *image.RGBA,
+	textRune rune,
+	dotX int,
+	baselineY int,
+	lineHeight int,
+) (int, bool) {
+	glyph, ok := emoji.glyphs[textRune]
+	if !ok {
+		return 0, false
+	}
+
+	decoded, ok := emoji.decoded(textRune)
+	if !ok {
+		return 0, false
+	}
+
+	bounds := decoded.Bounds()
+	if bounds.Dx() <= 0 || bounds.Dy() <= 0 {
+		return 0, false
+	}
+
+	target := max(1, int(float64(lineHeight)*1.2))
+	scaled := decoded
+
+	if bounds.Dx() != target || bounds.Dy() != target {
+		fitted := image.NewRGBA(image.Rect(0, 0, target, target))
+		draw.ApproxBiLinear.Scale(fitted, fitted.Bounds(), decoded, bounds, draw.Over, nil)
+		scaled = fitted
+	}
+
+	ascent := int(float64(lineHeight) * 0.85)
+	top := baselineY - ascent - (target-ascent)/2
+	draw.Draw(dst, image.Rect(dotX, top, dotX+target, top+target), scaled, image.Point{}, draw.Over)
+
+	_ = glyph
+
+	return emoji.advancePixels(lineHeight), true
 }
 
 func (loader tableImageFontLoader) loadFallbackFaces() []font.Face {
@@ -593,6 +1000,9 @@ func measureTableColumnWidths(grid [][]string, fonts tableImageFontSet) []int {
 		}
 
 		for column, cell := range row {
+			cellWidth := tableImageMeasure(fonts, face, cell).Ceil() + 2*tableImageCellPaddingX
+			widths[column] = max(widths[column], cellWidth)
+
 			for _, word := range strings.Fields(cell) {
 				wordWidth := tableImageMeasure(fonts, face, word).Ceil() + 2*tableImageCellPaddingX
 				widths[column] = max(widths[column], wordWidth)
@@ -727,14 +1137,14 @@ func splitWideTableWord(fonts tableImageFontSet, face font.Face, word string, ma
 	return parts
 }
 
-// tableImageMeasure widths text rune by rune so glyphs missing from the
-// primary face measure with the fallback face that will actually render
-// them. Kerning is ignored: table cells are word-wrapped independently, so
-// sub-pixel kerning precision buys nothing.
 func tableImageMeasure(fonts tableImageFontSet, face font.Face, text string) fixed.Int26_6 {
 	var width fixed.Int26_6
 
 	for _, textRune := range text {
+		if tableImageIsEmojiModifier(textRune) {
+			continue
+		}
+
 		width += tableImageRuneAdvance(fonts, face, textRune)
 	}
 
@@ -742,6 +1152,10 @@ func tableImageMeasure(fonts tableImageFontSet, face font.Face, text string) fix
 }
 
 func tableImageRuneAdvance(fonts tableImageFontSet, face font.Face, textRune rune) fixed.Int26_6 {
+	if fonts.emoji != nil && fonts.emoji.has(textRune) {
+		return fixed.I(fonts.emoji.advancePixels(tableImageLineHeight(face)))
+	}
+
 	if _, ok := face.GlyphAdvance(textRune); ok {
 		advance, _ := face.GlyphAdvance(textRune)
 
@@ -764,6 +1178,10 @@ func tableImageRuneAdvance(fonts tableImageFontSet, face font.Face, textRune run
 }
 
 func tableImageRuneFace(fonts tableImageFontSet, face font.Face, textRune rune) font.Face {
+	if fonts.emoji != nil && fonts.emoji.has(textRune) {
+		return face
+	}
+
 	if _, ok := face.GlyphAdvance(textRune); ok {
 		return face
 	}
@@ -812,15 +1230,97 @@ func drawTableRow(
 
 // tableImageDrawString draws rune by rune so glyphs missing from the active
 // face fall back through the loaded Noto chain instead of rendering as tofu.
-// Runes missing from every face render with the primary face, preserving
-// position.
+// Color emoji bypass vector drawing entirely: the CBDT bitmap is blitted at
+// the current dot, then the dot advances by the emoji advance. Runes missing
+// from every face render with the primary face, preserving position.
 func tableImageDrawString(fonts tableImageFontSet, active *font.Drawer, text string) {
 	for _, textRune := range text {
+		if tableImageIsEmojiModifier(textRune) {
+			continue
+		}
+
+		if fonts.emoji != nil && fonts.emoji.has(textRune) {
+			tableImageDrawEmoji(fonts, active, textRune)
+
+			continue
+		}
+
 		previous := active.Dot
 		active.Face = tableImageRuneFace(fonts, active.Face, textRune)
 		active.Dot = previous
 		active.DrawString(string(textRune))
 	}
+}
+
+// tableImageIsEmojiModifier reports variation selectors, ZWJ, keycap marks,
+// and skin-tone modifiers. The CBDT strike has no glyphs for these shaping
+// runes (VS16 maps to glyph 0), and drawing them with a vector face emits
+// tofu boxes over the color bitmap. They only steer GSUB shaping, which the
+// bitmap renderer does not perform.
+func tableImageIsEmojiModifier(textRune rune) bool {
+	switch {
+	case textRune == 0x200D || textRune == 0xFE0E || textRune == 0xFE0F || textRune == 0x20E3:
+		return true
+	case textRune >= 0x1F3FB && textRune <= 0x1F3FF:
+		return true
+	}
+
+	return false
+}
+
+func tableImageDrawEmoji(fonts tableImageFontSet, active *font.Drawer, textRune rune) {
+	emoji := fonts.emoji
+	if emoji == nil {
+		return
+	}
+
+	dst, ok := active.Dst.(*image.RGBA)
+	if !ok {
+		tableImageDrawEmojiFallback(fonts, active, textRune)
+
+		return
+	}
+
+	advance, drawn := tableImageBlitEmoji(
+		emoji,
+		dst,
+		active,
+		textRune,
+	)
+	if !drawn {
+		tableImageDrawEmojiFallback(fonts, active, textRune)
+
+		return
+	}
+
+	active.Dot.X += fixed.I(advance)
+}
+
+func tableImageBlitEmoji(
+	emoji *tableImageEmojiFont,
+	dst *image.RGBA,
+	active *font.Drawer,
+	textRune rune,
+) (int, bool) {
+	lineHeight := tableImageLineHeight(active.Face)
+	baselineY := tableImageEmojiBaselineY(active)
+
+	return emoji.draw(dst, textRune, active.Dot.X.Ceil(), baselineY, lineHeight)
+}
+
+func tableImageDrawEmojiFallback(fonts tableImageFontSet, active *font.Drawer, textRune rune) {
+	previous := active.Dot
+	active.Face = tableImageRuneFace(fonts, active.Face, textRune)
+	active.Dot = previous
+	active.DrawString(string(textRune))
+}
+
+func tableImageEmojiBaselineY(active *font.Drawer) int {
+	if baseline := active.Dot.Y.Ceil(); baseline != 0 {
+		return baseline
+	}
+
+	return active.Face.Metrics().Ascent.Ceil()
 }
 
 func drawTableHorizontalLine(img *image.RGBA, src image.Image, x0, y, x1 int) {

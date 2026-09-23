@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"image"
 	"image/png"
 	"net/http"
 	"strings"
@@ -65,6 +66,108 @@ func TestRenderMarkdownTablePNGProducesImage(t *testing.T) {
 	if decoded.Bounds().Dx() < 100 || decoded.Bounds().Dy() < 20 {
 		t.Fatalf("unexpected table image bounds: %v", decoded.Bounds())
 	}
+}
+
+func TestRenderIssueTableKeepsDatesOnOneLine(t *testing.T) {
+	t.Parallel()
+
+	table := markdownTable{
+		header: []string{"Scenario", "Date"},
+		rows: [][]string{
+			{"🚀 Fastest", "Sep 30 - Oct 1"},
+			{"🎯 Most likely", "Oct 3 - Oct 6"},
+			{"🐌 Worst case", "~Oct 14"},
+		},
+	}
+
+	fonts, err := loadTableImageFonts()
+	if err != nil {
+		t.Fatalf("load table fonts: %v", err)
+	}
+
+	grid := tableImageGrid(table)
+	widths := measureTableColumnWidths(grid, fonts)
+
+	for rowIndex, row := range grid {
+		face := fonts.regular
+		if rowIndex == 0 {
+			face = fonts.bold
+		}
+
+		for column, cell := range row {
+			lines := wrapTableCellLines(fonts, face, cell, widths[column]-2*tableImageCellPaddingX)
+			if len(lines) != 1 {
+				t.Fatalf("expected one line for %q, got %q (width %d)", cell, lines, widths[column])
+			}
+		}
+	}
+
+	if _, err := renderMarkdownTablePNG(table); err != nil {
+		t.Fatalf("render issue table png: %v", err)
+	}
+}
+
+func TestRenderIssueTableDrawsEmojiInColor(t *testing.T) {
+	t.Parallel()
+
+	fonts, err := loadTableImageFonts()
+	if err != nil {
+		t.Fatalf("load table fonts: %v", err)
+	}
+
+	if fonts.emoji == nil {
+		t.Fatal("expected emoji font for color emoji rendering")
+	}
+
+	for _, textRune := range []rune{0x26A1, 0x1F680, 0x1F3AF, 0x1F40C} {
+		if !fonts.emoji.has(textRune) {
+			t.Fatalf("expected emoji glyph for U+%X", textRune)
+		}
+
+		if _, ok := fonts.emoji.decoded(textRune); !ok {
+			t.Fatalf("expected decodable emoji bitmap for U+%X", textRune)
+		}
+	}
+
+	imageBytes, err := renderMarkdownTablePNG(markdownTable{
+		header: []string{"Scenario", "Date"},
+		rows:   [][]string{{"🚀 Fastest", "Sep 30 - Oct 1"}},
+	})
+	if err != nil {
+		t.Fatalf("render emoji table png: %v", err)
+	}
+
+	decoded, err := png.Decode(bytes.NewReader(imageBytes))
+	if err != nil {
+		t.Fatalf("decode emoji table png: %v", err)
+	}
+
+	if !tableImageHasNonGrayPixel(decoded) {
+		t.Fatal("expected color emoji pixels in rendered table")
+	}
+}
+
+func tableImageHasNonGrayPixel(img image.Image) bool {
+	bounds := img.Bounds()
+
+	for y := bounds.Min.Y; y < bounds.Max.Y; y += 2 {
+		for x := bounds.Min.X; x < bounds.Max.X; x += 2 {
+			pixelRed, pixelGreen, pixelBlue, _ := img.At(x, y).RGBA()
+			pixelRed, pixelGreen, pixelBlue = pixelRed>>8, pixelGreen>>8, pixelBlue>>8
+
+			if pixelRed < 0x10 && pixelGreen < 0x10 && pixelBlue < 0x10 {
+				continue
+			}
+
+			if absInt(int(pixelRed)-int(pixelGreen)) > 24 ||
+				absInt(int(pixelGreen)-int(pixelBlue)) > 24 ||
+				absInt(int(pixelRed)-int(pixelBlue)) > 24 {
+				return true
+			}
+		}
+	}
+
+	return false
 }
 
 func TestRenderMarkdownTablePNGCoversAllFallbackScripts(t *testing.T) {
