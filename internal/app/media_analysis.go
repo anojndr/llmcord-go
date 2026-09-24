@@ -129,6 +129,245 @@ func (instance *bot) maybeAugmentConversationWithGeminiMedia(
 	return augmentedConversation, nil
 }
 
+// augmentConversationWithDocumentMedia runs PDF/document extraction and
+// Gemini audio/video analysis over a single shared attachment-context walk:
+// both stages filter the same loaded node media instead of each resolving
+// reply targets and locking nodes. Behavior matches the sequential calls it
+// replaces, including error strings and the PDF-before-media apply order.
+func (instance *bot) augmentConversationWithDocumentMedia(
+	ctx context.Context,
+	loadedConfig config,
+	providerSlashModel string,
+	sourceMessage *discordgo.Message,
+	conversation []chatMessage,
+) ([]chatMessage, error) {
+	documentMediaParts, err := instance.attachmentPartsForDocumentMedia(ctx, sourceMessage)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(documentMediaParts) == 0 {
+		return conversation, nil
+	}
+
+	augmentedConversation, err := instance.augmentConversationWithDocumentMediaParts(
+		ctx,
+		loadedConfig,
+		providerSlashModel,
+		conversation,
+		documentMediaParts,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return augmentedConversation, nil
+}
+
+func (instance *bot) attachmentPartsForDocumentMedia(
+	ctx context.Context,
+	sourceMessage *discordgo.Message,
+) ([]contentPart, error) {
+	messages := instance.attachmentAugmentationMessages(ctx, sourceMessage)
+
+	parts := make([]contentPart, 0)
+
+	for _, message := range messages {
+		messageParts, err := instance.messagePartsForMessage(
+			ctx,
+			message,
+			partNeedsDocumentMediaAugmentation,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		parts = append(parts, messageParts...)
+	}
+
+	return parts, nil
+}
+
+func partNeedsDocumentMediaAugmentation(part contentPart) bool {
+	return partNeedsPDFExtraction(part) || partNeedsGeminiMediaAnalysis(part)
+}
+
+func (instance *bot) augmentConversationWithDocumentMediaParts(
+	ctx context.Context,
+	loadedConfig config,
+	providerSlashModel string,
+	conversation []chatMessage,
+	documentMediaParts []contentPart,
+) ([]chatMessage, error) {
+	documentParts := make([]contentPart, 0, len(documentMediaParts))
+	mediaParts := make([]contentPart, 0, len(documentMediaParts))
+
+	for _, part := range documentMediaParts {
+		if partNeedsPDFExtraction(part) {
+			documentParts = append(documentParts, part)
+		}
+
+		if partNeedsGeminiMediaAnalysis(part) {
+			mediaParts = append(mediaParts, part)
+		}
+	}
+
+	augmentedConversation := conversation
+
+	if len(documentParts) != 0 {
+		extracted, err := instance.extractDocumentPartsConversation(
+			ctx,
+			loadedConfig,
+			providerSlashModel,
+			documentParts,
+			augmentedConversation,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		augmentedConversation = extracted
+	}
+
+	if len(mediaParts) != 0 {
+		analyzed, err := instance.analyzeDocumentMediaPartsConversation(
+			ctx,
+			loadedConfig,
+			providerSlashModel,
+			mediaParts,
+			augmentedConversation,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		augmentedConversation = analyzed
+	}
+
+	return augmentedConversation, nil
+}
+
+func (instance *bot) extractDocumentPartsConversation(
+	ctx context.Context,
+	loadedConfig config,
+	providerSlashModel string,
+	documentParts []contentPart,
+	conversation []chatMessage,
+) ([]chatMessage, error) {
+	canExtractDocuments, err := canExtractPDFContents(loadedConfig, providerSlashModel)
+	if err != nil {
+		return nil, err
+	}
+
+	if !canExtractDocuments {
+		return conversation, nil
+	}
+
+	apiKind, err := configuredModelAPIKind(loadedConfig, providerSlashModel)
+	if err != nil {
+		return nil, err
+	}
+
+	extractableParts, err := extractableDocumentPartsForAPIKind(documentParts, providers.ProviderAPIKind(apiKind))
+	if err != nil {
+		return nil, fmt.Errorf("filter document parts for extraction: %w", err)
+	}
+
+	if len(extractableParts) == 0 {
+		return conversation, nil
+	}
+
+	contentOptions, err := messageContentOptionsForModel(loadedConfig, providerSlashModel)
+	if err != nil {
+		return nil, fmt.Errorf("build document extraction content options: %w", err)
+	}
+
+	remainingImageSlots, err := remainingImageSlotsForConversation(conversation, contentOptions.maxImages)
+	if err != nil {
+		return nil, fmt.Errorf("calculate remaining image slots for document extraction: %w", err)
+	}
+
+	extractions, imageParts, err := extractedDocumentConversationData(ctx, extractableParts, remainingImageSlots)
+	if err != nil {
+		return nil, err
+	}
+
+	augmentedConversation, err := appendPDFContentsToConversation(conversation, extractions)
+	if err != nil {
+		return nil, fmt.Errorf("append extracted document contents: %w", err)
+	}
+
+	augmentedConversation, err = appendMediaPartsToConversation(augmentedConversation, imageParts)
+	if err != nil {
+		return nil, fmt.Errorf("append extracted document images: %w", err)
+	}
+
+	return augmentedConversation, nil
+}
+
+func (instance *bot) analyzeDocumentMediaPartsConversation(
+	ctx context.Context,
+	loadedConfig config,
+	providerSlashModel string,
+	mediaParts []contentPart,
+	conversation []chatMessage,
+) ([]chatMessage, error) {
+	apiKind, err := configuredModelAPIKind(loadedConfig, providerSlashModel)
+	if err != nil {
+		return nil, err
+	}
+
+	if apiKind == providerAPIKindGemini {
+		return conversation, nil
+	}
+
+	if len(mediaParts) == 0 {
+		return conversation, nil
+	}
+
+	geminiModel, err := configuredGeminiMediaModel(loadedConfig)
+	if err != nil {
+		return nil, err
+	}
+
+	analyses := make([]string, 0, len(mediaParts))
+	results := runTasksConcurrently(
+		ctx,
+		geminiMediaAnalysisConcurrency,
+		len(mediaParts),
+		func(taskContext context.Context, index int) (string, error) {
+			return instance.analyzeMediaWithGemini(
+				taskContext,
+				loadedConfig,
+				geminiModel,
+				cloneContentPart(mediaParts[index]),
+			)
+		},
+	)
+
+	for index, result := range results {
+		if result.err != nil {
+			return nil, fmt.Errorf(
+				"analyze media file %d with gemini: %w",
+				index+1,
+				result.err,
+			)
+		}
+
+		analyses = append(analyses, result.value)
+	}
+
+	augmentedConversation, err := appendMediaAnalysesToConversation(
+		conversation,
+		analyses,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("append gemini media analyses: %w", err)
+	}
+
+	return augmentedConversation, nil
+}
+
 func configuredModelAPIKind(
 	loadedConfig config,
 	providerSlashModel string,

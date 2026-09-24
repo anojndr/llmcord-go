@@ -656,9 +656,7 @@ func (instance *bot) runWebSearchToolPhase(
 			newSearchMetadata(queries, results, loadedConfig.WebSearch.maxURLs()),
 		)
 		if tracker.sourceMessage != nil {
-			if persistErr := instance.persistAugmentedSourceMessage(ctx, tracker.sourceMessage, augmentedMessages); persistErr != nil {
-				logWarn("persist augmented source message after web search", persistErr)
-			}
+			instance.persistAugmentedSourceMessageAsync(ctx, tracker.sourceMessage, augmentedMessages)
 		}
 	}
 
@@ -1914,24 +1912,41 @@ func (client tinyFishSearchClient) search(
 	maxURLs := loadedConfig.WebSearch.maxURLs()
 	maxChars := loadedConfig.WebSearch.TinyFish.maxCharsPerResult()
 
-	// Phase 1: searches run concurrently; the fetch in phase 2 needs every
-	// query's URLs first, so enrichment cannot overlap the searches.
+	// Phase 1: searches run concurrently; each finished query contributes
+	// its URLs to a shared set, and full 10-URL batches fetch immediately
+	// while straggler searches still run. The final enrich pass stays
+	// authoritative for the remainder and any failures, so query count,
+	// fetch volume, and full content are unchanged.
+	early := newTinyFishEarlyBatcher(apiKeys, client.fetchCache)
+
 	outcomes, err := searchQueriesConcurrently(ctx, queries, func(
 		queryContext context.Context,
 		query string,
 	) (tinyFishQueryOutcome, error) {
-		return tryAllAPIKeys(queryContext, client.keys, apiKeys, func(apiKey string) (tinyFishQueryOutcome, error) {
-			searchResults, err := client.searchQuery(queryContext, apiKey, query)
-			if err != nil {
-				return tinyFishQueryOutcome{}, err
-			}
+		outcome, searchErr := tryAllAPIKeys(
+			queryContext,
+			client.keys,
+			apiKeys,
+			func(apiKey string) (tinyFishQueryOutcome, error) {
+				searchResults, err := client.searchQuery(queryContext, apiKey, query)
+				if err != nil {
+					return tinyFishQueryOutcome{}, err
+				}
 
-			if len(searchResults) > maxURLs {
-				searchResults = searchResults[:maxURLs]
-			}
+				if len(searchResults) > maxURLs {
+					searchResults = searchResults[:maxURLs]
+				}
 
-			return tinyFishQueryOutcome{query: query, results: searchResults}, nil
-		})
+				return tinyFishQueryOutcome{query: query, results: searchResults}, nil
+			},
+		)
+		if searchErr != nil {
+			return tinyFishQueryOutcome{}, searchErr
+		}
+
+		early.addAndMaybeFetch(queryContext, client, outcome.results)
+
+		return outcome, nil
 	})
 	if err != nil {
 		return nil, err
