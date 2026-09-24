@@ -260,74 +260,13 @@ func TestRespondToMessageExecutesWebSearchToolCalls(t *testing.T) {
 	}
 }
 
-func TestRespondToMessageKeepsToolsOfferedAcrossConsecutiveToolRounds(t *testing.T) {
+func TestRespondToMessageForcesFinalAnswerAfterOneWebSearchToolRound(t *testing.T) {
 	t.Parallel()
 
 	var roundRequests []chatCompletionRequest
 
-	chatClient := newStubChatClient(func(
-		_ context.Context,
-		request chatCompletionRequest,
-		handle func(streamDelta) error,
-	) error {
-		roundRequests = append(roundRequests, request)
-
-		// Tool calling is never disabled: every round keeps the tool
-		// definitions offered.
-		if len(request.Tools) == 0 {
-			t.Errorf("round %d carried no tools", len(roundRequests))
-		}
-
-		if len(roundRequests) <= 2 {
-			return handle(toolCallDelta(providers.FunctionToolCall{
-				ID:        "call_round_" + strconv.Itoa(len(roundRequests)),
-				Name:      providers.WebSearchToolName,
-				Arguments: `{"objective": "Find query results", "search_queries": ["` + testWebSearchQueryOne + `"]}`,
-			}))
-		}
-
-		return handle(newStreamDelta(testWebSearchToolAnswer, finishReasonStop))
-	})
-
-	webSearch := newStubWebSearchClient(func(
-		_ context.Context,
-		_ config,
-		queries []string,
-	) ([]webSearchResult, error) {
-		return []webSearchResult{
-			{Query: queries[0], Text: testWebSearchResultText},
-		}, nil
-	})
-
-	instance := newSearchToolTestBot(t, chatClient, webSearch)
-
-	respondWithWebSearchTool(t, instance, newWebSearchToolTestConfig())
-
-	if len(roundRequests) != 3 {
-		t.Fatalf("expected 3 generation rounds (2 tool rounds + final answer), got %d", len(roundRequests))
-	}
-
-	if len(webSearch.calls) != 2 {
-		t.Fatalf("expected 2 web search calls (one per tool round), got %d", len(webSearch.calls))
-	}
-
-	// Each follow-up replays every earlier round in order.
-	for roundIndex, request := range roundRequests {
-		if len(request.ToolRounds) != roundIndex {
-			t.Fatalf("expected request %d to replay %d tool rounds, got %d", roundIndex+1, roundIndex, len(request.ToolRounds))
-		}
-	}
-
-	finalRounds := roundRequests[2].ToolRounds
-	assertToolRoundOutputContains(t, finalRounds[0], "call_round_1", testWebSearchResultText)
-	assertToolRoundOutputContains(t, finalRounds[1], "call_round_2", testWebSearchResultText)
-}
-
-func TestRespondToMessageForcesFinalAnswerAfterWebSearchToolRoundCap(t *testing.T) {
-	t.Parallel()
-
-	var roundRequests []chatCompletionRequest
-
+	// The model would keep searching if it could: it answers only once
+	// tool_choice "none" forbids new tool calls.
 	chatClient := newStubChatClient(func(
 		_ context.Context,
 		request chatCompletionRequest,
@@ -340,7 +279,7 @@ func TestRespondToMessageForcesFinalAnswerAfterWebSearchToolRoundCap(t *testing.
 		}
 
 		return handle(toolCallDelta(providers.FunctionToolCall{
-			ID:        "call_loop_" + strconv.Itoa(len(roundRequests)),
+			ID:        "call_round_" + strconv.Itoa(len(roundRequests)),
 			Name:      providers.WebSearchToolName,
 			Arguments: `{"objective": "Find query results", "search_queries": ["` + testWebSearchQueryOne + `"]}`,
 		}))
@@ -360,43 +299,86 @@ func TestRespondToMessageForcesFinalAnswerAfterWebSearchToolRoundCap(t *testing.
 
 	respondWithWebSearchTool(t, instance, newWebSearchToolTestConfig())
 
-	// maxWebSearchToolRounds tool rounds execute searches, the cap round still
-	// returns tool calls, then one final round runs with tool_choice "none"
-	// so the model must answer from the accumulated results.
-	expectedRounds := maxWebSearchToolRounds + 2
-	if len(roundRequests) != expectedRounds {
-		t.Fatalf(
-			"expected %d generation rounds (cap %d tool rounds + cap round + forced final), got %d",
-			expectedRounds,
-			maxWebSearchToolRounds,
-			len(roundRequests),
-		)
+	if len(roundRequests) != 2 {
+		t.Fatalf("expected 2 generation rounds (one tool round + forced final answer), got %d", len(roundRequests))
 	}
 
-	if len(webSearch.calls) != maxWebSearchToolRounds {
-		t.Fatalf(
-			"expected %d web search calls, got %d",
-			maxWebSearchToolRounds,
-			len(webSearch.calls),
-		)
+	if len(webSearch.calls) != 1 {
+		t.Fatalf("expected exactly 1 web search call, got %d", len(webSearch.calls))
 	}
 
-	finalRequest := roundRequests[expectedRounds-1]
-	if finalRequest.ToolChoice != providers.ToolChoiceNone || len(finalRequest.Tools) == 0 {
+	toolRequest, finalRequest := roundRequests[0], roundRequests[1]
+	if toolRequest.ToolChoice != "" {
+		t.Fatalf("expected the tool round to leave tool_choice to the model, got %q", toolRequest.ToolChoice)
+	}
+
+	// The final round keeps the same tool definitions, so the prompt prefix
+	// stays cacheable, but forbids new calls.
+	if finalRequest.ToolChoice != providers.ToolChoiceNone || len(finalRequest.Tools) == 0 ||
+		!reflect.DeepEqual(finalRequest.Tools, toolRequest.Tools) {
 		t.Fatalf(
-			"expected the forced final round to keep the tools with tool_choice none, got choice %q tools %#v",
+			"expected the final round to keep the tools with tool_choice none, got choice %q tools %#v",
 			finalRequest.ToolChoice,
 			finalRequest.Tools,
 		)
 	}
 
-	// The capped round's unexecuted calls are dropped: the final round
-	// replays only the executed rounds, each fully answered.
-	if len(finalRequest.ToolRounds) != maxWebSearchToolRounds {
+	if len(finalRequest.ToolRounds) != 1 {
+		t.Fatalf("expected the final round to replay 1 tool round, got %d", len(finalRequest.ToolRounds))
+	}
+
+	assertToolRoundOutputContains(t, finalRequest.ToolRounds[0], "call_round_1", testWebSearchResultText)
+}
+
+func TestRespondToMessageRejectsToolCallsInForcedFinalAnswer(t *testing.T) {
+	t.Parallel()
+
+	var roundRequests []chatCompletionRequest
+
+	// A backend that ignores tool_choice "none" keeps requesting searches.
+	chatClient := newStubChatClient(func(
+		_ context.Context,
+		request chatCompletionRequest,
+		handle func(streamDelta) error,
+	) error {
+		roundRequests = append(roundRequests, request)
+
+		return handle(toolCallDelta(providers.FunctionToolCall{
+			ID:        "call_round_" + strconv.Itoa(len(roundRequests)),
+			Name:      providers.WebSearchToolName,
+			Arguments: `{"objective": "Find query results", "search_queries": ["` + testWebSearchQueryOne + `"]}`,
+		}))
+	})
+
+	webSearch := newStubWebSearchClient(func(
+		_ context.Context,
+		_ config,
+		queries []string,
+	) ([]webSearchResult, error) {
+		return []webSearchResult{
+			{Query: queries[0], Text: testWebSearchResultText},
+		}, nil
+	})
+
+	instance := newSearchToolTestBot(t, chatClient, webSearch)
+
+	err := instance.respondToMessage(
+		context.Background(),
+		newWebSearchToolTestConfig(),
+		newWebSearchToolSourceMessage(),
+		testWebSearchMainModel,
+	)
+	if !errors.Is(err, errEmptyModelResponse) {
+		t.Fatalf("expected the empty-response error when the final round still calls tools, got %v", err)
+	}
+
+	// Only the tool round's calls run a search; calls made despite
+	// tool_choice "none" are never executed.
+	if len(roundRequests) != 2 || len(webSearch.calls) != 1 {
 		t.Fatalf(
-			"expected the forced final round to replay %d tool rounds, got %d",
-			maxWebSearchToolRounds,
-			len(finalRequest.ToolRounds),
+			"expected 2 generation rounds and 1 web search call, got %d rounds and %d searches",
+			len(roundRequests),
+			len(webSearch.calls),
 		)
 	}
 }
@@ -446,14 +428,8 @@ func TestRespondToMessageSurfacesEmptyResponseWhenForcedFinalAnswerIsEmpty(t *te
 		t.Fatalf("expected the empty-response error when the forced final answer is empty, got %v", err)
 	}
 
-	expectedRounds := maxWebSearchToolRounds + 2
-	if len(roundRequests) != expectedRounds {
-		t.Fatalf(
-			"expected %d generation rounds (cap %d tool rounds + cap round + forced final), got %d",
-			expectedRounds,
-			maxWebSearchToolRounds,
-			len(roundRequests),
-		)
+	if len(roundRequests) != 2 {
+		t.Fatalf("expected 2 generation rounds (one tool round + forced final answer), got %d", len(roundRequests))
 	}
 }
 
@@ -568,10 +544,10 @@ func TestRespondToMessageWebSearchFailureAnswersWithoutResults(t *testing.T) {
 			}))
 		}
 
-		// Tool calling is never disabled: the follow-up still carries the
-		// tools with tool_choice "auto".
-		if len(request.Tools) == 0 {
-			t.Error("expected the follow-up request to keep the tool definitions")
+		// The forced final answer keeps the tool definitions with
+		// tool_choice "none".
+		if len(request.Tools) == 0 || request.ToolChoice != providers.ToolChoiceNone {
+			t.Errorf("expected the follow-up to keep the tools with tool_choice none, got choice %q", request.ToolChoice)
 		}
 
 		for _, message := range request.Messages {

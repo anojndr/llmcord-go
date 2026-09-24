@@ -3427,7 +3427,7 @@ func TestGenerateAndSendResponseExecutesWebSearchToolOnFallbackModel(t *testing.
 
 // fallbackToolRoundStream builds the stub stream: the primary model fails,
 // the fallback model emits one web_search tool call, and the fallback
-// follow-up (which keeps the tool definitions with tool_choice "auto" and
+// follow-up (which keeps the tool definitions with tool_choice "none" and
 // replays the tool round carrying the search results) gets answered.
 func fallbackToolRoundStream(
 	t *testing.T,
@@ -3442,8 +3442,8 @@ func fallbackToolRoundStream(
 		case "gemini-search/gemini-3.7-flash-medium:vision":
 			return errPrimaryModelOverload
 		case "9router/stable_model:vision":
-			// Tool calling is never disabled: both fallback rounds keep the
-			// tools offered with tool_choice "auto".
+			// Both fallback rounds keep the tools offered; the follow-up
+			// forbids new calls with tool_choice "none".
 			if len(request.Tools) == 0 {
 				t.Error("expected the fallback request to keep the tool definitions")
 
@@ -3451,6 +3451,10 @@ func fallbackToolRoundStream(
 			}
 
 			if len(request.ToolRounds) > 0 {
+				if request.ToolChoice != providers.ToolChoiceNone {
+					t.Errorf("expected the fallback follow-up to force tool_choice none, got %q", request.ToolChoice)
+				}
+
 				output, found := toolRoundOutput(request.ToolRounds[0], "call_fb")
 				if !found || !strings.Contains(output, testWebSearchResultText) {
 					t.Errorf(

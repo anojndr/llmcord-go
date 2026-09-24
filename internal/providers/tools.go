@@ -8,12 +8,16 @@ import (
 
 const webSearchToolDescription = "Search the web and return result titles, URLs, and excerpts. " +
 	"Always search the web if the user told you to, like 'search the web' or something similar, " +
-	"unless web search is absolutely not needed."
+	"unless web search is absolutely not needed. " +
+	"You can search only once per reply: make a single web_search call with ALL of your queries " +
+	"in search_queries, never multiple or parallel web_search calls. " +
+	"You cannot search again after the results arrive, so include every query you need up front."
 
 const webSearchObjectiveDescription = "Describe the search goal in a concise, standalone sentence. " +
 	"Name the key entity or topic."
 
-const webSearchQueriesDescription = "Provide keyword queries of 3-6 words each. " +
+const webSearchQueriesDescription = "Provide ALL of your keyword queries in this single call; " +
+	"you cannot search again. Use 3-6 words per query. " +
 	"Include the key entity or topic in every query. For multiple queries, vary names, synonyms, or angles. " +
 	"Do not use sentences, instructions, or site: operators."
 
@@ -264,10 +268,11 @@ func openAIChatCompletionsSupportsTools(model string, reasoningEffort string) bo
 	}
 }
 
-// setParallelToolCalls explicitly allows parallel tool calls so the model can
-// issue multiple independent calls in one turn (fewer round trips). User
-// overrides in ExtraBody still win because request builders copy ExtraBody
-// after this.
+// setParallelToolCalls explicitly allows parallel tool calls. The web_search
+// description asks for a single call with all queries, but a model that
+// still splits its queries across parallel calls gets them all executed in
+// its one tool round. User overrides in ExtraBody still win because request
+// builders copy ExtraBody after this.
 func setParallelToolCalls(requestBody map[string]any) {
 	if requestBody == nil {
 		return

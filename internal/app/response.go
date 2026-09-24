@@ -476,19 +476,18 @@ func isInvalidPreviousResponseError(err error) bool {
 	return true
 }
 
-// Tool calling follows the providers' function calling flow: each round's
-// tool-call response and one output per call are appended as a tool round,
-// which the provider replays after the conversation in its native wire
-// format (assistant tool_calls plus tool messages on Chat Completions;
-// output items plus function_call_output items, or previous_response_id
-// chaining, on the Responses API). The conversation messages themselves
-// never change, so every follow-up extends a byte-identical prefix and the
-// provider's prompt cache keeps matching. Tool calling is never disabled:
-// every round re-offers the same tools. The loop is bounded by
-// maxWebSearchToolRounds so a model that keeps calling tools without
-// answering cannot run away; hitting the cap runs one final round with
-// tool_choice "none" so the model must answer from the accumulated search
-// results instead of surfacing an empty-response error.
+// Tool calling follows the providers' function calling flow, forced to a
+// single tool round per attempt: when the model calls web_search, every
+// call of that round is executed (all their queries run as one search
+// batch), the round's tool-call response and one output per call are
+// appended as a tool round, and the only follow-up runs with tool_choice
+// "none", so the model must answer from those results instead of searching
+// again. The provider replays the round after the conversation in its
+// native wire format (assistant tool_calls plus tool messages on Chat
+// Completions; output items plus function_call_output items, or
+// previous_response_id chaining, on the Responses API). The conversation
+// messages and tool definitions never change, so the follow-up extends a
+// byte-identical prefix and the provider's prompt cache keeps matching.
 func (instance *bot) generateResponseWithWebSearchTool(
 	ctx context.Context,
 	loadedConfig config,
@@ -496,100 +495,76 @@ func (instance *bot) generateResponseWithWebSearchTool(
 	tracker *responseTracker,
 	warnings []string,
 ) (string, string, error) {
-	var prefill generatedPrefill
-
 	if tracker != nil {
 		// Each attempt (primary, stateless retry, fallback) runs its own
-		// tool rounds from scratch.
+		// tool round from scratch.
 		tracker.toolSearchResults = nil
 	}
 
-	for roundIndex := 0; ; roundIndex++ {
-		round, roundErr := instance.runGenerationRoundWithRetry(
-			ctx,
-			request,
-			tracker,
-			warnings,
-			prefill,
-		)
-		if roundErr != nil {
-			return round.rawAnswer, round.thinking, roundErr
-		}
-
-		if round.toolCallResponse == nil {
-			return round.rawAnswer, round.thinking, nil
-		}
-
-		if len(request.Tools) == 0 {
-			// The provider emitted tool calls although none were offered;
-			// there is nothing to execute, so surface the empty response.
-			logWarn(
-				"model emitted tool calls without offered tools",
-				nil,
-				"tool_calls",
-				len(round.toolCallResponse.Calls),
-			)
-
-			return round.rawAnswer, round.thinking, errEmptyModelResponse
-		}
-
-		if roundIndex >= maxWebSearchToolRounds {
-			return instance.runForcedFinalAnswerRound(ctx, request, tracker, warnings, round, roundIndex)
-		}
-
-		var outputs []providers.FunctionToolOutput
-
-		outputs, warnings, _ = instance.runWebSearchToolPhase(
-			ctx,
-			loadedConfig,
-			request.ConfiguredModel,
-			tracker,
-			request.Messages,
-			warnings,
-			round.toolCallResponse.Calls,
-		)
-
-		request.ToolRounds = append(slices.Clone(request.ToolRounds), providers.ToolRound{
-			Response: round.toolCallResponse,
-			Outputs:  outputs,
-		})
-
-		prefill = generatedPrefill{
-			rawAnswer: round.rawAnswer,
-			thinking:  round.thinking,
-		}
+	round, roundErr := instance.runGenerationRoundWithRetry(
+		ctx,
+		request,
+		tracker,
+		warnings,
+		generatedPrefill{rawAnswer: "", thinking: ""},
+	)
+	if roundErr != nil {
+		return round.rawAnswer, round.thinking, roundErr
 	}
+
+	if round.toolCallResponse == nil {
+		return round.rawAnswer, round.thinking, nil
+	}
+
+	if len(request.Tools) == 0 {
+		// The provider emitted tool calls although none were offered;
+		// there is nothing to execute, so surface the empty response.
+		logWarn(
+			"model emitted tool calls without offered tools",
+			nil,
+			"tool_calls",
+			len(round.toolCallResponse.Calls),
+		)
+
+		return round.rawAnswer, round.thinking, errEmptyModelResponse
+	}
+
+	outputs, warnings, _ := instance.runWebSearchToolPhase(
+		ctx,
+		loadedConfig,
+		request.ConfiguredModel,
+		tracker,
+		request.Messages,
+		warnings,
+		round.toolCallResponse.Calls,
+	)
+
+	request.ToolRounds = append(slices.Clone(request.ToolRounds), providers.ToolRound{
+		Response: round.toolCallResponse,
+		Outputs:  outputs,
+	})
+
+	return instance.runForcedFinalAnswerRound(ctx, request, tracker, warnings, round)
 }
 
-// runForcedFinalAnswerRound runs one last generation round with
-// tool_choice "none" after the web_search tool loop hits
-// maxWebSearchToolRounds: the model must answer from the accumulated search
+// runForcedFinalAnswerRound runs the follow-up to the attempt's single tool
+// round with tool_choice "none": the model must answer from the search
 // results instead of calling tools again. The tool definitions stay in the
 // request, as the function calling guide recommends, so the prompt prefix
-// is unchanged. The calls requested by the capped round are dropped with
-// that round.
+// is unchanged. Text and thinking streamed before the tool calls carry over
+// into the final render.
 func (instance *bot) runForcedFinalAnswerRound(
 	ctx context.Context,
 	request chatCompletionRequest,
 	tracker *responseTracker,
 	warnings []string,
-	round generatedRoundResult,
-	roundIndex int,
+	toolRound generatedRoundResult,
 ) (string, string, error) {
-	logWarn(
-		"web_search tool round cap reached without a final answer; forcing a final answer with tool_choice none",
-		nil,
-		"rounds",
-		roundIndex+1,
-		"max_rounds",
-		maxWebSearchToolRounds,
-	)
-
 	request.ToolChoice = providers.ToolChoiceNone
 
 	finalPrefill := generatedPrefill{
-		rawAnswer: round.rawAnswer,
-		thinking:  round.thinking,
+		rawAnswer: toolRound.rawAnswer,
+		thinking:  toolRound.thinking,
 	}
 
 	final, finalErr := instance.runGenerationRoundWithRetry(
