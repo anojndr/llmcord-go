@@ -143,7 +143,6 @@ const (
 	// enrichment or website fetching. ttl stays omitted so Fetch may serve
 	// any cached entry, the fastest server-side path.
 	tinyFishFetchPerURLTimeoutMS = 5000
-	tinyFishFetchURLsPerBatch    = 10
 	tinyFishSearchRequestTimeout = 20 * time.Second
 	tinyFishFetchRequestTimeout  = 30 * time.Second
 	// tinyFishFetchCacheTTL bounds how long a fetched page is served from

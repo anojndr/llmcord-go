@@ -8,9 +8,7 @@ import (
 	"log/slog"
 	"maps"
 	"os"
-	"slices"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
@@ -591,37 +589,44 @@ func (instance *bot) augmentPreparedMessageResponse(
 ) ([]chatMessage, *searchMetadata, []string, error) {
 	urlExtractionText := instance.sourceMessageURLExtractionText(ctx, message)
 
-	// Fast path for plain text queries: without URLs or attachments anywhere
-	// in the attachment context (source plus reply targets) the
-	// video/document/media stages only run regex scans and empty walks
-	// before returning empty. Skip straight to augmentConversation (which
-	// still gates cheaply) and keep full fidelity when anything is present.
-	if strings.TrimSpace(urlExtractionText) == "" && !instance.messageHasAugmentableContextAttachments(ctx, message) {
-		return instance.augmentPlainTextConversation(
-			ctx,
-			loadedConfig,
-			message,
-			providerSlashModel,
-			messages,
-			warnings,
-			urlExtractionText,
-		)
-	}
-
-	messages, videoWarnings, err := instance.augmentVideoAndDocumentMedia(
+	messages, videoWarnings, err := instance.augmentConversationWithVideoURLs(
 		ctx,
 		loadedConfig,
-		message,
 		providerSlashModel,
 		messages,
 		urlExtractionText,
 	)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil,
+			fmt.Errorf("augment conversation with video urls: %w", err)
 	}
 
 	warnings = append(warnings, videoWarnings...)
 
+	messages, err = instance.maybeAugmentConversationWithPDFContents(
+		ctx,
+		loadedConfig,
+		providerSlashModel,
+		message,
+		messages,
+	)
+	if err != nil {
+		return nil, nil, nil,
+			fmt.Errorf("augment conversation with extracted document content: %w", err)
+	}
+
+	messages, err = instance.maybeAugmentConversationWithGeminiMedia(
+		ctx,
+		loadedConfig,
+		providerSlashModel,
+		message,
+		messages,
+	)
+	if err != nil {
+		return nil, nil, nil,
+			fmt.Errorf("augment conversation with gemini media: %w", err)
+	}
+
 	messages, searchMetadata, warnings, err := instance.augmentConversation(
 		ctx,
 		loadedConfig,
@@ -635,325 +640,12 @@ func (instance *bot) augmentPreparedMessageResponse(
 		return nil, nil, nil, fmt.Errorf("augment conversation: %w", err)
 	}
 
-	return instance.persistAugmentedSourceMessageValue(ctx, message, messages, warnings, searchMetadata)
-}
-
-func (instance *bot) augmentPlainTextConversation(
-	ctx context.Context,
-	loadedConfig config,
-	message *discordgo.Message,
-	providerSlashModel string,
-	messages []chatMessage,
-	warnings []string,
-	urlExtractionText string,
-) ([]chatMessage, *searchMetadata, []string, error) {
-	// Plain text queries skip the video/document/media regex scans and
-	// attachment walks; the website stages below still gate cheaply.
-	messages, searchMetadata, warnings, err := instance.augmentConversation(
-		ctx,
-		loadedConfig,
-		message,
-		messages,
-		warnings,
-		urlExtractionText,
-		providerSlashModel,
-	)
+	err = instance.persistAugmentedSourceMessage(ctx, message, messages)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("augment conversation: %w", err)
+		return nil, nil, nil, fmt.Errorf("persist augmented source message: %w", err)
 	}
 
-	return instance.persistAugmentedSourceMessageValue(ctx, message, messages, warnings, searchMetadata)
-}
-
-func (instance *bot) augmentVideoAndDocumentMedia(
-	ctx context.Context,
-	loadedConfig config,
-	sourceMessage *discordgo.Message,
-	providerSlashModel string,
-	messages []chatMessage,
-	urlExtractionText string,
-) ([]chatMessage, []string, error) {
-	var (
-		videoMessages    []chatMessage
-		videoWarnings    []string
-		documentMessages []chatMessage
-		videoErr         error
-		documentErr      error
-	)
-
-	// Video fetch (network) overlaps the local document/media scans instead
-	// of running strictly before them. WaitGroup.Go preserves panic
-	// propagation: safeGo would recover a video-branch panic and continue
-	// with missing videos, while the old sequential code crashed.
-	var waitGroup sync.WaitGroup
-
-	waitGroup.Go(func() {
-		videoMessages, videoWarnings, videoErr = instance.augmentConversationWithVideoURLs(
-			ctx,
-			loadedConfig,
-			providerSlashModel,
-			messages,
-			urlExtractionText,
-		)
-	})
-	// PDF extraction and Gemini media analysis share one attachment-context
-	// walk and one media-parts pass: both filter the same loaded parts
-	// instead of each resolving reply targets and locking nodes twice.
-	documentMessages, documentErr = instance.augmentConversationWithDocumentMedia(
-		ctx,
-		loadedConfig,
-		providerSlashModel,
-		sourceMessage,
-		messages,
-	)
-
-	waitGroup.Wait()
-
-	if videoErr != nil {
-		return nil, nil, fmt.Errorf("augment conversation with video urls: %w", videoErr)
-	}
-
-	if documentErr != nil {
-		// Preserve the legacy sequential error chain: document extraction
-		// ran before media analysis, so surface media errors under the
-		// original stage name.
-		return nil, nil, fmt.Errorf("augment conversation with gemini media: %w", documentErr)
-	}
-
-	// Rebase document/media edits onto the video-augmented conversation when
-	// both branches produced content: both stages only touch the latest user
-	// message, so replay the combined document+media prompt delta.
-	messages = rebaseDocumentMediaAugmentation(messages, videoMessages, documentMessages)
-
-	return messages, videoWarnings, nil
-}
-
-func messageHasAugmentableAttachments(message *discordgo.Message) bool {
-	if message == nil || len(message.Attachments) == 0 {
-		return false
-	}
-
-	return true
-}
-
-func (instance *bot) messageHasAugmentableContextAttachments(
-	ctx context.Context,
-	sourceMessage *discordgo.Message,
-) bool {
-	if messageHasAugmentableAttachments(sourceMessage) {
-		return true
-	}
-
-	return slices.ContainsFunc(
-		instance.attachmentAugmentationMessages(ctx, sourceMessage),
-		messageHasAugmentableAttachments,
-	)
-}
-func (instance *bot) persistAugmentedSourceMessageValue(
-	ctx context.Context,
-	sourceMessage *discordgo.Message,
-	messages []chatMessage,
-	warnings []string,
-	metadata *searchMetadata,
-) ([]chatMessage, *searchMetadata, []string, error) {
-	// Persisting only updates the in-memory node plus a debounced save
-	// request; run it off the hot path so the first LLM request starts
-	// without waiting for node locking. Failures are best-effort and
-	// logged, matching the tool-phase behavior.
-	instance.persistAugmentedSourceMessageAsync(ctx, sourceMessage, messages)
-
-	return messages, metadata, warnings, nil
-}
-
-func (instance *bot) persistAugmentedSourceMessageAsync(
-	ctx context.Context,
-	sourceMessage *discordgo.Message,
-	conversation []chatMessage,
-) {
-	if sourceMessage == nil || instance == nil || instance.nodes == nil {
-		return
-	}
-
-	safeGo(func() {
-		if err := instance.persistAugmentedSourceMessage(ctx, sourceMessage, conversation); err != nil {
-			logWarn("persist augmented source message", err, "message_id", sourceMessage.ID)
-		}
-	})
-}
-
-func rebaseDocumentMediaAugmentation(
-	baseMessages []chatMessage,
-	videoMessages []chatMessage,
-	documentMediaMessages []chatMessage,
-) []chatMessage {
-	if len(videoMessages) == 0 || len(documentMediaMessages) == 0 {
-		if len(videoMessages) != 0 {
-			return videoMessages
-		}
-
-		if len(documentMediaMessages) != 0 {
-			return documentMediaMessages
-		}
-
-		return baseMessages
-	}
-
-	videoIndex, videoErr := latestUserMessageIndex(videoMessages)
-	baseIndex, baseErr := latestUserMessageIndex(baseMessages)
-	documentIndex, documentErr := latestUserMessageIndex(documentMediaMessages)
-
-	if videoErr != nil || baseErr != nil || documentErr != nil {
-		return videoMessages
-	}
-
-	rebased := make([]chatMessage, len(videoMessages))
-	copy(rebased, videoMessages)
-
-	basePrompt := parseAugmentedUserPrompt(messageContentText(baseMessages[baseIndex].Content))
-	videoPrompt := parseAugmentedUserPrompt(messageContentText(videoMessages[videoIndex].Content))
-	documentPrompt := parseAugmentedUserPrompt(messageContentText(documentMediaMessages[documentIndex].Content))
-
-	// Document/media stages only append within UserQuery (PDF section +
-	// media analyses) and media parts; carry that delta onto the video
-	// branch. URL stages write their own sections and never collide here.
-	// Later stages re-parse text content, so preserve exact wire format by
-	// replaying merges through the same append helpers.
-	mergedPrompt := videoPrompt
-	mergedPrompt.DocumentContent = documentPrompt.DocumentContent
-	mergedPrompt.UserQuery = rebaseUserQueryAnalyses(basePrompt.UserQuery, documentPrompt.UserQuery, videoPrompt.UserQuery)
-
-	mergedContent, err := appendContextToMessageContent(
-		videoMessages[videoIndex].Content,
-		func(prompt *augmentedUserPrompt) {
-			*prompt = mergedPrompt
-		},
-	)
-	if err != nil {
-		return videoMessages
-	}
-
-	extraMedia := appendMediaPartsDelta(
-		baseMessages[baseIndex].Content,
-		videoMessages[videoIndex].Content,
-		documentMediaMessages[documentIndex].Content,
-	)
-
-	if len(extraMedia) != 0 {
-		mergedContent, err = appendMediaPartsToMessageContent(mergedContent, extraMedia)
-		if err != nil {
-			return videoMessages
-		}
-	}
-
-	rebased[videoIndex].Content = mergedContent
-
-	return rebased
-}
-
-func rebaseUserQueryAnalyses(baseQuery, documentQuery, videoQuery string) string {
-	if documentQuery == baseQuery {
-		return videoQuery
-	}
-
-	addition := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(documentQuery), strings.TrimSpace(baseQuery)))
-	if addition == "" {
-		// Fallback when whitespace normalization differs: carry the full
-		// document query rather than dropping extracted content.
-		if strings.TrimSpace(documentQuery) != "" {
-			return strings.TrimSpace(documentQuery)
-		}
-
-		return videoQuery
-	}
-
-	return appendPromptUserQuery(videoQuery, addition)
-}
-
-func appendMediaPartsDelta(baseContent, videoContent, documentContent any) []contentPart {
-	baseParts := messageMediaParts(baseContent)
-	videoParts := messageMediaParts(videoContent)
-	documentParts := messageMediaParts(documentContent)
-
-	// Both branches fork from base and only append, so document-added parts
-	// are the document tail beyond the shared base prefix. Slice from the
-	// base length, not the video length: the video count is unrelated to
-	// the document branch and slicing from it drops document media whenever
-	// the video branch also appended (base 0 / video 1 / document 1 lost
-	// the PDF image).
-	wantFrom := max(len(baseParts), 0)
-	if wantFrom >= len(documentParts) {
-		return nil
-	}
-
-	extra := append([]contentPart(nil), documentParts[wantFrom:]...)
-
-	// Guard against the document branch reordering rather than appending:
-	// only return parts not already present in the video branch.
-	videoSeen := make(map[string]struct{}, len(videoParts))
-	for _, part := range videoParts {
-		videoSeen[mediaPartIdentity(part)] = struct{}{}
-	}
-
-	filtered := extra[:0]
-	for _, part := range extra {
-		if _, seen := videoSeen[mediaPartIdentity(part)]; seen {
-			continue
-		}
-
-		filtered = append(filtered, part)
-	}
-
-	return filtered
-}
-
-func mediaPartIdentity(part contentPart) string {
-	partType, _ := part["type"].(string)
-
-	if data, ok := part[contentFieldBytes].([]byte); ok {
-		return partType + "|" + string(data)
-	}
-
-	if imageURL, ok := part["image_url"]; ok {
-		switch urlValue := imageURL.(type) {
-		case map[string]string:
-			if url, ok := urlValue[messageURLKey]; ok && url != "" {
-				return partType + "|" + url
-			}
-		case map[string]any:
-			if url, ok := urlValue[messageURLKey].(string); ok && url != "" {
-				return partType + "|" + url
-			}
-		}
-	}
-
-	if url, ok := part[messageURLKey].(string); ok && url != "" {
-		return partType + "|" + url
-	}
-
-	mimeType, _ := part[contentFieldMIMEType].(string)
-	filename, _ := part[contentFieldFilename].(string)
-
-	return partType + "|" + mimeType + "|" + filename
-}
-
-func messageMediaParts(content any) []contentPart {
-	parts, ok := content.([]contentPart)
-	if !ok {
-		return nil
-	}
-
-	media := make([]contentPart, 0, len(parts))
-
-	for _, part := range parts {
-		partType, _ := part["type"].(string)
-		if partType == contentTypeText {
-			continue
-		}
-
-		media = append(media, part)
-	}
-
-	return media
+	return messages, searchMetadata, warnings, nil
 }
 
 func (instance *bot) persistAugmentedSourceMessage(
