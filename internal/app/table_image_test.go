@@ -119,7 +119,7 @@ func TestRenderIssueTableDrawsEmojiInColor(t *testing.T) {
 		t.Fatal("expected emoji font for color emoji rendering")
 	}
 
-	for _, textRune := range []rune{0x26A1, 0x1F680, 0x1F3AF, 0x1F40C} {
+	for _, textRune := range []rune{0x1F680, 0x1F3AF, 0x1F40C} {
 		if !fonts.emoji.has(textRune) {
 			t.Fatalf("expected emoji glyph for U+%X", textRune)
 		}
@@ -127,6 +127,22 @@ func TestRenderIssueTableDrawsEmojiInColor(t *testing.T) {
 		if _, ok := fonts.emoji.decoded(textRune); !ok {
 			t.Fatalf("expected decodable emoji bitmap for U+%X", textRune)
 		}
+	}
+
+	if !tableImageRunePrefersColorBitmap(0x1F680) {
+		t.Fatal("expected supplementary-plane emoji to prefer the color bitmap")
+	}
+
+	if tableImageRunePrefersColorBitmap(0x26A1) {
+		t.Fatal("expected text-presentation lightning to stay vector without VS16")
+	}
+
+	if !tableImageRunePrefersColorBitmapAt([]rune{0x26A1, 0xFE0F}, 0) {
+		t.Fatal("expected lightning with VS16 to take the color bitmap")
+	}
+
+	if tableImageRunePrefersColorBitmapAt([]rune{0x26A1}, 0) {
+		t.Fatal("expected bare lightning to stay vector")
 	}
 
 	imageBytes, err := renderMarkdownTablePNG(markdownTable{
