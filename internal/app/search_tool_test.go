@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -99,9 +100,10 @@ func parallelWebSearchToolCalls() []providers.FunctionToolCall {
 			Arguments: `{"objective": "Find first query results", "search_queries": ["` + testWebSearchQueryOne + `"]}`,
 		},
 		{
-			ID:        "call_2",
-			Name:      providers.WebSearchToolName,
-			Arguments: `{"objective": "Find second query results", "search_queries": ["` + testWebSearchQueryTwo + `", "` + testWebSearchQueryOne + `"]}`,
+			ID:   "call_2",
+			Name: providers.WebSearchToolName,
+			Arguments: `{"objective": "Find second query results", "search_queries": ["` +
+				testWebSearchQueryTwo + `", "` + testWebSearchQueryOne + `"]}`,
 		},
 	}
 }
@@ -130,6 +132,45 @@ func latestChatMessageText(messages []chatMessage) string {
 	return ""
 }
 
+// toolCallDelta is the final stream delta of a response that requested the
+// given function calls.
+func toolCallDelta(calls ...providers.FunctionToolCall) streamDelta {
+	return streamDelta{
+		Thinking:           "",
+		Content:            "",
+		FinishReason:       "tool_calls",
+		ProviderResponseID: "",
+		SearchMetadata:     nil,
+		ToolCallResponse:   &providers.ToolCallResponse{Calls: calls},
+	}
+}
+
+// toolRoundOutput returns the output a tool round carries for a call.
+func toolRoundOutput(round providers.ToolRound, callID string) (string, bool) {
+	for _, output := range round.Outputs {
+		if output.CallID == callID {
+			return output.Output, true
+		}
+	}
+
+	return "", false
+}
+
+// assertToolRoundOutputContains fails unless the round answers the call with
+// an output containing want.
+func assertToolRoundOutputContains(t *testing.T, round providers.ToolRound, callID string, want string) {
+	t.Helper()
+
+	output, found := toolRoundOutput(round, callID)
+	if !found {
+		t.Fatalf("expected an output for call %q, got %#v", callID, round.Outputs)
+	}
+
+	if !strings.Contains(output, want) {
+		t.Fatalf("expected the output for call %q to contain %q, got %q", callID, want, output)
+	}
+}
+
 func TestRespondToMessageExecutesWebSearchToolCalls(t *testing.T) {
 	t.Parallel()
 
@@ -143,10 +184,7 @@ func TestRespondToMessageExecutesWebSearchToolCalls(t *testing.T) {
 		requestTools = append(requestTools, request.Tools)
 
 		if len(requestTools) == 1 {
-			return handle(streamDelta{
-				ToolCalls:    parallelWebSearchToolCalls(),
-				FinishReason: "tool_calls",
-			})
+			return handle(toolCallDelta(parallelWebSearchToolCalls()...))
 		}
 
 		if len(request.Tools) == 0 {
@@ -191,9 +229,26 @@ func TestRespondToMessageExecutesWebSearchToolCalls(t *testing.T) {
 		t.Fatalf("expected the follow-up request, got %d requests", len(chatClient.requests))
 	}
 
-	followUpText := latestChatMessageText(chatClient.requests[1].Messages)
-	if !strings.Contains(followUpText, testWebSearchResultText) {
-		t.Fatalf("expected search results in the follow-up request, got: %q", followUpText)
+	followUp := chatClient.requests[1]
+	if len(followUp.ToolRounds) != 1 {
+		t.Fatalf("expected the follow-up to replay 1 tool round, got %d", len(followUp.ToolRounds))
+	}
+
+	round := followUp.ToolRounds[0]
+	if round.Response == nil || len(round.Response.Calls) != 2 {
+		t.Fatalf("expected the tool round to replay both calls, got %#v", round.Response)
+	}
+
+	// Every call gets its own output with the results for its queries.
+	assertToolRoundOutputContains(t, round, "call_1", testWebSearchResultText)
+	assertToolRoundOutputContains(t, round, "call_2", "Second search result text")
+	assertToolRoundOutputContains(t, round, "call_2", testWebSearchResultText)
+
+	if !reflect.DeepEqual(followUp.Messages, chatClient.requests[0].Messages) {
+		t.Fatalf(
+			"expected the follow-up to keep the conversation unchanged, got %#v",
+			followUp.Messages,
+		)
 	}
 
 	firstText := latestChatMessageText(chatClient.requests[0].Messages)
@@ -224,14 +279,11 @@ func TestRespondToMessageKeepsToolsOfferedAcrossConsecutiveToolRounds(t *testing
 		}
 
 		if len(roundRequests) <= 2 {
-			return handle(streamDelta{
-				ToolCalls: []providers.FunctionToolCall{{
-					ID:        "call_round_" + strconv.Itoa(len(roundRequests)),
-					Name:      providers.WebSearchToolName,
-					Arguments: `{"objective": "Find query results", "search_queries": ["` + testWebSearchQueryOne + `"]}`,
-				}},
-				FinishReason: "tool_calls",
-			})
+			return handle(toolCallDelta(providers.FunctionToolCall{
+				ID:        "call_round_" + strconv.Itoa(len(roundRequests)),
+				Name:      providers.WebSearchToolName,
+				Arguments: `{"objective": "Find query results", "search_queries": ["` + testWebSearchQueryOne + `"]}`,
+			}))
 		}
 
 		return handle(newStreamDelta(testWebSearchToolAnswer, finishReasonStop))
@@ -258,6 +310,17 @@ func TestRespondToMessageKeepsToolsOfferedAcrossConsecutiveToolRounds(t *testing
 	if len(webSearch.calls) != 2 {
 		t.Fatalf("expected 2 web search calls (one per tool round), got %d", len(webSearch.calls))
 	}
+
+	// Each follow-up replays every earlier round in order.
+	for roundIndex, request := range roundRequests {
+		if len(request.ToolRounds) != roundIndex {
+			t.Fatalf("expected request %d to replay %d tool rounds, got %d", roundIndex+1, roundIndex, len(request.ToolRounds))
+		}
+	}
+
+	finalRounds := roundRequests[2].ToolRounds
+	assertToolRoundOutputContains(t, finalRounds[0], "call_round_1", testWebSearchResultText)
+	assertToolRoundOutputContains(t, finalRounds[1], "call_round_2", testWebSearchResultText)
 }
 
 func TestRespondToMessageForcesFinalAnswerAfterWebSearchToolRoundCap(t *testing.T) {
@@ -272,18 +335,15 @@ func TestRespondToMessageForcesFinalAnswerAfterWebSearchToolRoundCap(t *testing.
 	) error {
 		roundRequests = append(roundRequests, request)
 
-		if len(request.Tools) == 0 {
+		if request.ToolChoice == providers.ToolChoiceNone {
 			return handle(newStreamDelta(testWebSearchToolAnswer, finishReasonStop))
 		}
 
-		return handle(streamDelta{
-			ToolCalls: []providers.FunctionToolCall{{
-				ID:        "call_loop_" + strconv.Itoa(len(roundRequests)),
-				Name:      providers.WebSearchToolName,
-				Arguments: `{"objective": "Find query results", "search_queries": ["` + testWebSearchQueryOne + `"]}`,
-			}},
-			FinishReason: "tool_calls",
-		})
+		return handle(toolCallDelta(providers.FunctionToolCall{
+			ID:        "call_loop_" + strconv.Itoa(len(roundRequests)),
+			Name:      providers.WebSearchToolName,
+			Arguments: `{"objective": "Find query results", "search_queries": ["` + testWebSearchQueryOne + `"]}`,
+		}))
 	})
 
 	webSearch := newStubWebSearchClient(func(
@@ -301,8 +361,8 @@ func TestRespondToMessageForcesFinalAnswerAfterWebSearchToolRoundCap(t *testing.
 	respondWithWebSearchTool(t, instance, newWebSearchToolTestConfig())
 
 	// maxWebSearchToolRounds tool rounds execute searches, the cap round still
-	// returns tool calls, then one final round runs with tools stripped so
-	// the model must answer from the accumulated results.
+	// returns tool calls, then one final round runs with tool_choice "none"
+	// so the model must answer from the accumulated results.
 	expectedRounds := maxWebSearchToolRounds + 2
 	if len(roundRequests) != expectedRounds {
 		t.Fatalf(
@@ -321,10 +381,22 @@ func TestRespondToMessageForcesFinalAnswerAfterWebSearchToolRoundCap(t *testing.
 		)
 	}
 
-	if len(roundRequests[expectedRounds-1].Tools) != 0 {
+	finalRequest := roundRequests[expectedRounds-1]
+	if finalRequest.ToolChoice != providers.ToolChoiceNone || len(finalRequest.Tools) == 0 {
 		t.Fatalf(
-			"expected the forced final round to strip tools, got %#v",
-			roundRequests[expectedRounds-1].Tools,
+			"expected the forced final round to keep the tools with tool_choice none, got choice %q tools %#v",
+			finalRequest.ToolChoice,
+			finalRequest.Tools,
+		)
+	}
+
+	// The capped round's unexecuted calls are dropped: the final round
+	// replays only the executed rounds, each fully answered.
+	if len(finalRequest.ToolRounds) != maxWebSearchToolRounds {
+		t.Fatalf(
+			"expected the forced final round to replay %d tool rounds, got %d",
+			maxWebSearchToolRounds,
+			len(finalRequest.ToolRounds),
 		)
 	}
 }
@@ -341,18 +413,15 @@ func TestRespondToMessageSurfacesEmptyResponseWhenForcedFinalAnswerIsEmpty(t *te
 	) error {
 		roundRequests = append(roundRequests, request)
 
-		if len(request.Tools) == 0 {
+		if request.ToolChoice == providers.ToolChoiceNone {
 			return handle(newStreamDelta("", finishReasonStop))
 		}
 
-		return handle(streamDelta{
-			ToolCalls: []providers.FunctionToolCall{{
-				ID:        "call_loop_" + strconv.Itoa(len(roundRequests)),
-				Name:      providers.WebSearchToolName,
-				Arguments: `{"objective": "Find query results", "search_queries": ["` + testWebSearchQueryOne + `"]}`,
-			}},
-			FinishReason: "tool_calls",
-		})
+		return handle(toolCallDelta(providers.FunctionToolCall{
+			ID:        "call_loop_" + strconv.Itoa(len(roundRequests)),
+			Name:      providers.WebSearchToolName,
+			Arguments: `{"objective": "Find query results", "search_queries": ["` + testWebSearchQueryOne + `"]}`,
+		}))
 	})
 
 	webSearch := newStubWebSearchClient(func(
@@ -401,10 +470,7 @@ func TestRespondToMessageRetainsWebSearchResultsInConversationHistory(t *testing
 		requestTools = append(requestTools, request.Tools)
 
 		if len(requestTools) == 1 {
-			return handle(streamDelta{
-				ToolCalls:    parallelWebSearchToolCalls(),
-				FinishReason: "tool_calls",
-			})
+			return handle(toolCallDelta(parallelWebSearchToolCalls()...))
 		}
 
 		return handle(newStreamDelta(testWebSearchToolAnswer, finishReasonStop))
@@ -495,14 +561,11 @@ func TestRespondToMessageWebSearchFailureAnswersWithoutResults(t *testing.T) {
 		requestCount++
 
 		if requestCount == 1 {
-			return handle(streamDelta{
-				ToolCalls: []providers.FunctionToolCall{{
-					ID:        "call_1",
-					Name:      providers.WebSearchToolName,
-					Arguments: `{"objective": "Find first query results", "search_queries": ["` + testWebSearchQueryOne + `"]}`,
-				}},
-				FinishReason: "tool_calls",
-			})
+			return handle(toolCallDelta(providers.FunctionToolCall{
+				ID:        "call_1",
+				Name:      providers.WebSearchToolName,
+				Arguments: `{"objective": "Find first query results", "search_queries": ["` + testWebSearchQueryOne + `"]}`,
+			}))
 		}
 
 		// Tool calling is never disabled: the follow-up still carries the
@@ -539,6 +602,91 @@ func TestRespondToMessageWebSearchFailureAnswersWithoutResults(t *testing.T) {
 
 	if len(chatClient.requests) != 2 {
 		t.Fatalf("expected a follow-up request after the failed search, got %d requests", len(chatClient.requests))
+	}
+
+	// The failed call is still answered, so the follow-up stays valid and
+	// the model learns the search failed.
+	followUpRounds := chatClient.requests[1].ToolRounds
+	if len(followUpRounds) != 1 {
+		t.Fatalf("expected the follow-up to replay 1 tool round, got %d", len(followUpRounds))
+	}
+
+	assertToolRoundOutputContains(t, followUpRounds[0], "call_1", webSearchFailedOutput)
+}
+
+func TestRunWebSearchToolPhaseAnswersEveryCall(t *testing.T) {
+	t.Parallel()
+
+	webSearch := newStubWebSearchClient(func(
+		_ context.Context,
+		_ config,
+		queries []string,
+	) ([]webSearchResult, error) {
+		if !slices.Equal(queries, []string{testWebSearchQueryOne}) {
+			t.Errorf("expected only the valid call's query to be searched, got %#v", queries)
+		}
+
+		return []webSearchResult{{Query: testWebSearchQueryOne, Text: testWebSearchResultText}}, nil
+	})
+
+	chatClient := newStubChatClient(func(
+		_ context.Context,
+		_ chatCompletionRequest,
+		_ func(streamDelta) error,
+	) error {
+		t.Error("unexpected chat completion call")
+
+		return nil
+	})
+
+	instance := newSearchToolTestBot(t, chatClient, webSearch)
+	tracker := newResponseTracker(newWebSearchToolSourceMessage(), testWebSearchMainModel)
+
+	outputs, warnings, searched := instance.runWebSearchToolPhase(
+		context.Background(),
+		newWebSearchToolTestConfig(),
+		testWebSearchMainModel,
+		tracker,
+		[]chatMessage{{Role: messageRoleUser, Content: "query"}},
+		nil,
+		[]providers.FunctionToolCall{
+			{
+				ID:        "call_search",
+				Name:      providers.WebSearchToolName,
+				Arguments: `{"search_queries": ["` + testWebSearchQueryOne + `"]}`,
+			},
+			{ID: "call_unknown", Name: "get_weather", Arguments: `{"location": "Paris"}`},
+			{ID: "call_malformed", Name: providers.WebSearchToolName, Arguments: `not json`},
+			{ID: "call_empty", Name: providers.WebSearchToolName, Arguments: `{"search_queries": ["  "]}`},
+		},
+	)
+
+	if !searched || len(warnings) != 0 {
+		t.Fatalf("expected a successful search without warnings, got searched=%v warnings=%#v", searched, warnings)
+	}
+
+	round := providers.ToolRound{Response: nil, Outputs: outputs}
+
+	wantOutputs := []struct {
+		callID string
+		want   string
+	}{
+		{callID: "call_search", want: testWebSearchResultText},
+		{callID: "call_unknown", want: `unknown function "get_weather"`},
+		{callID: "call_malformed", want: webSearchInvalidArgumentsOutput},
+		{callID: "call_empty", want: webSearchNoQueriesOutput},
+	}
+
+	if len(outputs) != len(wantOutputs) {
+		t.Fatalf("expected one output per call, got %#v", outputs)
+	}
+
+	for index, wantOutput := range wantOutputs {
+		if outputs[index].CallID != wantOutput.callID {
+			t.Fatalf("expected output %d to answer %q, got %q", index, wantOutput.callID, outputs[index].CallID)
+		}
+
+		assertToolRoundOutputContains(t, round, wantOutput.callID, wantOutput.want)
 	}
 }
 
@@ -656,8 +804,16 @@ func TestExtractWebSearchQueries(t *testing.T) {
 		{
 			name: "parses search_queries and objective from parallel calls and dedupes",
 			toolCalls: []providers.FunctionToolCall{
-				{ID: "a", Name: providers.WebSearchToolName, Arguments: `{"objective": "Find latest AI news", "search_queries": ["alpha", "beta"]}`},
-				{ID: "b", Name: providers.WebSearchToolName, Arguments: `{"objective": "Find latest AI news", "search_queries": ["beta", "gamma"]}`},
+				{
+					ID:        "a",
+					Name:      providers.WebSearchToolName,
+					Arguments: `{"objective": "Find latest AI news", "search_queries": ["alpha", "beta"]}`,
+				},
+				{
+					ID:        "b",
+					Name:      providers.WebSearchToolName,
+					Arguments: `{"objective": "Find latest AI news", "search_queries": ["beta", "gamma"]}`,
+				},
 			},
 			expected: []string{"alpha", "beta", "gamma"},
 		},

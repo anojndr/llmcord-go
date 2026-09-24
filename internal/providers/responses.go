@@ -1,8 +1,10 @@
-// Responses API client machinery shared by the built-in OpenAI provider.
 package providers
+
+// Responses API client machinery shared by the built-in OpenAI provider.
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -14,6 +16,7 @@ import (
 	"os"
 	"path"
 	"reflect"
+	"slices"
 	"strings"
 
 	searchtypes "llmcord-go/internal/searchtypes"
@@ -76,6 +79,28 @@ type responsesOutputItem struct {
 	// the Responses create reference. Reasoning items carry either
 	// summary parts in Summary or reasoning text parts in Content.
 	Content json.RawMessage `json:"content"`
+
+	// raw is the item exactly as streamed, so a tool-calling response can
+	// replay it unchanged in the follow-up input.
+	raw json.RawMessage
+}
+
+// UnmarshalJSON decodes an output item and keeps its raw JSON for replay.
+func (item *responsesOutputItem) UnmarshalJSON(data []byte) error {
+	type plainOutputItem responsesOutputItem
+
+	var decoded plainOutputItem
+
+	err := json.Unmarshal(data, &decoded)
+	if err != nil {
+		return fmt.Errorf("decode responses output item: %w", err)
+	}
+
+	*item = responsesOutputItem(decoded)
+
+	item.raw = append(json.RawMessage(nil), data...)
+
+	return nil
 }
 
 type responsesStreamResponse struct {
@@ -87,14 +112,27 @@ type responsesStreamResponse struct {
 }
 
 type responsesStreamEvent struct {
-	Type     string                   `json:"type"`
-	Delta    string                   `json:"delta"`
-	ItemID   string                   `json:"item_id"`
-	Message  string                   `json:"message"`
-	Code     any                      `json:"code"`
-	Item     *responsesOutputItem     `json:"item"`
-	Error    *responsesError          `json:"error"`
-	Response *responsesStreamResponse `json:"response"`
+	Type   string `json:"type"`
+	Delta  string `json:"delta"`
+	ItemID string `json:"item_id"`
+	// OutputIndex orders output items; response.output_item.done events
+	// may arrive out of output order for parallel items.
+	OutputIndex *int `json:"output_index"`
+	// Arguments is the finalized function-call arguments string carried
+	// by response.function_call_arguments.done.
+	Arguments string                   `json:"arguments"`
+	Message   string                   `json:"message"`
+	Code      any                      `json:"code"`
+	Item      *responsesOutputItem     `json:"item"`
+	Error     *responsesError          `json:"error"`
+	Response  *responsesStreamResponse `json:"response"`
+}
+
+// responsesStreamedItem is a raw output item from response.output_item.done
+// with its position in the response output.
+type responsesStreamedItem struct {
+	outputIndex int
+	raw         json.RawMessage
 }
 
 type responsesStreamState struct {
@@ -108,15 +146,22 @@ type responsesStreamState struct {
 	// text in full, so emission sites subtract it to keep thinking from
 	// being duplicated.
 	streamedReasoningSummaries map[string]string
-	seenToolCallIDs            map[string]struct{}
-	toolCalls                  []FunctionToolCall
+	// seenToolCallIDs dedupes function calls by call id and by output item
+	// id: each call is reported by response.function_call_arguments.done,
+	// response.output_item.done, and again in response.completed.
+	seenToolCallIDs map[string]struct{}
+	toolCalls       []FunctionToolCall
 	// inProgressToolCalls accumulates function_call arguments streamed via
 	// response.function_call_arguments.delta, keyed by output item id, so
 	// calls complete as soon as the item or arguments finish instead of
 	// waiting for response.completed.
 	inProgressToolCalls map[string]*responsesInProgressToolCall
 	inProgressOrder     []string
-	hasVisibleContent   bool
+	// streamedItems holds every output item completed through
+	// response.output_item.done, so a tool-calling response can be replayed
+	// even when response.completed omits its output array.
+	streamedItems     []responsesStreamedItem
+	hasVisibleContent bool
 }
 
 // responsesInProgressToolCall accumulates one function_call while its
@@ -262,12 +307,7 @@ func (client openAIClient) consumeResponsesStream(
 }
 
 func buildResponsesRequestBody(request ChatCompletionRequest) (map[string]any, error) {
-	inputMessages := request.Messages
-
-	previousResponseID := strings.TrimSpace(request.PreviousResponseID)
-	if previousResponseID != "" {
-		inputMessages = responsesChainedInput(request.Messages, request.PreviousResponseCount)
-	}
+	inputMessages, previousResponseID, chainedToolRound := responsesInputMessages(request)
 
 	messages := RequestMessagesWithFileOrImageOnlyQueryPlaceholder(inputMessages)
 	messages = openAIReplaceSystemRoleWithDeveloper(messages, request.Model)
@@ -281,6 +321,13 @@ func buildResponsesRequestBody(request ChatCompletionRequest) (map[string]any, e
 	if err != nil {
 		return nil, err
 	}
+
+	toolRoundInput, err := responsesToolRoundInput(request.ToolRounds, chainedToolRound)
+	if err != nil {
+		return nil, fmt.Errorf("build responses tool round input: %w", err)
+	}
+
+	input = append(input, toolRoundInput...)
 
 	requestBody := make(map[string]any, len(request.Provider.ExtraBody)+responsesRequestBodyBaseFields)
 	requestBody["model"] = request.Model
@@ -308,6 +355,30 @@ func buildResponsesRequestBody(request ChatCompletionRequest) (map[string]any, e
 	}
 
 	return requestBody, nil
+}
+
+// responsesInputMessages selects the conversation messages a request sends
+// and the previous_response_id it chains onto. A chained tool-round
+// follow-up chains onto the response that requested the calls and sends no
+// messages, since that response already stores the whole conversation. Any
+// other request with tool rounds is stateless and sends every message before
+// replaying the rounds. A chained request without tool rounds sends only the
+// messages the parent response does not store yet.
+func responsesInputMessages(request ChatCompletionRequest) ([]ChatMessage, string, bool) {
+	if responseID, chained := responsesToolRoundChain(request); chained {
+		return nil, responseID, true
+	}
+
+	if len(request.ToolRounds) > 0 {
+		return request.Messages, "", false
+	}
+
+	previousResponseID := strings.TrimSpace(request.PreviousResponseID)
+	if previousResponseID == "" {
+		return request.Messages, "", false
+	}
+
+	return responsesChainedInput(request.Messages, request.PreviousResponseCount), previousResponseID, false
 }
 
 // responsesChainedInput returns the trailing messages not yet stored under
@@ -623,7 +694,7 @@ func responsesUserPart(part ContentPart) (map[string]any, bool, error) {
 			searchtypes.MessageTextKey: textValue,
 		}, true, nil
 	case searchtypes.ContentTypeImageURL:
-		imageURL := ""
+		var imageURL string
 
 		switch typedImageURL := part["image_url"].(type) {
 		case map[string]string:
@@ -687,7 +758,7 @@ func handleResponsesStreamPayload(
 		delta.Thinking == "" &&
 		delta.FinishReason == "" &&
 		delta.ProviderResponseID == "" &&
-		len(delta.ToolCalls) == 0 {
+		!delta.ToolCallResponse.hasCalls() {
 		return terminal, nil
 	}
 
@@ -709,6 +780,7 @@ func newResponsesStreamState() *responsesStreamState {
 		toolCalls:                  nil,
 		inProgressToolCalls:        make(map[string]*responsesInProgressToolCall),
 		inProgressOrder:            nil,
+		streamedItems:              nil,
 		hasVisibleContent:          false,
 	}
 }
@@ -716,17 +788,20 @@ func newResponsesStreamState() *responsesStreamState {
 // collectResponsesFunctionCall records a complete function_call output item.
 // Items arrive via response.output_item.done and
 // response.function_call_arguments.done (and again inside the final
-// response.completed output), so they are deduplicated by call id. Arguments
-// streamed through response.function_call_arguments.delta and not included in
-// the item are merged in from the in-progress accumulator.
+// response.completed output), so they are deduplicated by call id and output
+// item id. Arguments streamed through response.function_call_arguments.delta
+// and not included in the item are merged in from the in-progress
+// accumulator.
 func collectResponsesFunctionCall(state *responsesStreamState, item responsesOutputItem) {
 	if state == nil {
 		return
 	}
 
+	itemID := strings.TrimSpace(item.ID)
+
 	callID := strings.TrimSpace(item.CallID)
 	if callID == "" {
-		callID = strings.TrimSpace(item.ID)
+		callID = itemID
 	}
 
 	name := strings.TrimSpace(item.Name)
@@ -736,21 +811,95 @@ func collectResponsesFunctionCall(state *responsesStreamState, item responsesOut
 
 	arguments := item.Arguments
 	if strings.TrimSpace(arguments) == "" {
-		if inProgress, seen := state.inProgressToolCallByID(callID, item.ID); seen {
+		if inProgress, seen := state.inProgressToolCallByID(callID, itemID); seen {
 			arguments = inProgress.argumentsString()
 		}
 	}
 
-	if _, seen := state.seenToolCallIDs[callID]; seen {
-		return
+	for _, id := range []string{callID, itemID} {
+		if _, seen := state.seenToolCallIDs[id]; id != "" && seen {
+			return
+		}
 	}
 
 	state.seenToolCallIDs[callID] = struct{}{}
+	if itemID != "" {
+		state.seenToolCallIDs[itemID] = struct{}{}
+	}
+
 	state.toolCalls = append(state.toolCalls, FunctionToolCall{
 		ID:        callID,
 		Name:      name,
 		Arguments: arguments,
 	})
+}
+
+// recordStreamedOutputItem keeps a completed output item for replay. Items
+// without an output_index keep their arrival position.
+func (state *responsesStreamState) recordStreamedOutputItem(item *responsesOutputItem, outputIndex *int) {
+	if state == nil || item == nil || len(item.raw) == 0 {
+		return
+	}
+
+	index := len(state.streamedItems)
+	if outputIndex != nil {
+		index = *outputIndex
+	}
+
+	state.streamedItems = append(state.streamedItems, responsesStreamedItem{
+		outputIndex: index,
+		raw:         item.raw,
+	})
+}
+
+// responsesToolCallResponse builds the tool-call response of a completed
+// response, or nil when it requested no function calls. The output items
+// replayed in a stateless follow-up come from the completed response's
+// output array, falling back to the items streamed through
+// response.output_item.done in output order.
+func responsesToolCallResponse(
+	response *responsesStreamResponse,
+	state *responsesStreamState,
+) *ToolCallResponse {
+	calls := responsesStateToolCalls(state)
+	if len(calls) == 0 {
+		return nil
+	}
+
+	var (
+		responseID  string
+		outputItems []json.RawMessage
+	)
+
+	if response != nil {
+		responseID = strings.TrimSpace(response.ID)
+
+		for index := range response.Output {
+			if raw := response.Output[index].raw; len(raw) > 0 {
+				outputItems = append(outputItems, raw)
+			}
+		}
+	}
+
+	if len(outputItems) == 0 && state != nil {
+		streamedItems := slices.Clone(state.streamedItems)
+		slices.SortStableFunc(streamedItems, func(left, right responsesStreamedItem) int {
+			return cmp.Compare(left.outputIndex, right.outputIndex)
+		})
+
+		for _, item := range streamedItems {
+			outputItems = append(outputItems, item.raw)
+		}
+	}
+
+	return &ToolCallResponse{
+		Calls:            calls,
+		text:             "",
+		reasoningContent: "",
+		extraContent:     nil,
+		responseID:       responseID,
+		outputItems:      outputItems,
+	}
 }
 
 // inProgressToolCallByID locates the in-progress accumulator for a call, by
@@ -809,16 +958,7 @@ func responsesObserveFunctionCallItem(state *responsesStreamState, item *respons
 		return
 	}
 
-	call, seen := state.inProgressToolCalls[key]
-	if !seen {
-		call = &responsesInProgressToolCall{
-			itemID: itemID,
-			callID: callID,
-		}
-
-		state.inProgressToolCalls[key] = call
-		state.inProgressOrder = append(state.inProgressOrder, key)
-	}
+	call := state.inProgressToolCall(key, itemID, callID)
 
 	if callID != "" && call.callID == "" {
 		call.callID = callID
@@ -833,6 +973,32 @@ func responsesObserveFunctionCallItem(state *responsesStreamState, item *respons
 	}
 }
 
+// inProgressToolCall returns the accumulator stored under key, creating it
+// for a call first seen with the given item and call ids.
+func (state *responsesStreamState) inProgressToolCall(
+	key string,
+	itemID string,
+	callID string,
+) *responsesInProgressToolCall {
+	call, seen := state.inProgressToolCalls[key]
+	if seen {
+		return call
+	}
+
+	call = &responsesInProgressToolCall{
+		itemID:    itemID,
+		callID:    callID,
+		name:      "",
+		arguments: strings.Builder{},
+		completed: false,
+	}
+
+	state.inProgressToolCalls[key] = call
+	state.inProgressOrder = append(state.inProgressOrder, key)
+
+	return call
+}
+
 // responsesAppendFunctionCallArguments merges one streamed argument fragment
 // (response.function_call_arguments.delta) into the in-progress call.
 func responsesAppendFunctionCallArguments(state *responsesStreamState, itemID string, delta string) {
@@ -845,21 +1011,14 @@ func responsesAppendFunctionCallArguments(state *responsesStreamState, itemID st
 		return
 	}
 
-	call, seen := state.inProgressToolCalls[key]
-	if !seen {
-		call = &responsesInProgressToolCall{itemID: key}
-
-		state.inProgressToolCalls[key] = call
-		state.inProgressOrder = append(state.inProgressOrder, key)
-	}
-
-	call.arguments.WriteString(delta)
+	state.inProgressToolCall(key, key, "").arguments.WriteString(delta)
 }
 
 // responsesCompleteFunctionCallArguments finalizes a streamed function call
-// (response.function_call_arguments.done): once the name is known, the call
-// is recorded exactly once via collectResponsesFunctionCall.
-func responsesCompleteFunctionCallArguments(state *responsesStreamState, itemID string) {
+// (response.function_call_arguments.done). The event carries the finalized
+// arguments string, which replaces the streamed fragments; once the name is
+// known, the call is recorded exactly once via collectResponsesFunctionCall.
+func responsesCompleteFunctionCallArguments(state *responsesStreamState, itemID string, arguments string) {
 	if state == nil {
 		return
 	}
@@ -869,20 +1028,41 @@ func responsesCompleteFunctionCallArguments(state *responsesStreamState, itemID 
 		return
 	}
 
-	call, seen := state.inProgressToolCalls[key]
-	if !seen || call.completed {
+	call := state.inProgressToolCall(key, key, "")
+	if call.completed {
 		return
+	}
+
+	if arguments != "" {
+		call.arguments.Reset()
+		call.arguments.WriteString(arguments)
 	}
 
 	call.completed = true
 
-	collectResponsesFunctionCall(state, responsesOutputItem{
-		ID:        call.itemID,
-		Type:      responsesOutputTypeFunctionCall,
-		CallID:    call.callID,
-		Name:      call.name,
-		Arguments: call.argumentsString(),
-	})
+	collectResponsesFunctionCall(state, responsesCompletedFunctionCallItem(call))
+}
+
+// responsesCompletedFunctionCallItem converts a finalized in-progress call
+// into the function_call output item it streamed.
+func responsesCompletedFunctionCallItem(call *responsesInProgressToolCall) responsesOutputItem {
+	return responsesOutputItem{
+		ID:            call.itemID,
+		Type:          responsesOutputTypeFunctionCall,
+		Status:        responsesStatusCompleted,
+		CallID:        call.callID,
+		Name:          call.name,
+		Arguments:     call.argumentsString(),
+		Result:        "",
+		ResultURL:     "",
+		MIMEType:      "",
+		Action:        "",
+		Prompt:        "",
+		RevisedPrompt: "",
+		Summary:       nil,
+		Content:       nil,
+		raw:           nil,
+	}
 }
 
 func responsesStreamPayloadDelta(
@@ -935,31 +1115,11 @@ func responsesStreamPayloadDelta(
 
 		return delta, false, nil
 	case responsesStreamEventOutputDone:
-		delta := emptyDelta
-
-		if event.Item != nil &&
-			strings.EqualFold(strings.TrimSpace(event.Item.Type), responsesOutputTypeFunctionCall) {
-			collectResponsesFunctionCall(state, *event.Item)
-
-			return delta, false, nil
-		}
-
-		delta.Thinking = responsesOutputItemThinking(event.Item, state)
-		if delta.Thinking == "" {
-			delta.Content = responsesOutputItemText(event.Item, state, false)
-		}
-
-		return delta, false, nil
-	case responsesStreamEventOutputItemAdded:
-		responsesObserveFunctionCallItem(state, event.Item)
-
-		return emptyDelta, false, nil
-	case responsesStreamEventFunctionCallArgsDelta:
-		responsesAppendFunctionCallArguments(state, event.ItemID, event.Delta)
-
-		return emptyDelta, false, nil
-	case responsesStreamEventFunctionCallArgsDone:
-		responsesCompleteFunctionCallArguments(state, event.ItemID)
+		return responsesOutputItemDoneDelta(event, state), false, nil
+	case responsesStreamEventOutputItemAdded,
+		responsesStreamEventFunctionCallArgsDelta,
+		responsesStreamEventFunctionCallArgsDone:
+		responsesObserveFunctionCallEvent(eventType, event, state)
 
 		return emptyDelta, false, nil
 	case responsesStreamEventCompleted, responsesStreamEventDone:
@@ -986,6 +1146,48 @@ func responsesStreamPayloadDelta(
 	}
 }
 
+// responsesOutputItemDoneDelta handles response.output_item.done: the item
+// is kept for tool-round replay, a function_call item is recorded as a call,
+// and reasoning or message text not already streamed is emitted.
+func responsesOutputItemDoneDelta(event responsesStreamEvent, state *responsesStreamState) StreamDelta {
+	delta := emptyStreamDelta()
+
+	state.recordStreamedOutputItem(event.Item, event.OutputIndex)
+
+	if event.Item != nil &&
+		strings.EqualFold(strings.TrimSpace(event.Item.Type), responsesOutputTypeFunctionCall) {
+		collectResponsesFunctionCall(state, *event.Item)
+
+		return delta
+	}
+
+	delta.Thinking = responsesOutputItemThinking(event.Item, state)
+	if delta.Thinking == "" {
+		delta.Content = responsesOutputItemText(event.Item, state, false)
+	}
+
+	return delta
+}
+
+// responsesObserveFunctionCallEvent tracks a function call while it streams:
+// response.output_item.added announces the item,
+// response.function_call_arguments.delta streams its arguments, and
+// response.function_call_arguments.done carries the finalized arguments.
+func responsesObserveFunctionCallEvent(
+	eventType string,
+	event responsesStreamEvent,
+	state *responsesStreamState,
+) {
+	switch eventType {
+	case responsesStreamEventOutputItemAdded:
+		responsesObserveFunctionCallItem(state, event.Item)
+	case responsesStreamEventFunctionCallArgsDelta:
+		responsesAppendFunctionCallArguments(state, event.ItemID, event.Delta)
+	case responsesStreamEventFunctionCallArgsDone:
+		responsesCompleteFunctionCallArguments(state, event.ItemID, event.Arguments)
+	}
+}
+
 func emptyStreamDelta() StreamDelta {
 	return StreamDelta{
 		Thinking:           "",
@@ -993,7 +1195,7 @@ func emptyStreamDelta() StreamDelta {
 		FinishReason:       "",
 		ProviderResponseID: "",
 		SearchMetadata:     nil,
-		ToolCalls:          nil,
+		ToolCallResponse:   nil,
 	}
 }
 
@@ -1008,7 +1210,7 @@ func responsesCompletedDelta(
 			FinishReason:       finishReasonStop,
 			ProviderResponseID: "",
 			SearchMetadata:     nil,
-			ToolCalls:          nil,
+			ToolCallResponse:   responsesToolCallResponse(nil, state),
 		}, nil
 	}
 
@@ -1019,7 +1221,7 @@ func responsesCompletedDelta(
 			FinishReason:       "",
 			ProviderResponseID: "",
 			SearchMetadata:     nil,
-			ToolCalls:          nil,
+			ToolCallResponse:   nil,
 		}, openAIStreamEventError(
 			response.Error.Message,
 			response.Error.Type,
@@ -1040,7 +1242,7 @@ func responsesCompletedDelta(
 			FinishReason:       "",
 			ProviderResponseID: "",
 			SearchMetadata:     nil,
-			ToolCalls:          nil,
+			ToolCallResponse:   nil,
 		}, responsesStatusError(status, reason)
 	}
 
@@ -1064,7 +1266,7 @@ func responsesCompletedDelta(
 		FinishReason:       finishReasonStop,
 		ProviderResponseID: strings.TrimSpace(response.ID),
 		SearchMetadata:     nil,
-		ToolCalls:          responsesStateToolCalls(state),
+		ToolCallResponse:   responsesToolCallResponse(response, state),
 	}, nil
 }
 
@@ -1183,10 +1385,8 @@ func responsesUnstreamedReasoningSummary(
 		return "", true
 	}
 
-	if strings.HasPrefix(trimmedSummary, trimmedStreamed) {
-		return strings.TrimSpace(
-			strings.TrimPrefix(trimmedSummary, trimmedStreamed),
-		), true
+	if remainder, found := strings.CutPrefix(trimmedSummary, trimmedStreamed); found {
+		return strings.TrimSpace(remainder), true
 	}
 
 	return summaryText, false

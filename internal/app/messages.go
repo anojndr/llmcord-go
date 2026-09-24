@@ -1256,6 +1256,8 @@ func buildChatCompletionRequest(
 		RequestID:             "",
 		Messages:              messages,
 		Tools:                 nil,
+		ToolChoice:            "",
+		ToolRounds:            nil,
 		PreviousResponseID:    "",
 		PreviousResponseCount: 0,
 	}, nil

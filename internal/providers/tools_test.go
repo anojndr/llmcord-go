@@ -311,8 +311,12 @@ func TestOpenAIStreamChatCompletionAccumulatesToolCalls(t *testing.T) {
 		responseWriter.Header().Set("Content-Type", "text/event-stream")
 
 		// Parallel tool calls: fragments for the two calls interleave.
-		writeSSE(t, responseWriter, chatCompletionsToolCallChunk(0, "call_a", "web_search", `{"objective": "Find first", "search_queries": ["fir`))
-		writeSSE(t, responseWriter, chatCompletionsToolCallChunk(1, "call_b", "web_search", `{"objective": "Find second", "search_queries"`))
+		writeSSE(t, responseWriter, chatCompletionsToolCallChunk(
+			0, "call_a", "web_search", `{"objective": "Find first", "search_queries": ["fir`,
+		))
+		writeSSE(t, responseWriter, chatCompletionsToolCallChunk(
+			1, "call_b", "web_search", `{"objective": "Find second", "search_queries"`,
+		))
 		writeSSE(t, responseWriter, chatCompletionsToolCallChunk(0, "", "", `st"]}`))
 		writeSSE(t, responseWriter, chatCompletionsToolCallChunk(1, "", "", `: ["second"]}`))
 		writeSSE(t, responseWriter, chatCompletionsFinishChunk("tool_calls"))
@@ -326,7 +330,9 @@ func TestOpenAIStreamChatCompletionAccumulatesToolCalls(t *testing.T) {
 	var toolCalls []FunctionToolCall
 
 	err := client.streamChatCompletion(context.Background(), request, func(delta StreamDelta) error {
-		toolCalls = append(toolCalls, delta.ToolCalls...)
+		if delta.ToolCallResponse != nil {
+			toolCalls = append(toolCalls, delta.ToolCallResponse.Calls...)
+		}
 
 		return nil
 	})
@@ -423,8 +429,12 @@ func TestBuildResponsesRequestBodyIncludesFlatTools(t *testing.T) {
 func TestResponsesStreamCollectsFunctionCalls(t *testing.T) {
 	t.Parallel()
 
-	firstCall := responsesFunctionCallItem("fc_1", "call_a", "completed", `{"objective": "Find first", "search_queries": ["first"]}`)
-	secondCall := responsesFunctionCallItem("fc_2", "call_b", "completed", `{"objective": "Find second", "search_queries": ["second"]}`)
+	firstCall := responsesFunctionCallItem(
+		"fc_1", "call_a", "completed", `{"objective": "Find first", "search_queries": ["first"]}`,
+	)
+	secondCall := responsesFunctionCallItem(
+		"fc_2", "call_b", "completed", `{"objective": "Find second", "search_queries": ["second"]}`,
+	)
 
 	server := newToolCallTestServer(t, func(responseWriter http.ResponseWriter, _ *http.Request) {
 		responseWriter.Header().Set("Content-Type", "text/event-stream")
@@ -468,7 +478,9 @@ func TestResponsesStreamCollectsFunctionCalls(t *testing.T) {
 			sawCompleted = true
 		}
 
-		toolCalls = append(toolCalls, delta.ToolCalls...)
+		if delta.ToolCallResponse != nil {
+			toolCalls = append(toolCalls, delta.ToolCallResponse.Calls...)
+		}
 
 		return nil
 	})

@@ -204,14 +204,17 @@ func buildChatCompletionRequestBodyWithUsageOption(
 	includeStreamingUsage bool,
 ) map[string]any {
 	requestBody := make(map[string]any, len(request.Provider.ExtraBody)+requestBodyBaseFields)
-	requestBody["messages"] = openAINormalizeRequestMessages(
-		openAIReplaceSystemRoleWithDeveloper(
-			openAICacheBreakpointMessages(
-				RequestMessagesWithFileOrImageOnlyQueryPlaceholder(request.Messages),
-				request,
+	requestBody["messages"] = openAIRequestMessages(
+		openAINormalizeRequestMessages(
+			openAIReplaceSystemRoleWithDeveloper(
+				openAICacheBreakpointMessages(
+					RequestMessagesWithFileOrImageOnlyQueryPlaceholder(request.Messages),
+					request,
+				),
+				request.Model,
 			),
-			request.Model,
 		),
+		request.ToolRounds,
 	)
 	requestBody["model"] = request.Model
 	requestBody["stream"] = true
@@ -219,6 +222,7 @@ func buildChatCompletionRequestBodyWithUsageOption(
 	addOpenAITools(requestBody, request)
 
 	maps.Copy(requestBody, request.Provider.ExtraBody)
+	dropUnsupportedOpenAIChatTools(requestBody, request.Model)
 
 	if request.Provider.APIKind == ProviderAPIKindOpenAI && !request.Provider.UseResponsesAPI {
 		defaultOpenAIServiceTier(requestBody)
@@ -729,7 +733,7 @@ func handleStreamPayload(
 			FinishReason:       "",
 			ProviderResponseID: "",
 			SearchMetadata:     nil,
-			ToolCalls:          nil,
+			ToolCallResponse:   nil,
 		}
 
 		err = handle(thinkingDelta)
@@ -745,7 +749,7 @@ func handleStreamPayload(
 			FinishReason:       "",
 			ProviderResponseID: "",
 			SearchMetadata:     nil,
-			ToolCalls:          nil,
+			ToolCallResponse:   nil,
 		}
 
 		err = handle(contentDelta)
@@ -766,7 +770,7 @@ func handleStreamPayload(
 			FinishReason:       delta.FinishReason,
 			ProviderResponseID: "",
 			SearchMetadata:     nil,
-			ToolCalls:          delta.ToolCalls,
+			ToolCallResponse:   delta.ToolCallResponse,
 		}
 
 		err = handle(finishDelta)
@@ -849,26 +853,15 @@ func openAIStreamPayloadDelta(
 		delta.Thinking = *choice.Delta.ReasoningContent
 	}
 
-	if choice.Delta.FunctionCall != nil && toolCalls != nil {
-		toolCalls.observe([]openAIStreamToolCall{{
-			Index: 0,
-			ID:    "",
-			Function: openAIStreamFunctionPayload{
-				Name:      choice.Delta.FunctionCall.Name,
-				Arguments: choice.Delta.FunctionCall.Arguments,
-			},
-		}})
-	}
-
-	if len(choice.Delta.ToolCalls) > 0 && toolCalls != nil {
-		toolCalls.observe(choice.Delta.ToolCalls)
+	if toolCalls != nil {
+		toolCalls.observeChoice(delta.Content, delta.Thinking, choice.Delta.FunctionCall, choice.Delta.ToolCalls)
 	}
 
 	if choice.FinishReason != nil {
 		delta.FinishReason = strings.TrimSpace(*choice.FinishReason)
 
 		if toolCalls != nil {
-			delta.ToolCalls = toolCalls.finalize()
+			delta.ToolCallResponse = toolCalls.finalize()
 		}
 	}
 

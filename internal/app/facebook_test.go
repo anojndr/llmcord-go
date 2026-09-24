@@ -1480,7 +1480,7 @@ func TestMaybeAugmentConversationWithFacebookPreprocessesForNonGeminiModels(t *t
 			FinishReason:       finishReasonStop,
 			ProviderResponseID: "",
 			SearchMetadata:     nil,
-			ToolCalls:          nil,
+			ToolCallResponse:   nil,
 		})
 	})
 

@@ -23,7 +23,19 @@ type ChatCompletionRequest struct {
 	SessionID       string
 	RequestID       string
 	Messages        []ChatMessage
-	Tools           []FunctionTool
+	// Tools are the function tools offered on the OpenAI-compatible APIs.
+	// The native Gemini client does not offer function tools; it grounds
+	// with the built-in Google Search tool when EnableGrounding is set.
+	Tools []FunctionTool
+	// ToolChoice constrains tool use while Tools are offered. Empty leaves
+	// the API default ("auto": the model decides); ToolChoiceNone keeps the
+	// tool definitions but forbids new calls, which the function calling
+	// guide recommends over dropping the tools.
+	ToolChoice string
+	// ToolRounds are the function-calling rounds already completed in this
+	// turn, oldest first. Providers replay them after Messages in their
+	// native wire format (see ToolRound).
+	ToolRounds []ToolRound
 	// PreviousResponseID chains a Responses API follow-up onto the parent
 	// turn's stored response so only new input is sent. Empty disables
 	// chaining and sends the full Messages history statelessly.
@@ -54,7 +66,9 @@ type StreamDelta struct {
 	FinishReason       string
 	ProviderResponseID string
 	SearchMetadata     *searchtypes.SearchMetadata
-	ToolCalls          []FunctionToolCall
+	// ToolCallResponse is set on the final delta of a response that ended by
+	// requesting function calls.
+	ToolCallResponse *ToolCallResponse
 }
 
 // ProviderAPIKind is the provider wire protocol family.

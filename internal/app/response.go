@@ -9,6 +9,7 @@ import (
 	searchtypes "llmcord-go/internal/searchtypes"
 	"net/http"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -55,6 +56,10 @@ type responseTracker struct {
 	originalMessages   []chatMessage
 	tableImages        [][]renderedTableImage
 	tableImagesSent    []bool
+	// toolSearchResults accumulates the web_search tool results of the
+	// current attempt; they are retained in the source message's history so
+	// later turns keep the searched context.
+	toolSearchResults []webSearchResult
 }
 
 const (
@@ -195,10 +200,10 @@ type generatedPrefill struct {
 }
 
 type generatedRoundResult struct {
-	rawAnswer string
-	thinking  string
-	metadata  *searchMetadata
-	toolCalls []providers.FunctionToolCall
+	rawAnswer        string
+	thinking         string
+	metadata         *searchMetadata
+	toolCallResponse *providers.ToolCallResponse
 }
 
 func (instance *bot) runGenerationRound(
@@ -224,7 +229,7 @@ func (instance *bot) runGenerationRound(
 		lastRenderTime:      &lastRenderTime,
 		rawAnswerText:       "",
 		renderedAnswerText:  "",
-		toolCalls:           nil,
+		toolCallResponse:    nil,
 	}
 
 	if prefill.rawAnswer != "" {
@@ -250,7 +255,7 @@ func (instance *bot) runGenerationRound(
 		finishReason = providers.OpenAIStreamErrorEventType
 	}
 
-	if streamErr == nil && len(streamState.toolCalls) > 0 {
+	if streamErr == nil && streamState.toolCallResponse != nil {
 		// Tool round: hand off to the web search phase without finalizing
 		// the response render. The round's text is raw answer content;
 		// strip the bridge source appendix (carried raw, it would sit
@@ -264,10 +269,10 @@ func (instance *bot) runGenerationRound(
 		}
 
 		return generatedRoundResult{
-			rawAnswer: roundAnswerText,
-			thinking:  thinkingAccumulator.joined(),
-			metadata:  nil,
-			toolCalls: streamState.toolCalls,
+			rawAnswer:        roundAnswerText,
+			thinking:         thinkingAccumulator.joined(),
+			metadata:         nil,
+			toolCallResponse: streamState.toolCallResponse,
 		}, finishReason, nil
 	}
 
@@ -329,15 +334,15 @@ func (instance *bot) finalizeGenerationRound(
 	}
 
 	if responseErr == nil &&
-		strings.TrimSpace(cleanedAnswerText) == "" && len(streamState.toolCalls) == 0 {
+		strings.TrimSpace(cleanedAnswerText) == "" && streamState.toolCallResponse == nil {
 		responseErr = errEmptyModelResponse
 	}
 
 	return generatedRoundResult{
-		rawAnswer: cleanedAnswerText,
-		thinking:  thinkingAccumulator.joined(),
-		metadata:  parsedSearchMetadata,
-		toolCalls: nil,
+		rawAnswer:        cleanedAnswerText,
+		thinking:         thinkingAccumulator.joined(),
+		metadata:         parsedSearchMetadata,
+		toolCallResponse: nil,
 	}, finishReason, responseErr
 }
 
@@ -471,12 +476,18 @@ func isInvalidPreviousResponseError(err error) bool {
 	return true
 }
 
-// Tool calling is never disabled: every round re-offers the tools with
-// tool_choice "auto" (and a byte-identical tool prefix, so the provider's
-// prompt cache keeps matching). The loop is bounded by
+// Tool calling follows the providers' function calling flow: each round's
+// tool-call response and one output per call are appended as a tool round,
+// which the provider replays after the conversation in its native wire
+// format (assistant tool_calls plus tool messages on Chat Completions;
+// output items plus function_call_output items, or previous_response_id
+// chaining, on the Responses API). The conversation messages themselves
+// never change, so every follow-up extends a byte-identical prefix and the
+// provider's prompt cache keeps matching. Tool calling is never disabled:
+// every round re-offers the same tools. The loop is bounded by
 // maxWebSearchToolRounds so a model that keeps calling tools without
 // answering cannot run away; hitting the cap runs one final round with
-// tools stripped so the model must answer from the accumulated search
+// tool_choice "none" so the model must answer from the accumulated search
 // results instead of surfacing an empty-response error.
 func (instance *bot) generateResponseWithWebSearchTool(
 	ctx context.Context,
@@ -486,6 +497,12 @@ func (instance *bot) generateResponseWithWebSearchTool(
 	warnings []string,
 ) (string, string, error) {
 	var prefill generatedPrefill
+
+	if tracker != nil {
+		// Each attempt (primary, stateless retry, fallback) runs its own
+		// tool rounds from scratch.
+		tracker.toolSearchResults = nil
+	}
 
 	for roundIndex := 0; ; roundIndex++ {
 		round, roundErr := instance.runGenerationRoundWithRetry(
@@ -499,18 +516,8 @@ func (instance *bot) generateResponseWithWebSearchTool(
 			return round.rawAnswer, round.thinking, roundErr
 		}
 
-		if len(round.toolCalls) == 0 {
+		if round.toolCallResponse == nil {
 			return round.rawAnswer, round.thinking, nil
-		}
-
-		// A chained follow-up sent only the new tail with
-		// previous_response_id. Tool execution appends function outputs
-		// that the stateless tool phase builds against the full history,
-		// so revert to a full stateless send for the remaining rounds:
-		// request.Messages already holds the complete conversation.
-		if strings.TrimSpace(request.PreviousResponseID) != "" {
-			request.PreviousResponseID = ""
-			request.PreviousResponseCount = 0
 		}
 
 		if len(request.Tools) == 0 {
@@ -520,7 +527,7 @@ func (instance *bot) generateResponseWithWebSearchTool(
 				"model emitted tool calls without offered tools",
 				nil,
 				"tool_calls",
-				len(round.toolCalls),
+				len(round.toolCallResponse.Calls),
 			)
 
 			return round.rawAnswer, round.thinking, errEmptyModelResponse
@@ -530,26 +537,22 @@ func (instance *bot) generateResponseWithWebSearchTool(
 			return instance.runForcedFinalAnswerRound(ctx, request, tracker, warnings, round, roundIndex)
 		}
 
-		var searchWarnings []string
+		var outputs []providers.FunctionToolOutput
 
-		var augmentedMessages []chatMessage
-
-		var searched bool
-
-		augmentedMessages, searchWarnings, searched = instance.runWebSearchToolPhase(
+		outputs, warnings, _ = instance.runWebSearchToolPhase(
 			ctx,
 			loadedConfig,
 			request.ConfiguredModel,
 			tracker,
 			request.Messages,
 			warnings,
-			round.toolCalls,
+			round.toolCallResponse.Calls,
 		)
-		warnings = searchWarnings
 
-		if searched {
-			request.Messages = augmentedMessages
-		}
+		request.ToolRounds = append(slices.Clone(request.ToolRounds), providers.ToolRound{
+			Response: round.toolCallResponse,
+			Outputs:  outputs,
+		})
 
 		prefill = generatedPrefill{
 			rawAnswer: round.rawAnswer,
@@ -558,10 +561,13 @@ func (instance *bot) generateResponseWithWebSearchTool(
 	}
 }
 
-// runForcedFinalAnswerRound runs one last generation round with tools
-// stripped after the web_search tool loop hits maxWebSearchToolRounds: the
-// model must answer from the accumulated search results instead of calling
-// tools again.
+// runForcedFinalAnswerRound runs one last generation round with
+// tool_choice "none" after the web_search tool loop hits
+// maxWebSearchToolRounds: the model must answer from the accumulated search
+// results instead of calling tools again. The tool definitions stay in the
+// request, as the function calling guide recommends, so the prompt prefix
+// is unchanged. The calls requested by the capped round are dropped with
+// that round.
 func (instance *bot) runForcedFinalAnswerRound(
 	ctx context.Context,
 	request chatCompletionRequest,
@@ -571,7 +577,7 @@ func (instance *bot) runForcedFinalAnswerRound(
 	roundIndex int,
 ) (string, string, error) {
 	logWarn(
-		"web_search tool round cap reached without a final answer; forcing final answer without tools",
+		"web_search tool round cap reached without a final answer; forcing a final answer with tool_choice none",
 		nil,
 		"rounds",
 		roundIndex+1,
@@ -579,7 +585,7 @@ func (instance *bot) runForcedFinalAnswerRound(
 		maxWebSearchToolRounds,
 	)
 
-	request.Tools = nil
+	request.ToolChoice = providers.ToolChoiceNone
 
 	finalPrefill := generatedPrefill{
 		rawAnswer: round.rawAnswer,
@@ -597,12 +603,12 @@ func (instance *bot) runForcedFinalAnswerRound(
 		return final.rawAnswer, final.thinking, finalErr
 	}
 
-	if len(final.toolCalls) != 0 {
+	if final.toolCallResponse != nil {
 		logWarn(
-			"model emitted tool calls without offered tools",
+			"model emitted tool calls although tool_choice was none",
 			nil,
 			"tool_calls",
-			len(final.toolCalls),
+			len(final.toolCallResponse.Calls),
 		)
 
 		return final.rawAnswer, final.thinking, errEmptyModelResponse
@@ -791,7 +797,7 @@ type generatedStreamState struct {
 	lastRenderTime      *time.Time
 	rawAnswerText       string
 	renderedAnswerText  string
-	toolCalls           []providers.FunctionToolCall
+	toolCallResponse    *providers.ToolCallResponse
 }
 
 func (instance *bot) handleGeneratedStreamDelta(
@@ -814,8 +820,8 @@ func (instance *bot) handleGeneratedStreamDelta(
 		splitOccurred = answerSplitOccurred || splitOccurred
 	}
 
-	if len(delta.ToolCalls) > 0 {
-		state.toolCalls = append(state.toolCalls, delta.ToolCalls...)
+	if delta.ToolCallResponse != nil {
+		state.toolCallResponse = delta.ToolCallResponse
 	}
 
 	if delta.FinishReason != "" {

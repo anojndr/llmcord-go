@@ -1844,7 +1844,12 @@ func TestOpenAIStreamPayloadDeltaParsesRefusalAndLegacyFunctionCall(t *testing.T
 		t.Fatalf("unexpected refusal content: %q", delta.Content)
 	}
 
-	calls := accumulator.finalize()
+	response := accumulator.finalize()
+	if response == nil {
+		t.Fatal("expected legacy function_call to accumulate a tool call")
+	}
+
+	calls := response.Calls
 	if len(calls) != 1 || calls[0].Name != "get_weather" {
 		t.Fatalf("expected legacy function_call to accumulate a tool call: %#v", calls)
 	}
@@ -1940,10 +1945,12 @@ func TestOpenAIStreamPayloadDeltaLegacyFunctionCallSplitArguments(t *testing.T) 
 		}
 	}
 
-	calls := accumulator.finalize()
-	if len(calls) != 1 {
-		t.Fatalf("expected split function_call fragments to merge into one call: %#v", calls)
+	response := accumulator.finalize()
+	if response == nil || len(response.Calls) != 1 {
+		t.Fatalf("expected split function_call fragments to merge into one call: %#v", response)
 	}
+
+	calls := response.Calls
 
 	if calls[0].Name != "get_weather" {
 		t.Fatalf("unexpected function_call name: %q", calls[0].Name)

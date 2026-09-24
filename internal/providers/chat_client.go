@@ -241,7 +241,7 @@ func deltaReferencesContent(delta StreamDelta) bool {
 	return delta.Thinking != "" ||
 		delta.Content != "" ||
 		delta.SearchMetadata != nil ||
-		len(delta.ToolCalls) > 0
+		delta.ToolCallResponse.hasCalls()
 }
 
 // IsTransientStreamError reports whether a stream failure is safe to retry:

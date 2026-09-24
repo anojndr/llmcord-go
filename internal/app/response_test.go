@@ -3417,16 +3417,18 @@ func TestGenerateAndSendResponseExecutesWebSearchToolOnFallbackModel(t *testing.
 		t.Fatalf("expected primary + fallback tool round + fallback follow-up, got %d requests", len(chatClient.requests))
 	}
 
-	followUpText := latestChatMessageText(chatClient.requests[2].Messages)
-	if !strings.Contains(followUpText, testWebSearchResultText) {
-		t.Fatalf("expected search results in the fallback follow-up request, got: %q", followUpText)
+	followUpRounds := chatClient.requests[2].ToolRounds
+	if len(followUpRounds) != 1 {
+		t.Fatalf("expected the fallback follow-up to replay 1 tool round, got %d", len(followUpRounds))
 	}
+
+	assertToolRoundOutputContains(t, followUpRounds[0], "call_fb", testWebSearchResultText)
 }
 
 // fallbackToolRoundStream builds the stub stream: the primary model fails,
 // the fallback model emits one web_search tool call, and the fallback
 // follow-up (which keeps the tool definitions with tool_choice "auto" and
-// must contain the search results) gets answered.
+// replays the tool round carrying the search results) gets answered.
 func fallbackToolRoundStream(
 	t *testing.T,
 	attemptedModels *[]string,
@@ -3448,26 +3450,23 @@ func fallbackToolRoundStream(
 				return errUnknownModel
 			}
 
-			if strings.Contains(latestChatMessageText(request.Messages), testWebSearchResultText) {
-				followUpText := latestChatMessageText(request.Messages)
-				if !strings.Contains(followUpText, testWebSearchResultText) {
+			if len(request.ToolRounds) > 0 {
+				output, found := toolRoundOutput(request.ToolRounds[0], "call_fb")
+				if !found || !strings.Contains(output, testWebSearchResultText) {
 					t.Errorf(
-						"expected search results in the fallback follow-up request, got: %q",
-						followUpText,
+						"expected search results in the fallback follow-up tool output, got: %q",
+						output,
 					)
 				}
 
 				return handle(newStreamDelta("Fallback answer after searching.", finishReasonStop))
 			}
 
-			return handle(streamDelta{
-				ToolCalls: []providers.FunctionToolCall{{
-					ID:        "call_fb",
-					Name:      providers.WebSearchToolName,
-					Arguments: `{"objective": "Find first query results", "search_queries": ["` + testWebSearchQueryOne + `"]}`,
-				}},
-				FinishReason: "tool_calls",
-			})
+			return handle(toolCallDelta(providers.FunctionToolCall{
+				ID:        "call_fb",
+				Name:      providers.WebSearchToolName,
+				Arguments: `{"objective": "Find first query results", "search_queries": ["` + testWebSearchQueryOne + `"]}`,
+			}))
 		default:
 			return errUnknownModel
 		}
@@ -3751,7 +3750,11 @@ func TestGenerateAndSendResponseRetriesChainedFollowUpStatelessly(t *testing.T) 
 	}
 }
 
-func TestGenerateResponseWithWebSearchToolRevertsToStatelessOnToolCalls(t *testing.T) {
+// TestGenerateResponseWithWebSearchToolKeepsChainedTurnForToolRounds covers
+// a chained Responses turn: the tool follow-up keeps the caller's chaining
+// and carries the executed tool round, so the provider can chain onto the
+// response that requested the calls and send only their outputs.
+func TestGenerateResponseWithWebSearchToolKeepsChainedTurnForToolRounds(t *testing.T) {
 	t.Parallel()
 
 	chatClient := newStubChatClient(func(
@@ -3759,18 +3762,15 @@ func TestGenerateResponseWithWebSearchToolRevertsToStatelessOnToolCalls(t *testi
 		request chatCompletionRequest,
 		handle func(streamDelta) error,
 	) error {
-		if strings.Contains(latestChatMessageText(request.Messages), testWebSearchResultText) {
+		if len(request.ToolRounds) > 0 {
 			return handle(newStreamDelta(testWebSearchToolAnswer, finishReasonStop))
 		}
 
-		return handle(streamDelta{
-			ToolCalls: []providers.FunctionToolCall{{
-				ID:        "call_1",
-				Name:      providers.WebSearchToolName,
-				Arguments: `{"objective": "Find first query results", "search_queries": ["` + testWebSearchQueryOne + `"]}`,
-			}},
-			FinishReason: "tool_calls",
-		})
+		return handle(toolCallDelta(providers.FunctionToolCall{
+			ID:        "call_1",
+			Name:      providers.WebSearchToolName,
+			Arguments: `{"objective": "Find first query results", "search_queries": ["` + testWebSearchQueryOne + `"]}`,
+		}))
 	})
 	webSearch := newStubWebSearchClient(func(
 		_ context.Context,
@@ -3803,11 +3803,18 @@ func TestGenerateResponseWithWebSearchToolRevertsToStatelessOnToolCalls(t *testi
 	}
 
 	if len(chatClient.requests) != 2 {
-		t.Fatalf("expected tool round plus stateless follow-up, got %d requests", len(chatClient.requests))
+		t.Fatalf("expected tool round plus follow-up, got %d requests", len(chatClient.requests))
 	}
 
 	followUp := chatClient.requests[1]
-	if strings.TrimSpace(followUp.PreviousResponseID) != "" || followUp.PreviousResponseCount != 0 {
-		t.Fatalf("expected tool follow-up without chaining, got %#v", followUp)
+	if followUp.PreviousResponseID != request.PreviousResponseID ||
+		followUp.PreviousResponseCount != request.PreviousResponseCount {
+		t.Fatalf("expected the tool follow-up to keep the turn's chaining, got %#v", followUp)
 	}
+
+	if len(followUp.ToolRounds) != 1 {
+		t.Fatalf("expected the tool follow-up to carry 1 tool round, got %d", len(followUp.ToolRounds))
+	}
+
+	assertToolRoundOutputContains(t, followUp.ToolRounds[0], "call_1", testWebSearchResultText)
 }

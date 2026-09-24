@@ -42,6 +42,15 @@ const (
 	// webSearchToolMaxQueries specifies the default query cap when a limit is configured.
 	// In practice, web_search queries are unlimited (0).
 	webSearchToolMaxQueries = 0
+
+	// Function call outputs returned to the model for calls that cannot
+	// produce search results. Every call must be answered, and the function
+	// calling guide suggests returning an error string the model can act on.
+	webSearchUnknownToolOutputFormat = "Error: unknown function %q. The only available function is %s."
+	webSearchInvalidArgumentsOutput  = "Error: the web_search arguments are not valid JSON " +
+		"with a search_queries array of strings."
+	webSearchNoQueriesOutput = "Error: web_search needs at least one non-empty search query."
+	webSearchFailedOutput    = "Error: the web search failed, so no search results are available."
 )
 
 type chatCompletionStreamer interface {
@@ -527,45 +536,39 @@ func (err exaStatusError) Unwrap() error {
 	return err.Err
 }
 
-// extractWebSearchQueries parses the search queries requested through the
-// web_search tool calls. It accepts both "search_queries" (the Parallel Search
-// schema) and "queries" (legacy schema) for backward compatibility. Calls to other
-// tools and calls with malformed arguments are ignored; valid queries are trimmed
-// and deduplicated in order.
-func extractWebSearchQueries(toolCalls []providers.FunctionToolCall) []string {
+// webSearchToolCall is one function call of a tool round: its web_search
+// queries, or the error output that answers a call that cannot run.
+type webSearchToolCall struct {
+	call        providers.FunctionToolCall
+	queries     []string
+	errorOutput string
+}
+
+// parseWebSearchToolCalls parses every call of a tool round and returns the
+// calls together with the union of their queries, trimmed and deduplicated
+// in order. Calls to other functions, malformed arguments, and calls without
+// queries get an error output instead of queries.
+func parseWebSearchToolCalls(toolCalls []providers.FunctionToolCall) ([]webSearchToolCall, []string) {
+	parsedCalls := make([]webSearchToolCall, 0, len(toolCalls))
 	seenQueries := make(map[string]struct{})
 
 	var queries []string
 
 	for _, toolCall := range toolCalls {
-		if strings.TrimSpace(toolCall.Name) != providers.WebSearchToolName {
-			continue
-		}
+		parsedCall := webSearchToolCall{call: toolCall, queries: nil, errorOutput: ""}
 
-		var arguments struct {
-			Objective     string   `json:"objective"`
-			SearchQueries []string `json:"search_queries"`
-			Queries       []string `json:"queries"`
-		}
-
-		err := json.Unmarshal([]byte(toolCall.Arguments), &arguments)
-		if err != nil {
-			logWarn("parse web search tool arguments", err, "arguments", toolCall.Arguments)
+		callQueries, errorOutput := webSearchToolCallQueries(toolCall)
+		if errorOutput != "" {
+			parsedCall.errorOutput = errorOutput
+			parsedCalls = append(parsedCalls, parsedCall)
 
 			continue
 		}
 
-		rawQueries := arguments.SearchQueries
-		if len(rawQueries) == 0 {
-			rawQueries = arguments.Queries
-		}
+		parsedCall.queries = callQueries
+		parsedCalls = append(parsedCalls, parsedCall)
 
-		for _, query := range rawQueries {
-			query = strings.TrimSpace(query)
-			if query == "" {
-				continue
-			}
-
+		for _, query := range callQueries {
 			if _, seen := seenQueries[query]; seen {
 				continue
 			}
@@ -575,7 +578,150 @@ func extractWebSearchQueries(toolCalls []providers.FunctionToolCall) []string {
 		}
 	}
 
+	return parsedCalls, queries
+}
+
+// webSearchToolCallQueries parses the search queries of one web_search call.
+// It accepts both "search_queries" (the Parallel Search schema) and
+// "queries" (legacy schema) for backward compatibility. It returns the
+// trimmed, deduplicated queries, or the error output for a call that cannot
+// run.
+func webSearchToolCallQueries(toolCall providers.FunctionToolCall) ([]string, string) {
+	name := strings.TrimSpace(toolCall.Name)
+	if name != providers.WebSearchToolName {
+		return nil, fmt.Sprintf(webSearchUnknownToolOutputFormat, name, providers.WebSearchToolName)
+	}
+
+	var arguments struct {
+		Objective     string   `json:"objective"`
+		SearchQueries []string `json:"search_queries"`
+		Queries       []string `json:"queries"`
+	}
+
+	err := json.Unmarshal([]byte(toolCall.Arguments), &arguments)
+	if err != nil {
+		logWarn("parse web search tool arguments", err, "arguments", toolCall.Arguments)
+
+		return nil, webSearchInvalidArgumentsOutput
+	}
+
+	rawQueries := arguments.SearchQueries
+	if len(rawQueries) == 0 {
+		rawQueries = arguments.Queries
+	}
+
+	seenQueries := make(map[string]struct{}, len(rawQueries))
+	queries := make([]string, 0, len(rawQueries))
+
+	for _, query := range rawQueries {
+		query = strings.TrimSpace(query)
+		if query == "" {
+			continue
+		}
+
+		if _, seen := seenQueries[query]; seen {
+			continue
+		}
+
+		seenQueries[query] = struct{}{}
+		queries = append(queries, query)
+	}
+
+	if len(queries) == 0 {
+		return nil, webSearchNoQueriesOutput
+	}
+
+	return queries, ""
+}
+
+// extractWebSearchQueries returns the union of the search queries requested
+// through the web_search tool calls, trimmed and deduplicated in order.
+// Calls to other tools and calls with malformed arguments are ignored.
+func extractWebSearchQueries(toolCalls []providers.FunctionToolCall) []string {
+	_, queries := parseWebSearchToolCalls(toolCalls)
+
 	return queries
+}
+
+// webSearchToolOutputs answers every call of a tool round, in call order.
+// A web_search call gets the results for its own queries; results matching
+// no call's query go to the first call that ran, so none are lost. Calls
+// that could not run keep their error output, and searchErrorOutput (when
+// set) answers every call that needed the failed search.
+func webSearchToolOutputs(
+	parsedCalls []webSearchToolCall,
+	results []webSearchResult,
+	searchErrorOutput string,
+) []providers.FunctionToolOutput {
+	outputs := make([]providers.FunctionToolOutput, 0, len(parsedCalls))
+	unmatchedResults := webSearchResultsMatchingNoCall(parsedCalls, results)
+
+	for _, parsedCall := range parsedCalls {
+		output := parsedCall.errorOutput
+
+		switch {
+		case output != "":
+		case searchErrorOutput != "":
+			output = searchErrorOutput
+		default:
+			callResults := webSearchResultsForQueries(results, parsedCall.queries)
+			callResults = append(callResults, unmatchedResults...)
+			unmatchedResults = nil
+			output = formatWebSearchResults(callResults)
+		}
+
+		outputs = append(outputs, providers.FunctionToolOutput{
+			CallID: parsedCall.call.ID,
+			Output: output,
+		})
+	}
+
+	return outputs
+}
+
+// webSearchResultsForQueries returns the results for each query in query
+// order; a query without results reports that nothing was found.
+func webSearchResultsForQueries(results []webSearchResult, queries []string) []webSearchResult {
+	queryResults := make([]webSearchResult, 0, len(queries))
+
+	for _, query := range queries {
+		found := false
+
+		for _, result := range results {
+			if strings.EqualFold(strings.TrimSpace(result.Query), query) {
+				queryResults = append(queryResults, result)
+				found = true
+			}
+		}
+
+		if !found {
+			queryResults = append(queryResults, webSearchResult{Query: query, Text: ""})
+		}
+	}
+
+	return queryResults
+}
+
+// webSearchResultsMatchingNoCall returns the results whose query was not
+// requested by any web_search call of the round.
+func webSearchResultsMatchingNoCall(parsedCalls []webSearchToolCall, results []webSearchResult) []webSearchResult {
+	requestedQueries := make(map[string]struct{})
+
+	for _, parsedCall := range parsedCalls {
+		for _, query := range parsedCall.queries {
+			requestedQueries[strings.ToLower(query)] = struct{}{}
+		}
+	}
+
+	var unmatched []webSearchResult
+
+	for _, result := range results {
+		if _, requested := requestedQueries[strings.ToLower(strings.TrimSpace(result.Query))]; !requested {
+			unmatched = append(unmatched, result)
+		}
+	}
+
+	return unmatched
 }
 
 // webSearchToolEnabled reports whether the provider's models should be
@@ -606,12 +752,15 @@ func (instance *bot) runWebSearchQueries(
 	return instance.webSearch.search(ctx, searchConfig, queries)
 }
 
-// runWebSearchToolPhase executes every query requested through the
-// web_search tool calls and appends the formatted results to the request
-// messages. Appending to the already-built request messages (instead of
-// rebuilding the conversation) keeps the follow-up request a byte-identical
-// prefix extension, so the provider's prompt cache still matches. It
-// reports whether usable results were produced.
+// runWebSearchToolPhase executes the function calls of one tool round and
+// returns one output per call, in call order: the function calling guides
+// require every call the model requested to be answered. The queries of
+// all web_search calls run through the routed search chain as one batch,
+// and each call's output holds the results for its own queries. Calls to
+// unknown functions, calls without usable queries, and failed searches are
+// answered with an error the model can act on. Search results are also
+// retained in the source message's history for later turns. It reports
+// whether usable results were produced.
 func (instance *bot) runWebSearchToolPhase(
 	ctx context.Context,
 	loadedConfig config,
@@ -620,8 +769,8 @@ func (instance *bot) runWebSearchToolPhase(
 	requestMessages []chatMessage,
 	warnings []string,
 	toolCalls []providers.FunctionToolCall,
-) ([]chatMessage, []string, bool) {
-	queries := extractWebSearchQueries(toolCalls)
+) ([]providers.FunctionToolOutput, []string, bool) {
+	parsedCalls, queries := parseWebSearchToolCalls(toolCalls)
 	if len(queries) == 0 {
 		logWarn(
 			"web_search tool called without usable queries",
@@ -630,24 +779,16 @@ func (instance *bot) runWebSearchToolPhase(
 			len(toolCalls),
 		)
 
-		return nil, warnings, false
+		return webSearchToolOutputs(parsedCalls, nil, ""), warnings, false
 	}
 
 	results, err := instance.runWebSearchQueries(ctx, loadedConfig, configuredModel, queries)
 	if err != nil {
 		logWarn("run web search", err, "queries", queries)
 
-		return nil, append(warnings, searchWarningText), false
-	}
-
-	augmentedMessages, err := appendWebSearchResultsToConversation(
-		requestMessages,
-		formatWebSearchResults(results),
-	)
-	if err != nil {
-		logWarn("append web search results to conversation", err)
-
-		return nil, append(warnings, searchWarningText), false
+		return webSearchToolOutputs(parsedCalls, nil, webSearchFailedOutput),
+			append(warnings, searchWarningText),
+			false
 	}
 
 	if tracker != nil {
@@ -655,14 +796,41 @@ func (instance *bot) runWebSearchToolPhase(
 			tracker.searchMetadata,
 			newSearchMetadata(queries, results, loadedConfig.WebSearch.maxURLs()),
 		)
-		if tracker.sourceMessage != nil {
-			if persistErr := instance.persistAugmentedSourceMessage(ctx, tracker.sourceMessage, augmentedMessages); persistErr != nil {
-				logWarn("persist augmented source message after web search", persistErr)
-			}
-		}
+		tracker.toolSearchResults = append(tracker.toolSearchResults, results...)
+
+		instance.retainWebSearchResults(ctx, tracker, requestMessages)
 	}
 
-	return augmentedMessages, warnings, true
+	return webSearchToolOutputs(parsedCalls, results, ""), warnings, true
+}
+
+// retainWebSearchResults stores the attempt's accumulated web_search tool
+// results in the source message's history node, so later turns rebuilt from
+// the reply chain keep the searched context. The current request is left
+// unchanged: its results travel as tool outputs.
+func (instance *bot) retainWebSearchResults(
+	ctx context.Context,
+	tracker *responseTracker,
+	requestMessages []chatMessage,
+) {
+	if tracker.sourceMessage == nil {
+		return
+	}
+
+	augmentedMessages, err := appendWebSearchResultsToConversation(
+		requestMessages,
+		formatWebSearchResults(tracker.toolSearchResults),
+	)
+	if err != nil {
+		logWarn("append web search results to retained history", err)
+
+		return
+	}
+
+	err = instance.persistAugmentedSourceMessage(ctx, tracker.sourceMessage, augmentedMessages)
+	if err != nil {
+		logWarn("persist augmented source message after web search", err)
+	}
 }
 
 func newSearchMetadata(queries []string, results []webSearchResult, maxURLs int) *searchMetadata {

@@ -631,7 +631,7 @@ func newGeminiMediaAnalysisChatClient(
 			FinishReason:       finishReasonStop,
 			ProviderResponseID: "",
 			SearchMetadata:     nil,
-			ToolCalls:          nil,
+			ToolCallResponse:   nil,
 		})
 		if err != nil {
 			return err
@@ -702,7 +702,7 @@ func newConcurrentGeminiMediaAnalysisChatClient(
 			FinishReason:       finishReasonStop,
 			ProviderResponseID: "",
 			SearchMetadata:     nil,
-			ToolCalls:          nil,
+			ToolCallResponse:   nil,
 		})
 	})
 
@@ -845,7 +845,7 @@ func TestAnalyzeMediaWithGeminiFallsBackToAudioCapableModel(t *testing.T) {
 			FinishReason:       finishReasonStop,
 			ProviderResponseID: "",
 			SearchMetadata:     nil,
-			ToolCalls:          nil,
+			ToolCallResponse:   nil,
 		})
 	})
 
