@@ -7,7 +7,7 @@ It turns Discord reply chains into a frontend for OpenAI-compatible chat-complet
 ## Highlights
 
 - Reply-chain conversations in guilds, DMs, and public threads; triggered by bot mentions or `at ai`
-- Real-time streaming replies with a live progress embed (stage checklist, progress bar, elapsed timer, and the web search queries and sources while the model writes the answer), plus `Show Thinking`, `Show Sources`, `View response better on GitHub Gist` (publishes the full reply as a GitHub Gist), and `Export` (downloads the reply chain as a standalone HTML file)
+- Real-time streaming replies with a live progress embed (stage checklist, progress bar, elapsed timer, and the web search queries plus how many sources the model is reading while it writes the answer), plus `Show Thinking`, `Show Sources`, `View response better on GitHub Gist` (publishes the full reply as a GitHub Gist), and `Export` (downloads the reply chain as a standalone HTML file)
 - Multimodal input: images, audio, video, PDFs, DOCX, PPTX, and generic file attachments
 - URL enrichment for TikTok, Facebook, YouTube, Reddit, and generic websites (Firecrawl Scrape when a Firecrawl key is set)
 - Automatic Facebook video downloads: any message containing a Facebook or fb.watch link (no bot mention needed) gets a reply with the MP4 attached; oversized videos are compressed to 8 MB first and fall back to the direct download link if compression fails

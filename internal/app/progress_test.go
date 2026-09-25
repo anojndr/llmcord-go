@@ -804,13 +804,14 @@ func TestBuildRequestProgressEmbedShowsWebSearch(t *testing.T) {
 	t.Parallel()
 
 	queries := []string{"first *query*", "second query"}
-	sources := []searchSource{
-		{Title: "Docs [beta]", URL: "https://www.docs.example/guide_(v2)"},
-		{Title: "https://news.example/story", URL: "https://news.example/story"},
-	}
 
-	const rail = "✓ ~~Reading conversation~~\n\n" +
-		"✓ ~~Gathering context~~\n\n"
+	const (
+		rail = "✓ ~~Reading conversation~~\n\n" +
+			"✓ ~~Gathering context~~\n\n"
+		searches = "**Searches**\n" +
+			"• first \\*query\\*\n" +
+			"• second query"
+	)
 
 	tests := []struct {
 		name            string
@@ -819,40 +820,33 @@ func TestBuildRequestProgressEmbedShowsWebSearch(t *testing.T) {
 	}{
 		{
 			name:   "searching",
-			search: requestProgressSearch{queries: queries, sources: nil, finished: false, failed: false},
+			search: requestProgressSearch{queries: queries, sourceCount: 0, finished: false, failed: false},
 			wantDescription: "### ⠙ Searching the web\n\n" + rail +
-				"› **Generating response** — *Running 2 searches*\n\n" +
-				"**Searches**\n" +
-				"• first \\*query\\*\n" +
-				"• second query",
+				"› **Generating response** — *Running 2 searches*\n\n" + searches,
 		},
 		{
-			name:   "sources",
-			search: requestProgressSearch{queries: queries, sources: sources, finished: true, failed: false},
+			name:   "reading sources",
+			search: requestProgressSearch{queries: queries, sourceCount: 12, finished: true, failed: false},
 			wantDescription: "### ⠙ Writing the answer\n\n" + rail +
-				"› **Generating response** — *Reading 2 sources*\n\n" +
-				"**Searches**\n" +
-				"• first \\*query\\*\n" +
-				"• second query\n\n" +
-				"**Sources**\n" +
-				"1. [Docs \\[beta\\]](https://www.docs.example/guide_%28v2%29) · docs.example\n" +
-				"2. [news.example](https://news.example/story)",
+				"› **Generating response** — *Reading 12 sources*\n\n" + searches,
+		},
+		{
+			name:   "reading one source",
+			search: requestProgressSearch{queries: queries, sourceCount: 1, finished: true, failed: false},
+			wantDescription: "### ⠙ Writing the answer\n\n" + rail +
+				"› **Generating response** — *Reading 1 source*\n\n" + searches,
 		},
 		{
 			name:   "no sources",
-			search: requestProgressSearch{queries: queries[1:], sources: nil, finished: true, failed: false},
+			search: requestProgressSearch{queries: queries, sourceCount: 0, finished: true, failed: false},
 			wantDescription: "### ⠙ Writing the answer\n\n" + rail +
-				"› **Generating response** — *No sources found*\n\n" +
-				"**Searches**\n" +
-				"• second query",
+				"› **Generating response** — *No sources found*\n\n" + searches,
 		},
 		{
 			name:   "failed",
-			search: requestProgressSearch{queries: queries[1:], sources: nil, finished: true, failed: true},
+			search: requestProgressSearch{queries: queries, sourceCount: 0, finished: true, failed: true},
 			wantDescription: "### ⠙ Writing the answer\n\n" + rail +
-				"› **Generating response** — *Web search unavailable*\n\n" +
-				"**Searches**\n" +
-				"• second query",
+				"› **Generating response** — *Web search unavailable*\n\n" + searches,
 		},
 	}
 
@@ -882,7 +876,7 @@ func TestBuildRequestProgressEmbedShowsWebSearch(t *testing.T) {
 	}
 }
 
-func TestBuildRequestProgressEmbedKeepsWebSearchWithinEmbedLimit(t *testing.T) {
+func TestBuildRequestProgressEmbedCountsQueriesPastTheLimit(t *testing.T) {
 	t.Parallel()
 
 	queries := make([]string, 0, requestProgressMaxQueries+3)
@@ -890,16 +884,8 @@ func TestBuildRequestProgressEmbedKeepsWebSearchWithinEmbedLimit(t *testing.T) {
 		queries = append(queries, strings.Repeat("query ", 40)+strconv.Itoa(index))
 	}
 
-	sources := make([]searchSource, 0, 40)
-	for index := range 40 {
-		sources = append(sources, searchSource{
-			Title: strings.Repeat("Long title ", 20),
-			URL:   "https://site" + strconv.Itoa(index) + ".example/" + strings.Repeat("p", 450),
-		})
-	}
-
 	view := newRequestProgressView(requestProgressStageGeneratingResponse)
-	view.search = requestProgressSearch{queries: queries, sources: sources, finished: true, failed: false}
+	view.search = requestProgressSearch{queries: queries, sourceCount: 40, finished: true, failed: false}
 
 	embed := buildRequestProgressEmbed(
 		view,
@@ -909,63 +895,20 @@ func TestBuildRequestProgressEmbedKeepsWebSearchWithinEmbedLimit(t *testing.T) {
 		requestProgressSpinnerFrame(0),
 	)
 
+	if got := strings.Count(embed.Description, "\n• "); got != requestProgressMaxQueries {
+		t.Fatalf("expected %d listed queries, got %d: %q", requestProgressMaxQueries, got, embed.Description)
+	}
+
+	if !strings.HasSuffix(embed.Description, "…\n+3 more") {
+		t.Fatalf("expected shortened queries and the rest counted: %q", embed.Description)
+	}
+
 	if got := runeCount(embed.Description); got > embedResponseMaxLength {
 		t.Fatalf("expected the card within %d runes, got %d", embedResponseMaxLength, got)
 	}
-
-	if !strings.Contains(embed.Description, "+3 more\n") {
-		t.Fatalf("expected the queries past the limit to be counted: %q", embed.Description)
-	}
-
-	if !strings.HasSuffix(embed.Description, " more") {
-		t.Fatalf("expected the sources past the limit to be counted: %q", embed.Description)
-	}
-
-	if strings.Count(embed.Description, "](https://") > requestProgressMaxSources {
-		t.Fatalf("expected at most %d source links: %q", requestProgressMaxSources, embed.Description)
-	}
 }
 
-func TestFormatRequestProgressSourceLinksOnlyWebURLs(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name   string
-		source searchSource
-		want   string
-	}{
-		{
-			name:   "web URL",
-			source: searchSource{Title: "A_b", URL: "https://www.example.com/a b"},
-			want:   "[A\\_b](https://www.example.com/a%20b) · example.com",
-		},
-		{
-			name:   "non-web URL",
-			source: searchSource{Title: "Local file", URL: "file:///etc/passwd"},
-			want:   "Local file",
-		},
-		{
-			name: "overlong URL",
-			source: searchSource{
-				Title: "Long",
-				URL:   "https://example.com/" + strings.Repeat("x", requestProgressSourceURLMaxLength),
-			},
-			want: "Long · example.com",
-		},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-
-			if got := formatRequestProgressSource(test.source); got != test.want {
-				t.Fatalf("formatRequestProgressSource() = %q, want %q", got, test.want)
-			}
-		})
-	}
-}
-
-func TestWebSearchResultSourcesTakesEachResultsTopSourcesFirst(t *testing.T) {
+func TestCountWebSearchResultSourcesCountsEachPageOnce(t *testing.T) {
 	t.Parallel()
 
 	results := []webSearchResult{
@@ -981,15 +924,9 @@ func TestWebSearchResultSourcesTakesEachResultsTopSourcesFirst(t *testing.T) {
 		},
 	}
 
-	sources := webSearchResultSources(results, 2)
-
-	got := make([]string, 0, len(sources))
-	for _, source := range sources {
-		got = append(got, source.Title)
-	}
-
-	if want := []string{"A1", "B1", "A2"}; !slices.Equal(got, want) {
-		t.Fatalf("webSearchResultSources() titles = %v, want %v", got, want)
+	// A3 is past the per-result limit and A2 was found by both queries.
+	if got := countWebSearchResultSources(results, 2); got != 3 {
+		t.Fatalf("countWebSearchResultSources() = %d, want 3", got)
 	}
 }
 
@@ -1071,8 +1008,8 @@ func TestRespondToMessageShowsWebSearchOnProgressCard(t *testing.T) {
 			return handle(toolCallDelta(parallelWebSearchToolCalls()...))
 		}
 
-		if !edits.waitFor("Writing the answer", "**Sources**", "[Result title](https://result.example/page)") {
-			t.Error("expected the card to list the sources while the model writes the answer")
+		if !edits.waitFor("Writing the answer", "Reading 3 sources", "• "+testWebSearchQueryOne) {
+			t.Error("expected the card to count the sources while the model writes the answer")
 		}
 
 		return handle(newStreamDelta(testWebSearchToolAnswer, finishReasonStop))
@@ -1083,11 +1020,14 @@ func TestRespondToMessageShowsWebSearchOnProgressCard(t *testing.T) {
 			t.Error("expected the card to list the queries while they run")
 		}
 
+		// Each query finds its own page and a shared one: three sources.
 		results := make([]webSearchResult, 0, len(queries))
-		for _, query := range queries {
+		for index, query := range queries {
 			results = append(results, webSearchResult{
 				Query: query,
-				Text:  "Title: Result title\nURL: https://result.example/page\nSnippet:\n| " + testWebSearchResultText,
+				Text: "Title: Result title\nURL: https://result.example/" + strconv.Itoa(index) +
+					"\nSnippet:\n| " + testWebSearchResultText +
+					"\n\nTitle: Shared title\nURL: https://shared.example/page",
 			})
 		}
 
@@ -1117,5 +1057,11 @@ func TestRespondToMessageShowsWebSearchOnProgressCard(t *testing.T) {
 	descriptions := edits.snapshot()
 	if len(descriptions) == 0 || !strings.Contains(descriptions[len(descriptions)-1], testWebSearchToolAnswer) {
 		t.Fatalf("expected the answer to replace the card last, got %#v", descriptions)
+	}
+
+	for _, description := range descriptions {
+		if strings.Contains(description, "Title") || strings.Contains(description, "example/") {
+			t.Fatalf("expected the card to count the sources without listing them, got %q", description)
+		}
 	}
 }

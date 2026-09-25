@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"fmt"
-	"net/url"
 	"slices"
 	"strings"
 	"sync"
@@ -38,27 +37,17 @@ const (
 	requestProgressCurrentGlyph = "›"
 	requestProgressPendingGlyph = "○"
 
-	// Web search section bounds: at most this many queries and sources are
-	// listed (the rest are counted), each shortened to fit one line.
-	requestProgressMaxQueries          = 5
-	requestProgressMaxSources          = 8
-	requestProgressQueryMaxRunes       = 100
-	requestProgressSourceTitleMaxRunes = 80
-	requestProgressSourceURLMaxLength  = 500
-	// requestProgressMoreLineRunes is kept free for a "+N more" line.
-	requestProgressMoreLineRunes = 16
-	// requestProgressSearchExtraLines counts the search section's lines that
-	// list neither a query nor a source: its headings, the blank line
-	// between them, and a "+N more" line.
-	requestProgressSearchExtraLines = 4
+	// Web search section bounds: at most this many queries are listed (the
+	// rest are counted), each shortened to fit one line. The section's other
+	// lines are its heading and a "+N more" line.
+	requestProgressMaxQueries       = 5
+	requestProgressQueryMaxRunes    = 100
+	requestProgressSearchExtraLines = 2
 
 	requestProgressWritingAnswerHeadline = "Writing the answer"
-	// requestProgressMarkdownCharacters are escaped in search text so
+	// requestProgressMarkdownCharacters are escaped in search queries so
 	// Discord markdown shows them as written.
 	requestProgressMarkdownCharacters = "\\*_~`|[]<>#"
-	// requestProgressLinkBreakingCharacters would end a markdown link
-	// target early, so they are percent-encoded in source links.
-	requestProgressLinkBreakingCharacters = "() <>"
 )
 
 // requestProgressSpinnerFrames are cycled one per refresh tick so the periodic
@@ -115,7 +104,7 @@ type requestProgressView struct {
 func newRequestProgressView(stage requestProgressStage) requestProgressView {
 	return requestProgressView{
 		stage:  stage,
-		search: requestProgressSearch{queries: nil, sources: nil, finished: false, failed: false},
+		search: requestProgressSearch{queries: nil, sourceCount: 0, finished: false, failed: false},
 	}
 }
 
@@ -131,13 +120,13 @@ func (view *requestProgressView) advanceTo(stage requestProgressStage) bool {
 	return true
 }
 
-// requestProgressSearch is the reply's web search as the card shows it: the
-// queries while they run, then the sources the model answers from.
+// requestProgressSearch is the reply's web search as the card shows it: its
+// queries, and once they ran, how many sources the model answers from.
 type requestProgressSearch struct {
-	queries  []string
-	sources  []searchSource
-	finished bool
-	failed   bool
+	queries     []string
+	sourceCount int
+	finished    bool
+	failed      bool
 }
 
 // activity returns the card headline and the current step's detail for the
@@ -150,11 +139,11 @@ func (search requestProgressSearch) activity() (string, string, bool) {
 		return "Searching the web", "Running " + countedNoun(len(search.queries), "search", "searches"), true
 	case search.failed:
 		return requestProgressWritingAnswerHeadline, "Web search unavailable", true
-	case len(search.sources) == 0:
+	case search.sourceCount == 0:
 		return requestProgressWritingAnswerHeadline, "No sources found", true
 	default:
 		return requestProgressWritingAnswerHeadline,
-			"Reading " + countedNoun(len(search.sources), "source", "sources"),
+			"Reading " + countedNoun(search.sourceCount, "source", "sources"),
 			true
 	}
 }
@@ -270,21 +259,21 @@ func (progress *requestProgress) advance(stage requestProgressStage) {
 // while they run.
 func (progress *requestProgress) showSearchStarted(queries []string) {
 	progress.showSearch(requestProgressSearch{
-		queries:  slices.Clone(queries),
-		sources:  nil,
-		finished: false,
-		failed:   false,
+		queries:     slices.Clone(queries),
+		sourceCount: 0,
+		finished:    false,
+		failed:      false,
 	})
 }
 
-// showSearchFinished shows the sources the model answers from, or that the
-// search failed, on the card while the model writes the answer.
-func (progress *requestProgress) showSearchFinished(queries []string, sources []searchSource, failed bool) {
+// showSearchFinished shows how many sources the model answers from, or that
+// the search failed, on the card while the model writes the answer.
+func (progress *requestProgress) showSearchFinished(queries []string, sourceCount int, failed bool) {
 	progress.showSearch(requestProgressSearch{
-		queries:  slices.Clone(queries),
-		sources:  slices.Clone(sources),
-		finished: true,
-		failed:   failed,
+		queries:     slices.Clone(queries),
+		sourceCount: sourceCount,
+		finished:    true,
+		failed:      failed,
 	})
 }
 
@@ -553,9 +542,8 @@ func (progress *requestProgress) run(ctx context.Context) {
 
 // buildRequestProgressEmbed renders the live card: a spinner headline naming
 // the active step above a step rail of struck-through, active, and queued
-// steps, then the reply's web search queries and sources, if it searched.
-// Step position and elapsed time move to the footer so the body stays
-// scannable.
+// steps, then the reply's web search queries, if it searched. Step position
+// and elapsed time move to the footer so the body stays scannable.
 func buildRequestProgressEmbed(
 	view requestProgressView,
 	modelName string,
@@ -593,14 +581,8 @@ func buildRequestProgressEmbed(
 
 	description := strings.Join(lines, "\n")
 
-	const sectionSeparator = "\n\n"
-
-	searchSection := formatRequestProgressSearch(
-		view.search,
-		embedResponseMaxLength-runeCount(description)-len(sectionSeparator),
-	)
-	if searchSection != "" {
-		description += sectionSeparator + searchSection
+	if searchSection := formatRequestProgressSearch(view.search); searchSection != "" {
+		description += "\n\n" + searchSection
 	}
 
 	embed := buildResponseEmbed(
@@ -618,15 +600,16 @@ func buildRequestProgressEmbed(
 	return embed
 }
 
-// formatRequestProgressSearch lists the search queries and, once the search
-// is done, its sources as links, within budget runes. Queries and sources
-// past their limits, or past the budget, are counted instead.
-func formatRequestProgressSearch(search requestProgressSearch, budget int) string {
+// formatRequestProgressSearch lists the search queries, counting those past
+// requestProgressMaxQueries instead; a few short lines keep the card far
+// below the embed length limit. Sources are not listed: the current step's
+// detail says how many the model is reading.
+func formatRequestProgressSearch(search requestProgressSearch) string {
 	if len(search.queries) == 0 {
 		return ""
 	}
 
-	lines := make([]string, 0, requestProgressMaxQueries+requestProgressMaxSources+requestProgressSearchExtraLines)
+	lines := make([]string, 0, requestProgressMaxQueries+requestProgressSearchExtraLines)
 	lines = append(lines, "**Searches**")
 
 	for index, query := range search.queries {
@@ -639,98 +622,7 @@ func formatRequestProgressSearch(search requestProgressSearch, budget int) strin
 		lines = append(lines, "• "+requestProgressText(query, requestProgressQueryMaxRunes))
 	}
 
-	if len(search.sources) > 0 {
-		lines = append(lines, "", "**Sources**")
-	}
-
-	used := runeCount(strings.Join(lines, "\n"))
-
-	for index, source := range search.sources {
-		line := fmt.Sprintf(numberedListLineFormat, index+1, formatRequestProgressSource(source))
-		line = strings.TrimSuffix(line, "\n")
-
-		if index == requestProgressMaxSources ||
-			used+1+runeCount(line) > budget-requestProgressMoreLineRunes {
-			lines = append(lines, fmt.Sprintf("+%d more", len(search.sources)-index))
-
-			break
-		}
-
-		lines = append(lines, line)
-		used += 1 + runeCount(line)
-	}
-
 	return strings.Join(lines, "\n")
-}
-
-// formatRequestProgressSource renders a source as a link titled with its
-// page title, followed by its site.
-func formatRequestProgressSource(source searchSource) string {
-	rawURL := strings.TrimSpace(source.URL)
-	site := requestProgressSourceSite(rawURL)
-
-	title := strings.TrimSpace(source.Title)
-	if title == "" || strings.EqualFold(title, rawURL) {
-		title = site
-	}
-
-	if title == "" {
-		title = rawURL
-	}
-
-	label := requestProgressText(title, requestProgressSourceTitleMaxRunes)
-	if strings.EqualFold(title, site) {
-		site = ""
-	}
-
-	if target := requestProgressLinkTarget(rawURL); target != "" {
-		label = "[" + label + "](" + target + ")"
-	}
-
-	if site == "" {
-		return label
-	}
-
-	return label + " · " + requestProgressText(site, requestProgressSourceTitleMaxRunes)
-}
-
-// requestProgressSourceSite returns the host of rawURL without "www.", or ""
-// when rawURL has none.
-func requestProgressSourceSite(rawURL string) string {
-	parsedURL, err := url.Parse(rawURL)
-	if err != nil {
-		return ""
-	}
-
-	return strings.TrimPrefix(strings.ToLower(parsedURL.Hostname()), "www.")
-}
-
-// requestProgressLinkTarget returns rawURL ready for a markdown link, or ""
-// when it is not a short http(s) URL. The characters that would end the link
-// target early are percent-encoded.
-func requestProgressLinkTarget(rawURL string) string {
-	if len(rawURL) > requestProgressSourceURLMaxLength {
-		return ""
-	}
-
-	parsedURL, err := url.Parse(rawURL)
-	if err != nil || parsedURL.Host == "" || !isWebsiteScheme(parsedURL.Scheme) {
-		return ""
-	}
-
-	var target strings.Builder
-
-	for _, character := range rawURL {
-		if strings.ContainsRune(requestProgressLinkBreakingCharacters, character) {
-			_, _ = fmt.Fprintf(&target, "%%%02X", character)
-
-			continue
-		}
-
-		target.WriteRune(character)
-	}
-
-	return target.String()
 }
 
 // requestProgressText renders search text on one line, shortened to

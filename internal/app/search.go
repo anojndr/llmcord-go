@@ -797,7 +797,7 @@ func (instance *bot) runWebSearchToolPhase(
 		logWarn("run web search", err, "queries", queries)
 
 		if tracker != nil {
-			tracker.progress.showSearchFinished(queries, nil, true)
+			tracker.progress.showSearchFinished(queries, 0, true)
 		}
 
 		return webSearchToolOutputs(parsedCalls, nil, webSearchFailedOutput),
@@ -808,7 +808,7 @@ func (instance *bot) runWebSearchToolPhase(
 	if tracker != nil {
 		tracker.progress.showSearchFinished(
 			queries,
-			webSearchResultSources(results, loadedConfig.WebSearch.maxURLs()),
+			countWebSearchResultSources(results, loadedConfig.WebSearch.maxURLs()),
 			false,
 		)
 
@@ -1367,11 +1367,11 @@ func formatSearchSourcesPageContent(pages []string, pageIndex int, totalSources 
 	)
 }
 
-// webSearchResultSources returns the sources of search results, at most
-// maxURLs per result as in Show Sources, deduplicated by URL and taken in
-// turn from each result, so every query's top sources come first.
-func webSearchResultSources(results []webSearchResult, maxURLs int) []searchSource {
-	resultSources := make([][]searchSource, 0, len(results))
+// countWebSearchResultSources counts the distinct source URLs of search
+// results, at most maxURLs per result as in Show Sources: a page found by
+// several queries counts once.
+func countWebSearchResultSources(results []webSearchResult, maxURLs int) int {
+	seenURLs := make(map[string]struct{})
 
 	for _, result := range results {
 		sources := extractSearchSources(result.Text)
@@ -1379,37 +1379,12 @@ func webSearchResultSources(results []webSearchResult, maxURLs int) []searchSour
 			sources = sources[:maxURLs]
 		}
 
-		resultSources = append(resultSources, sources)
-	}
-
-	var ordered []searchSource
-
-	seenURLs := make(map[string]struct{})
-
-	for rank := 0; ; rank++ {
-		ranked := false
-
-		for _, sources := range resultSources {
-			if rank >= len(sources) {
-				continue
-			}
-
-			ranked = true
-
-			key := strings.ToLower(strings.TrimSpace(sources[rank].URL))
-			if _, seen := seenURLs[key]; seen {
-				continue
-			}
-
-			seenURLs[key] = struct{}{}
-
-			ordered = append(ordered, sources[rank])
-		}
-
-		if !ranked {
-			return ordered
+		for _, source := range sources {
+			seenURLs[strings.ToLower(strings.TrimSpace(source.URL))] = struct{}{}
 		}
 	}
+
+	return len(seenURLs)
 }
 
 func formatSearchSourceLine(source searchSource) string {
