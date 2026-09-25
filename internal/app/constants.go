@@ -222,6 +222,10 @@ const (
 	userAgentHeader                    = "User-Agent"
 	requestBodyBaseFields              = 3
 	configuredModelParts               = 2
+	// openCodeModelSegment is the configured model name segment of models
+	// served by OpenCode (9router's "oc" alias), such as
+	// "xiaomi/oc/mimo-v2.6-flash-free:vision".
+	openCodeModelSegment = "oc"
 )
 
 func exaSearchTypes() []string {

@@ -486,6 +486,184 @@ func TestRespondToMessageSkipsIgnoredToolChoiceNoneOnLaterReplies(t *testing.T) 
 	assertToolFreeFinalAnswerRequest(t, laterRequests[1], laterRequests[0])
 }
 
+func TestIsOpenCodeModel(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name            string
+		configuredModel string
+		want            bool
+	}{
+		{name: "chat completions route", configuredModel: "xiaomi/oc/mimo-v2.6-flash-free:vision", want: true},
+		{name: "responses route", configuredModel: "9router/oc/muse-spark-1.3-contributor-free:vision", want: true},
+		{name: "case insensitive", configuredModel: "9router-fast/OC/muse-spark-1.3-contributor-free", want: true},
+		{name: "provider segment", configuredModel: "oc/mimo-v2.6-flash-free", want: true},
+		{name: "surrounding whitespace", configuredModel: " xiaomi/oc/mimo-v2.6-flash-free:vision ", want: true},
+		{name: "other route", configuredModel: "9router/cx/gpt-6-astra:vision", want: false},
+		{name: "letters inside segments", configuredModel: "openai/local-docs-ocr:vision", want: false},
+		{name: "segment prefix", configuredModel: "9router/oc-mimo", want: false},
+		{name: "not provider slash model", configuredModel: "oc", want: false},
+		{name: "empty", configuredModel: "", want: false},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := isOpenCodeModel(testCase.configuredModel); got != testCase.want {
+				t.Fatalf("isOpenCodeModel(%q) = %v, want %v", testCase.configuredModel, got, testCase.want)
+			}
+		})
+	}
+}
+
+// assertNoToolChoiceNoneRequest fails if any generation round was sent with
+// tool_choice "none".
+func assertNoToolChoiceNoneRequest(t *testing.T, requests []chatCompletionRequest) {
+	t.Helper()
+
+	for index, request := range requests {
+		if request.ToolChoice == providers.ToolChoiceNone {
+			t.Fatalf("expected no round with tool_choice none, round %d of %s had it", index+1, request.ConfiguredModel)
+		}
+	}
+}
+
+func TestRespondToMessageAnswersOpenCodeModelWithoutToolChoiceNoneOnFirstReply(t *testing.T) {
+	t.Parallel()
+
+	const openCodeModel = "openai/oc/main-model:vision"
+
+	chatClient := newToolChoiceIgnoringChatClient(false)
+	webSearch := newSingleResultWebSearchClient()
+	instance := newSearchToolTestBot(t, chatClient, webSearch)
+
+	loadedConfig := newWebSearchToolTestConfig()
+	loadedConfig.Models = map[string]map[string]any{openCodeModel: nil}
+	loadedConfig.ModelOrder = []string{openCodeModel}
+
+	err := instance.respondToMessage(
+		context.Background(),
+		loadedConfig,
+		newWebSearchToolSourceMessage(),
+		openCodeModel,
+	)
+	if err != nil {
+		t.Fatalf("respond to message: %v", err)
+	}
+
+	// Nothing has been learned about the backend yet, but the very first
+	// reply still goes from its tool round straight to the final answer
+	// without tools.
+	if len(chatClient.requests) != 2 {
+		t.Fatalf("expected 2 generation rounds (tool round + tool-free final answer), got %d", len(chatClient.requests))
+	}
+
+	if len(webSearch.calls) != 1 {
+		t.Fatalf("expected exactly 1 web search call, got %d", len(webSearch.calls))
+	}
+
+	assertNoToolChoiceNoneRequest(t, chatClient.requests)
+
+	toolRequest := chatClient.requests[0]
+	if len(toolRequest.Tools) == 0 {
+		t.Fatal("expected the tool round to offer the tools")
+	}
+
+	assertToolFreeFinalAnswerRequest(t, chatClient.requests[1], toolRequest)
+
+	responseNode := instance.nodes.getOrCreate("response-message")
+	responseNode.mu.Lock()
+	responseText := responseNode.text
+	responseNode.mu.Unlock()
+
+	if !strings.Contains(responseText, testWebSearchToolAnswer) {
+		t.Fatalf("expected the final answer in the response, got %q", responseText)
+	}
+}
+
+func TestGenerateAndSendResponseAnswersOpenCodeFallbackModelWithoutToolChoiceNone(t *testing.T) {
+	t.Parallel()
+
+	const (
+		primaryModel  = "gemini-search/gemini-3.7-flash-medium:vision"
+		fallbackModel = "9router-fast/oc/muse-spark-1.3-contributor-free:vision"
+	)
+
+	chatClient := newStubChatClient(func(
+		_ context.Context,
+		request chatCompletionRequest,
+		handle func(streamDelta) error,
+	) error {
+		if request.ConfiguredModel == primaryModel {
+			return errPrimaryModelOverload
+		}
+
+		// Like OpenCode, the fallback backend calls the tool again whenever
+		// tools are offered, whatever tool_choice says.
+		if len(request.Tools) == 0 {
+			return handle(newStreamDelta(testWebSearchToolAnswer, finishReasonStop))
+		}
+
+		return handle(toolCallDelta(providers.FunctionToolCall{
+			ID:        "call_fallback",
+			Name:      providers.WebSearchToolName,
+			Arguments: `{"objective": "Find query results", "search_queries": ["` + testWebSearchQueryOne + `"]}`,
+		}))
+	})
+	webSearch := newSingleResultWebSearchClient()
+	instance := newSearchToolTestBot(t, chatClient, webSearch)
+
+	primaryProvider := new(providerConfig)
+	primaryProvider.Name = "gemini-search"
+
+	fallbackProvider := new(providerConfig)
+	fallbackProvider.Name = "9router-fast"
+	fallbackProvider.BaseURL = "http://localhost:20128/v1"
+	fallbackProvider.API = "openai-responses"
+
+	loadedConfig := newWebSearchToolTestConfig()
+	loadedConfig.Providers = map[string]providerConfig{
+		primaryProvider.Name:  *primaryProvider,
+		fallbackProvider.Name: *fallbackProvider,
+	}
+	loadedConfig.Models = map[string]map[string]any{primaryModel: nil, fallbackModel: nil}
+	loadedConfig.ModelOrder = []string{primaryModel, fallbackModel}
+	loadedConfig.FallbackModel = fallbackModel
+
+	sourceMessage := newWebSearchToolSourceMessage()
+
+	var request chatCompletionRequest
+
+	request.ConfiguredModel = primaryModel
+	request.Model = "gemini-3.7-flash-medium"
+	request.Messages = []chatMessage{{Role: messageRoleUser, Content: "Hello"}}
+
+	err := instance.generateAndSendResponse(
+		context.Background(),
+		loadedConfig,
+		request,
+		newResponseTracker(sourceMessage, request.ConfiguredModel),
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("generate and send response: %v", err)
+	}
+
+	// Primary failure, fallback tool round, fallback final answer without
+	// tools: no fallback round is spent on tool_choice "none".
+	if len(chatClient.requests) != 3 {
+		t.Fatalf("expected primary + fallback tool round + fallback final answer, got %d requests", len(chatClient.requests))
+	}
+
+	if len(webSearch.calls) != 1 {
+		t.Fatalf("expected exactly 1 fallback web search call, got %d", len(webSearch.calls))
+	}
+
+	assertNoToolChoiceNoneRequest(t, chatClient.requests)
+	assertToolFreeFinalAnswerRequest(t, chatClient.requests[2], chatClient.requests[1])
+}
+
 func TestRespondToMessageSurfacesEmptyResponseWhenToolFreeFinalAnswerCallsTools(t *testing.T) {
 	t.Parallel()
 

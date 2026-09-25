@@ -561,7 +561,8 @@ func (instance *bot) generateResponseWithWebSearchTool(
 // for an upstream that accepts nothing else). Tool calls made anyway are
 // never executed: the answer is requested again without tools, and the
 // model is remembered so its later final answers skip the ignored
-// tool_choice.
+// tool_choice. OpenCode models (see isOpenCodeModel) skip it from their
+// first reply.
 func (instance *bot) runForcedFinalAnswerRound(
 	ctx context.Context,
 	request chatCompletionRequest,
@@ -694,9 +695,14 @@ func toolRoundOutputsText(rounds []providers.ToolRound) string {
 	return strings.Join(outputs, "\n\n")
 }
 
-// ignoresToolChoiceNone reports whether the configured model's backend has
-// streamed tool calls although tool_choice was "none".
+// ignoresToolChoiceNone reports whether the configured model's backend does
+// not enforce tool_choice "none": OpenCode models always, other models once
+// their backend has streamed tool calls although tool_choice was "none".
 func (instance *bot) ignoresToolChoiceNone(configuredModel string) bool {
+	if isOpenCodeModel(configuredModel) {
+		return true
+	}
+
 	instance.toolChoiceMu.Lock()
 	defer instance.toolChoiceMu.Unlock()
 
@@ -718,6 +724,28 @@ func (instance *bot) rememberToolChoiceNoneIgnored(configuredModel string) {
 	}
 
 	instance.toolChoiceNoneIgnored[strings.TrimSpace(configuredModel)] = struct{}{}
+}
+
+// isOpenCodeModel reports whether a configured model is served by OpenCode:
+// one of its slash-separated name segments is "oc", as in
+// "xiaomi/oc/mimo-v2.6-flash-free:vision". OpenCode answers tool_choice
+// "none" with another tool call, so these models get their final answer
+// without tools from their first reply instead of spending a round on the
+// ignored tool_choice. Names that merely contain the letters, such as
+// "local" or "ocr", do not match.
+func isOpenCodeModel(configuredModel string) bool {
+	providerName, modelName, err := splitConfiguredModel(strings.TrimSpace(configuredModel))
+	if err != nil {
+		return false
+	}
+
+	for segment := range strings.SplitSeq(providerName+"/"+modelName, "/") {
+		if strings.EqualFold(strings.TrimSpace(segment), openCodeModelSegment) {
+			return true
+		}
+	}
+
+	return false
 }
 
 func sleepPrematureStreamRetry(ctx context.Context, delay time.Duration) error {
