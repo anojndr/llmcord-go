@@ -380,7 +380,8 @@ web_search:
   # TinyFish — primary search + Fetch fallback for website extraction
   tinyfish:
     # Optional. When set, search uses TinyFish Search API (with automatic Fetch
-    # enrichment) and website extraction falls back to TinyFish Fetch API.
+    # enrichment; result pages not fetched within 5 seconds keep their search
+    # snippet) and website extraction falls back to TinyFish Fetch API.
     # Optional max characters per URL result. Default: 5000
     # max_chars_per_result: 5000
     # `api_key` also accepts a YAML list; requests are round-robin across them.

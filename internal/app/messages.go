@@ -250,9 +250,14 @@ func (instance *bot) respondToMessage(
 	message *discordgo.Message,
 	providerSlashModel string,
 ) error {
+	// Neither the progress card nor the typing indicator is waited for: both
+	// go out in the background while the reply is prepared.
 	progress := instance.startRequestProgress(ctx, message, providerSlashModel)
+	// Every reply path settles the card itself; this only stops the card
+	// loop when a panic skips them.
+	defer progress.settle()
 
-	stopTyping := instance.startTyping(ctx, message.ChannelID)
+	stopTyping := instance.startTypingAfter(ctx, message.ChannelID, progress.posted)
 	defer stopTyping()
 
 	request, tracker, warnings, err := instance.prepareMessageResponse(

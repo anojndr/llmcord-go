@@ -7,7 +7,7 @@ It turns Discord reply chains into a frontend for OpenAI-compatible chat-complet
 ## Highlights
 
 - Reply-chain conversations in guilds, DMs, and public threads; triggered by bot mentions or `at ai`
-- Real-time streaming replies with a live progress embed (stage checklist, progress bar, elapsed timer), plus `Show Thinking`, `Show Sources`, `View response better on GitHub Gist` (publishes the full reply as a GitHub Gist), and `Export` (downloads the reply chain as a standalone HTML file)
+- Real-time streaming replies with a live progress embed (stage checklist, progress bar, elapsed timer, and the web search queries and sources while the model writes the answer), plus `Show Thinking`, `Show Sources`, `View response better on GitHub Gist` (publishes the full reply as a GitHub Gist), and `Export` (downloads the reply chain as a standalone HTML file)
 - Multimodal input: images, audio, video, PDFs, DOCX, PPTX, and generic file attachments
 - URL enrichment for TikTok, Facebook, YouTube, Reddit, and generic websites (Firecrawl Scrape when a Firecrawl key is set)
 - Automatic Facebook video downloads: any message containing a Facebook or fb.watch link (no bot mention needed) gets a reply with the MP4 attached; oversized videos are compressed to 8 MB first and fall back to the direct download link if compression fails
@@ -103,6 +103,7 @@ Model notes:
 ### Search and Visual Search
 
 Web search order is configurable in `config.yaml` via `web_search_order` (or `web_search.order`): `tinyfish > exa > tavily` (default: TinyFish -> Exa -> Tavily; also supports `parallel`).
+TinyFish search fetches every result page with its own Fetch request, all under one 5-second limit; a page that misses it keeps its search snippet instead of its full text, so one slow page never holds up the answer.
 Website extraction order is configurable in `config.yaml` via `extraction_order` (or `web_search.extraction_order`): `firecrawl > tinyfish > exa > parallel > tavily` (default: Firecrawl -> TinyFish -> Exa -> Parallel -> Tavily).
 | Setting | Purpose |
 | --- | --- |

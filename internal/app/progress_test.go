@@ -1,9 +1,14 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"net/http"
+	"slices"
+	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -47,113 +52,73 @@ func TestRequestProgressFailNonBlocking(t *testing.T) {
 	}
 }
 
-func TestRequestProgressHandoffDrainsPendingStageUpdates(t *testing.T) {
-	t.Parallel()
+const (
+	testProgressChannelID = "channel-1"
+	testProgressBotUserID = "bot-user"
+	testProgressMessageID = "prog-1"
+)
 
-	const (
-		channelID = "channel-1"
-		botUserID = "bot-user"
-		messageID = "prog-1"
-	)
+// newTestRequestProgress returns a progress card whose card message is
+// already posted, with its refresh loop running.
+func newTestRequestProgress(t *testing.T, instance *bot) *requestProgress {
+	t.Helper()
 
-	patchDescriptions := make([]string, 0, 4)
-
-	session := newDirectMessageTestSession(t, channelID, botUserID, roundTripFunc(func(
-		request *http.Request,
-	) (*http.Response, error) {
-		t.Helper()
-
-		if request.Method == http.MethodPatch {
-			patchDescriptions = append(
-				patchDescriptions,
-				requestEmbedDescription(t, request),
-			)
-
-			patchMsg := new(discordgo.Message)
-			patchMsg.ID = messageID
-			patchMsg.ChannelID = channelID
-
-			return newJSONResponse(t, request, patchMsg), nil
-		}
-
-		return newNoContentResponse(request), nil
-	}))
-
-	instance := new(bot)
-	instance.session = session
-	instance.nodes = newMessageNodeStore(10)
-
-	sourceMessage := new(discordgo.Message)
-	sourceMessage.ID = "src-1"
-	sourceMessage.ChannelID = channelID
-
-	progressMsg := new(discordgo.Message)
-	progressMsg.ID = messageID
-	progressMsg.ChannelID = channelID
-
-	progress := &requestProgress{
-		instance: instance,
-		tracker:  newResponseTracker(sourceMessage, "model-1"),
-		stages:   make(chan requestProgressStage, 1),
-		handoffs: make(chan requestProgressHandoff),
-		failures: make(chan requestProgressFailure),
-		message:  progressMsg,
-	}
+	progress := newTestRequestProgressStopped(instance)
 
 	go progress.run(t.Context())
 
-	progress.advance(requestProgressStageGatheringContext)
-	progress.advance(requestProgressStageGeneratingResponse)
+	return progress
+}
 
-	tracker := progress.handoff("model-1", nil)
-	if tracker == nil {
-		t.Fatal("expected non-nil tracker from handoff")
-	}
+// newTestRequestProgressStopped returns a progress card whose card message
+// is already posted, without starting its refresh loop.
+func newTestRequestProgressStopped(instance *bot) *requestProgress {
+	sourceMessage := new(discordgo.Message)
+	sourceMessage.ID = "src-1"
+	sourceMessage.ChannelID = testProgressChannelID
 
-	if tracker.modelName != "model-1" {
-		t.Fatalf("unexpected tracker model: %q", tracker.modelName)
-	}
-
-	rendered := false
-
-	for _, description := range patchDescriptions {
-		if strings.Contains(description, "**Generating response**") {
-			rendered = true
-		}
-	}
-
-	if !rendered {
-		t.Fatalf(
-			"expected handoff drain to render the newest stage, got %#v",
-			patchDescriptions,
-		)
+	return &requestProgress{
+		instance:      instance,
+		tracker:       newResponseTracker(sourceMessage, "model-1"),
+		sourceMessage: sourceMessage,
+		modelName:     "model-1",
+		startedAt:     time.Now(),
+		stages:        make(chan requestProgressStage, 1),
+		searches:      make(chan requestProgressSearch, 1),
+		posted:        make(chan struct{}),
+		stop:          make(chan struct{}),
+		done:          make(chan struct{}),
+		stopOnce:      sync.Once{},
+		settled:       false,
+		message:       newTestProgressCardMessage(),
+		pending:       pendingResponse{messageID: "", node: nil},
+		ticks:         0,
+		nextEditAt:    time.Time{},
 	}
 }
 
-func TestRequestProgressRunPeriodicallyRefreshes(t *testing.T) {
-	t.Parallel()
+func newTestProgressCardMessage() *discordgo.Message {
+	cardMessage := new(discordgo.Message)
+	cardMessage.ID = testProgressMessageID
+	cardMessage.ChannelID = testProgressChannelID
 
-	const (
-		channelID = "channel-1"
-		botUserID = "bot-user"
-		messageID = "prog-1"
-	)
+	return cardMessage
+}
 
-	patches := make(chan struct{}, 16)
+// newProgressTestBot returns a bot whose Discord session answers card edits
+// through onPatch and everything else with 204 No Content.
+func newProgressTestBot(t *testing.T, onPatch func(*http.Request)) *bot {
+	t.Helper()
 
-	session := newDirectMessageTestSession(t, channelID, botUserID, roundTripFunc(func(
+	session := newDirectMessageTestSession(t, testProgressChannelID, testProgressBotUserID, roundTripFunc(func(
 		request *http.Request,
 	) (*http.Response, error) {
 		t.Helper()
 
 		if request.Method == http.MethodPatch {
-			patches <- struct{}{}
+			onPatch(request)
 
-			patchMsg := new(discordgo.Message)
-			patchMsg.ID = messageID
-			patchMsg.ChannelID = channelID
-
-			return newJSONResponse(t, request, patchMsg), nil
+			return newJSONResponse(t, request, newTestProgressCardMessage()), nil
 		}
 
 		return newNoContentResponse(request), nil
@@ -163,24 +128,169 @@ func TestRequestProgressRunPeriodicallyRefreshes(t *testing.T) {
 	instance.session = session
 	instance.nodes = newMessageNodeStore(10)
 
-	sourceMessage := new(discordgo.Message)
-	sourceMessage.ID = "src-1"
-	sourceMessage.ChannelID = channelID
+	return instance
+}
 
-	progressMsg := new(discordgo.Message)
-	progressMsg.ID = messageID
-	progressMsg.ChannelID = channelID
+func TestRequestProgressHandoffDoesNotWaitForCardEdit(t *testing.T) {
+	t.Parallel()
 
-	progress := &requestProgress{
-		instance: instance,
-		tracker:  newResponseTracker(sourceMessage, "model-1"),
-		stages:   make(chan requestProgressStage, 1),
-		handoffs: make(chan requestProgressHandoff),
-		failures: make(chan requestProgressFailure),
-		message:  progressMsg,
+	editStarted := make(chan struct{})
+	releaseEdit := make(chan struct{})
+
+	var (
+		editStartedOnce   sync.Once
+		patchDescriptions []string
+	)
+
+	instance := newProgressTestBot(t, func(request *http.Request) {
+		description := requestEmbedDescription(t, request)
+
+		editStartedOnce.Do(func() { close(editStarted) })
+		<-releaseEdit
+
+		patchDescriptions = append(patchDescriptions, description)
+	})
+
+	progress := newTestRequestProgress(t, instance)
+	progress.advance(requestProgressStageGeneratingResponse)
+
+	select {
+	case <-editStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected the card loop to start editing the card")
 	}
 
+	handedOff := make(chan *responseTracker, 1)
+
+	go func() {
+		handedOff <- progress.handoff("model-1", nil)
+	}()
+
+	var tracker *responseTracker
+
+	select {
+	case tracker = <-handedOff:
+	case <-time.After(2 * time.Second):
+		close(releaseEdit)
+		t.Fatal("handoff waited for the card edit")
+	}
+
+	if tracker == nil || tracker.modelName != "model-1" || tracker.progress != progress {
+		t.Fatalf("unexpected handed-off tracker: %#v", tracker)
+	}
+
+	close(releaseEdit)
+	tracker.settleProgress()
+
+	if len(tracker.responseMessages) != 1 || tracker.responseMessages[0].ID != testProgressMessageID ||
+		len(tracker.pendingResponses) != 1 || !tracker.progressActive {
+		t.Fatalf("expected settle to hand the card message to the tracker: %#v", tracker.responseMessages)
+	}
+
+	if len(patchDescriptions) == 0 || !strings.Contains(patchDescriptions[0], "**Generating response**") {
+		t.Fatalf("expected the card to render the newest stage in the background, got %#v", patchDescriptions)
+	}
+}
+
+func TestRequestProgressSettleWaitsForCardEditInFlight(t *testing.T) {
+	t.Parallel()
+
+	editStarted := make(chan struct{})
+	releaseEdit := make(chan struct{})
+
+	var (
+		editStartedOnce sync.Once
+		editFinished    atomic.Bool
+	)
+
+	instance := newProgressTestBot(t, func(*http.Request) {
+		editStartedOnce.Do(func() { close(editStarted) })
+		<-releaseEdit
+		editFinished.Store(true)
+	})
+
+	progress := newTestRequestProgress(t, instance)
+	progress.advance(requestProgressStageGatheringContext)
+
+	select {
+	case <-editStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected the card loop to start editing the card")
+	}
+
+	settled := make(chan struct{})
+
+	go func() {
+		progress.settle()
+		close(settled)
+	}()
+
+	select {
+	case <-settled:
+		close(releaseEdit)
+		t.Fatal("settle returned while a card edit was still being sent")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(releaseEdit)
+
+	select {
+	case <-settled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("settle did not return after the card edit finished")
+	}
+
+	if !editFinished.Load() {
+		t.Fatal("expected the card edit to finish before settle returned")
+	}
+}
+
+func TestRequestProgressSettleDropsCardEditWaitingForItsSlot(t *testing.T) {
+	t.Parallel()
+
+	var patches atomic.Int64
+
+	instance := newProgressTestBot(t, func(*http.Request) {
+		patches.Add(1)
+	})
+
+	progress := newTestRequestProgressStopped(instance)
+	// The previous card edit was just sent, so the next one has to wait.
+	progress.nextEditAt = time.Now().Add(time.Hour)
+
 	go progress.run(t.Context())
+
+	progress.advance(requestProgressStageGeneratingResponse)
+
+	settled := make(chan struct{})
+
+	go func() {
+		progress.settle()
+		close(settled)
+	}()
+
+	select {
+	case <-settled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("settle waited for a card edit that had not been sent")
+	}
+
+	if got := patches.Load(); got != 0 {
+		t.Fatalf("expected the waiting card edit to be dropped, got %d edits", got)
+	}
+}
+
+func TestRequestProgressRunRefreshesPeriodicallyUntilGenerating(t *testing.T) {
+	t.Parallel()
+
+	patches := make(chan string, 16)
+
+	instance := newProgressTestBot(t, func(request *http.Request) {
+		patches <- requestEmbedDescription(t, request)
+	})
+
+	progress := newTestRequestProgress(t, instance)
+	defer progress.settle()
 
 	select {
 	case <-patches:
@@ -188,15 +298,49 @@ func TestRequestProgressRunPeriodicallyRefreshes(t *testing.T) {
 		t.Fatal("expected periodic progress refresh without stage changes")
 	}
 
-	tracker := progress.handoff("model-1", nil)
-	if tracker == nil {
-		t.Fatal("expected non-nil tracker from handoff")
+	progress.advance(requestProgressStageGeneratingResponse)
+
+	deadline := time.After(3 * requestProgressRefreshInterval)
+
+	for generating := false; !generating; {
+		select {
+		case description := <-patches:
+			generating = strings.Contains(description, "**Generating response**")
+		case <-deadline:
+			t.Fatal("expected the card to render the generating stage")
+		}
 	}
 
+	// Refresh ticks would only make the reply's first edit wait for its slot.
 	select {
-	case <-patches:
-		t.Fatal("unexpected progress refresh after handoff")
-	case <-time.After(requestProgressRefreshInterval / 2):
+	case description := <-patches:
+		t.Fatalf("unexpected periodic refresh while generating: %q", description)
+	case <-time.After(requestProgressRefreshInterval + editDelay):
+	}
+}
+
+func TestRequestProgressSettleHandsCardEditPacingToReply(t *testing.T) {
+	t.Parallel()
+
+	edited := make(chan struct{}, 4)
+
+	instance := newProgressTestBot(t, func(*http.Request) {
+		edited <- struct{}{}
+	})
+
+	progress := newTestRequestProgress(t, instance)
+	progress.advance(requestProgressStageGatheringContext)
+
+	select {
+	case <-edited:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected the card loop to edit the card")
+	}
+
+	progress.settle()
+
+	if wait := instance.reserveEditDelay(testProgressMessageID); wait <= 0 || wait > editDelay {
+		t.Fatalf("expected the reply's first edit to wait out the card edit's slot, got %s", wait)
 	}
 }
 
@@ -261,17 +405,19 @@ func TestRequestProgressRenderAdvancesSpinnerFrame(t *testing.T) {
 	progressMsg.ChannelID = channelID
 
 	progress := &requestProgress{
-		instance: instance,
-		tracker:  newResponseTracker(sourceMessage, "model-1"),
-		stages:   make(chan requestProgressStage, 1),
-		handoffs: make(chan requestProgressHandoff),
-		failures: make(chan requestProgressFailure),
-		message:  progressMsg,
+		instance:  instance,
+		tracker:   newResponseTracker(sourceMessage, "model-1"),
+		modelName: "model-1",
+		stages:    make(chan requestProgressStage, 1),
+		message:   progressMsg,
 	}
 
 	ctx := t.Context()
-	progress.render(ctx, requestProgressStageReadingConversation)
-	progress.render(ctx, requestProgressStageReadingConversation)
+	view := newRequestProgressView(requestProgressStageReadingConversation)
+	progress.render(ctx, &view)
+	// Skip the card's own edit pacing between the two renders.
+	progress.nextEditAt = time.Time{}
+	progress.render(ctx, &view)
 
 	if len(patchDescriptions) != 2 {
 		t.Fatalf("unexpected patch count: %d", len(patchDescriptions))
@@ -354,7 +500,7 @@ func TestBuildRequestProgressEmbed(t *testing.T) {
 			t.Parallel()
 
 			embed := buildRequestProgressEmbed(
-				test.stage,
+				newRequestProgressView(test.stage),
 				"model-1",
 				elapsed,
 				startedAt,
@@ -389,7 +535,7 @@ func TestBuildRequestProgressEmbedOmitsTimestampWhenStartIsZero(t *testing.T) {
 	t.Parallel()
 
 	embed := buildRequestProgressEmbed(
-		requestProgressStageReadingConversation,
+		newRequestProgressView(requestProgressStageReadingConversation),
 		"model-1",
 		0,
 		time.Time{},
@@ -541,5 +687,435 @@ func TestBuildRequestProgressFailureEmbed(t *testing.T) {
 
 	if embed.Color != embedColorFailure {
 		t.Fatalf("unexpected failure embed color: %#x", embed.Color)
+	}
+}
+
+// newCardBlockingRespondSession answers the progress card POST with
+// cardMessage and holds every card edit until cardEditsMayFinish closes (or
+// a safety timeout passes); answer edits pass straight through.
+func newCardBlockingRespondSession(
+	t *testing.T,
+	cardMessage *discordgo.Message,
+	cardEditsMayFinish <-chan struct{},
+	cardEditsDone *atomic.Int64,
+	answerEdits chan<- string,
+) *discordgo.Session {
+	t.Helper()
+
+	return newDirectMessageTestSession(t, testProgressChannelID, testProgressBotUserID, roundTripFunc(func(
+		request *http.Request,
+	) (*http.Response, error) {
+		t.Helper()
+
+		switch {
+		case request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/typing"):
+			return newNoContentResponse(request), nil
+		case request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/messages"):
+			return newJSONResponse(t, request, cardMessage), nil
+		case request.Method == http.MethodPatch:
+			description := requestEmbedDescription(t, request)
+			if strings.HasPrefix(description, "### ") {
+				select {
+				case <-cardEditsMayFinish:
+				case <-time.After(5 * time.Second):
+				}
+
+				cardEditsDone.Add(1)
+			} else {
+				answerEdits <- description
+			}
+
+			return newJSONResponse(t, request, cardMessage), nil
+		default:
+			t.Errorf("unexpected request: %s %s", request.Method, request.URL.Path)
+
+			return nil, errUnexpectedTestRequest
+		}
+	}))
+}
+
+func TestRespondToMessageStartsGenerationBeforeProgressCardEditsFinish(t *testing.T) {
+	t.Parallel()
+
+	const answerText = "The answer."
+
+	llmCalled := make(chan struct{})
+	answerEdits := make(chan string, 8)
+
+	var (
+		llmCalledOnce      sync.Once
+		cardEditsDone      atomic.Int64
+		cardEditsAtLLMCall atomic.Int64
+	)
+
+	instance := new(bot)
+	instance.nodes = newMessageNodeStore(10)
+	instance.session = newCardBlockingRespondSession(
+		t,
+		newTestProgressCardMessage(),
+		llmCalled,
+		&cardEditsDone,
+		answerEdits,
+	)
+	instance.chatCompletions = newStubChatClient(func(
+		_ context.Context,
+		_ chatCompletionRequest,
+		handle func(streamDelta) error,
+	) error {
+		llmCalledOnce.Do(func() {
+			cardEditsAtLLMCall.Store(cardEditsDone.Load())
+			close(llmCalled)
+		})
+
+		return handle(newStreamDelta(answerText, finishReasonStop))
+	})
+
+	started := time.Now()
+
+	err := instance.respondToMessage(
+		t.Context(),
+		newRateLimitedRespondToMessageConfig(),
+		newRateLimitedRespondToMessageSourceMessage(testProgressChannelID, "user-message-1", "user-1"),
+		"openai/main-model",
+	)
+	if err != nil {
+		t.Fatalf("respond to message: %v", err)
+	}
+
+	if got := cardEditsAtLLMCall.Load(); got != 0 {
+		t.Fatalf("expected the model request before any card edit finished, %d had finished", got)
+	}
+
+	if elapsed := time.Since(started); elapsed > 4*time.Second {
+		t.Fatalf("expected the reply not to wait for card edits, took %s", elapsed)
+	}
+
+	select {
+	case description := <-answerEdits:
+		if !strings.Contains(description, answerText) {
+			t.Fatalf("expected the answer to replace the card, got %q", description)
+		}
+	default:
+		t.Fatal("expected the answer to be rendered over the progress card")
+	}
+}
+
+func TestBuildRequestProgressEmbedShowsWebSearch(t *testing.T) {
+	t.Parallel()
+
+	queries := []string{"first *query*", "second query"}
+	sources := []searchSource{
+		{Title: "Docs [beta]", URL: "https://www.docs.example/guide_(v2)"},
+		{Title: "https://news.example/story", URL: "https://news.example/story"},
+	}
+
+	const rail = "✓ ~~Reading conversation~~\n\n" +
+		"✓ ~~Gathering context~~\n\n"
+
+	tests := []struct {
+		name            string
+		search          requestProgressSearch
+		wantDescription string
+	}{
+		{
+			name:   "searching",
+			search: requestProgressSearch{queries: queries, sources: nil, finished: false, failed: false},
+			wantDescription: "### ⠙ Searching the web\n\n" + rail +
+				"› **Generating response** — *Running 2 searches*\n\n" +
+				"**Searches**\n" +
+				"• first \\*query\\*\n" +
+				"• second query",
+		},
+		{
+			name:   "sources",
+			search: requestProgressSearch{queries: queries, sources: sources, finished: true, failed: false},
+			wantDescription: "### ⠙ Writing the answer\n\n" + rail +
+				"› **Generating response** — *Reading 2 sources*\n\n" +
+				"**Searches**\n" +
+				"• first \\*query\\*\n" +
+				"• second query\n\n" +
+				"**Sources**\n" +
+				"1. [Docs \\[beta\\]](https://www.docs.example/guide_%28v2%29) · docs.example\n" +
+				"2. [news.example](https://news.example/story)",
+		},
+		{
+			name:   "no sources",
+			search: requestProgressSearch{queries: queries[1:], sources: nil, finished: true, failed: false},
+			wantDescription: "### ⠙ Writing the answer\n\n" + rail +
+				"› **Generating response** — *No sources found*\n\n" +
+				"**Searches**\n" +
+				"• second query",
+		},
+		{
+			name:   "failed",
+			search: requestProgressSearch{queries: queries[1:], sources: nil, finished: true, failed: true},
+			wantDescription: "### ⠙ Writing the answer\n\n" + rail +
+				"› **Generating response** — *Web search unavailable*\n\n" +
+				"**Searches**\n" +
+				"• second query",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			view := newRequestProgressView(requestProgressStageGeneratingResponse)
+			view.search = test.search
+
+			embed := buildRequestProgressEmbed(
+				view,
+				"model-1",
+				3*time.Second,
+				time.Time{},
+				requestProgressSpinnerFrame(1),
+			)
+
+			if embed.Description != test.wantDescription {
+				t.Fatalf("unexpected embed description:\n%q\nwant:\n%q", embed.Description, test.wantDescription)
+			}
+
+			if embed.Footer == nil || embed.Footer.Text != "Step 3 of 3 · 0:03" {
+				t.Fatalf("unexpected embed footer: %#v", embed.Footer)
+			}
+		})
+	}
+}
+
+func TestBuildRequestProgressEmbedKeepsWebSearchWithinEmbedLimit(t *testing.T) {
+	t.Parallel()
+
+	queries := make([]string, 0, requestProgressMaxQueries+3)
+	for index := range requestProgressMaxQueries + 3 {
+		queries = append(queries, strings.Repeat("query ", 40)+strconv.Itoa(index))
+	}
+
+	sources := make([]searchSource, 0, 40)
+	for index := range 40 {
+		sources = append(sources, searchSource{
+			Title: strings.Repeat("Long title ", 20),
+			URL:   "https://site" + strconv.Itoa(index) + ".example/" + strings.Repeat("p", 450),
+		})
+	}
+
+	view := newRequestProgressView(requestProgressStageGeneratingResponse)
+	view.search = requestProgressSearch{queries: queries, sources: sources, finished: true, failed: false}
+
+	embed := buildRequestProgressEmbed(
+		view,
+		"model-1",
+		0,
+		time.Time{},
+		requestProgressSpinnerFrame(0),
+	)
+
+	if got := runeCount(embed.Description); got > embedResponseMaxLength {
+		t.Fatalf("expected the card within %d runes, got %d", embedResponseMaxLength, got)
+	}
+
+	if !strings.Contains(embed.Description, "+3 more\n") {
+		t.Fatalf("expected the queries past the limit to be counted: %q", embed.Description)
+	}
+
+	if !strings.HasSuffix(embed.Description, " more") {
+		t.Fatalf("expected the sources past the limit to be counted: %q", embed.Description)
+	}
+
+	if strings.Count(embed.Description, "](https://") > requestProgressMaxSources {
+		t.Fatalf("expected at most %d source links: %q", requestProgressMaxSources, embed.Description)
+	}
+}
+
+func TestFormatRequestProgressSourceLinksOnlyWebURLs(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		source searchSource
+		want   string
+	}{
+		{
+			name:   "web URL",
+			source: searchSource{Title: "A_b", URL: "https://www.example.com/a b"},
+			want:   "[A\\_b](https://www.example.com/a%20b) · example.com",
+		},
+		{
+			name:   "non-web URL",
+			source: searchSource{Title: "Local file", URL: "file:///etc/passwd"},
+			want:   "Local file",
+		},
+		{
+			name: "overlong URL",
+			source: searchSource{
+				Title: "Long",
+				URL:   "https://example.com/" + strings.Repeat("x", requestProgressSourceURLMaxLength),
+			},
+			want: "Long · example.com",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := formatRequestProgressSource(test.source); got != test.want {
+				t.Fatalf("formatRequestProgressSource() = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestWebSearchResultSourcesTakesEachResultsTopSourcesFirst(t *testing.T) {
+	t.Parallel()
+
+	results := []webSearchResult{
+		{
+			Query: "one",
+			Text: "Title: A1\nURL: https://a.example/1\n\n" +
+				"Title: A2\nURL: https://a.example/2\n\n" +
+				"Title: A3\nURL: https://a.example/3",
+		},
+		{
+			Query: "two",
+			Text:  "Title: B1\nURL: https://b.example/1\n\nTitle: A2 again\nURL: https://A.example/2",
+		},
+	}
+
+	sources := webSearchResultSources(results, 2)
+
+	got := make([]string, 0, len(sources))
+	for _, source := range sources {
+		got = append(got, source.Title)
+	}
+
+	if want := []string{"A1", "B1", "A2"}; !slices.Equal(got, want) {
+		t.Fatalf("webSearchResultSources() titles = %v, want %v", got, want)
+	}
+}
+
+// progressCardEdits records the descriptions of progress card edits and lets
+// a test wait for one containing some text.
+type progressCardEdits struct {
+	mu           sync.Mutex
+	descriptions []string
+	changed      chan struct{}
+}
+
+func newProgressCardEdits() *progressCardEdits {
+	return &progressCardEdits{mu: sync.Mutex{}, descriptions: nil, changed: make(chan struct{}, 64)}
+}
+
+func (edits *progressCardEdits) add(description string) {
+	edits.mu.Lock()
+	edits.descriptions = append(edits.descriptions, description)
+	edits.mu.Unlock()
+
+	select {
+	case edits.changed <- struct{}{}:
+	default:
+	}
+}
+
+func (edits *progressCardEdits) snapshot() []string {
+	edits.mu.Lock()
+	defer edits.mu.Unlock()
+
+	return slices.Clone(edits.descriptions)
+}
+
+// waitFor waits until an edit contains every part, reporting false after
+// a few seconds.
+func (edits *progressCardEdits) waitFor(parts ...string) bool {
+	deadline := time.After(3 * time.Second)
+
+	for {
+		for _, description := range edits.snapshot() {
+			if containsAll(description, parts...) {
+				return true
+			}
+		}
+
+		select {
+		case <-edits.changed:
+		case <-deadline:
+			return false
+		}
+	}
+}
+
+func containsAll(text string, parts ...string) bool {
+	for _, part := range parts {
+		if !strings.Contains(text, part) {
+			return false
+		}
+	}
+
+	return true
+}
+
+func TestRespondToMessageShowsWebSearchOnProgressCard(t *testing.T) {
+	t.Parallel()
+
+	edits := newProgressCardEdits()
+	cardMessage := newTestProgressCardMessage()
+	cardMessage.ChannelID = testWebSearchChannelID
+
+	var roundCount atomic.Int64
+
+	chatClient := newStubChatClient(func(
+		_ context.Context,
+		_ chatCompletionRequest,
+		handle func(streamDelta) error,
+	) error {
+		if roundCount.Add(1) == 1 {
+			return handle(toolCallDelta(parallelWebSearchToolCalls()...))
+		}
+
+		if !edits.waitFor("Writing the answer", "**Sources**", "[Result title](https://result.example/page)") {
+			t.Error("expected the card to list the sources while the model writes the answer")
+		}
+
+		return handle(newStreamDelta(testWebSearchToolAnswer, finishReasonStop))
+	})
+
+	webSearch := newStubWebSearchClient(func(_ context.Context, _ config, queries []string) ([]webSearchResult, error) {
+		if !edits.waitFor("Searching the web", "• "+testWebSearchQueryOne, "• "+testWebSearchQueryTwo) {
+			t.Error("expected the card to list the queries while they run")
+		}
+
+		results := make([]webSearchResult, 0, len(queries))
+		for _, query := range queries {
+			results = append(results, webSearchResult{
+				Query: query,
+				Text:  "Title: Result title\nURL: https://result.example/page\nSnippet:\n| " + testWebSearchResultText,
+			})
+		}
+
+		return results, nil
+	})
+
+	instance := newSearchTestBot(chatClient, webSearch)
+	instance.session = newDirectMessageTestSession(t, testWebSearchChannelID, testWebSearchBotUserID, roundTripFunc(func(
+		request *http.Request,
+	) (*http.Response, error) {
+		switch {
+		case request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/typing"):
+			return newNoContentResponse(request), nil
+		case request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/messages"):
+			return newJSONResponse(t, request, cardMessage), nil
+		case request.Method == http.MethodPatch:
+			edits.add(requestEmbedDescription(t, request))
+
+			return newJSONResponse(t, request, cardMessage), nil
+		default:
+			return newNoContentResponse(request), nil
+		}
+	}))
+
+	respondWithWebSearchTool(t, instance, newWebSearchToolTestConfig())
+
+	descriptions := edits.snapshot()
+	if len(descriptions) == 0 || !strings.Contains(descriptions[len(descriptions)-1], testWebSearchToolAnswer) {
+		t.Fatalf("expected the answer to replace the card last, got %#v", descriptions)
 	}
 }

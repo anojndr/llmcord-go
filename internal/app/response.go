@@ -60,6 +60,9 @@ type responseTracker struct {
 	// current attempt; they are retained in the source message's history so
 	// later turns keep the searched context.
 	toolSearchResults []webSearchResult
+	// progress is the live progress card handed off with the tracker. Its
+	// card loop owns the card message until settleProgress.
+	progress *requestProgress
 }
 
 const (
@@ -171,7 +174,21 @@ func newResponseTracker(
 	return tracker
 }
 
+// settleProgress stops the live progress card and adds the card message to
+// the response messages. Rendering the reply or its failure and releasing
+// the reply run it first, because the card loop owns the card message until
+// then; after the first call it does nothing.
+func (tracker *responseTracker) settleProgress() {
+	if tracker == nil {
+		return
+	}
+
+	tracker.progress.settle()
+}
+
 func (tracker *responseTracker) release(store *messageNodeStore, fullText string, thinkingText string) {
+	tracker.settleProgress()
+
 	for _, pending := range tracker.pendingResponses {
 		pending.node.role = messageRoleAssistant
 		pending.node.text = fullText
@@ -1120,6 +1137,8 @@ func (instance *bot) renderFailureResponse(
 		errorText = userFacingResponseError(nil)
 	}
 
+	tracker.settleProgress()
+
 	failureEmbed := buildRequestProgressFailureEmbed(tracker.modelName, errorText)
 
 	handled, renderErr := instance.renderFailureOnProgressMessage(ctx, tracker, failureEmbed)
@@ -1234,6 +1253,8 @@ func (instance *bot) renderEmbedResponse(
 	if len(segments) == 0 {
 		return nil
 	}
+
+	tracker.settleProgress()
 
 	desiredSpecs := buildRenderSpecs(
 		segments,

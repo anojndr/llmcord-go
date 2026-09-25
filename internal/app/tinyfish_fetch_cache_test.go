@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -113,7 +114,35 @@ func TestTinyFishFetchCacheSkipsEmptyText(t *testing.T) {
 type tinyFishSearchFetchCapture struct {
 	searchCalls atomic.Int64
 	fetchCalls  atomic.Int64
-	fetchedURLs atomic.Value
+
+	mu            sync.Mutex
+	fetchRequests [][]string
+	// slowURLs are answered only once their request is cut off.
+	slowURLs map[string]struct{}
+}
+
+func (capture *tinyFishSearchFetchCapture) recordFetch(urls []string) {
+	capture.mu.Lock()
+	defer capture.mu.Unlock()
+
+	capture.fetchRequests = append(capture.fetchRequests, append([]string(nil), urls...))
+}
+
+func (capture *tinyFishSearchFetchCapture) requests() [][]string {
+	capture.mu.Lock()
+	defer capture.mu.Unlock()
+
+	return append([][]string(nil), capture.fetchRequests...)
+}
+
+func (capture *tinyFishSearchFetchCapture) slowRequest(urls []string) bool {
+	for _, rawURL := range urls {
+		if _, slow := capture.slowURLs[rawURL]; slow {
+			return true
+		}
+	}
+
+	return false
 }
 
 func newTinyFishSearchFetchTestServer(
@@ -162,7 +191,16 @@ func newTinyFishSearchFetchTestServer(
 			t.Errorf("decode TinyFish fetch request: %v", err)
 		}
 
-		capture.fetchedURLs.Store(append([]string(nil), received.URLs...))
+		capture.recordFetch(received.URLs)
+
+		if capture.slowRequest(received.URLs) {
+			select {
+			case <-request.Context().Done():
+			case <-time.After(10 * time.Second):
+			}
+
+			return
+		}
 
 		responseWriter.Header().Set("Content-Type", "application/json")
 
@@ -250,23 +288,26 @@ func TestTinyFishSearchDeduplicatesFetchAcrossQueries(t *testing.T) {
 		t.Fatalf("unexpected result count: %d", len(results))
 	}
 
-	if got := capture.fetchCalls.Load(); got != 1 {
-		t.Fatalf("expected 1 shared fetch request, got %d", got)
-	}
-
-	fetched, _ := capture.fetchedURLs.Load().([]string)
-	if len(fetched) != 3 {
-		t.Fatalf("expected 3 deduplicated fetch URLs, got %v", fetched)
+	// Every deduplicated page gets its own request, so a slow page cannot
+	// hold the others back.
+	requests := capture.requests()
+	if len(requests) != 3 {
+		t.Fatalf("expected 3 fetch requests for 3 deduplicated pages, got %v", requests)
 	}
 
 	seen := make(map[string]int)
-	for _, rawURL := range fetched {
-		seen[rawURL]++
+
+	for _, requestURLs := range requests {
+		if len(requestURLs) != 1 {
+			t.Fatalf("expected one URL per fetch request, got %v", requestURLs)
+		}
+
+		seen[requestURLs[0]]++
 	}
 
 	for _, rawURL := range []string{"https://example.com/a", "https://example.com/shared", "https://example.com/b"} {
 		if seen[rawURL] != 1 {
-			t.Fatalf("expected exactly one fetch of %q, got %v", rawURL, fetched)
+			t.Fatalf("expected exactly one fetch of %q, got %v", rawURL, requests)
 		}
 	}
 
@@ -348,6 +389,59 @@ func TestTinyFishSearchFallsBackToSnippetsWhenFetchFails(t *testing.T) {
 
 	if strings.Contains(results[0].Text, "Content:") {
 		t.Fatalf("expected no fetched content section after fetch failure: %q", results[0].Text)
+	}
+}
+
+func TestTinyFishSearchKeepsSnippetForPageThatMissesFetchDeadline(t *testing.T) {
+	t.Parallel()
+
+	const fetchDeadline = 300 * time.Millisecond
+
+	capture := tinyFishSearchFetchCapture{
+		searchCalls:   atomic.Int64{},
+		fetchCalls:    atomic.Int64{},
+		mu:            sync.Mutex{},
+		fetchRequests: nil,
+		slowURLs:      map[string]struct{}{"https://example.com/slow": {}},
+	}
+
+	// The slow page is fetched first: pages that were queued behind it, or
+	// batched with it, would miss the deadline too.
+	searchServer, fetchServer := newTinyFishSearchFetchTestServer(t, &capture, map[string][]map[string]any{
+		"slow query": {tinyFishSearchTestResult(1, "slow")},
+		"fast query": {tinyFishSearchTestResult(1, "fast")},
+	}, http.StatusOK)
+
+	client := newTinyFishSearchTestClient(t, searchServer, fetchServer)
+	client.fetchDeadline = fetchDeadline
+
+	started := time.Now()
+
+	results, err := client.search(t.Context(), tinyFishSearchTestConfig(), []string{"slow query", "fast query"})
+	if err != nil {
+		t.Fatalf("search returned error: %v", err)
+	}
+
+	if elapsed := time.Since(started); elapsed > fetchDeadline+2*time.Second {
+		t.Fatalf("expected the fetch deadline to cut off the slow page, search took %s", elapsed)
+	}
+
+	if len(results) != 2 {
+		t.Fatalf("unexpected result count: %d", len(results))
+	}
+
+	slowText, fastText := results[0].Text, results[1].Text
+
+	if !strings.Contains(slowText, "Snippet slow") || strings.Contains(slowText, "Content:") {
+		t.Fatalf("expected the slow page to keep only its snippet: %q", slowText)
+	}
+
+	if !strings.Contains(fastText, "Full body for https://example.com/fast") {
+		t.Fatalf("expected the fast page content despite the slow page: %q", fastText)
+	}
+
+	if _, _, _, _, _, cached := client.fetchCache.lookup("https://example.com/slow"); cached {
+		t.Fatal("expected no cache entry for the page that missed the deadline")
 	}
 }
 

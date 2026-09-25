@@ -777,12 +777,41 @@ func newConfiguredModelCommand(
 	return command
 }
 
+// startTyping shows the typing indicator in channelID until the returned stop
+// function runs; see startTypingAfter.
 func (instance *bot) startTyping(ctx context.Context, channelID string) func() {
-	stop := make(chan struct{})
+	return instance.startTypingAfter(ctx, channelID, nil)
+}
 
-	instance.sendTypingIndicator(channelID)
+// startTypingAfter shows the typing indicator once ready is closed (right
+// away for a nil ready) and refreshes it until the returned stop function
+// runs. Every indicator is sent in the background, so the caller never waits
+// for Discord. The first indicator always goes out once ready is closed, and
+// stop waits for it and for any refresh still being sent, so ready must
+// close. A reply passes its progress card's posted channel: Discord hides a
+// user's typing indicator when that user posts a message, so an indicator
+// sent before the card would vanish until the next refresh.
+func (instance *bot) startTypingAfter(
+	ctx context.Context,
+	channelID string,
+	ready <-chan struct{},
+) func() {
+	stop := make(chan struct{})
+	done := make(chan struct{})
 
 	safeGo(func() {
+		defer close(done)
+
+		if ready != nil {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ready:
+			}
+		}
+
+		instance.sendTypingIndicator(channelID)
+
 		ticker := time.NewTicker(typingRefreshInterval)
 		defer ticker.Stop()
 
@@ -799,8 +828,11 @@ func (instance *bot) startTyping(ctx context.Context, channelID string) func() {
 		}
 	})
 
+	var stopOnce sync.Once
+
 	return func() {
-		close(stop)
+		stopOnce.Do(func() { close(stop) })
+		<-done
 	}
 }
 
@@ -828,6 +860,27 @@ func (instance *bot) waitForEditSlotForMessage(
 		return fmt.Errorf("wait for edit slot: %w", ctx.Err())
 	case <-timer.C:
 		return nil
+	}
+}
+
+// holdEditSlot makes the next edit of messageID wait until nextEditAt, for
+// edits paced outside the edit slots: the progress card paces its own edits
+// and hands its last one over when the reply takes the card message.
+func (instance *bot) holdEditSlot(messageID string, nextEditAt time.Time) {
+	instance.editMu.Lock()
+	defer instance.editMu.Unlock()
+
+	editKey := strings.TrimSpace(messageID)
+	if editKey == "" || nextEditAt.IsZero() {
+		return
+	}
+
+	if instance.nextEditAtByMessage == nil {
+		instance.nextEditAtByMessage = make(map[string]time.Time)
+	}
+
+	if nextEditAt.After(instance.nextEditAtByMessage[editKey]) {
+		instance.nextEditAtByMessage[editKey] = nextEditAt
 	}
 }
 

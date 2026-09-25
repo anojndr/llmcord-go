@@ -142,6 +142,14 @@ const (
 	tinyFishFetchPerURLTimeoutMS = 5000
 	tinyFishSearchRequestTimeout = 20 * time.Second
 	tinyFishFetchRequestTimeout  = 30 * time.Second
+	// tinyFishSearchFetchDeadline is the hard wall-clock limit on fetching
+	// search result pages: the per-URL timeout bounds only server-side work,
+	// so a batch still took 6 s on average and up to 13 s. Pages that miss
+	// the deadline keep their search snippet. tinyFishSearchFetchConcurrency
+	// caps how many of those page requests run at once; later pages queue
+	// and usually fall back to their snippet.
+	tinyFishSearchFetchDeadline    = 5 * time.Second
+	tinyFishSearchFetchConcurrency = 20
 	// tinyFishFetchCacheTTL bounds how long a fetched page is served from
 	// the in-memory fetch cache without another Fetch API round trip.
 	// Repeat URLs inside this window (overlapping queries, Show Sources,

@@ -9,12 +9,14 @@ import (
 	"io"
 	providers "llmcord-go/internal/providers"
 	searchtypes "llmcord-go/internal/searchtypes"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 const (
@@ -95,6 +97,9 @@ type tinyFishSearchClient struct {
 	httpClient     *http.Client
 	keys           *apiKeyRotator
 	fetchCache     *tinyFishFetchCache
+	// fetchDeadline is the hard limit on fetching search result pages
+	// (tinyFishSearchFetchDeadline).
+	fetchDeadline time.Duration
 }
 
 type routedWebSearchClient struct {
@@ -500,6 +505,7 @@ func newTinyFishSearchClient(httpClient *http.Client, fetchCache ...*tinyFishFet
 		httpClient:     httpClient,
 		keys:           newAPIKeyRotator(),
 		fetchCache:     cache,
+		fetchDeadline:  tinyFishSearchFetchDeadline,
 	}
 }
 
@@ -782,9 +788,17 @@ func (instance *bot) runWebSearchToolPhase(
 		return webSearchToolOutputs(parsedCalls, nil, ""), warnings, false
 	}
 
+	if tracker != nil {
+		tracker.progress.showSearchStarted(queries)
+	}
+
 	results, err := instance.runWebSearchQueries(ctx, loadedConfig, configuredModel, queries)
 	if err != nil {
 		logWarn("run web search", err, "queries", queries)
+
+		if tracker != nil {
+			tracker.progress.showSearchFinished(queries, nil, true)
+		}
 
 		return webSearchToolOutputs(parsedCalls, nil, webSearchFailedOutput),
 			append(warnings, searchWarningText),
@@ -792,6 +806,12 @@ func (instance *bot) runWebSearchToolPhase(
 	}
 
 	if tracker != nil {
+		tracker.progress.showSearchFinished(
+			queries,
+			webSearchResultSources(results, loadedConfig.WebSearch.maxURLs()),
+			false,
+		)
+
 		tracker.searchMetadata = mergeSearchMetadata(
 			tracker.searchMetadata,
 			newSearchMetadata(queries, results, loadedConfig.WebSearch.maxURLs()),
@@ -1345,6 +1365,51 @@ func formatSearchSourcesPageContent(pages []string, pageIndex int, totalSources 
 		len(pages),
 		pages[pageIndex],
 	)
+}
+
+// webSearchResultSources returns the sources of search results, at most
+// maxURLs per result as in Show Sources, deduplicated by URL and taken in
+// turn from each result, so every query's top sources come first.
+func webSearchResultSources(results []webSearchResult, maxURLs int) []searchSource {
+	resultSources := make([][]searchSource, 0, len(results))
+
+	for _, result := range results {
+		sources := extractSearchSources(result.Text)
+		if maxURLs > 0 && len(sources) > maxURLs {
+			sources = sources[:maxURLs]
+		}
+
+		resultSources = append(resultSources, sources)
+	}
+
+	var ordered []searchSource
+
+	seenURLs := make(map[string]struct{})
+
+	for rank := 0; ; rank++ {
+		ranked := false
+
+		for _, sources := range resultSources {
+			if rank >= len(sources) {
+				continue
+			}
+
+			ranked = true
+
+			key := strings.ToLower(strings.TrimSpace(sources[rank].URL))
+			if _, seen := seenURLs[key]; seen {
+				continue
+			}
+
+			seenURLs[key] = struct{}{}
+
+			ordered = append(ordered, sources[rank])
+		}
+
+		if !ranked {
+			return ordered
+		}
+	}
 }
 
 func formatSearchSourceLine(source searchSource) string {
@@ -2105,9 +2170,10 @@ func (client tinyFishSearchClient) search(
 		return nil, err
 	}
 
-	// Phase 2: one deduplicated fetch across all queries. Overlapping URLs
-	// (common when the model issues related queries) are fetched once, and
-	// repeat URLs inside the cache TTL cost no round trip at all.
+	// Phase 2: one deduplicated fetch across all queries, bounded by the
+	// fetch deadline. Overlapping URLs (common when the model issues related
+	// queries) are fetched once, and repeat URLs inside the cache TTL cost
+	// no round trip at all.
 	fetchedTextMap, fetchedTitleMap := client.enrichTinyFishOutcomes(ctx, apiKeys, outcomes)
 
 	formatted := make([]webSearchResult, len(outcomes))
@@ -2181,9 +2247,7 @@ func (client tinyFishSearchClient) enrichTinyFishOutcomes(
 		return fetchedTextMap, fetchedTitleMap
 	}
 
-	fetchResponse, fetchErr := tryAllAPIKeys(ctx, client.keys, apiKeys, func(apiKey string) (tinyFishFetchResponse, error) {
-		return client.fetchContents(ctx, apiKey, missingURLs)
-	})
+	fetchResults, fetchErr := client.fetchSearchPages(ctx, apiKeys, missingURLs)
 	if fetchErr != nil {
 		queries := make([]string, 0, len(outcomes))
 		for _, outcome := range outcomes {
@@ -2191,11 +2255,9 @@ func (client tinyFishSearchClient) enrichTinyFishOutcomes(
 		}
 
 		logWarn("tinyfish fetch for search enrichment failed", fetchErr, "queries", queries)
-
-		return fetchedTextMap, fetchedTitleMap
 	}
 
-	for _, fetchResult := range fetchResponse.Results {
+	for _, fetchResult := range fetchResults {
 		textStr := strings.TrimSpace(tinyFishFetchResultText(fetchResult.Text))
 		if textStr == "" {
 			continue
@@ -2298,72 +2360,73 @@ func (client tinyFishSearchClient) searchQuery(
 	return response.Results, nil
 }
 
-func (client tinyFishSearchClient) fetchContents(
+// fetchSearchPages fetches search result pages under one hard deadline
+// (fetchDeadline). Every page gets its own request: a Fetch batch answers
+// only once its slowest URL finishes, so batching would let one slow page
+// hold every other page of the batch past the deadline. Pages that miss the
+// deadline are cut off and keep their search snippet. The results that
+// arrived are returned even when some requests failed; the error reports
+// failures other than the deadline, such as rejected API keys.
+func (client tinyFishSearchClient) fetchSearchPages(
 	ctx context.Context,
-	apiKey string,
+	apiKeys []string,
 	urls []string,
-) (tinyFishFetchResponse, error) {
-	if len(urls) == 0 {
-		return tinyFishFetchResponse{}, nil
+) ([]tinyFishFetchResult, error) {
+	deadline := client.fetchDeadline
+	if deadline <= 0 {
+		deadline = tinyFishSearchFetchDeadline
 	}
 
-	batchCount := (len(urls) + 9) / 10
-	if batchCount == 1 {
-		return client.fetchTinyFishBatch(ctx, apiKey, urls)
-	}
+	fetchCtx, cancel := context.WithTimeout(ctx, deadline)
+	defer cancel()
 
 	taskResults := runTasksConcurrently(
-		ctx,
-		externalRequestConcurrency,
-		batchCount,
+		fetchCtx,
+		tinyFishSearchFetchConcurrency,
+		len(urls),
 		func(taskCtx context.Context, index int) (tinyFishFetchResponse, error) {
-			start := index * 10
-
-			end := start + 10
-			if end > len(urls) {
-				end = len(urls)
-			}
-
-			batch := urls[start:end]
-
-			return client.fetchTinyFishBatch(taskCtx, apiKey, batch)
+			return tryAllAPIKeys(taskCtx, client.keys, apiKeys, func(apiKey string) (tinyFishFetchResponse, error) {
+				return client.fetchTinyFishBatch(taskCtx, apiKey, urls[index:index+1])
+			})
 		},
 	)
 
 	var (
-		mergedResults []tinyFishFetchResult
-		mergedErrors  []tinyFishFetchError
+		results     []tinyFishFetchResult
+		missedPages int
+		failedPages int
+		firstErr    error
 	)
 
-	hasSuccess := false
+	for _, taskResult := range taskResults {
+		switch {
+		case taskResult.err == nil:
+			results = append(results, taskResult.value.Results...)
+		case errors.Is(taskResult.err, context.DeadlineExceeded) || errors.Is(taskResult.err, context.Canceled):
+			missedPages++
+		default:
+			failedPages++
 
-	var firstErr error
-
-	for _, result := range taskResults {
-		if result.err != nil {
 			if firstErr == nil {
-				firstErr = result.err
+				firstErr = taskResult.err
 			}
-
-			logWarn("tinyfish fetch batch failed", result.err)
-
-			continue
 		}
-
-		hasSuccess = true
-
-		mergedResults = append(mergedResults, result.value.Results...)
-		mergedErrors = append(mergedErrors, result.value.Errors...)
 	}
 
-	if !hasSuccess && firstErr != nil {
-		return tinyFishFetchResponse{}, firstErr
+	if missedPages > 0 && errors.Is(fetchCtx.Err(), context.DeadlineExceeded) {
+		slog.Info(
+			"tinyfish fetch deadline reached; missed pages keep their search snippet",
+			"deadline", deadline,
+			"pages", len(urls),
+			"missed_pages", missedPages,
+		)
 	}
 
-	return tinyFishFetchResponse{
-		Results: mergedResults,
-		Errors:  mergedErrors,
-	}, nil
+	if firstErr != nil {
+		return results, fmt.Errorf("fetch %d of %d search result pages: %w", failedPages, len(urls), firstErr)
+	}
+
+	return results, nil
 }
 
 func (client tinyFishSearchClient) fetchTinyFishBatch(

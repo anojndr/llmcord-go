@@ -1071,7 +1071,10 @@ func TestBuildChatCompletionRequestNormalizesOpenAIChatCompletionsLowAliases(t *
 	}
 }
 
-func TestRespondToMessageSendsProgressEmbedBeforeTypingAndAttachmentProcessing(t *testing.T) {
+// The progress card and typing indicator go out in the background: the card
+// still comes first (typing waits for it) and before any reply edit, but
+// preprocessing such as attachment downloads does not wait for either.
+func TestRespondToMessageSendsProgressEmbedBeforeTypingWithoutBlockingPreprocessing(t *testing.T) {
 	t.Parallel()
 
 	const (
@@ -2040,9 +2043,10 @@ func newRespondToMessageTypingFixture(
 	progressSent := new(atomic.Bool)
 	attachmentFetched := new(atomic.Bool)
 	probe := typingPreprocessingProbe{
-		typingSent:        typingSent,
-		progressSent:      progressSent,
-		attachmentFetched: attachmentFetched,
+		typingSent:           typingSent,
+		progressSent:         progressSent,
+		attachmentFetched:    attachmentFetched,
+		attachmentDownloaded: make(chan struct{}),
 	}
 
 	session := newRespondToMessageTypingSession(
@@ -2288,6 +2292,10 @@ type typingPreprocessingProbe struct {
 	typingSent        *atomic.Bool
 	progressSent      *atomic.Bool
 	attachmentFetched *atomic.Bool
+	// attachmentDownloaded, when set, holds the progress card POST until the
+	// attachment download has started: preprocessing must not wait for the
+	// card.
+	attachmentDownloaded chan struct{}
 }
 
 func newRespondToMessageTypingSession(
@@ -2336,6 +2344,14 @@ func newRespondToMessageTypingSession(
 				t.Fatal("expected progress embed to be sent before the typing indicator")
 			}
 
+			if probe.attachmentDownloaded != nil {
+				select {
+				case <-probe.attachmentDownloaded:
+				case <-time.After(2 * time.Second):
+					t.Error("expected the attachment download to run while the progress card was being posted")
+				}
+			}
+
 			probe.progressSent.Store(true)
 
 			return newJSONResponse(t, request, assistantMessage), nil
@@ -2372,16 +2388,8 @@ func newRespondToMessageTypingChatClient(
 	) error {
 		t.Helper()
 
-		if !probe.typingSent.Load() {
-			t.Fatal("expected typing indicator before chat completion")
-		}
-
 		if request.ConfiguredModel != "openai/main-model" {
 			t.Fatalf("unexpected configured model: %q", request.ConfiguredModel)
-		}
-
-		if !probe.progressSent.Load() {
-			t.Fatal("expected progress embed before chat completion")
 		}
 
 		if !probe.attachmentFetched.Load() {
@@ -2412,14 +2420,8 @@ func newRespondToMessageAttachmentClient(
 			t.Fatalf("unexpected attachment request: %s %s", request.Method, request.URL.String())
 		}
 
-		probe.attachmentFetched.Store(true)
-
-		if !probe.typingSent.Load() {
-			t.Fatal("expected typing indicator before attachment download")
-		}
-
-		if !probe.progressSent.Load() {
-			t.Fatal("expected progress embed before attachment download")
+		if !probe.attachmentFetched.Swap(true) && probe.attachmentDownloaded != nil {
+			close(probe.attachmentDownloaded)
 		}
 
 		return newTextResponse(request, "attachment context"), nil

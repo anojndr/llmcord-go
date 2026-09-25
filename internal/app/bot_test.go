@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 )
@@ -131,17 +132,15 @@ func TestCurrentModelForChannelIDsUsesFirstMatchingLock(t *testing.T) {
 	}
 }
 
-func TestStartTypingSendsInitialIndicatorBeforeReturning(t *testing.T) {
-	t.Parallel()
-
-	const channelID = "channel-1"
+// newTypingTestBot returns a bot whose Discord session answers typing
+// indicators for channelID, holding each one until release is closed.
+func newTypingTestBot(t *testing.T, channelID string, release <-chan struct{}, typingSent *atomic.Int64) *bot {
+	t.Helper()
 
 	session, err := discordgo.New("Bot discord-token")
 	if err != nil {
 		t.Fatalf("create discord session: %v", err)
 	}
-
-	var typingSent atomic.Bool
 
 	client := new(http.Client)
 	client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
@@ -149,10 +148,13 @@ func TestStartTypingSendsInitialIndicatorBeforeReturning(t *testing.T) {
 
 		if request.Method != http.MethodPost ||
 			request.URL.Path != "/api/v9/channels/"+channelID+"/typing" {
-			t.Fatalf("unexpected request: %s %s", request.Method, request.URL.Path)
+			t.Errorf("unexpected request: %s %s", request.Method, request.URL.Path)
+
+			return nil, errUnexpectedTestRequest
 		}
 
-		typingSent.Store(true)
+		<-release
+		typingSent.Add(1)
 
 		return newNoContentResponse(request), nil
 	})
@@ -161,11 +163,69 @@ func TestStartTypingSendsInitialIndicatorBeforeReturning(t *testing.T) {
 	instance := new(bot)
 	instance.session = session
 
-	stopTyping := instance.startTyping(t.Context(), channelID)
-	defer stopTyping()
+	return instance
+}
 
-	if !typingSent.Load() {
-		t.Fatal("expected initial typing indicator before startTyping returned")
+func TestStartTypingSendsInitialIndicatorInBackground(t *testing.T) {
+	t.Parallel()
+
+	const channelID = "channel-1"
+
+	release := make(chan struct{})
+
+	var typingSent atomic.Int64
+
+	instance := newTypingTestBot(t, channelID, release, &typingSent)
+
+	returned := make(chan func(), 1)
+
+	go func() {
+		returned <- instance.startTyping(t.Context(), channelID)
+	}()
+
+	var stopTyping func()
+
+	select {
+	case stopTyping = <-returned:
+	case <-time.After(2 * time.Second):
+		close(release)
+		t.Fatal("startTyping waited for Discord to accept the typing indicator")
+	}
+
+	close(release)
+	stopTyping()
+
+	if typingSent.Load() != 1 {
+		t.Fatalf("expected stop to wait for the initial typing indicator, sent %d", typingSent.Load())
+	}
+}
+
+func TestStartTypingAfterWaitsForReady(t *testing.T) {
+	t.Parallel()
+
+	const channelID = "channel-1"
+
+	release := make(chan struct{})
+	close(release)
+
+	var typingSent atomic.Int64
+
+	instance := newTypingTestBot(t, channelID, release, &typingSent)
+	ready := make(chan struct{})
+
+	stopTyping := instance.startTypingAfter(t.Context(), channelID, ready)
+
+	time.Sleep(50 * time.Millisecond)
+
+	if got := typingSent.Load(); got != 0 {
+		t.Fatalf("expected no typing indicator before ready, sent %d", got)
+	}
+
+	close(ready)
+	stopTyping()
+
+	if got := typingSent.Load(); got != 1 {
+		t.Fatalf("expected the typing indicator once ready closed, sent %d", got)
 	}
 }
 
