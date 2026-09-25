@@ -488,6 +488,8 @@ func isInvalidPreviousResponseError(err error) bool {
 // previous_response_id chaining, on the Responses API). The conversation
 // messages and tool definitions never change, so the follow-up extends a
 // byte-identical prefix and the provider's prompt cache keeps matching.
+// A backend that does not enforce tool_choice "none" gets the follow-up
+// without tools instead (see runForcedFinalAnswerRound).
 func (instance *bot) generateResponseWithWebSearchTool(
 	ctx context.Context,
 	loadedConfig config,
@@ -553,6 +555,13 @@ func (instance *bot) generateResponseWithWebSearchTool(
 // request, as the function calling guide recommends, so the prompt prefix
 // is unchanged. Text and thinking streamed before the tool calls carry over
 // into the final render.
+//
+// tool_choice "none" only imitates passing no functions, and not every
+// OpenAI-compatible backend enforces it (a proxy may rewrite it to "auto"
+// for an upstream that accepts nothing else). Tool calls made anyway are
+// never executed: the answer is requested again without tools, and the
+// model is remembered so its later final answers skip the ignored
+// tool_choice.
 func (instance *bot) runForcedFinalAnswerRound(
 	ctx context.Context,
 	request chatCompletionRequest,
@@ -560,12 +569,16 @@ func (instance *bot) runForcedFinalAnswerRound(
 	warnings []string,
 	toolRound generatedRoundResult,
 ) (string, string, error) {
-	request.ToolChoice = providers.ToolChoiceNone
-
 	finalPrefill := generatedPrefill{
 		rawAnswer: toolRound.rawAnswer,
 		thinking:  toolRound.thinking,
 	}
+
+	if instance.ignoresToolChoiceNone(request.ConfiguredModel) {
+		return instance.runToolFreeFinalAnswerRound(ctx, request, tracker, warnings, finalPrefill)
+	}
+
+	request.ToolChoice = providers.ToolChoiceNone
 
 	final, finalErr := instance.runGenerationRoundWithRetry(
 		ctx,
@@ -578,10 +591,59 @@ func (instance *bot) runForcedFinalAnswerRound(
 		return final.rawAnswer, final.thinking, finalErr
 	}
 
+	if final.toolCallResponse == nil {
+		return final.rawAnswer, final.thinking, nil
+	}
+
+	logWarn(
+		"model emitted tool calls although tool_choice was none; answering without tools",
+		nil,
+		"configured_model",
+		request.ConfiguredModel,
+		"tool_calls",
+		len(final.toolCallResponse.Calls),
+	)
+
+	instance.rememberToolChoiceNoneIgnored(request.ConfiguredModel)
+
+	return instance.runToolFreeFinalAnswerRound(ctx, request, tracker, warnings, finalPrefill)
+}
+
+// runToolFreeFinalAnswerRound requests the final answer with no tools
+// offered, the behavior tool_choice "none" imitates, so no backend can turn
+// it into another tool call. The tool rounds travel as text instead (see
+// toolFreeFinalAnswerRequest).
+func (instance *bot) runToolFreeFinalAnswerRound(
+	ctx context.Context,
+	request chatCompletionRequest,
+	tracker *responseTracker,
+	warnings []string,
+	prefill generatedPrefill,
+) (string, string, error) {
+	toolFreeRequest, err := toolFreeFinalAnswerRequest(request)
+	if err != nil {
+		return prefill.rawAnswer, prefill.thinking, err
+	}
+
+	final, finalErr := instance.runGenerationRoundWithRetry(
+		ctx,
+		toolFreeRequest,
+		tracker,
+		warnings,
+		prefill,
+	)
+	if finalErr != nil {
+		return final.rawAnswer, final.thinking, finalErr
+	}
+
 	if final.toolCallResponse != nil {
+		// Only a tool the backend injected on its own can be called here;
+		// there is nothing to execute, so surface the empty response.
 		logWarn(
-			"model emitted tool calls although tool_choice was none",
+			"model emitted tool calls without offered tools",
 			nil,
+			"configured_model",
+			request.ConfiguredModel,
 			"tool_calls",
 			len(final.toolCallResponse.Calls),
 		)
@@ -590,6 +652,72 @@ func (instance *bot) runForcedFinalAnswerRound(
 	}
 
 	return final.rawAnswer, final.thinking, nil
+}
+
+// toolFreeFinalAnswerRequest drops the tool definitions, tool_choice, and
+// tool rounds from a follow-up request and appends the rounds' outputs to
+// the latest user message as web search results, the form the reply-chain
+// history keeps them in. A tool-call history replayed without tool
+// definitions is not portable across OpenAI-compatible backends, so the
+// rounds are not replayed natively. previous_response_id chaining is kept:
+// the chained input is the new tail, which now carries the results.
+func toolFreeFinalAnswerRequest(request chatCompletionRequest) (chatCompletionRequest, error) {
+	messages, err := appendWebSearchResultsToConversation(
+		request.Messages,
+		toolRoundOutputsText(request.ToolRounds),
+	)
+	if err != nil {
+		return chatCompletionRequest{}, fmt.Errorf("append tool round outputs to conversation: %w", err)
+	}
+
+	request.Messages = messages
+	request.Tools = nil
+	request.ToolChoice = ""
+	request.ToolRounds = nil
+
+	return request, nil
+}
+
+// toolRoundOutputsText joins the non-empty outputs of the tool rounds in
+// round and call order, the text the model received for its calls.
+func toolRoundOutputsText(rounds []providers.ToolRound) string {
+	var outputs []string
+
+	for _, round := range rounds {
+		for _, output := range round.Outputs {
+			if text := strings.TrimSpace(output.Output); text != "" {
+				outputs = append(outputs, text)
+			}
+		}
+	}
+
+	return strings.Join(outputs, "\n\n")
+}
+
+// ignoresToolChoiceNone reports whether the configured model's backend has
+// streamed tool calls although tool_choice was "none".
+func (instance *bot) ignoresToolChoiceNone(configuredModel string) bool {
+	instance.toolChoiceMu.Lock()
+	defer instance.toolChoiceMu.Unlock()
+
+	_, ignored := instance.toolChoiceNoneIgnored[strings.TrimSpace(configuredModel)]
+
+	return ignored
+}
+
+// rememberToolChoiceNoneIgnored records that the configured model's backend
+// does not enforce tool_choice "none", so its later final answers are
+// requested without tools right away instead of first spending a round on
+// the ignored tool_choice.
+func (instance *bot) rememberToolChoiceNoneIgnored(configuredModel string) {
+	instance.toolChoiceMu.Lock()
+	defer instance.toolChoiceMu.Unlock()
+
+	if instance.toolChoiceNoneIgnored == nil {
+		instance.toolChoiceNoneIgnored = make(map[string]struct{})
+	}
+
+	instance.toolChoiceNoneIgnored[strings.TrimSpace(configuredModel)] = struct{}{}
 }
 
 func sleepPrematureStreamRetry(ctx context.Context, delay time.Duration) error {

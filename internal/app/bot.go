@@ -62,6 +62,8 @@ type bot struct {
 	redisDedupPrefix             string
 	maintenanceMu                sync.RWMutex
 	maintenanceChannels          map[string]struct{}
+	toolChoiceMu                 sync.Mutex
+	toolChoiceNoneIgnored        map[string]struct{}
 	startupMu                    sync.Mutex
 	discordReady                 bool
 	sessionConfigured            bool

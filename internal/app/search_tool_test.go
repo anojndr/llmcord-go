@@ -330,27 +330,35 @@ func TestRespondToMessageForcesFinalAnswerAfterOneWebSearchToolRound(t *testing.
 	assertToolRoundOutputContains(t, finalRequest.ToolRounds[0], "call_round_1", testWebSearchResultText)
 }
 
-func TestRespondToMessageRejectsToolCallsInForcedFinalAnswer(t *testing.T) {
-	t.Parallel()
+// newToolChoiceIgnoringChatClient mimics a backend that does not enforce
+// tool_choice "none" (for example a proxy that rewrites it to "auto"): it
+// requests another web search whenever tools are offered, and answers only
+// when none are. With keepCallingTools it calls a tool even then, like a
+// backend that injects tools of its own.
+func newToolChoiceIgnoringChatClient(keepCallingTools bool) *stubChatCompletionClient {
+	var rounds int
 
-	var roundRequests []chatCompletionRequest
-
-	// A backend that ignores tool_choice "none" keeps requesting searches.
-	chatClient := newStubChatClient(func(
+	return newStubChatClient(func(
 		_ context.Context,
 		request chatCompletionRequest,
 		handle func(streamDelta) error,
 	) error {
-		roundRequests = append(roundRequests, request)
+		rounds++
+
+		if len(request.Tools) == 0 && !keepCallingTools {
+			return handle(newStreamDelta(testWebSearchToolAnswer, finishReasonStop))
+		}
 
 		return handle(toolCallDelta(providers.FunctionToolCall{
-			ID:        "call_round_" + strconv.Itoa(len(roundRequests)),
+			ID:        "call_round_" + strconv.Itoa(rounds),
 			Name:      providers.WebSearchToolName,
 			Arguments: `{"objective": "Find query results", "search_queries": ["` + testWebSearchQueryOne + `"]}`,
 		}))
 	})
+}
 
-	webSearch := newStubWebSearchClient(func(
+func newSingleResultWebSearchClient() *stubWebSearchClient {
+	return newStubWebSearchClient(func(
 		_ context.Context,
 		_ config,
 		queries []string,
@@ -359,7 +367,130 @@ func TestRespondToMessageRejectsToolCallsInForcedFinalAnswer(t *testing.T) {
 			{Query: queries[0], Text: testWebSearchResultText},
 		}, nil
 	})
+}
 
+// assertToolFreeFinalAnswerRequest fails unless the final answer request
+// offers no tools and carries the search results as text in the latest
+// user message of the tool round's conversation.
+func assertToolFreeFinalAnswerRequest(
+	t *testing.T,
+	finalRequest chatCompletionRequest,
+	toolRequest chatCompletionRequest,
+) {
+	t.Helper()
+
+	if len(finalRequest.Tools) != 0 || finalRequest.ToolChoice != "" || len(finalRequest.ToolRounds) != 0 {
+		t.Fatalf(
+			"expected the final answer without tools, got %d tools, choice %q, %d tool rounds",
+			len(finalRequest.Tools),
+			finalRequest.ToolChoice,
+			len(finalRequest.ToolRounds),
+		)
+	}
+
+	if len(finalRequest.Messages) != len(toolRequest.Messages) {
+		t.Fatalf(
+			"expected the final answer to keep the %d conversation messages, got %d",
+			len(toolRequest.Messages),
+			len(finalRequest.Messages),
+		)
+	}
+
+	finalText := latestChatMessageText(finalRequest.Messages)
+	if !strings.Contains(finalText, webSearchSectionName) || !strings.Contains(finalText, testWebSearchResultText) {
+		t.Fatalf("expected the search results as text in the latest user message, got %q", finalText)
+	}
+}
+
+func TestRespondToMessageAnswersWithoutToolsWhenBackendIgnoresToolChoiceNone(t *testing.T) {
+	t.Parallel()
+
+	chatClient := newToolChoiceIgnoringChatClient(false)
+	webSearch := newSingleResultWebSearchClient()
+	instance := newSearchToolTestBot(t, chatClient, webSearch)
+
+	respondWithWebSearchTool(t, instance, newWebSearchToolTestConfig())
+
+	// Tool round, forced final answer (tool_choice ignored), then the
+	// final answer without tools.
+	if len(chatClient.requests) != 3 {
+		t.Fatalf("expected 3 generation rounds, got %d", len(chatClient.requests))
+	}
+
+	// Calls made despite tool_choice "none" are never executed.
+	if len(webSearch.calls) != 1 {
+		t.Fatalf("expected exactly 1 web search call, got %d", len(webSearch.calls))
+	}
+
+	toolRequest, forcedRequest := chatClient.requests[0], chatClient.requests[1]
+	if forcedRequest.ToolChoice != providers.ToolChoiceNone || len(forcedRequest.ToolRounds) != 1 {
+		t.Fatalf(
+			"expected the forced final answer first, got choice %q with %d tool rounds",
+			forcedRequest.ToolChoice,
+			len(forcedRequest.ToolRounds),
+		)
+	}
+
+	assertToolFreeFinalAnswerRequest(t, chatClient.requests[2], toolRequest)
+
+	if strings.Contains(latestChatMessageText(toolRequest.Messages), testWebSearchResultText) {
+		t.Fatal("expected the tool round's conversation to stay unchanged")
+	}
+
+	responseNode := instance.nodes.getOrCreate("response-message")
+	responseNode.mu.Lock()
+	responseText := responseNode.text
+	responseNode.mu.Unlock()
+
+	if !strings.Contains(responseText, testWebSearchToolAnswer) {
+		t.Fatalf("expected the final answer in the response, got %q", responseText)
+	}
+}
+
+func TestRespondToMessageSkipsIgnoredToolChoiceNoneOnLaterReplies(t *testing.T) {
+	t.Parallel()
+
+	chatClient := newToolChoiceIgnoringChatClient(false)
+	instance := newSearchToolTestBot(t, chatClient, newSingleResultWebSearchClient())
+	loadedConfig := newWebSearchToolTestConfig()
+
+	respondWithWebSearchTool(t, instance, loadedConfig)
+
+	firstReplyRounds := len(chatClient.requests)
+
+	err := instance.respondToMessage(
+		context.Background(),
+		loadedConfig,
+		newPromptMessage("user-message-2", testWebSearchChannelID, testWebSearchUserID, testWebSearchBotUserID),
+		testWebSearchMainModel,
+	)
+	if err != nil {
+		t.Fatalf("respond to the later message: %v", err)
+	}
+
+	// The model is known to ignore tool_choice "none", so the later reply
+	// goes from its tool round straight to the final answer without tools.
+	laterRequests := chatClient.requests[firstReplyRounds:]
+	if len(laterRequests) != 2 {
+		t.Fatalf("expected 2 generation rounds for the later reply, got %d", len(laterRequests))
+	}
+
+	if len(laterRequests[0].Tools) == 0 || laterRequests[0].ToolChoice != "" {
+		t.Fatalf(
+			"expected the later tool round to offer the tools, got %d tools with choice %q",
+			len(laterRequests[0].Tools),
+			laterRequests[0].ToolChoice,
+		)
+	}
+
+	assertToolFreeFinalAnswerRequest(t, laterRequests[1], laterRequests[0])
+}
+
+func TestRespondToMessageSurfacesEmptyResponseWhenToolFreeFinalAnswerCallsTools(t *testing.T) {
+	t.Parallel()
+
+	chatClient := newToolChoiceIgnoringChatClient(true)
+	webSearch := newSingleResultWebSearchClient()
 	instance := newSearchToolTestBot(t, chatClient, webSearch)
 
 	err := instance.respondToMessage(
@@ -369,17 +500,76 @@ func TestRespondToMessageRejectsToolCallsInForcedFinalAnswer(t *testing.T) {
 		testWebSearchMainModel,
 	)
 	if !errors.Is(err, errEmptyModelResponse) {
-		t.Fatalf("expected the empty-response error when the final round still calls tools, got %v", err)
+		t.Fatalf("expected the empty-response error when even the tool-free answer calls tools, got %v", err)
 	}
 
-	// Only the tool round's calls run a search; calls made despite
-	// tool_choice "none" are never executed.
-	if len(roundRequests) != 2 || len(webSearch.calls) != 1 {
+	if len(chatClient.requests) != 3 || len(webSearch.calls) != 1 {
 		t.Fatalf(
-			"expected 2 generation rounds and 1 web search call, got %d rounds and %d searches",
-			len(roundRequests),
+			"expected 3 generation rounds and 1 web search call, got %d rounds and %d searches",
+			len(chatClient.requests),
 			len(webSearch.calls),
 		)
+	}
+
+	assertToolFreeFinalAnswerRequest(t, chatClient.requests[2], chatClient.requests[0])
+}
+
+func TestToolFreeFinalAnswerRequestSendsToolRoundOutputsAsText(t *testing.T) {
+	t.Parallel()
+
+	const (
+		userQuery      = "which mouse has lower latency?"
+		searchOutput   = "Query: mouse latency\nResults:\nThird-party latency table"
+		failedOutput   = webSearchFailedOutput
+		previousID     = "resp_parent"
+		previousCount  = 2
+		configuredName = "9router/muse-spark:vision"
+	)
+
+	var request chatCompletionRequest
+
+	request.ConfiguredModel = configuredName
+	request.Messages = []chatMessage{
+		{Role: messageRoleSystem, Content: "system prompt"},
+		{Role: messageRoleUser, Content: userQuery},
+	}
+	request.Tools = []providers.FunctionTool{providers.WebSearchTool(webSearchToolMaxQueries)}
+	request.ToolChoice = providers.ToolChoiceNone
+	request.ToolRounds = []providers.ToolRound{{
+		Response: &providers.ToolCallResponse{Calls: parallelWebSearchToolCalls()},
+		Outputs: []providers.FunctionToolOutput{
+			{CallID: "call_1", Output: searchOutput},
+			{CallID: "call_2", Output: " "},
+			{CallID: "call_3", Output: failedOutput},
+		},
+	}}
+	request.PreviousResponseID = previousID
+	request.PreviousResponseCount = previousCount
+
+	toolFreeRequest, err := toolFreeFinalAnswerRequest(request)
+	if err != nil {
+		t.Fatalf("build tool-free final answer request: %v", err)
+	}
+
+	if toolFreeRequest.Tools != nil || toolFreeRequest.ToolChoice != "" || toolFreeRequest.ToolRounds != nil {
+		t.Fatalf("expected no tools, tool_choice, or tool rounds, got %#v", toolFreeRequest)
+	}
+
+	if toolFreeRequest.ConfiguredModel != configuredName ||
+		toolFreeRequest.PreviousResponseID != previousID ||
+		toolFreeRequest.PreviousResponseCount != previousCount {
+		t.Fatalf("expected the model and response chaining to be kept, got %#v", toolFreeRequest)
+	}
+
+	finalText := latestChatMessageText(toolFreeRequest.Messages)
+	for _, want := range []string{userQuery, webSearchSectionName + ":\n" + searchOutput + "\n\n" + failedOutput} {
+		if !strings.Contains(finalText, want) {
+			t.Fatalf("expected the latest user message to contain %q, got %q", want, finalText)
+		}
+	}
+
+	if request.Messages[1].Content != userQuery || len(request.ToolRounds) != 1 {
+		t.Fatal("expected the original request to stay unchanged")
 	}
 }
 
