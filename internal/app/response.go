@@ -63,6 +63,10 @@ type responseTracker struct {
 	// progress is the live progress card handed off with the tracker. Its
 	// card loop owns the card message until settleProgress.
 	progress *requestProgress
+	// finalRender is what the latest render applied to each response
+	// message when that render was final; any later render clears it (see
+	// confirmFinalRender).
+	finalRender []renderedEmbedMessage
 }
 
 const (
@@ -363,7 +367,87 @@ func (instance *bot) finalizeGenerationRound(
 	}, finishReason, responseErr
 }
 
-// runGenerationRoundWithRetry wraps runGenerationRound with a bounded
+// runGenerationRoundWithRetry runs a generation round (with the stream
+// retries of runGenerationRoundWithStreamRetry) and attempts it again while
+// the model spends it on tool calls its request never offered (see
+// calledUnofferedTools), up to unofferedToolCallMaxAttempts attempts. Each
+// attempt re-renders over the tracker's messages in place, so text streamed
+// before such calls is replaced. When every attempt calls such tools, the
+// round fails with errEmptyModelResponse.
+func (instance *bot) runGenerationRoundWithRetry(
+	ctx context.Context,
+	request chatCompletionRequest,
+	tracker *responseTracker,
+	warnings []string,
+	prefill generatedPrefill,
+) (generatedRoundResult, error) {
+	for attempt := 1; ; attempt++ {
+		round, err := instance.runGenerationRoundWithStreamRetry(ctx, request, tracker, warnings, prefill)
+		if !calledUnofferedTools(request, round, err) {
+			return round, err
+		}
+
+		if attempt >= unofferedToolCallMaxAttempts {
+			logWarn(
+				"model kept calling tools that were not offered; giving up",
+				nil,
+				"configured_model",
+				request.ConfiguredModel,
+				"tool_calls",
+				toolCallNames(round.toolCallResponse),
+				"max_attempts",
+				unofferedToolCallMaxAttempts,
+			)
+
+			return round, errEmptyModelResponse
+		}
+
+		logWarn(
+			"model called tools that were not offered; retrying generation",
+			nil,
+			"configured_model",
+			request.ConfiguredModel,
+			"tool_calls",
+			toolCallNames(round.toolCallResponse),
+			"attempt",
+			attempt+1,
+			"max_attempts",
+			unofferedToolCallMaxAttempts,
+		)
+
+		sleepErr := sleepPrematureStreamRetry(ctx, prematureStreamRetryFixedDelay)
+		if sleepErr != nil {
+			return round, sleepErr
+		}
+	}
+}
+
+// calledUnofferedTools reports whether a round ended in tool calls although
+// its request offered no tools. A backend can add tools of its own: 9router
+// adds decoy tools to every OpenCode request (the OpenCode free tier rejects
+// requests without them), and OpenCode lets the model call them despite
+// tool_choice "none". Nothing can execute such calls, so the round produced
+// no answer, but another attempt usually does.
+func calledUnofferedTools(request chatCompletionRequest, round generatedRoundResult, err error) bool {
+	return err == nil && round.toolCallResponse != nil && len(request.Tools) == 0
+}
+
+// toolCallNames lists the function names of a tool-call response in call
+// order.
+func toolCallNames(response *providers.ToolCallResponse) []string {
+	if response == nil {
+		return nil
+	}
+
+	names := make([]string, 0, len(response.Calls))
+	for _, call := range response.Calls {
+		names = append(names, call.Name)
+	}
+
+	return names
+}
+
+// runGenerationRoundWithStreamRetry wraps runGenerationRound with a bounded
 // same-model retry for streams that end without delivering a finish reason
 // or fail transiently mid-stream (for example a Responses stream dropped
 // before response.completed/response.done, surfaced as unexpected EOF):
@@ -374,7 +458,7 @@ func (instance *bot) finalizeGenerationRound(
 // auxiliary iili.io url replies are claimed once per response. Up to
 // prematureStreamRetryMaxAttempts streams are attempted in total; exhausted
 // retries keep the existing behavior of releasing the truncated reply.
-func (instance *bot) runGenerationRoundWithRetry(
+func (instance *bot) runGenerationRoundWithStreamRetry(
 	ctx context.Context,
 	request chatCompletionRequest,
 	tracker *responseTracker,
@@ -535,19 +619,6 @@ func (instance *bot) generateResponseWithWebSearchTool(
 		return round.rawAnswer, round.thinking, nil
 	}
 
-	if len(request.Tools) == 0 {
-		// The provider emitted tool calls although none were offered;
-		// there is nothing to execute, so surface the empty response.
-		logWarn(
-			"model emitted tool calls without offered tools",
-			nil,
-			"tool_calls",
-			len(round.toolCallResponse.Calls),
-		)
-
-		return round.rawAnswer, round.thinking, errEmptyModelResponse
-	}
-
 	outputs, warnings, _ := instance.runWebSearchToolPhase(
 		ctx,
 		loadedConfig,
@@ -628,9 +699,10 @@ func (instance *bot) runForcedFinalAnswerRound(
 }
 
 // runToolFreeFinalAnswerRound requests the final answer with no tools
-// offered, the behavior tool_choice "none" imitates, so no backend can turn
-// it into another tool call. The tool rounds travel as text instead (see
-// toolFreeFinalAnswerRequest).
+// offered, the behavior tool_choice "none" imitates. The tool rounds travel
+// as text instead (see toolFreeFinalAnswerRequest). A backend that adds
+// tools of its own can still get calls to them back; the round is then
+// attempted again (see calledUnofferedTools).
 func (instance *bot) runToolFreeFinalAnswerRound(
 	ctx context.Context,
 	request chatCompletionRequest,
@@ -650,26 +722,8 @@ func (instance *bot) runToolFreeFinalAnswerRound(
 		warnings,
 		prefill,
 	)
-	if finalErr != nil {
-		return final.rawAnswer, final.thinking, finalErr
-	}
 
-	if final.toolCallResponse != nil {
-		// Only a tool the backend injected on its own can be called here;
-		// there is nothing to execute, so surface the empty response.
-		logWarn(
-			"model emitted tool calls without offered tools",
-			nil,
-			"configured_model",
-			request.ConfiguredModel,
-			"tool_calls",
-			len(final.toolCallResponse.Calls),
-		)
-
-		return final.rawAnswer, final.thinking, errEmptyModelResponse
-	}
-
-	return final.rawAnswer, final.thinking, nil
+	return final.rawAnswer, final.thinking, finalErr
 }
 
 // toolFreeFinalAnswerRequest drops the tool definitions, tool_choice, and
@@ -1256,6 +1310,10 @@ func (instance *bot) renderEmbedResponse(
 
 	tracker.settleProgress()
 
+	// Any render replaces what the messages show, so an earlier final
+	// render is no longer theirs to confirm.
+	tracker.finalRender = nil
+
 	desiredSpecs := buildRenderSpecs(
 		segments,
 		finishReason,
@@ -1264,8 +1322,11 @@ func (instance *bot) renderEmbedResponse(
 		hasThinking,
 	)
 
+	var finalRender []renderedEmbedMessage
+
 	for index, spec := range desiredSpecs {
-		if index < len(tracker.renderedSpecs) && tracker.renderedSpecs[index] == spec {
+		changed := index >= len(tracker.renderedSpecs) || tracker.renderedSpecs[index] != spec
+		if !changed && !final {
 			continue
 		}
 
@@ -1277,15 +1338,25 @@ func (instance *bot) renderEmbedResponse(
 			spec.footerText,
 		)
 
-		err := instance.renderEmbedSpec(ctx, tracker, index, embed, spec.actions)
-		if err != nil {
-			return err
+		if changed {
+			err := instance.renderEmbedSpec(ctx, tracker, index, embed, spec.actions)
+			if err != nil {
+				return err
+			}
+
+			if index < len(tracker.renderedSpecs) {
+				tracker.renderedSpecs[index] = spec
+			} else {
+				tracker.renderedSpecs = append(tracker.renderedSpecs, spec)
+			}
 		}
 
-		if index < len(tracker.renderedSpecs) {
-			tracker.renderedSpecs[index] = spec
-		} else {
-			tracker.renderedSpecs = append(tracker.renderedSpecs, spec)
+		if final {
+			finalRender = append(finalRender, renderedEmbedMessage{
+				message:    tracker.responseMessages[index],
+				embed:      embed,
+				components: buildEmbedComponents(spec.actions),
+			})
 		}
 	}
 
@@ -1294,6 +1365,7 @@ func (instance *bot) renderEmbedResponse(
 		return err
 	}
 
+	tracker.finalRender = finalRender
 	tracker.responseVisible = true
 
 	return nil

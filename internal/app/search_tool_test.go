@@ -664,7 +664,7 @@ func TestGenerateAndSendResponseAnswersOpenCodeFallbackModelWithoutToolChoiceNon
 	assertToolFreeFinalAnswerRequest(t, chatClient.requests[2], chatClient.requests[1])
 }
 
-func TestRespondToMessageSurfacesEmptyResponseWhenToolFreeFinalAnswerCallsTools(t *testing.T) {
+func TestRespondToMessageSurfacesEmptyResponseWhenToolFreeFinalAnswerKeepsCallingTools(t *testing.T) {
 	t.Parallel()
 
 	chatClient := newToolChoiceIgnoringChatClient(true)
@@ -678,18 +678,154 @@ func TestRespondToMessageSurfacesEmptyResponseWhenToolFreeFinalAnswerCallsTools(
 		testWebSearchMainModel,
 	)
 	if !errors.Is(err, errEmptyModelResponse) {
-		t.Fatalf("expected the empty-response error when even the tool-free answer calls tools, got %v", err)
+		t.Fatalf("expected the empty-response error when every tool-free answer attempt calls tools, got %v", err)
 	}
 
-	if len(chatClient.requests) != 3 || len(webSearch.calls) != 1 {
+	// The tool round, the ignored tool_choice "none" round, then every
+	// attempt of the tool-free final answer.
+	expectedRounds := 2 + unofferedToolCallMaxAttempts
+	if len(chatClient.requests) != expectedRounds || len(webSearch.calls) != 1 {
 		t.Fatalf(
-			"expected 3 generation rounds and 1 web search call, got %d rounds and %d searches",
+			"expected %d generation rounds and 1 web search call, got %d rounds and %d searches",
+			expectedRounds,
 			len(chatClient.requests),
 			len(webSearch.calls),
 		)
 	}
 
+	for _, finalRequest := range chatClient.requests[2:] {
+		assertToolFreeFinalAnswerRequest(t, finalRequest, chatClient.requests[0])
+	}
+}
+
+func TestRespondToMessageRetriesToolFreeFinalAnswerThatCallsUnofferedTools(t *testing.T) {
+	t.Parallel()
+
+	const (
+		openCodeModel = "openai/oc/main-model:vision"
+		preambleText  = "Let me open the page first."
+	)
+
+	toolFreeAttempts := 0
+	chatClient := newStubChatClient(func(
+		_ context.Context,
+		request chatCompletionRequest,
+		handle func(streamDelta) error,
+	) error {
+		if len(request.Tools) != 0 {
+			return handle(toolCallDelta(providers.FunctionToolCall{
+				ID:        "call_search",
+				Name:      providers.WebSearchToolName,
+				Arguments: `{"objective": "Find query results", "search_queries": ["` + testWebSearchQueryOne + `"]}`,
+			}))
+		}
+
+		toolFreeAttempts++
+		if toolFreeAttempts > 1 {
+			return handle(newStreamDelta(testWebSearchToolAnswer, finishReasonStop))
+		}
+
+		// Like OpenCode behind 9router, the first tool-free attempt calls
+		// one of the proxy's own decoy tools instead of answering.
+		err := handle(newStreamDelta(preambleText, ""))
+		if err != nil {
+			return err
+		}
+
+		return handle(toolCallDelta(providers.FunctionToolCall{ID: "call_decoy", Name: "bash", Arguments: "{}"}))
+	})
+	webSearch := newSingleResultWebSearchClient()
+	instance := newSearchToolTestBot(t, chatClient, webSearch)
+
+	loadedConfig := newWebSearchToolTestConfig()
+	loadedConfig.Models = map[string]map[string]any{openCodeModel: nil}
+	loadedConfig.ModelOrder = []string{openCodeModel}
+
+	err := instance.respondToMessage(
+		context.Background(),
+		loadedConfig,
+		newWebSearchToolSourceMessage(),
+		openCodeModel,
+	)
+	if err != nil {
+		t.Fatalf("respond to message: %v", err)
+	}
+
+	if len(chatClient.requests) != 3 || len(webSearch.calls) != 1 {
+		t.Fatalf(
+			"expected the tool round and 2 tool-free attempts with 1 web search call, got %d rounds and %d searches",
+			len(chatClient.requests),
+			len(webSearch.calls),
+		)
+	}
+
+	assertToolFreeFinalAnswerRequest(t, chatClient.requests[1], chatClient.requests[0])
 	assertToolFreeFinalAnswerRequest(t, chatClient.requests[2], chatClient.requests[0])
+
+	responseNode := instance.nodes.getOrCreate("response-message")
+	responseNode.mu.Lock()
+	responseText := responseNode.text
+	responseNode.mu.Unlock()
+
+	if !strings.Contains(responseText, testWebSearchToolAnswer) || strings.Contains(responseText, preambleText) {
+		t.Fatalf("expected only the retried answer in the response, got %q", responseText)
+	}
+}
+
+func TestGenerateAndSendResponseRetriesRoundThatCallsUnofferedTools(t *testing.T) {
+	t.Parallel()
+
+	attempts := 0
+	chatClient := newStubChatClient(func(
+		_ context.Context,
+		_ chatCompletionRequest,
+		handle func(streamDelta) error,
+	) error {
+		attempts++
+		if attempts > 1 {
+			return handle(newStreamDelta(testWebSearchToolAnswer, finishReasonStop))
+		}
+
+		return handle(toolCallDelta(providers.FunctionToolCall{ID: "call_decoy", Name: "read", Arguments: "{}"}))
+	})
+	webSearch := newSingleResultWebSearchClient()
+	instance := newSearchToolTestBot(t, chatClient, webSearch)
+
+	var request chatCompletionRequest
+
+	request.ConfiguredModel = testWebSearchMainModel
+	request.Model = "main-model"
+	request.Messages = []chatMessage{{Role: messageRoleUser, Content: "Hello"}}
+
+	err := instance.generateAndSendResponse(
+		context.Background(),
+		newWebSearchToolTestConfig(),
+		request,
+		newResponseTracker(newWebSearchToolSourceMessage(), request.ConfiguredModel),
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("generate and send response: %v", err)
+	}
+
+	// No tools were offered, so the call is never run as a search: the
+	// round is simply attempted again.
+	if len(chatClient.requests) != 2 || len(webSearch.calls) != 0 {
+		t.Fatalf(
+			"expected 2 attempts and no web search call, got %d attempts and %d searches",
+			len(chatClient.requests),
+			len(webSearch.calls),
+		)
+	}
+
+	responseNode := instance.nodes.getOrCreate("response-message")
+	responseNode.mu.Lock()
+	responseText := responseNode.text
+	responseNode.mu.Unlock()
+
+	if responseText != testWebSearchToolAnswer {
+		t.Fatalf("expected the retried answer in the response, got %q", responseText)
+	}
 }
 
 func TestToolFreeFinalAnswerRequestSendsToolRoundOutputsAsText(t *testing.T) {

@@ -288,6 +288,9 @@ func (instance *bot) respondToMessage(
 	)
 
 	err = instance.generateAndSendResponse(ctx, loadedConfig, request, tracker, warnings)
+
+	instance.confirmFinalRender(ctx, tracker)
+
 	if err != nil {
 		return fmt.Errorf("generate and send response: %w", err)
 	}

@@ -89,6 +89,7 @@ type bot struct {
 	watcherCancel                context.CancelFunc
 	watcherWg                    sync.WaitGroup
 	watcherRunning               bool
+	finalRenderCheckDelays       []time.Duration
 }
 
 func newOptimizedHTTPTransport() *http.Transport {
@@ -180,6 +181,7 @@ func newBot(ctx context.Context, configPath string, loadedConfig config) (*bot, 
 	instance.configPath = configPath
 	instance.seedConfigCache(loadedConfig)
 	instance.session = discordSession
+	instance.finalRenderCheckDelays = []time.Duration{finalRenderCheckDelay, finalRenderRecheckDelay}
 	instance.httpClient = httpClient
 	instance.chatCompletions = providers.NewChatCompletionRouter(httpClient)
 	instance.redisClient, instance.redisPrefix = connectRedis(ctx, loadedConfig.Redis)

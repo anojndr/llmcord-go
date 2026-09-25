@@ -120,6 +120,9 @@ const (
 	finishReasonLength                    = "length"
 	prematureStreamRetryMaxAttempts       = 5
 	prematureStreamRetryFixedDelay        = 1 * time.Second
+	unofferedToolCallMaxAttempts          = 3
+	finalRenderCheckDelay                 = 3 * time.Second
+	finalRenderRecheckDelay               = 12 * time.Second
 	externalRequestConcurrency            = 8
 	discordReconnectEnvVarName            = "LLMCORD_RECONNECT"
 	DefaultConfigPath                     = "config.yaml"
