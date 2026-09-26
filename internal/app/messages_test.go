@@ -528,6 +528,64 @@ func TestMessageContentOptionsForModelLeavesOpenAIFilesDisabled(t *testing.T) {
 	if options.allowDocuments {
 		t.Fatalf("expected OpenAI-compatible chat documents to remain disabled: %#v", options)
 	}
+
+	if !options.allowAudio {
+		t.Fatalf("expected OpenAI-compatible chat audio to be enabled: %#v", options)
+	}
+
+	if options.allowVideo {
+		t.Fatalf("expected non-mimo OpenAI video to remain disabled: %#v", options)
+	}
+}
+
+func TestIsMimoVideoModel(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name            string
+		configuredModel string
+		want            bool
+	}{
+		{name: "oc route", configuredModel: "xiaomi/oc/mimo-v2.6-flash-free:vision", want: true},
+		{name: "bzl route", configuredModel: "bzl/mimo-v2.5", want: true},
+		{name: "other model", configuredModel: "openai/gpt-5.1", want: false},
+		{name: "empty", configuredModel: "", want: false},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := isMimoVideoModel(testCase.configuredModel); got != testCase.want {
+				t.Fatalf("isMimoVideoModel(%q) = %v, want %v", testCase.configuredModel, got, testCase.want)
+			}
+		})
+	}
+}
+
+func TestMessageContentOptionsForModelEnablesVideoForMimo(t *testing.T) {
+	t.Parallel()
+
+	provider := new(providerConfig)
+	provider.BaseURL = testOpenAIBaseURL
+
+	var loadedConfig config
+
+	loadedConfig.Providers = map[string]providerConfig{
+		"xiaomi": *provider,
+	}
+	loadedConfig.Models = map[string]map[string]any{
+		"xiaomi/oc/mimo-v2.6-flash-free:vision": nil,
+	}
+
+	options, err := messageContentOptionsForModel(loadedConfig, "xiaomi/oc/mimo-v2.6-flash-free:vision")
+	if err != nil {
+		t.Fatalf("build message content options: %v", err)
+	}
+
+	if !options.allowAudio || !options.allowVideo {
+		t.Fatalf("expected mimo audio+video enabled: %#v", options)
+	}
 }
 
 type concurrentFetchGate struct {
@@ -1436,10 +1494,10 @@ func seedGeminiMediaPreparationFailureSource(
 	sourceNode.urlScanText = sourceNode.text
 	sourceNode.media = []contentPart{
 		{
-			"type":               contentTypeAudioData,
-			contentFieldBytes:    []byte("audio-bytes"),
-			contentFieldMIMEType: "audio/mpeg",
-			contentFieldFilename: "clip.mp3",
+			"type":               contentTypeVideoData,
+			contentFieldBytes:    []byte("video-bytes"),
+			contentFieldMIMEType: testVideoMIMEType,
+			contentFieldFilename: "clip.mp4",
 		},
 	}
 }

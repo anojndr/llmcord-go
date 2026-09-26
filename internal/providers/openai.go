@@ -393,16 +393,16 @@ func openAINormalizeRequestMessages(messages []ChatMessage) []ChatMessage {
 func openAINormalizeMessageContent(content any) (any, bool) {
 	switch typedContent := content.(type) {
 	case []ContentPart:
-		normalizedParts := make([]ContentPart, len(typedContent))
+		normalizedParts := make([]ContentPart, 0, len(typedContent))
 		changed := false
 
-		for index, part := range typedContent {
-			normalizedPart, partChanged := openAINormalizeContentPart(part)
+		for _, part := range typedContent {
+			expandedParts, partChanged := openAINormalizeContentParts(part)
 			if partChanged {
 				changed = true
 			}
 
-			normalizedParts[index] = normalizedPart
+			normalizedParts = append(normalizedParts, expandedParts...)
 		}
 
 		if !changed {
@@ -412,16 +412,16 @@ func openAINormalizeMessageContent(content any) (any, bool) {
 		return normalizedParts, true
 
 	case []map[string]any:
-		normalizedParts := make([]map[string]any, len(typedContent))
+		normalizedParts := make([]map[string]any, 0, len(typedContent))
 		changed := false
 
-		for index, part := range typedContent {
-			normalizedPart, partChanged := openAINormalizeContentPartMap(part)
+		for _, part := range typedContent {
+			expandedParts, partChanged := openAINormalizeContentPartMaps(part)
 			if partChanged {
 				changed = true
 			}
 
-			normalizedParts[index] = normalizedPart
+			normalizedParts = append(normalizedParts, expandedParts...)
 		}
 
 		if !changed {
@@ -433,6 +433,56 @@ func openAINormalizeMessageContent(content any) (any, bool) {
 	default:
 		return content, false
 	}
+}
+
+// openAINormalizeContentParts normalizes one part to zero or more wire
+// parts: video expands to video_url + frames + audio, everything else maps
+// one-to-one through openAINormalizeContentPart.
+func openAINormalizeContentParts(part ContentPart) ([]ContentPart, bool) {
+	if partType, _ := part["type"].(string); partType == searchtypes.ContentTypeVideoData {
+		expandedParts, ok := openAIVideoParts(part)
+		if !ok {
+			return nil, true
+		}
+
+		return expandedParts, true
+	}
+
+	normalizedPart, changed := openAINormalizeContentPart(part)
+	if normalizedPart == nil {
+		return nil, changed
+	}
+
+	if !changed {
+		return []ContentPart{part}, false
+	}
+
+	return []ContentPart{normalizedPart}, true
+}
+
+// openAINormalizeContentPartMaps is the map-form twin of
+// openAINormalizeContentParts.
+func openAINormalizeContentPartMaps(part map[string]any) ([]map[string]any, bool) {
+	if partType, _ := part["type"].(string); partType == searchtypes.ContentTypeVideoData {
+		expandedParts, ok := openAIVideoParts(part)
+		if !ok {
+			return nil, true
+		}
+
+		convertedParts := make([]map[string]any, 0, len(expandedParts))
+		for _, expandedPart := range expandedParts {
+			convertedParts = append(convertedParts, map[string]any(expandedPart))
+		}
+
+		return convertedParts, true
+	}
+
+	normalizedPart, changed := openAINormalizeContentPartMap(part)
+	if normalizedPart == nil {
+		return nil, changed
+	}
+
+	return []map[string]any{normalizedPart}, changed
 }
 
 func nestedRequestBodyMap(requestBody map[string]any, key string) map[string]any {
@@ -460,6 +510,27 @@ func nestedRequestBodyMap(requestBody map[string]any, key string) map[string]any
 
 func openAINormalizeContentPart(part ContentPart) (ContentPart, bool) {
 	partType, _ := part["type"].(string)
+	if partType == searchtypes.ContentTypeAudioData {
+		// Invalid audio (empty bytes, missing mime) is dropped so the
+		// request never carries the internal audio_data type the API
+		// rejects; Responses already skips these via not-ok.
+		convertedPart, ok := openAIAudioInputPart(part)
+		if !ok {
+			return nil, true
+		}
+
+		return convertedPart, true
+	}
+
+	if partType == searchtypes.ContentTypeVideoData {
+		convertedPart, ok := openAIVideoURLPart(part)
+		if !ok {
+			return nil, true
+		}
+
+		return convertedPart, true
+	}
+
 	if partType != searchtypes.ContentTypeImageURL {
 		return part, false
 	}
@@ -509,6 +580,24 @@ func openAINormalizeContentPart(part ContentPart) (ContentPart, bool) {
 
 func openAINormalizeContentPartMap(part map[string]any) (map[string]any, bool) {
 	partType, _ := part["type"].(string)
+	if partType == searchtypes.ContentTypeAudioData {
+		convertedPart, ok := openAIAudioInputPart(part)
+		if !ok {
+			return nil, true
+		}
+
+		return convertedPart, true
+	}
+
+	if partType == searchtypes.ContentTypeVideoData {
+		convertedPart, ok := openAIVideoURLPart(part)
+		if !ok {
+			return nil, true
+		}
+
+		return convertedPart, true
+	}
+
 	if partType != searchtypes.ContentTypeImageURL {
 		return part, false
 	}

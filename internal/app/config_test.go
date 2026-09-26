@@ -1801,6 +1801,121 @@ media_analysis_model: openai/first-model
 	}
 }
 
+func TestLoadConfigAcceptsMimoMediaAnalysisModel(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	configText := `
+bot_token: discord-token
+providers:
+  xiaomi:
+    base_url: https://api.example.com/v1
+models:
+  xiaomi/oc/mimo-v2.6-flash-free:vision:
+media_analysis_model: xiaomi/oc/mimo-v2.6-flash-free:vision
+`
+
+	err := os.WriteFile(configPath, []byte(configText), 0o600)
+	if err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	loadedConfig, err := loadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config with mimo media analysis model: %v", err)
+	}
+
+	if loadedConfig.MediaAnalysisModel != defaultMimoMediaAnalysisModel {
+		t.Fatalf("unexpected mimo media analysis model: %q", loadedConfig.MediaAnalysisModel)
+	}
+}
+
+func TestLoadConfigAcceptsMediaAnalysisModelFallback(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	configText := `
+bot_token: discord-token
+providers:
+  xiaomi:
+    base_url: https://api.example.com/v1
+  gemini:
+    api_key: test-key
+models:
+  xiaomi/oc/mimo-v2.6-flash-free:vision:
+  gemini/gemini-3.5-flash:
+media_analysis_model: xiaomi/oc/mimo-v2.6-flash-free:vision
+media_analysis_model_fallback: gemini/gemini-3.5-flash
+`
+
+	err := os.WriteFile(configPath, []byte(configText), 0o600)
+	if err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	loadedConfig, err := loadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config with media analysis fallback: %v", err)
+	}
+
+	if loadedConfig.MediaAnalysisModelFallback != "gemini/gemini-3.5-flash" {
+		t.Fatalf("unexpected media analysis fallback: %q", loadedConfig.MediaAnalysisModelFallback)
+	}
+}
+
+func TestLoadConfigRejectsUnknownMediaAnalysisModelFallback(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	configText := `
+bot_token: discord-token
+providers:
+  gemini:
+    api_key: test-key
+models:
+  gemini/gemini-3.5-flash-lite:
+media_analysis_model_fallback: gemini/gemini-9.9-missing
+`
+
+	err := os.WriteFile(configPath, []byte(configText), 0o600)
+	if err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	if _, err := loadConfig(configPath); err == nil {
+		t.Fatal("expected unknown media analysis fallback to fail validation")
+	}
+}
+
+func TestLoadConfigRejectsSameMediaAnalysisModelFallback(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	configText := `
+bot_token: discord-token
+providers:
+  gemini:
+    api_key: test-key
+models:
+  gemini/gemini-3.5-flash-lite:
+media_analysis_model: gemini/gemini-3.5-flash-lite
+media_analysis_model_fallback: gemini/gemini-3.5-flash-lite
+`
+
+	err := os.WriteFile(configPath, []byte(configText), 0o600)
+	if err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	if _, err := loadConfig(configPath); err == nil {
+		t.Fatal("expected identical media analysis fallback to fail validation")
+	}
+}
+
 func TestLoadConfigRejectsUnknownChannelModelLock(t *testing.T) {
 	t.Parallel()
 

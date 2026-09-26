@@ -347,9 +347,11 @@ channel_model_locks:
   # "123456789012345678": google/gemini-3.6-flash
 
 media_analysis_model: google/gemini-3.6-flash
+# Backup preprocessor tried when media_analysis_model fails on a part (for
+# example MiMo outage → Gemini). Must name a different configured model.
+# media_analysis_model_fallback: google/gemini-3.6-flash-lite
 # Optional fallback before returning an error (defaults to 9router/stable_model:vision if present).
 # fallback_model: 9router/stable_model:vision
-
 # -----------------------------------------------------------------------------
 # Web search & Extraction — the model calls a native `web_search` tool; requested queries
 # run through the configurable fallback chain (default: TinyFish -> Exa -> Tavily),

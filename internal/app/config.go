@@ -480,51 +480,53 @@ const (
 )
 
 type rawConfig struct {
-	BotToken           scalarString                 `yaml:"bot_token"`
-	ClientID           scalarString                 `yaml:"client_id"`
-	StatusMessage      string                       `yaml:"status_message"`
-	MaxImages          *int                         `yaml:"max_images"`
-	MaxMessages        *int                         `yaml:"max_messages"`
-	AllowDMs           *bool                        `yaml:"allow_dms"`
-	Permissions        permissionsConfig            `yaml:"permissions"`
-	Providers          map[string]rawProviderConfig `yaml:"providers"`
-	WebSearch          rawWebSearchConfig           `yaml:"web_search"`
-	WebSearchOrder     webSearchOrder               `yaml:"web_search_order"`
-	ExtractionOrder    webExtractionOrder           `yaml:"extraction_order"`
-	WebExtractionOrder webExtractionOrder           `yaml:"web_extraction_order"`
-	VisualSearch       rawVisualSearchConfig        `yaml:"visual_search"`
-	Database           rawDatabaseConfig            `yaml:"database"`
-	Redis              rawRedisConfig               `yaml:"redis"`
-	Gist               rawGistConfig                `yaml:"gist"`
-	AutoAppendPhrases  rawAutoAppendPhrasesConfig   `yaml:"auto_append_phrases"`
-	Models             map[string]map[string]any    `yaml:"models"`
-	ChannelModelLocks  map[string]scalarString      `yaml:"channel_model_locks"`
-	MediaAnalysisModel scalarString                 `yaml:"media_analysis_model"`
-	FallbackModel      scalarString                 `yaml:"fallback_model"`
-	SystemPrompt       string                       `yaml:"system_prompt"`
+	BotToken                   scalarString                 `yaml:"bot_token"`
+	ClientID                   scalarString                 `yaml:"client_id"`
+	StatusMessage              string                       `yaml:"status_message"`
+	MaxImages                  *int                         `yaml:"max_images"`
+	MaxMessages                *int                         `yaml:"max_messages"`
+	AllowDMs                   *bool                        `yaml:"allow_dms"`
+	Permissions                permissionsConfig            `yaml:"permissions"`
+	Providers                  map[string]rawProviderConfig `yaml:"providers"`
+	WebSearch                  rawWebSearchConfig           `yaml:"web_search"`
+	WebSearchOrder             webSearchOrder               `yaml:"web_search_order"`
+	ExtractionOrder            webExtractionOrder           `yaml:"extraction_order"`
+	WebExtractionOrder         webExtractionOrder           `yaml:"web_extraction_order"`
+	VisualSearch               rawVisualSearchConfig        `yaml:"visual_search"`
+	Database                   rawDatabaseConfig            `yaml:"database"`
+	Redis                      rawRedisConfig               `yaml:"redis"`
+	Gist                       rawGistConfig                `yaml:"gist"`
+	AutoAppendPhrases          rawAutoAppendPhrasesConfig   `yaml:"auto_append_phrases"`
+	Models                     map[string]map[string]any    `yaml:"models"`
+	ChannelModelLocks          map[string]scalarString      `yaml:"channel_model_locks"`
+	MediaAnalysisModel         scalarString                 `yaml:"media_analysis_model"`
+	MediaAnalysisModelFallback scalarString                 `yaml:"media_analysis_model_fallback"`
+	FallbackModel              scalarString                 `yaml:"fallback_model"`
+	SystemPrompt               string                       `yaml:"system_prompt"`
 }
 
 type config struct {
-	BotToken           string
-	ClientID           string
-	StatusMessage      string
-	MaxImages          int
-	MaxMessages        int
-	AllowDMs           bool
-	Permissions        permissionsConfig
-	Providers          map[string]providerConfig
-	WebSearch          webSearchConfig
-	VisualSearch       visualSearchConfig
-	Database           databaseConfig
-	Redis              redisConfig
-	Gist               gistConfig
-	AutoAppendPhrases  autoAppendPhrasesConfig
-	Models             map[string]map[string]any
-	ModelOrder         []string
-	ChannelModelLocks  map[string]string
-	MediaAnalysisModel string
-	FallbackModel      string
-	SystemPrompt       string
+	BotToken                   string
+	ClientID                   string
+	StatusMessage              string
+	MaxImages                  int
+	MaxMessages                int
+	AllowDMs                   bool
+	Permissions                permissionsConfig
+	Providers                  map[string]providerConfig
+	WebSearch                  webSearchConfig
+	VisualSearch               visualSearchConfig
+	Database                   databaseConfig
+	Redis                      redisConfig
+	Gist                       gistConfig
+	AutoAppendPhrases          autoAppendPhrasesConfig
+	Models                     map[string]map[string]any
+	ModelOrder                 []string
+	ChannelModelLocks          map[string]string
+	MediaAnalysisModel         string
+	MediaAnalysisModelFallback string
+	FallbackModel              string
+	SystemPrompt               string
 }
 
 func loadConfig(filename string) (config, error) {
@@ -575,6 +577,7 @@ func buildLoadedConfig(
 	allowDMs := boolValueOrDefault(rawLoadedConfig.AllowDMs, true)
 
 	mediaAnalysisModel := strings.TrimSpace(string(rawLoadedConfig.MediaAnalysisModel))
+	mediaAnalysisModelFallback := strings.TrimSpace(string(rawLoadedConfig.MediaAnalysisModelFallback))
 	fallbackModel := normalizedFallbackModel(rawLoadedConfig.FallbackModel, rawLoadedConfig.Models)
 	channelModelLocks := normalizeStringScalarMap(rawLoadedConfig.ChannelModelLocks)
 
@@ -594,16 +597,17 @@ func buildLoadedConfig(
 				APIKeys: serpAPIVisualSearchKeys,
 			},
 		},
-		Database:           normalizeDatabaseConfig(rawLoadedConfig.Database),
-		Redis:              normalizeRedisConfig(rawLoadedConfig.Redis),
-		Gist:               normalizeGistConfig(rawLoadedConfig.Gist),
-		AutoAppendPhrases:  normalizeAutoAppendPhrases(rawLoadedConfig.AutoAppendPhrases),
-		Models:             rawLoadedConfig.Models,
-		ModelOrder:         modelOrder,
-		ChannelModelLocks:  channelModelLocks,
-		MediaAnalysisModel: mediaAnalysisModel,
-		FallbackModel:      fallbackModel,
-		SystemPrompt:       rawLoadedConfig.SystemPrompt,
+		Database:                   normalizeDatabaseConfig(rawLoadedConfig.Database),
+		Redis:                      normalizeRedisConfig(rawLoadedConfig.Redis),
+		Gist:                       normalizeGistConfig(rawLoadedConfig.Gist),
+		AutoAppendPhrases:          normalizeAutoAppendPhrases(rawLoadedConfig.AutoAppendPhrases),
+		Models:                     rawLoadedConfig.Models,
+		ModelOrder:                 modelOrder,
+		ChannelModelLocks:          channelModelLocks,
+		MediaAnalysisModel:         mediaAnalysisModel,
+		MediaAnalysisModelFallback: mediaAnalysisModelFallback,
+		FallbackModel:              fallbackModel,
+		SystemPrompt:               rawLoadedConfig.SystemPrompt,
 	}
 
 	rawOrderStr := string(rawLoadedConfig.WebSearch.Order)
@@ -800,6 +804,13 @@ func boolValueOrDefault(value *bool, fallback bool) bool {
 }
 
 const defaultStableModelFallback = "9router/stable_model:vision"
+
+// defaultMimoMediaAnalysisModel is the preprocessor used when the reply
+// model cannot hear audio or see video itself: MiMo takes both natively
+// (audio via OpenAI input_audio, video via MiMo video_url), so one model
+// covers every attachment. It must exist in models to take effect; unset
+// (or absent) means no media preprocessing, same as before.
+const defaultMimoMediaAnalysisModel = "xiaomi/oc/mimo-v2.6-flash-free:vision"
 
 func normalizedFallbackModel(rawValue scalarString, models map[string]map[string]any) string {
 	fallbackModel := strings.TrimSpace(string(rawValue))
@@ -1060,6 +1071,11 @@ func validateConfig(loadedConfig config) error {
 		return err
 	}
 
+	err = validateMediaAnalysisModelFallback(loadedConfig)
+	if err != nil {
+		return err
+	}
+
 	return validateFallbackModel(loadedConfig)
 }
 
@@ -1266,10 +1282,40 @@ func validateMediaAnalysisModel(loadedConfig config) error {
 		)
 	}
 
-	if apiKind != providerAPIKindGemini {
+	if apiKind != providerAPIKindGemini && loadedConfig.MediaAnalysisModel != defaultMimoMediaAnalysisModel {
 		return fmt.Errorf(
 			"media_analysis_model %q must use a gemini provider: %w",
 			loadedConfig.MediaAnalysisModel,
+			os.ErrInvalid,
+		)
+	}
+
+	return nil
+}
+
+// validateMediaAnalysisModelFallback checks the backup preprocessor tried
+// when the primary media_analysis_model fails on a part. Empty disables
+// the second attempt; otherwise it must name a configured model distinct
+// from the primary, on any provider kind (the preprocessor request goes
+// through the normal provider router).
+func validateMediaAnalysisModelFallback(loadedConfig config) error {
+	fallbackModel := strings.TrimSpace(loadedConfig.MediaAnalysisModelFallback)
+	if fallbackModel == "" {
+		return nil
+	}
+
+	if !loadedConfig.hasModel(fallbackModel) {
+		return fmt.Errorf(
+			"media_analysis_model_fallback %q is not defined in models: %w",
+			fallbackModel,
+			os.ErrNotExist,
+		)
+	}
+
+	if fallbackModel == strings.TrimSpace(loadedConfig.MediaAnalysisModel) {
+		return fmt.Errorf(
+			"media_analysis_model_fallback %q must differ from media_analysis_model: %w",
+			fallbackModel,
 			os.ErrInvalid,
 		)
 	}

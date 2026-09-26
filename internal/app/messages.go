@@ -920,6 +920,22 @@ func messageContentOptionsForModel(
 		options.allowFiles = true
 		options.allowedDocumentMIMETypes = allowedGeminiDocumentMIMETypes()
 		options.allowVideo = true
+	} else if provider.apiKind() == providerAPIKindOpenAI {
+		// Audio input is native on the OpenAI-family wire protocols: Chat
+		// Completions takes {type: input_audio, input_audio: {data, format}}
+		// (openai-openapi ChatCompletionRequestMessageContentPartAudio) and
+		// the Responses API takes {type: input_audio, input_audio: {data,
+		// format}} inside input content (openai-openapi InputAudio).
+		// Formerly only Gemini received raw audio; other models got a
+		// Gemini transcription spliced in as text. Sending the bytes lets
+		// audio-capable OpenAI-compatible models hear the original clip.
+		options.allowAudio = true
+		// Video rides the same request as a MiMo video_url part
+		// (type video_url + data: URL, fps, media_resolution) — but only
+		// MiMo-family models speak it. Anything else keeps video out of
+		// the request and gets a preprocessed text analysis instead (see
+		// maybeAugmentConversationWithGeminiMedia).
+		options.allowVideo = isMimoVideoModel(providerSlashModel)
 	}
 
 	return options, nil

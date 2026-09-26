@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"strings"
@@ -74,6 +75,11 @@ func (instance *bot) maybeAugmentConversationWithGeminiMedia(
 		return conversation, nil
 	}
 
+	contentOptions, err := messageContentOptionsForModel(loadedConfig, providerSlashModel)
+	if err != nil {
+		return nil, fmt.Errorf("build media analysis content options: %w", err)
+	}
+
 	mediaParts, err := instance.audioVideoPartsForMessages(
 		ctx,
 		instance.attachmentAugmentationMessages(ctx, sourceMessage),
@@ -81,6 +87,12 @@ func (instance *bot) maybeAugmentConversationWithGeminiMedia(
 	if err != nil {
 		return nil, fmt.Errorf("load media parts for gemini analysis: %w", err)
 	}
+
+	// Only preprocess the attachments the reply model cannot take
+	// itself: native audio (input_audio) and, for MiMo models, native
+	// video (video_url) already ride the request. Preprocessing those
+	// again would only duplicate the bytes as text.
+	mediaParts = mediaPartsNeedingPreprocessing(mediaParts, contentOptions)
 
 	if len(mediaParts) == 0 {
 		return conversation, nil
@@ -90,6 +102,16 @@ func (instance *bot) maybeAugmentConversationWithGeminiMedia(
 	if err != nil {
 		return nil, err
 	}
+
+	slog.Info(
+		"media preprocessor used",
+		"reply_model",
+		providerSlashModel,
+		"preprocessor_model",
+		geminiModel,
+		"media_part_count",
+		len(mediaParts),
+	)
 
 	analyses := make([]string, 0, len(mediaParts))
 	results := runTasksConcurrently(
@@ -144,6 +166,10 @@ func configuredModelAPIKind(
 func configuredGeminiMediaModel(loadedConfig config) (string, error) {
 	if strings.TrimSpace(loadedConfig.MediaAnalysisModel) != "" {
 		return strings.TrimSpace(loadedConfig.MediaAnalysisModel), nil
+	}
+
+	if loadedConfig.hasModel(defaultMimoMediaAnalysisModel) {
+		return defaultMimoMediaAnalysisModel, nil
 	}
 
 	candidates := make([]string, 0, len(loadedConfig.ModelOrder))
@@ -376,6 +402,32 @@ func partNeedsGeminiMediaAnalysis(part contentPart) bool {
 	return partType == contentTypeAudioData || partType == contentTypeVideoData
 }
 
+// mediaPartsNeedingPreprocessing drops the attachments the reply model
+// already carries natively: audio when allowAudio, video when allowVideo
+// (MiMo video_url). The remainder need a text analysis to be visible.
+func mediaPartsNeedingPreprocessing(parts []contentPart, options messageContentOptions) []contentPart {
+	needed := make([]contentPart, 0, len(parts))
+
+	for _, part := range parts {
+		partType, _ := part["type"].(string)
+
+		switch partType {
+		case contentTypeAudioData:
+			if !options.allowAudio {
+				needed = append(needed, part)
+			}
+		case contentTypeVideoData:
+			if !options.allowVideo {
+				needed = append(needed, part)
+			}
+		default:
+			needed = append(needed, part)
+		}
+	}
+
+	return needed
+}
+
 func cloneContentPart(part contentPart) contentPart {
 	clonedPart := make(contentPart, len(part))
 
@@ -437,6 +489,16 @@ func (instance *bot) analyzeMediaWithGemini(
 		return responseText, nil
 	}
 
+	if fallbackText, fallbacked := instance.tryMediaAnalysisFallbackPreprocessor(
+		ctx,
+		loadedConfig,
+		geminiModel,
+		messages,
+		primaryErr,
+	); fallbacked {
+		return fallbackText, nil
+	}
+
 	if !geminiMediaAnalysisMayFallback(primaryErr) {
 		return "", primaryErr
 	}
@@ -474,6 +536,54 @@ func (instance *bot) analyzeMediaWithGemini(
 	return "", primaryErr
 }
 
+// tryMediaAnalysisFallbackPreprocessor retries one failed media analysis on
+// the configured media_analysis_model_fallback (e.g. MiMo outage → Gemini).
+// It reports false when no fallback is configured, the fallback is the
+// failed model itself, or the fallback also failed — the caller then
+// continues with the built-in gemini candidate retries.
+func (instance *bot) tryMediaAnalysisFallbackPreprocessor(
+	ctx context.Context,
+	loadedConfig config,
+	geminiModel string,
+	messages []chatMessage,
+	primaryErr error,
+) (string, bool) {
+	fallbackModel := strings.TrimSpace(loadedConfig.MediaAnalysisModelFallback)
+	if fallbackModel == "" || fallbackModel == strings.TrimSpace(geminiModel) {
+		return "", false
+	}
+
+	logWarn(
+		"retry media analysis with fallback preprocessor",
+		primaryErr,
+		"configured_model",
+		geminiModel,
+		"fallback_model",
+		fallbackModel,
+	)
+
+	responseText, fallbackErr := instance.analyzeMediaWithGeminiModel(
+		ctx,
+		loadedConfig,
+		fallbackModel,
+		messages,
+	)
+	if fallbackErr == nil {
+		return responseText, true
+	}
+
+	logWarn(
+		"media analysis fallback preprocessor failed",
+		fallbackErr,
+		"configured_model",
+		geminiModel,
+		"fallback_model",
+		fallbackModel,
+	)
+
+	return "", false
+}
+
 func (instance *bot) analyzeMediaWithGeminiModel(
 	ctx context.Context,
 	loadedConfig config,
@@ -490,9 +600,9 @@ func (instance *bot) analyzeMediaWithGeminiModel(
 		return "", fmt.Errorf("build gemini media analysis request: %w", err)
 	}
 
-	responseText, err := collectChatCompletionText(ctx, instance.chatCompletions, request)
-	if err != nil {
-		return "", fmt.Errorf("collect gemini media analysis: %w", err)
+	responseText, collectErr := collectChatCompletionText(ctx, instance.chatCompletions, request)
+	if collectErr != nil {
+		return "", fmt.Errorf("collect gemini media analysis: %w", collectErr)
 	}
 
 	trimmedResponse := strings.TrimSpace(responseText)

@@ -657,7 +657,7 @@ func responsesUserContent(content any) (any, bool, error) {
 
 		parts := make([]map[string]any, 0, len(typedContent))
 		for _, part := range typedContent {
-			convertedPart, ok, err := responsesUserPart(part)
+			convertedParts, ok, err := responsesUserParts(part)
 			if err != nil {
 				return nil, false, err
 			}
@@ -666,7 +666,7 @@ func responsesUserContent(content any) (any, bool, error) {
 				continue
 			}
 
-			parts = append(parts, convertedPart)
+			parts = append(parts, convertedParts...)
 		}
 
 		if len(parts) == 0 {
@@ -677,6 +677,62 @@ func responsesUserContent(content any) (any, bool, error) {
 	default:
 		return nil, false, fmt.Errorf("unsupported responses user content type %T: %w", content, os.ErrInvalid)
 	}
+}
+
+func responsesUserParts(part ContentPart) ([]map[string]any, bool, error) {
+	if partType, _ := part["type"].(string); partType == searchtypes.ContentTypeVideoData {
+		expandedParts, ok := openAIVideoParts(part)
+		if !ok {
+			return nil, false, nil
+		}
+
+		convertedParts := make([]map[string]any, 0, len(expandedParts))
+		for _, expandedPart := range expandedParts {
+			expandedType, _ := expandedPart["type"].(string)
+			if expandedType == openAIVideoURLPartType {
+				videoURL, _ := expandedPart[openAIVideoURLPartType].(map[string]string)
+
+				convertedParts = append(convertedParts, map[string]any{
+					searchtypes.MessageTypeKey: openAIVideoURLPartType,
+					openAIVideoURLPartType: map[string]string{
+						searchtypes.MessageURLKey: videoURL[searchtypes.MessageURLKey],
+					},
+					mimoVideoFPSKey:        mimoVideoDefaultFPS,
+					mimoVideoResolutionKey: mimoVideoDefaultResolution,
+				})
+
+				continue
+			}
+
+			convertedPart, ok, err := responsesUserPart(expandedPart)
+			if err != nil {
+				return nil, false, err
+			}
+
+			if !ok {
+				continue
+			}
+
+			convertedParts = append(convertedParts, convertedPart)
+		}
+
+		if len(convertedParts) == 0 {
+			return nil, false, nil
+		}
+
+		return convertedParts, true, nil
+	}
+
+	convertedPart, ok, err := responsesUserPart(part)
+	if err != nil {
+		return nil, false, err
+	}
+
+	if !ok {
+		return nil, false, nil
+	}
+
+	return []map[string]any{convertedPart}, true, nil
 }
 
 func responsesUserPart(part ContentPart) (map[string]any, bool, error) {
@@ -714,6 +770,35 @@ func responsesUserPart(part ContentPart) (map[string]any, bool, error) {
 			searchtypes.MessageTypeKey:   responsesInputImageType,
 			"image_url":                  imageURL,
 			searchtypes.MessageDetailKey: responsesImageDetailHigh,
+		}, true, nil
+	case searchtypes.ContentTypeAudioData:
+		encodedData, format, ok := encodeOpenAIAudioPart(part)
+		if !ok {
+			return nil, false, nil
+		}
+
+		return map[string]any{
+			searchtypes.MessageTypeKey: openAIAudioInputPartType,
+			openAIAudioInputPartType: map[string]string{
+				"data":   encodedData,
+				"format": format,
+			},
+		}, true, nil
+	case searchtypes.ContentTypeVideoData:
+		convertedPart, ok := openAIVideoURLPart(part)
+		if !ok {
+			return nil, false, nil
+		}
+
+		videoURL, _ := convertedPart[openAIVideoURLPartType].(map[string]string)
+
+		return map[string]any{
+			searchtypes.MessageTypeKey: openAIVideoURLPartType,
+			openAIVideoURLPartType: map[string]string{
+				searchtypes.MessageURLKey: videoURL[searchtypes.MessageURLKey],
+			},
+			mimoVideoFPSKey:        mimoVideoDefaultFPS,
+			mimoVideoResolutionKey: mimoVideoDefaultResolution,
 		}, true, nil
 	case searchtypes.ContentTypeDocument, searchtypes.ContentTypeFileData:
 		documentBytes, mimeType, filename, err := support.AttachmentBytes(part)
