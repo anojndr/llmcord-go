@@ -414,46 +414,58 @@ func TestBuildChatCompletionRequestBodySkipsCacheOptionsForResponsesAPI(t *testi
 	}
 }
 
-func TestBuildChatCompletionRequestBodyRewritesSystemRoleForGPT56(t *testing.T) {
+func TestBuildChatCompletionRequestBodyRewritesSystemRoleForNewerModels(t *testing.T) {
 	t.Parallel()
 
-	request := ChatCompletionRequest{
-		Provider: ProviderRequestConfig{
-			API:             "",
-			APIKind:         ProviderAPIKindOpenAI,
-			BaseURL:         "https://example.com/v1",
-			APIKey:          "test-key",
-			UseResponsesAPI: false,
-			APIKeys:         nil,
-			EnableGrounding: false,
-			ExtraHeaders:    nil,
-			ExtraQuery:      nil,
-			ExtraBody:       nil,
-		},
-		Model:           "gpt-5.6",
-		ConfiguredModel: "openai/gpt-5.6",
-		SessionID:       testOpenAIPromptCacheKey,
-		Messages: []ChatMessage{
-			{Role: searchtypes.MessageRoleSystem, Content: "You are concise."},
-			{Role: searchtypes.MessageRoleUser, Content: "hello"},
-		},
-		RequestID: "",
-		Tools:     nil,
-	}
+	for _, testCase := range []struct {
+		name  string
+		model string
+	}{
+		{name: "gpt-5.6", model: "gpt-5.6"},
+		{name: "gpt-6", model: "gpt-6-sol"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 
-	requestBody := buildChatCompletionRequestBody(request)
+			request := ChatCompletionRequest{
+				Provider: ProviderRequestConfig{
+					API:             "",
+					APIKind:         ProviderAPIKindOpenAI,
+					BaseURL:         "https://example.com/v1",
+					APIKey:          "test-key",
+					UseResponsesAPI: false,
+					APIKeys:         nil,
+					EnableGrounding: false,
+					ExtraHeaders:    nil,
+					ExtraQuery:      nil,
+					ExtraBody:       nil,
+				},
+				Model:           testCase.model,
+				ConfiguredModel: "openai/" + testCase.model,
+				SessionID:       testOpenAIPromptCacheKey,
+				Messages: []ChatMessage{
+					{Role: searchtypes.MessageRoleSystem, Content: "You are concise."},
+					{Role: searchtypes.MessageRoleUser, Content: "hello"},
+				},
+				RequestID: "",
+				Tools:     nil,
+			}
 
-	messages, messagesOK := requestBody["messages"].([]ChatMessage)
-	if !messagesOK || len(messages) != 2 {
-		t.Fatalf("unexpected messages Payload: %#v", requestBody["messages"])
-	}
+			requestBody := buildChatCompletionRequestBody(request)
 
-	if messages[0].Role != "developer" {
-		t.Fatalf("expected developer role for gpt-5.6: %#v", messages[0])
-	}
+			messages, messagesOK := requestBody["messages"].([]ChatMessage)
+			if !messagesOK || len(messages) != 2 {
+				t.Fatalf("unexpected messages Payload: %#v", requestBody["messages"])
+			}
 
-	if messages[1].Role != searchtypes.MessageRoleUser {
-		t.Fatalf("unexpected user role: %#v", messages[1])
+			if messages[0].Role != "developer" {
+				t.Fatalf("expected developer role for %s: %#v", testCase.model, messages[0])
+			}
+
+			if messages[1].Role != searchtypes.MessageRoleUser {
+				t.Fatalf("unexpected user role: %#v", messages[1])
+			}
+		})
 	}
 }
 

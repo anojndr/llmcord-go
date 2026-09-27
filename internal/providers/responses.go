@@ -349,6 +349,7 @@ func buildResponsesRequestBody(request ChatCompletionRequest) (map[string]any, e
 	}
 
 	maps.Copy(requestBody, extraBody)
+	stripUnsupportedResponsesLogprobsInclude(requestBody)
 
 	if request.Provider.APIKind == ProviderAPIKindOpenAI && OpenAIConfiguredModel(request.ConfiguredModel) {
 		addOpenAICacheOptions(requestBody, request)
@@ -405,6 +406,45 @@ func openAICacheOptionsModeIsExplicit(extraBody map[string]any) bool {
 	mode, hasMode := openAICacheOptionsMode(extraBody)
 
 	return hasMode && strings.EqualFold(mode, openAICacheBreakpointModeExplicit)
+}
+
+// stripUnsupportedResponsesLogprobsInclude removes
+// message.output_text.logprobs from an include array when reasoning is
+// active. The GPT-6 migration guide forbids logprobs alongside reasoning
+// effort, so a stale include entry would fail the request.
+func stripUnsupportedResponsesLogprobsInclude(requestBody map[string]any) {
+	reasoning, isReasoning := requestBody["reasoning"].(map[string]any)
+	if !isReasoning {
+		return
+	}
+
+	effort, _ := reasoning["effort"].(string)
+	if strings.TrimSpace(effort) == "" ||
+		strings.EqualFold(strings.TrimSpace(effort), OpenAIReasoningEffortNone) {
+		return
+	}
+
+	rawInclude, hasInclude := requestBody["include"]
+	if !hasInclude {
+		return
+	}
+
+	includes, isList := rawInclude.([]any)
+	if !isList {
+		return
+	}
+
+	filtered := make([]any, 0, len(includes))
+	for _, entry := range includes {
+		if text, isText := entry.(string); isText &&
+			strings.TrimSpace(text) == "message.output_text.logprobs" {
+			continue
+		}
+
+		filtered = append(filtered, entry)
+	}
+
+	requestBody["include"] = filtered
 }
 
 func openAIResponsesCacheBreakpointMessages(messages []ChatMessage) []ChatMessage {

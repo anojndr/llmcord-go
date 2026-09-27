@@ -61,7 +61,7 @@ permissions:
 #   reasoning_effort: none | minimal | low | medium | high | xhigh | max
 # Maps to reasoning.effort (api: openai-responses) or reasoning_effort
 # (api: openai-chat-completions). Values are normalized per model:
-# minimal→low for gpt-5.2/5.3/5.4, xhigh/max→high for gpt-5.1.
+# minimal→low for gpt-5.2/5.3/5.4 and gpt-6, xhigh/max→high for gpt-5.1.
 # Model-level reasoning_effort overrides this. Only valid for
 # OpenAI-compatible providers; Gemini providers must not set it
 # (validation will fail). Explicit reasoning_effort wins over
@@ -313,9 +313,10 @@ providers:
 #     reasoning_effort: none | minimal | low | medium | high | xhigh | max
 # With api: openai-responses this sends reasoning.effort, with
 # api: openai-chat-completions it sends reasoning_effort. Values are
-# normalized per model: minimal→low for gpt-5.2/5.3/5.4, xhigh/max→high
-# for gpt-5.1. Per-model wins over per-provider reasoning_effort;
-# explicit wins over alias suffixes like -low/-high/-max. Only valid
+# normalized per model: minimal→low for gpt-5.2/5.3/5.4 and gpt-6,
+# xhigh/max→high for gpt-5.1. Per-model wins over per-provider
+# reasoning_effort; explicit wins over alias suffixes like -low/-high/-max
+# (aliases work on gpt-5 and gpt-6 models). Only valid
 # for OpenAI-compatible providers.
 # -----------------------------------------------------------------------------
 models:

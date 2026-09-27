@@ -212,7 +212,46 @@ func NormalizeOpenAIResponsesExtraBody(model string, extraBody map[string]any) m
 
 	normalizedExtraBody["reasoning"] = clonedReasoningConfig
 
+	stripUnsupportedReasoningSamplingParams(normalizedExtraBody, clonedReasoningConfig)
+
 	return normalizedExtraBody
+}
+
+// stripUnsupportedReasoningSamplingParams removes temperature, top_p, and
+// top_logprobs when a reasoning effort other than none is active. The GPT-6
+// migration guide requires this: reasoning models reject custom sampling
+// values once they reason, so a stale temperature from another provider or
+// model would fail the request.
+func stripUnsupportedReasoningSamplingParams(extraBody map[string]any, reasoningConfig map[string]any) {
+	effort, _ := reasoningConfig["effort"].(string)
+	if strings.TrimSpace(effort) == "" ||
+		strings.EqualFold(strings.TrimSpace(effort), OpenAIReasoningEffortNone) {
+		return
+	}
+
+	delete(extraBody, "temperature")
+	delete(extraBody, "top_p")
+	delete(extraBody, "top_logprobs")
+}
+
+// stripUnsupportedChatCompletionsSamplingParams removes temperature, top_p,
+// top_logprobs, and logprobs from a Chat Completions body when the model's
+// reasoning effort is active. The GPT-6 migration guide requires this for
+// reasoning models; the effort lives in the merged reasoning_effort field.
+func stripUnsupportedChatCompletionsSamplingParams(requestBody map[string]any) {
+	effort, _ := requestBody[openAIReasoningEffortKey].(string)
+	if strings.EqualFold(strings.TrimSpace(effort), OpenAIReasoningEffortNone) {
+		return
+	}
+
+	if strings.TrimSpace(effort) == "" {
+		return
+	}
+
+	delete(requestBody, "temperature")
+	delete(requestBody, "top_p")
+	delete(requestBody, "top_logprobs")
+	delete(requestBody, "logprobs")
 }
 
 // normalizeOpenAIReasoningSummary lowercases valid summary verbosity and
@@ -280,7 +319,9 @@ func openAIReasoningEffortAlias(model string) (string, string, bool) {
 }
 
 func openAIReasoningAliasModel(model string) bool {
-	return strings.HasPrefix(openAIReasoningModelID(model), "gpt-5")
+	modelID := openAIReasoningModelID(model)
+
+	return strings.HasPrefix(modelID, "gpt-5") || strings.HasPrefix(modelID, "gpt-6")
 }
 
 func normalizeOpenAIReasoningEffort(model, effort string) string {
@@ -297,7 +338,8 @@ func normalizeOpenAIReasoningEffort(model, effort string) string {
 		return "high"
 	case (strings.HasPrefix(modelID, "gpt-5.2") ||
 		strings.HasPrefix(modelID, "gpt-5.3") ||
-		strings.HasPrefix(modelID, OpenAIReasoningModelGPT54)) &&
+		strings.HasPrefix(modelID, OpenAIReasoningModelGPT54) ||
+		strings.HasPrefix(modelID, "gpt-6")) &&
 		normalizedEffort == OpenAIReasoningEffortMinimal:
 		return OpenAIReasoningEffortLow
 	default:

@@ -29,7 +29,7 @@ func supportedLLMImageMIMETypeSet() map[string]struct{} {
 //
 // Images are sent to the LLM exactly as received: no resizing, re-encoding,
 // or MIME conversion. Fidelity is controlled provider-side (OpenAI image
-// detail high, Gemini per-part media resolution ultra high), so ingest stays
+// detail high, Gemini per-part media resolution high), so ingest stays
 // a byte-identical passthrough for supported types within the byte budget.
 // Oversized or unsupported images return false so buildMediaParts drops them
 // and the existing unsupported-attachment warning fires.

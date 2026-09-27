@@ -746,7 +746,7 @@ func TestBuildGeminiGenerateContentRequestUploadsOnlyPDFDocuments(t *testing.T) 
 		t.Fatalf("unexpected uploaded PDF file part: %#v", part)
 	}
 }
-func TestBuildGeminiGenerateContentRequestUploadsLargeImageWithUltraHighResolution(t *testing.T) {
+func TestBuildGeminiGenerateContentRequestUploadsLargeImageWithHighResolution(t *testing.T) {
 	t.Parallel()
 
 	largeImageBytes := make([]byte, geminiInlineImageByteLimit+1)
@@ -791,8 +791,8 @@ func TestBuildGeminiGenerateContentRequestUploadsLargeImageWithUltraHighResoluti
 	}
 
 	if uploadedPart.MediaResolution == nil ||
-		uploadedPart.MediaResolution.Level != genai.PartMediaResolutionLevelMediaResolutionUltraHigh {
-		t.Fatalf("expected ultra high media resolution on uploaded image: %#v", uploadedPart.MediaResolution)
+		uploadedPart.MediaResolution.Level != genai.PartMediaResolutionLevelMediaResolutionHigh {
+		t.Fatalf("expected high media resolution on uploaded image: %#v", uploadedPart.MediaResolution)
 	}
 }
 
@@ -1114,8 +1114,8 @@ func assertGeminiConvertedContents(t *testing.T, contents []*genai.Content) {
 	}
 
 	if contents[0].Parts[1].MediaResolution == nil ||
-		contents[0].Parts[1].MediaResolution.Level != genai.PartMediaResolutionLevelMediaResolutionUltraHigh {
-		t.Fatalf("expected ultra high image media resolution: %#v", contents[0].Parts[1].MediaResolution)
+		contents[0].Parts[1].MediaResolution.Level != genai.PartMediaResolutionLevelMediaResolutionHigh {
+		t.Fatalf("expected high image media resolution: %#v", contents[0].Parts[1].MediaResolution)
 	}
 
 	if contents[1].Role != string(genai.RoleModel) {

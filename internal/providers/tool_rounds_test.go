@@ -201,6 +201,32 @@ func TestBuildChatCompletionRequestBodyToolChoiceNoneKeepsTools(t *testing.T) {
 	}
 }
 
+func TestBuildChatCompletionRequestBodyStripsSamplingParamsWithReasoning(t *testing.T) {
+	t.Parallel()
+
+	request := toolStreamRequest("https://example.com", false)
+	request.Model = "gpt-6-sol"
+	request.Provider.ExtraBody = map[string]any{
+		"reasoning_effort": OpenAIReasoningEffortMedium,
+		"temperature":      float64(0.2),
+		"top_p":            float64(0.9),
+		"top_logprobs":     2,
+		"logprobs":         true,
+	}
+
+	requestBody := buildChatCompletionRequestBody(request)
+
+	for _, key := range []string{"temperature", "top_p", "top_logprobs", "logprobs"} {
+		if _, exists := requestBody[key]; exists {
+			t.Fatalf("unexpected %s with reasoning effort: %#v", key, requestBody[key])
+		}
+	}
+
+	if requestBody["reasoning_effort"] != OpenAIReasoningEffortMedium {
+		t.Fatalf("expected reasoning effort to survive: %#v", requestBody["reasoning_effort"])
+	}
+}
+
 func TestBuildChatCompletionRequestBodyDropsToolsForGPT6ChatRestrictions(t *testing.T) {
 	t.Parallel()
 

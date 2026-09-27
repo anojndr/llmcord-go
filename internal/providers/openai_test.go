@@ -1138,6 +1138,100 @@ func TestBuildOpenAIResponsesRequestBodyNormalizesReasoningConfig(t *testing.T) 
 	}
 }
 
+func TestBuildOpenAIResponsesRequestBodyKeepsSamplingParamsWithoutEffort(t *testing.T) {
+	t.Parallel()
+
+	request := ChatCompletionRequest{
+		Provider: ProviderRequestConfig{
+			API:             "",
+			APIKind:         ProviderAPIKindOpenAI,
+			BaseURL:         testOpenAIBaseURL,
+			APIKey:          "test-key",
+			APIKeys:         nil,
+			UseResponsesAPI: true,
+			EnableGrounding: false,
+			ExtraHeaders:    nil,
+			ExtraQuery:      nil,
+			ExtraBody: map[string]any{
+				"reasoning":   map[string]any{"summary": OpenAIReasoningSummaryConcise},
+				"temperature": float64(0.2),
+			},
+		},
+		Model:           "gpt-6-sol",
+		ConfiguredModel: "openai/gpt-6-sol",
+		SessionID:       "",
+		RequestID:       "",
+		Tools:           nil,
+		Messages: []ChatMessage{
+			{Role: searchtypes.MessageRoleUser, Content: "hello"},
+		},
+	}
+
+	requestBody, err := buildResponsesRequestBody(request)
+	if err != nil {
+		t.Fatalf("build responses request body: %v", err)
+	}
+
+	if requestBody["temperature"] != float64(0.2) {
+		t.Fatalf("expected temperature without effort: %#v", requestBody["temperature"])
+	}
+}
+
+func TestBuildOpenAIResponsesRequestBodyStripsSamplingParamsWithReasoning(t *testing.T) {
+	t.Parallel()
+
+	request := ChatCompletionRequest{
+		Provider: ProviderRequestConfig{
+			API:             "",
+			APIKind:         ProviderAPIKindOpenAI,
+			BaseURL:         testOpenAIBaseURL,
+			APIKey:          "test-key",
+			APIKeys:         nil,
+			UseResponsesAPI: true,
+			EnableGrounding: false,
+			ExtraHeaders:    nil,
+			ExtraQuery:      nil,
+			ExtraBody: map[string]any{
+				"reasoning":    map[string]any{"effort": OpenAIReasoningEffortMedium},
+				"temperature":  float64(0.2),
+				"top_p":        float64(0.9),
+				"top_logprobs": 2,
+				"include":      []any{"message.output_text.logprobs", "reasoning.encrypted_content"},
+			},
+		},
+		Model:           "gpt-6-sol",
+		ConfiguredModel: "openai/gpt-6-sol",
+		SessionID:       "",
+		RequestID:       "",
+		Tools:           nil,
+		Messages: []ChatMessage{
+			{Role: searchtypes.MessageRoleUser, Content: "hello"},
+		},
+	}
+
+	requestBody, err := buildResponsesRequestBody(request)
+	if err != nil {
+		t.Fatalf("build responses request body: %v", err)
+	}
+
+	for _, key := range []string{"temperature", "top_p", "top_logprobs"} {
+		if _, exists := requestBody[key]; exists {
+			t.Fatalf("unexpected %s with reasoning effort: %#v", key, requestBody[key])
+		}
+	}
+
+	includes, ok := requestBody["include"].([]any)
+	if !ok {
+		t.Fatalf("unexpected include Payload: %#v", requestBody["include"])
+	}
+
+	for _, entry := range includes {
+		if text, ok := entry.(string); ok && text == "message.output_text.logprobs" {
+			t.Fatalf("unexpected logprobs include with reasoning effort: %#v", includes)
+		}
+	}
+}
+
 func TestBuildOpenAIResponsesRequestBodyDefaultsReasoningSummary(t *testing.T) {
 	t.Parallel()
 

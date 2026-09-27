@@ -52,6 +52,17 @@ func TestOpenAIReasoningEffortAliasMaxNotAppliedToNonReasoningModels(t *testing.
 	}
 }
 
+func TestOpenAIReasoningEffortAliasResolvesGPT6Models(t *testing.T) {
+	t.Parallel()
+
+	for _, configuredModel := range []string{"openai/gpt-6-sol-low", "openai/gpt-6-astra-high"} {
+		_, _, hasAlias := openAIReasoningEffortAlias(configuredModel)
+		if !hasAlias {
+			t.Fatalf("expected alias to resolve for %q", configuredModel)
+		}
+	}
+}
+
 func TestNormalizeOpenAIReasoningEffortKeepsMax(t *testing.T) {
 	t.Parallel()
 

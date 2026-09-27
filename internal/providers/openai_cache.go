@@ -15,7 +15,9 @@ const (
 )
 
 func openAIModelIsGPT56Family(model string) bool {
-	return strings.HasPrefix(openAIReasoningModelID(model), "gpt-5.6")
+	modelID := openAIReasoningModelID(model)
+
+	return strings.HasPrefix(modelID, "gpt-5.6") || strings.HasPrefix(modelID, "gpt-6")
 }
 
 func openAICacheOptionsMode(extraBody map[string]any) (string, bool) {

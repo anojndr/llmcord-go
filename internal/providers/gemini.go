@@ -1257,7 +1257,7 @@ func geminiImagePart(
 		}
 
 		if uploadedPart != nil {
-			uploadedPart.MediaResolution = newGeminiUltraHighMediaResolution()
+			uploadedPart.MediaResolution = newGeminiHighMediaResolution()
 		}
 
 		return uploadedPart, uploadedPart != nil, nil
@@ -1269,17 +1269,18 @@ func geminiImagePart(
 	}
 
 	imagePart := genai.NewPartFromBytes(imageBytes, imageData.MimeType)
-	imagePart.MediaResolution = newGeminiUltraHighMediaResolution()
+	imagePart.MediaResolution = newGeminiHighMediaResolution()
 
 	return imagePart, true, nil
 }
 
-// newGeminiUltraHighMediaResolution pins image parts to the highest
-// per-content tokenization level so Gemini sees the original pixels instead
-// of a provider-side downscale.
-func newGeminiUltraHighMediaResolution() *genai.PartMediaResolution {
+// newGeminiHighMediaResolution pins image parts to the high per-content
+// tokenization level (1120 image tokens). The media-resolution guide calls
+// high optimal for most image analysis; ultra_high is reserved for computer
+// use and would double image tokens to 2240 on every Discord image.
+func newGeminiHighMediaResolution() *genai.PartMediaResolution {
 	return &genai.PartMediaResolution{
-		Level:     genai.PartMediaResolutionLevelMediaResolutionUltraHigh,
+		Level:     genai.PartMediaResolutionLevelMediaResolutionHigh,
 		NumTokens: nil,
 	}
 }

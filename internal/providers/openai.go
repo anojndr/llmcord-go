@@ -222,6 +222,7 @@ func buildChatCompletionRequestBodyWithUsageOption(
 	addOpenAITools(requestBody, request)
 
 	maps.Copy(requestBody, request.Provider.ExtraBody)
+	stripUnsupportedChatCompletionsSamplingParams(requestBody)
 	dropUnsupportedOpenAIChatTools(requestBody, request.Model)
 
 	if request.Provider.APIKind == ProviderAPIKindOpenAI && !request.Provider.UseResponsesAPI {
