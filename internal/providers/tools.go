@@ -14,7 +14,9 @@ const webSearchObjectiveDescription = "Describe the search goal in a concise, st
 	"Name the key entity or topic."
 
 const webSearchQueriesDescription = "Provide keyword queries of 3-6 words each. " +
-	"Include the key entity or topic in every query. For multiple queries, vary names, synonyms, or angles. " +
+	"Repeat the exact same key entity or topic verbatim in every query; " +
+	"never substitute different model numbers, versions, years, or proper nouns. " +
+	"For multiple queries, vary angles or aspects, not the entity name. " +
 	"Do not use sentences, instructions, or site: operators."
 
 // WebSearchToolName is the function name the model calls to search the web.
