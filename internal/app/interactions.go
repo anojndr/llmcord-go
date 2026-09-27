@@ -98,6 +98,8 @@ func (instance *bot) handleApplicationCommandInteraction(
 		return instance.handleEditChannelNameCommand(session, interaction)
 	case moveChannelCommandName:
 		return instance.handleMoveChannelCommand(session, interaction)
+	case latencyBenchCommandName:
+		return instance.handleLatencyBenchCommand(session, interaction)
 	case maintenanceCommandName:
 		return instance.handleMaintenanceCommand(session, interaction)
 	case watcherStatusCommandName:

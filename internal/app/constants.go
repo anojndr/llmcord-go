@@ -23,7 +23,7 @@ const (
 	defaultMaxMessages                = 25
 	systemPromptTimeBucketMinutes     = 10
 	maxMessageNodes                   = 500
-	registeredCommandCount            = 8
+	registeredCommandCount            = 9
 	maxAutocompleteChoices            = 25
 	statusMessageMaxLength            = 128
 	streamingIndicator                = " ..."

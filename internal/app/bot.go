@@ -631,6 +631,7 @@ func (instance *bot) syncCommands() error {
 	commands = append(commands, newCreateChannelCommand())
 	commands = append(commands, newEditChannelNameCommand())
 	commands = append(commands, newMoveChannelCommand())
+	commands = append(commands, newLatencyBenchCommand())
 	commands = append(commands, newMaintenanceCommand())
 	commands = append(commands, newWatcherStatusCommand())
 
