@@ -371,6 +371,9 @@ func (instance *bot) finalizeGenerationRound(
 // retries of runGenerationRoundWithStreamRetry) and attempts it again while
 // the model spends it on tool calls its request never offered (see
 // calledUnofferedTools), up to unofferedToolCallMaxAttempts attempts. Each
+// retry tells the model the called functions are unavailable (a proxy can
+// attach tools of its own after a tool-free request left none), so the next
+// attempt arrives with new information instead of the identical prompt. Each
 // attempt re-renders over the tracker's messages in place, so text streamed
 // before such calls is replaced. When every attempt calls such tools, the
 // round fails with errEmptyModelResponse.
@@ -402,24 +405,99 @@ func (instance *bot) runGenerationRoundWithRetry(
 			return round, errEmptyModelResponse
 		}
 
+		unavailableToolCalls := toolCallNames(round.toolCallResponse)
+
 		logWarn(
 			"model called tools that were not offered; retrying generation",
 			nil,
 			"configured_model",
 			request.ConfiguredModel,
 			"tool_calls",
-			toolCallNames(round.toolCallResponse),
+			unavailableToolCalls,
 			"attempt",
 			attempt+1,
 			"max_attempts",
 			unofferedToolCallMaxAttempts,
 		)
 
+		feedbackMessages, feedbackErr := appendUnofferedToolFeedback(request.Messages, unavailableToolCalls)
+		if feedbackErr != nil {
+			logWarn(
+				"append unavailable tool feedback; retrying without it",
+				feedbackErr,
+				"configured_model",
+				request.ConfiguredModel,
+			)
+		} else {
+			request.Messages = feedbackMessages
+		}
+
 		sleepErr := sleepPrematureStreamRetry(ctx, prematureStreamRetryFixedDelay)
 		if sleepErr != nil {
 			return round, sleepErr
 		}
 	}
+}
+
+// appendUnofferedToolFeedback notes that the named functions are unavailable
+// on the latest user message, steering the retried tool-free attempt toward
+// answering from the conversation text instead of calling them again. Names
+// already flagged on the latest user query are skipped, so repeated decoy
+// calls across retries do not stack identical notices.
+func appendUnofferedToolFeedback(conversation []chatMessage, names []string) ([]chatMessage, error) {
+	query, found := latestUserQuery(conversation)
+	if !found {
+		return conversation, nil
+	}
+
+	seen := make(map[string]struct{}, len(names))
+	quoted := make([]string, 0, len(names))
+
+	for _, name := range names {
+		trimmed := strings.TrimSpace(name)
+		if trimmed == "" {
+			continue
+		}
+
+		if _, duplicate := seen[trimmed]; duplicate {
+			continue
+		}
+
+		seen[trimmed] = struct{}{}
+		quoted = append(quoted, fmt.Sprintf("%q", trimmed))
+	}
+
+	pending := quoted[:0]
+	for _, quotedName := range quoted {
+		if strings.Contains(query, "functions "+quotedName+" are not available") ||
+			strings.Contains(query, "function "+quotedName+" is not available") {
+			continue
+		}
+
+		pending = append(pending, quotedName)
+	}
+
+	if len(pending) == 0 {
+		return conversation, nil
+	}
+
+	var notice string
+
+	if len(pending) == 1 {
+		notice = fmt.Sprintf(
+			"Error: function %s is not available. Answer using the information above without calling tools.",
+			pending[0],
+		)
+	} else {
+		notice = fmt.Sprintf(
+			"Error: functions %s are not available. Answer using the information above without calling tools.",
+			strings.Join(pending, ", "),
+		)
+	}
+
+	return appendContextToConversation(conversation, func(prompt *augmentedUserPrompt) {
+		prompt.UserQuery = appendPromptUserQuery(prompt.UserQuery, notice)
+	})
 }
 
 // calledUnofferedTools reports whether a round ended in tool calls although

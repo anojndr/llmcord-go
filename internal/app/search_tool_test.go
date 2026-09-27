@@ -760,6 +760,17 @@ func TestRespondToMessageRetriesToolFreeFinalAnswerThatCallsUnofferedTools(t *te
 	}
 
 	assertToolFreeFinalAnswerRequest(t, chatClient.requests[1], chatClient.requests[0])
+
+	// The retry must arrive with new information: the latest user message
+	// names the decoy function instead of resending the identical tool-free
+	// prompt, while staying a tool-free final answer carrying the results.
+	firstText := latestChatMessageText(chatClient.requests[1].Messages)
+	retryText := latestChatMessageText(chatClient.requests[2].Messages)
+
+	if retryText == firstText || !strings.Contains(retryText, `"bash"`) {
+		t.Fatalf("expected the retry to add unavailable-tool feedback naming the decoy call, got %q", retryText)
+	}
+
 	assertToolFreeFinalAnswerRequest(t, chatClient.requests[2], chatClient.requests[0])
 
 	responseNode := instance.nodes.getOrCreate("response-message")
@@ -769,6 +780,53 @@ func TestRespondToMessageRetriesToolFreeFinalAnswerThatCallsUnofferedTools(t *te
 
 	if !strings.Contains(responseText, testWebSearchToolAnswer) || strings.Contains(responseText, preambleText) {
 		t.Fatalf("expected only the retried answer in the response, got %q", responseText)
+	}
+}
+
+func TestAppendUnofferedToolFeedback(t *testing.T) {
+	t.Parallel()
+
+	conversation := []chatMessage{{Role: messageRoleUser, Content: "Hello"}}
+
+	updated, err := appendUnofferedToolFeedback(conversation, []string{"bash", " bash ", ""})
+	if err != nil {
+		t.Fatalf("append unoffered tool feedback: %v", err)
+	}
+
+	updatedText := latestChatMessageText(updated)
+	if updatedText == "Hello" || !strings.Contains(updatedText, `"bash"`) {
+		t.Fatalf("expected deduplicated unavailable-tool feedback, got %q", updatedText)
+	}
+
+	if latestChatMessageText(conversation) != "Hello" {
+		t.Fatal("expected the original conversation to stay unchanged")
+	}
+
+	repeated, err := appendUnofferedToolFeedback(updated, []string{"bash"})
+	if err != nil {
+		t.Fatalf("append repeated unoffered tool feedback: %v", err)
+	}
+
+	if latestChatMessageText(repeated) != updatedText {
+		t.Fatalf("expected repeated decoy feedback to be skipped, got %q", latestChatMessageText(repeated))
+	}
+
+	unchanged, err := appendUnofferedToolFeedback(conversation, []string{"  ", ""})
+	if err != nil {
+		t.Fatalf("append empty unoffered tool feedback: %v", err)
+	}
+
+	if latestChatMessageText(unchanged) != "Hello" {
+		t.Fatalf("expected no feedback for blank tool names, got %q", latestChatMessageText(unchanged))
+	}
+
+	empty, err := appendUnofferedToolFeedback(nil, []string{"bash"})
+	if err != nil {
+		t.Fatalf("append unoffered tool feedback without conversation: %v", err)
+	}
+
+	if empty != nil {
+		t.Fatalf("expected no feedback without a user message, got %#v", empty)
 	}
 }
 
