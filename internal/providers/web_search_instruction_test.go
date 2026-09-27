@@ -15,3 +15,43 @@ func TestWebSearchToolDescriptionIncludesUserInstruction(t *testing.T) {
 		t.Fatalf("web_search tool description missing required instruction %q: got %q", want, tool.Description)
 	}
 }
+
+func TestWebSearchToolQueriesRequireVerbatimEntity(t *testing.T) {
+	t.Parallel()
+
+	tool := WebSearchTool(0)
+
+	properties, propertiesOK := tool.Parameters["properties"].(map[string]any)
+	if !propertiesOK {
+		t.Fatalf("unexpected parameters properties: %#v", tool.Parameters["properties"])
+	}
+
+	objective, objectiveOK := properties["objective"].(map[string]any)
+	if !objectiveOK {
+		t.Fatalf("unexpected objective property: %#v", properties["objective"])
+	}
+
+	objectiveDescription, _ := objective["description"].(string)
+	for _, want := range []string{"verbatim", "never correct or substitute"} {
+		if !strings.Contains(objectiveDescription, want) {
+			t.Fatalf("web_search objective missing %q: got %q", want, objectiveDescription)
+		}
+	}
+
+	queries, queriesOK := properties["search_queries"].(map[string]any)
+	if !queriesOK {
+		t.Fatalf("unexpected search_queries property: %#v", properties["search_queries"])
+	}
+
+	queriesDescription, _ := queries["description"].(string)
+	for _, want := range []string{
+		"Repeat the exact same key entity or topic verbatim in every query",
+		"even if the entity looks unreleased, unfamiliar, or misspelled",
+		"iPhone 18 Pro Max price Philippines",
+		"never 'iPhone 16 Pro Max' or 'iPhone 17 Pro Max'",
+	} {
+		if !strings.Contains(queriesDescription, want) {
+			t.Fatalf("web_search queries description missing %q: got %q", want, queriesDescription)
+		}
+	}
+}

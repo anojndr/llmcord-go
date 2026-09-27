@@ -11,11 +11,15 @@ const webSearchToolDescription = "Search the web and return result titles, URLs,
 	"unless web search is absolutely not needed."
 
 const webSearchObjectiveDescription = "Describe the search goal in a concise, standalone sentence. " +
-	"Name the key entity or topic."
+	"Copy the user's key entity verbatim, including model numbers, versions, years, and proper nouns; " +
+	"never correct or substitute them (e.g. iPhone 18 Pro Max stays iPhone 18 Pro Max)."
 
 const webSearchQueriesDescription = "Provide keyword queries of 3-6 words each. " +
 	"Repeat the exact same key entity or topic verbatim in every query; " +
-	"never substitute different model numbers, versions, years, or proper nouns. " +
+	"never substitute different model numbers, versions, years, or proper nouns, " +
+	"even if the entity looks unreleased, unfamiliar, or misspelled. " +
+	"For example, 'expected price of iPhone 18 Pro Max in the Philippines' uses " +
+	"'iPhone 18 Pro Max price Philippines', never 'iPhone 16 Pro Max' or 'iPhone 17 Pro Max'. " +
 	"For multiple queries, vary angles or aspects, not the entity name. " +
 	"Do not use sentences, instructions, or site: operators."
 
