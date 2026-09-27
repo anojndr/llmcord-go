@@ -253,6 +253,22 @@ func isVisionModel(modelName string) bool {
 	return false
 }
 
+// isMimoVideoModel reports whether a configured model speaks MiMo's native
+// video_url part (video understanding guide): a slash-separated segment
+// starting with "mimo", e.g. "xiaomi/oc/mimo-v2.6-flash-free:vision" or
+// "bzl/mimo-v2.5". Only these models get raw video bytes; everything else
+// gets a preprocessed text analysis.
+func isMimoVideoModel(configuredModel string) bool {
+	for segment := range strings.SplitSeq(strings.ToLower(strings.TrimSpace(configuredModel)), "/") {
+		trimmedSegment := strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(segment), ":vision"))
+		if trimmedSegment == "mimo" || strings.HasPrefix(trimmedSegment, "mimo-") {
+			return true
+		}
+	}
+
+	return false
+}
+
 func minInt(left, right int) int {
 	if left < right {
 		return left

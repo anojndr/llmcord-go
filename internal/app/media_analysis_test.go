@@ -69,8 +69,9 @@ func TestAppendMediaAnalysesToConversationPreservesImages(t *testing.T) {
 func TestMaybeAugmentConversationWithGeminiMediaAppendsAnalysesForNonGeminiModel(t *testing.T) {
 	t.Parallel()
 
+	// Audio rides OpenAI requests natively (input_audio), so only the
+	// video part still needs a text analysis.
 	expectedAnalyses := []string{
-		"Audio transcription per timestamp:\n\n0s to 10s: hello there",
 		"Video description per timestamp:\n\n0s to 10s: somebody waves",
 	}
 
@@ -116,7 +117,7 @@ func TestMaybeAugmentConversationWithGeminiMediaAppendsAnalysesForNonGeminiModel
 		t.Fatalf("augment conversation with gemini media: %v", err)
 	}
 
-	if *callIndex != 2 {
+	if *callIndex != 1 {
 		t.Fatalf("unexpected gemini analysis call count: %d", *callIndex)
 	}
 
@@ -148,14 +149,16 @@ func TestMaybeAugmentConversationWithGeminiMediaRunsAnalysesConcurrentlyAndKeeps
 	t.Parallel()
 
 	const (
-		audioAnalysis = "Audio transcription per timestamp:\n\n0s to 10s: hello from audio"
-		videoAnalysis = "Video description per timestamp:\n\n0s to 10s: hello from video"
+		firstAnalysis  = "Video description per timestamp:\n\n0s to 10s: hello from first video"
+		secondAnalysis = "Video description per timestamp:\n\n0s to 10s: hello from second video"
 	)
 
+	// Two video parts (audio would ride the request natively): the
+	// concurrent client asserts per-part prompts and keeps call order.
 	chatClient, callCount := newConcurrentGeminiMediaAnalysisChatClient(
 		t,
-		audioAnalysis,
-		videoAnalysis,
+		firstAnalysis,
+		secondAnalysis,
 	)
 
 	instance, sourceMessage := newMediaAnalysisTestBot(
@@ -163,16 +166,16 @@ func TestMaybeAugmentConversationWithGeminiMediaRunsAnalysesConcurrentlyAndKeeps
 		"message-concurrent-media",
 		[]contentPart{
 			{
-				"type":               contentTypeAudioData,
-				contentFieldBytes:    []byte("audio-bytes"),
-				contentFieldMIMEType: "audio/mpeg",
-				contentFieldFilename: "clip.mp3",
+				"type":               contentTypeVideoData,
+				contentFieldBytes:    []byte("video-bytes-1"),
+				contentFieldMIMEType: testVideoMIMEType,
+				contentFieldFilename: "clip1.mp4",
 			},
 			{
 				"type":               contentTypeVideoData,
-				contentFieldBytes:    []byte("video-bytes"),
+				contentFieldBytes:    []byte("video-bytes-2"),
 				contentFieldMIMEType: testVideoMIMEType,
-				contentFieldFilename: "clip.mp4",
+				contentFieldFilename: "clip2.mp4",
 			},
 		},
 	)
@@ -202,7 +205,7 @@ func TestMaybeAugmentConversationWithGeminiMediaRunsAnalysesConcurrentlyAndKeeps
 
 	expectedText := expectedMediaAnalysisUserText(
 		"<@123>: summarize these files",
-		[]string{audioAnalysis, videoAnalysis},
+		[]string{firstAnalysis, secondAnalysis},
 	)
 	if content != expectedText {
 		t.Fatalf("unexpected augmented text: %q", content)
@@ -213,7 +216,6 @@ func TestMaybeAugmentConversationWithGeminiMediaAppendsReplyTargetAnalysesForNon
 	t.Parallel()
 
 	expectedAnalyses := []string{
-		"Audio transcription per timestamp:\n\n0s to 10s: reply target hello there",
 		"Video description per timestamp:\n\n0s to 10s: reply target somebody waves",
 	}
 
@@ -263,7 +265,7 @@ func TestMaybeAugmentConversationWithGeminiMediaAppendsReplyTargetAnalysesForNon
 		t.Fatalf("augment conversation with replied gemini media: %v", err)
 	}
 
-	if *callIndex != 2 {
+	if *callIndex != 1 {
 		t.Fatalf("unexpected gemini analysis call count: %d", *callIndex)
 	}
 
@@ -285,7 +287,7 @@ func TestMaybeAugmentConversationWithGeminiMediaUsesAssistantReplyTargetSource(t
 	t.Parallel()
 
 	expectedAnalyses := []string{
-		"Audio transcription per timestamp:\n\n0s to 10s: original source hello there",
+		"Video description per timestamp:\n\n0s to 10s: original source hello there",
 	}
 
 	chatClient, callIndex := newGeminiMediaAnalysisChatClient(t, expectedAnalyses)
@@ -306,7 +308,7 @@ func TestMaybeAugmentConversationWithGeminiMediaUsesAssistantReplyTargetSource(t
 	sourceNode := instance.nodes.getOrCreate(sourceMessage.ID)
 	sourceNode.parentMessage = assistantMessage
 	sourceNode.role = messageRoleUser
-	sourceNode.text = "<@123>: summarize that original audio"
+	sourceNode.text = "<@123>: summarize that original video"
 
 	assistantNode := instance.nodes.getOrCreate(assistantMessage.ID)
 	assistantNode.initialized = true
@@ -319,10 +321,10 @@ func TestMaybeAugmentConversationWithGeminiMediaUsesAssistantReplyTargetSource(t
 	originalSourceNode.role = messageRoleUser
 	originalSourceNode.media = []contentPart{
 		{
-			"type":               contentTypeAudioData,
-			contentFieldBytes:    []byte("audio-bytes"),
-			contentFieldMIMEType: "audio/mpeg",
-			contentFieldFilename: "original.mp3",
+			"type":               contentTypeVideoData,
+			contentFieldBytes:    []byte("video-bytes"),
+			contentFieldMIMEType: testVideoMIMEType,
+			contentFieldFilename: "original.mp4",
 		},
 	}
 
@@ -331,7 +333,7 @@ func TestMaybeAugmentConversationWithGeminiMediaUsesAssistantReplyTargetSource(t
 		testMediaAnalysisConfig(),
 		"openai/gpt-5",
 		sourceMessage,
-		[]chatMessage{{Role: messageRoleUser, Content: "<@123>: summarize that original audio"}},
+		[]chatMessage{{Role: messageRoleUser, Content: "<@123>: summarize that original video"}},
 	)
 	if err != nil {
 		t.Fatalf("augment conversation with assistant reply target media: %v", err)
@@ -347,7 +349,7 @@ func TestMaybeAugmentConversationWithGeminiMediaUsesAssistantReplyTargetSource(t
 	}
 
 	expectedText := expectedMediaAnalysisUserText(
-		"<@123>: summarize that original audio",
+		"<@123>: summarize that original video",
 		expectedAnalyses,
 	)
 	if content != expectedText {
@@ -421,9 +423,9 @@ func TestMaybeAugmentConversationWithGeminiMediaRequiresGeminiModel(t *testing.T
 		"message-3",
 		[]contentPart{
 			{
-				"type":               contentTypeAudioData,
-				contentFieldBytes:    []byte("audio-bytes"),
-				contentFieldMIMEType: "audio/mpeg",
+				"type":               contentTypeVideoData,
+				contentFieldBytes:    []byte("video-bytes"),
+				contentFieldMIMEType: testVideoMIMEType,
 			},
 		},
 	)
@@ -525,16 +527,23 @@ func TestConfiguredGeminiMediaModelAutoSelectsFirstGeminiInModelOrder(t *testing
 	}
 }
 
-func TestConfiguredGeminiMediaModelUsesConfiguredModel(t *testing.T) {
+func TestConfiguredGeminiMediaModelPrefersMimoPreprocessor(t *testing.T) {
 	t.Parallel()
 
-	modelName, err := configuredGeminiMediaModel(testMediaAnalysisConfig())
+	loadedConfig := testMediaAnalysisConfig()
+	loadedConfig.MediaAnalysisModel = ""
+	loadedConfig.Models[defaultMimoMediaAnalysisModel] = nil
+	loadedConfig.ModelOrder = append(
+		[]string{testMediaAnalysisModel},
+		loadedConfig.ModelOrder...,
+	)
+	modelName, err := configuredGeminiMediaModel(loadedConfig)
 	if err != nil {
-		t.Fatalf("find configured gemini media model: %v", err)
+		t.Fatalf("find configured mimo media model: %v", err)
 	}
 
-	if modelName != testMediaAnalysisModel {
-		t.Fatalf("unexpected gemini media model: %q", modelName)
+	if modelName != defaultMimoMediaAnalysisModel {
+		t.Fatalf("unexpected mimo media model: %q", modelName)
 	}
 }
 
@@ -645,8 +654,8 @@ func newGeminiMediaAnalysisChatClient(
 
 func newConcurrentGeminiMediaAnalysisChatClient(
 	t *testing.T,
-	audioAnalysis string,
-	videoAnalysis string,
+	firstAnalysis string,
+	secondAnalysis string,
 ) (*stubChatCompletionClient, *int) {
 	t.Helper()
 
@@ -691,9 +700,9 @@ func newConcurrentGeminiMediaAnalysisChatClient(
 		callCount++
 		callMu.Unlock()
 
-		analysis := audioAnalysis
-		if partType == contentTypeVideoData {
-			analysis = videoAnalysis
+		analysis := firstAnalysis
+		if strings.Contains(geminiMediaRequestFilename(t, request), "2.mp4") {
+			analysis = secondAnalysis
 		}
 
 		return handle(streamDelta{
@@ -745,6 +754,26 @@ func geminiMediaRequestPartType(
 	}
 
 	return partType
+}
+
+func geminiMediaRequestFilename(
+	t *testing.T,
+	request chatCompletionRequest,
+) string {
+	t.Helper()
+
+	contentParts, ok := request.Messages[0].Content.([]contentPart)
+	if !ok {
+		t.Fatalf("unexpected request content type: %T", request.Messages[0].Content)
+	}
+
+	if len(contentParts) != 2 {
+		t.Fatalf("unexpected request part count: %d", len(contentParts))
+	}
+
+	filename, _ := contentParts[1][contentFieldFilename].(string)
+
+	return filename
 }
 
 func assertGeminiMediaAnalysisRequest(
@@ -879,9 +908,161 @@ func TestAnalyzeMediaWithGeminiFallsBackToAudioCapableModel(t *testing.T) {
 	}
 }
 
-func TestAnalyzeMediaWithGeminiKeepsPrimaryErrorWhenAllFallbacksFail(t *testing.T) {
+func TestAnalyzeMediaWithGeminiTriesConfiguredFallbackPreprocessor(t *testing.T) {
 	t.Parallel()
 
+	const fallbackModel = "gemini/gemini-2.5-flash"
+
+	expectedAnalysis := "Audio transcription per timestamp:\n\n0s to 10s: hello from fallback"
+
+	chatClient := newStubChatClient(func(
+		_ context.Context,
+		request chatCompletionRequest,
+		handle func(streamDelta) error,
+	) error {
+		t.Helper()
+
+		if request.ConfiguredModel == testMediaAnalysisModel {
+			return testGeminiInternalError()
+		}
+
+		if request.ConfiguredModel != fallbackModel {
+			t.Fatalf("unexpected fallback model: %q", request.ConfiguredModel)
+		}
+
+		return handle(streamDelta{
+			Thinking:           "",
+			Content:            expectedAnalysis,
+			FinishReason:       finishReasonStop,
+			ProviderResponseID: "",
+			SearchMetadata:     nil,
+			ToolCallResponse:   nil,
+		})
+	})
+
+	loadedConfig := testMediaAnalysisConfig()
+	loadedConfig.Models[fallbackModel] = nil
+	loadedConfig.ModelOrder = append(loadedConfig.ModelOrder, fallbackModel)
+	loadedConfig.MediaAnalysisModelFallback = fallbackModel
+
+	instance := new(bot)
+	instance.chatCompletions = chatClient
+
+	analysis, err := instance.analyzeMediaWithGemini(
+		context.Background(),
+		loadedConfig,
+		testMediaAnalysisModel,
+		testAudioMediaPart(),
+	)
+	if err != nil {
+		t.Fatalf("analyze media with fallback preprocessor: %v", err)
+	}
+
+	if analysis != expectedAnalysis {
+		t.Fatalf("unexpected analysis: %q", analysis)
+	}
+
+	if len(chatClient.requests) != 2 {
+		t.Fatalf("unexpected call count: %d", len(chatClient.requests))
+	}
+}
+
+func TestAnalyzeMediaWithGeminiSkipsFallbackPreprocessorWhenSameModel(t *testing.T) {
+	t.Parallel()
+
+	chatClient := newStubChatClient(func(
+		_ context.Context,
+		_ chatCompletionRequest,
+		_ func(streamDelta) error,
+	) error {
+		t.Helper()
+
+		return testGeminiInternalError()
+	})
+
+	loadedConfig := testMediaAnalysisConfig()
+	loadedConfig.MediaAnalysisModelFallback = testMediaAnalysisModel
+
+	instance := new(bot)
+	instance.chatCompletions = chatClient
+
+	if _, err := instance.analyzeMediaWithGemini(
+		context.Background(),
+		loadedConfig,
+		testMediaAnalysisModel,
+		testAudioMediaPart(),
+	); err == nil {
+		t.Fatal("expected media analysis failure")
+	}
+
+	// Same-model fallback is skipped; only the primary plus the two
+	// static gemini candidates run.
+	if len(chatClient.requests) != 3 {
+		t.Fatalf("unexpected call count: %d", len(chatClient.requests))
+	}
+}
+
+func TestMaybeAugmentConversationLogsPreprocessorModel(t *testing.T) {
+	t.Parallel()
+
+	expectedAnalyses := []string{
+		"Video description per timestamp:\n\n0s to 10s: somebody waves",
+	}
+
+	chatClient, _ := newGeminiMediaAnalysisChatClient(t, expectedAnalyses)
+	instance, sourceMessage := newMediaAnalysisTestBot(
+		chatClient,
+		"message-log-preprocessor",
+		[]contentPart{
+			{
+				"type":               contentTypeVideoData,
+				contentFieldBytes:    []byte("video-bytes"),
+				contentFieldMIMEType: testVideoMIMEType,
+				contentFieldFilename: "clip.mp4",
+			},
+		},
+	)
+
+	conversation := []chatMessage{
+		{Role: messageRoleUser, Content: "<@123>: summarize this"},
+	}
+
+	handler := captureLogs(t, func(*captureLogHandler) {
+		_, err := instance.maybeAugmentConversationWithGeminiMedia(
+			context.Background(),
+			testMediaAnalysisConfig(),
+			"openai/gpt-5",
+			sourceMessage,
+			conversation,
+		)
+		if err != nil {
+			t.Fatalf("augment conversation with media: %v", err)
+		}
+	})
+
+	var foundLog *capturedLog
+	for _, record := range handler.snapshot() {
+		if record.message == "media preprocessor used" {
+			foundLog = &record
+
+			break
+		}
+	}
+
+	if foundLog == nil {
+		t.Fatal("expected media preprocessor used log")
+	}
+
+	if foundLog.attrs["preprocessor_model"] != testMediaAnalysisModel {
+		t.Fatalf("unexpected preprocessor model: %#v", foundLog.attrs)
+	}
+
+	if foundLog.attrs["reply_model"] != "openai/gpt-5" {
+		t.Fatalf("unexpected reply model: %#v", foundLog.attrs)
+	}
+}
+
+func TestAnalyzeMediaWithGeminiKeepsPrimaryErrorWhenAllFallbacksFail(t *testing.T) {
 	chatClient := newStubChatClient(func(
 		_ context.Context,
 		_ chatCompletionRequest,
