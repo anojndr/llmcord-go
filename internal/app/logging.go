@@ -81,10 +81,6 @@ func logWarn(message string, err error, attrs ...any) {
 	slog.Warn(message, attrs...)
 }
 
-func logInfo(message string, attrs ...any) {
-	slog.Info(message, attrs...)
-}
-
 func captureStack() string {
 	programCounters := make([]uintptr, maxCapturedStackFrames)
 	programCounterCount := runtime.Callers(1, programCounters)
@@ -123,8 +119,7 @@ func isLoggingHelperFrame(function string) bool {
 		function == "main.appendStackFrame" ||
 		function == "main.isLoggingHelperFrame" ||
 		function == "main.LogError" ||
-		function == "main.logWarn" ||
-		function == "main.logInfo"
+		function == "main.logWarn"
 }
 
 func recoverAndLog(contextText string) {

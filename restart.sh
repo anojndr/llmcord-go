@@ -3,8 +3,8 @@
 # restart.sh - restart the llmcord-go Discord bot.
 #
 # Stops any currently running instance, then starts a fresh one. Old
-# instances get SIGTERM first so the bot shuts down gracefully and saves its
-# Discord resume state; stragglers get SIGKILL after a short grace period.
+# instances get SIGTERM first so the bot shuts down gracefully and persists
+# its runtime state; stragglers get SIGKILL after a short grace period.
 # Works whether or not a bot is already running.
 #
 # It kills both halves of a `go run ./cmd/llmcord-go` invocation: the `go run`

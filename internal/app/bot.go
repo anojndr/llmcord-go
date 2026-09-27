@@ -22,17 +22,7 @@ import (
 type bot struct {
 	configPath                   string
 	session                      *discordgo.Session
-	guardMu                      sync.Mutex
-	guardCancel                  context.CancelFunc
-	awakeCancel                  context.CancelFunc
-	guardWg                      sync.WaitGroup
-	guardRunning                 bool
-	reconnectMu                  sync.Mutex
-	reconnectInProgress          bool
 	sessionClose                 func(*discordgo.Session) error
-	gatewayProbeURL              string
-	gatewayProbeTimeout          time.Duration
-	gatewayProbeReachable        bool
 	httpClient                   *http.Client
 	chatCompletions              chatCompletionStreamer
 	webSearch                    webSearcher
@@ -69,8 +59,6 @@ type bot struct {
 	sessionConfigured            bool
 	onlineAnnounced              bool
 	onlineOutput                 io.Writer
-	awakeWatcher                 func(*discordgo.Session) bool
-	resetGatewayProbeStateFn     func()
 	channelCacheMu               sync.Mutex
 	channelCache                 map[string]channelCacheEntry
 	botStateMu                   sync.RWMutex
@@ -170,6 +158,9 @@ func newBot(ctx context.Context, configPath string, loadedConfig config) (*bot, 
 		return nil, fmt.Errorf("create discord session: %w", err)
 	}
 
+	// Auto-reconnect is fully removed: a dropped gateway stays down until restart.
+	discordSession.ShouldReconnectOnError = false
+
 	discordSession.Client = &http.Client{
 		Transport: newOptimizedHTTPTransport(),
 		Timeout:   discordClientTimeout,
@@ -233,8 +224,6 @@ func newBot(ctx context.Context, configPath string, loadedConfig config) (*bot, 
 		discordgo.IntentsDirectMessages |
 		discordgo.IntentsMessageContent
 	discordSession.AddHandler(recoverHandler(instance.handleReady))
-	discordSession.AddHandler(recoverHandler(instance.handleResumed))
-	discordSession.AddHandler(recoverHandler(instance.handleConnect))
 	discordSession.AddHandler(recoverHandler(instance.handleChannelUpdate))
 	discordSession.AddHandler(recoverHandler(instance.handleInteractionCreate))
 	discordSession.AddHandler(recoverHandler(instance.handleMessageCreate))
@@ -458,8 +447,6 @@ func (instance *bot) open(ctx context.Context, loadedConfig config) error {
 		return fmt.Errorf("open discord session: %w", err)
 	}
 
-	instance.startReconnectGuard(ctx)
-
 	err = instance.configureSession(loadedConfig)
 	if err != nil {
 		return fmt.Errorf("configure discord session: %w", err)
@@ -485,49 +472,6 @@ func (instance *bot) open(ctx context.Context, loadedConfig config) error {
 
 func (instance *bot) handleReady(_ *discordgo.Session, _ *discordgo.Ready) {
 	instance.markDiscordReady()
-
-	gatewayURL := instance.lastGatewayURL()
-	if gatewayURL != "" {
-		instance.armGatewayProbe(gatewayURL)
-	}
-}
-
-// handleResumed fires when the gateway resumes a saved session instead of
-// fresh-identifying. No READY is dispatched on resume, so without this the
-// online announcement would never print after a graceful restart even
-// though the bot is fully functional.
-func (instance *bot) handleResumed(_ *discordgo.Session, _ *discordgo.Resumed) {
-	instance.markDiscordReady()
-}
-
-// handleConnect runs after a successful (re)connect to the gateway. The
-// Discord gateway treats each connection as a fresh session for slash
-// commands; they disappear on reconnect, so this re-syncs them and
-// re-applies the status message.
-func (instance *bot) handleConnect(_ *discordgo.Session, _ *discordgo.Connect) {
-	if !instance.reconnectGuardEnabled() {
-		return
-	}
-
-	instance.startupMu.Lock()
-	configured := instance.sessionConfigured
-	instance.startupMu.Unlock()
-
-	if !configured {
-		return
-	}
-
-	loadedConfig, err := instance.loadConfigCached()
-	if err != nil {
-		logWarn("load config for reconnect resync", err)
-
-		return
-	}
-
-	err = instance.configureSession(loadedConfig)
-	if err != nil {
-		logWarn("resync session after reconnect", err)
-	}
 }
 
 func (instance *bot) markDiscordReady() {
@@ -583,8 +527,6 @@ func (instance *bot) configureSession(loadedConfig config) error {
 	return nil
 }
 func (instance *bot) close() error {
-	instance.botClosed.Store(true)
-	instance.stopReconnectGuard()
 	instance.stopIPhoneWatcher()
 
 	var sessionErr error

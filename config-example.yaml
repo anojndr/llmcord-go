@@ -546,9 +546,3 @@ auto_append_phrases:
 # LLMCORD_HTTP_ADDR     Bind address for the health HTTP server (else PORT)
 # LLMCORD_LOG_LEVEL     debug / info / warn / error (default: info)
 # LLMCORD_LOG_FORMAT    text / json (default: text)
-# LLMCORD_RECONNECT     Set to 0 or false to disable automatic Discord
-#                       gateway reconnection recovery (default: enabled).
-#                       When enabled, the bot force-reconnects a gateway
-#                       session that stops acknowledging heartbeats,
-#                       resumes instantly once the network is back, and
-#                       caps reconnect delays between 2 and 120 seconds.

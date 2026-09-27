@@ -104,7 +104,7 @@ func (instance *bot) handleMessageCreate(
 }
 
 // currentBotUserID returns the bot's Discord user ID, or "" when the gateway
-// session or its cached user state is unavailable (startup, reconnect, or
+// session or its cached user state is unavailable (startup or
 // direct unit-test construction where discordgo has not fired Ready).
 func (instance *bot) currentBotUserID() string {
 	if instance == nil || instance.session == nil || instance.session.State == nil || instance.session.State.User == nil {

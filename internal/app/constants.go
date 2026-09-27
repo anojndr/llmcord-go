@@ -124,7 +124,6 @@ const (
 	finalRenderCheckDelay                 = 3 * time.Second
 	finalRenderRecheckDelay               = 12 * time.Second
 	externalRequestConcurrency            = 8
-	discordReconnectEnvVarName            = "LLMCORD_RECONNECT"
 	DefaultConfigPath                     = "config.yaml"
 	ConfigPathEnvironmentVariable         = "LLMCORD_CONFIG_PATH"
 	LegacyConfigPathEnvironmentVariable   = "CONFIG_PATH"
@@ -215,14 +214,6 @@ const (
 	publicHTTPIdleTimeout              = 30 * time.Second
 	discordStartupProbeReadLimit       = 4096
 	errorBodySnippetMaxLength          = 200
-	discordGatewayHeartbeatInterval    = 41250 * time.Millisecond
-	discordHeartbeatAckMissedIntervals = 4
-	discordAwakeProbeTimeout           = 10 * time.Second
-	discordAwakeTestProbeInterval      = 50 * time.Millisecond
-	discordAwakeProbePollInterval      = 15 * time.Second
-	discordAwakeProbeSuccessStatuses   = 2
-	discordReconnectSessionReopenDelay = 2 * time.Second
-	discordReconnectSessionCloseDelay  = 2 * time.Second
 	handleStreamDeltaErrorFormat       = "handle stream delta: %w"
 	numberedListLineFormat             = "%d. %s\n"
 	sseScannerInitialBuffer            = 64 * 1024
