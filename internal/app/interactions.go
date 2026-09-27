@@ -13,7 +13,9 @@ import (
 	"github.com/bwmarrin/discordgo"
 )
 
-const discordUnknownInteractionCode = 10062
+// discordUnknownInteractionCode mirrors discordgo.ErrCodeUnknownInteraction
+// (structs.go): the interaction token expired before the bot answered.
+const discordUnknownInteractionCode = discordgo.ErrCodeUnknownInteraction
 
 // expiredInteractionLogArgsCap reserves the discard log's base attributes
 // plus one optional detail pair (see expiredInteractionDetail).

@@ -2,6 +2,8 @@ package app
 
 import (
 	"net/http"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/bwmarrin/discordgo"
@@ -117,12 +119,57 @@ func TestResolveParentMessageDoesNotChainMessagesContainingAtAIPhrase(t *testing
 	message.Author = newDiscordUser("user-1", false)
 	message.Content = "continue at ai"
 
-	parent, failed := instance.resolveParentMessage(message)
+	parent, failed := instance.resolveParentMessage(message, "bot-user")
 	if failed {
 		t.Fatal("expected resolveParentMessage to succeed")
 	}
 
 	if parent != nil {
 		t.Fatalf("expected no implicit parent message, got %#v", parent)
+	}
+}
+
+func TestHandleMessageCreateDropsNilAuthorWithoutPanic(t *testing.T) {
+	t.Parallel()
+
+	session, err := discordgo.New("Bot discord-token")
+	if err != nil {
+		t.Fatalf("create discord session: %v", err)
+	}
+
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	configText := []byte("bot_token: discord-token\n" +
+		"providers:\n" +
+		"  openai:\n" +
+		"    base_url: https://api.example.com/v1\n" +
+		"    api_key: test-key\n" +
+		"models:\n" +
+		"  openai/gpt-test:\n")
+
+	if err := os.WriteFile(configPath, configText, 0o600); err != nil {
+		t.Fatalf("write test config: %v", err)
+	}
+
+	instance := new(bot)
+	instance.session = session
+	instance.configPath = configPath
+	instance.nodes = newMessageNodeStore(10)
+
+	message := new(discordgo.Message)
+	message.ID = "nil-author-message"
+	message.ChannelID = "channel-1"
+
+	instance.handleMessageCreate(nil, &discordgo.MessageCreate{Message: message})
+}
+
+func TestPreviousMessageCanChainRejectsNilAuthor(t *testing.T) {
+	t.Parallel()
+
+	message := new(discordgo.Message)
+	previous := new(discordgo.Message)
+	previous.Author = newDiscordUser("user-1", false)
+
+	if previousMessageCanChain(message, previous, "bot-user") {
+		t.Fatal("expected nil author to reject chaining")
 	}
 }

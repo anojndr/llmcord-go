@@ -69,7 +69,7 @@ func (instance *bot) buildConversation(
 		node.mu.Lock()
 
 		if !node.initialized {
-			instance.initializeNode(ctx, currentMessage, node)
+			instance.initializeNode(ctx, currentMessage, node, instance.currentBotUserID())
 		}
 
 		content, summary := buildMessageContent(node, contentOptions)
@@ -335,8 +335,8 @@ func (instance *bot) initializeNode(
 	ctx context.Context,
 	message *discordgo.Message,
 	node *messageNode,
+	botUserID string,
 ) {
-	botUserID := instance.session.State.User.ID
 	cleanedContent := trimBotMention(message.Content, botUserID)
 
 	var (
@@ -361,7 +361,7 @@ func (instance *bot) initializeNode(
 	safeGo(func() {
 		defer initializationWaitGroup.Done()
 
-		parentMessage, fetchParentFailed = instance.resolveParentMessage(message)
+		parentMessage, fetchParentFailed = instance.resolveParentMessage(message, botUserID)
 	})
 
 	initializationWaitGroup.Wait()
@@ -928,8 +928,11 @@ func unsupportedPreprocessedPartCount(
 	return count
 }
 
-func (instance *bot) resolveParentMessage(message *discordgo.Message) (*discordgo.Message, bool) {
-	implicitParent, failed := instance.resolveImplicitParentMessage(message)
+func (instance *bot) resolveParentMessage(
+	message *discordgo.Message,
+	botUserID string,
+) (*discordgo.Message, bool) {
+	implicitParent, failed := instance.resolveImplicitParentMessage(message, botUserID)
 	if failed || implicitParent != nil {
 		return implicitParent, failed
 	}
@@ -972,8 +975,11 @@ func (instance *bot) resolveParentMessage(message *discordgo.Message) (*discordg
 	return instance.fetchReferencedParentMessage(referenceChannelID, message.MessageReference.MessageID)
 }
 
-func (instance *bot) resolveImplicitParentMessage(message *discordgo.Message) (*discordgo.Message, bool) {
-	if message.MessageReference != nil || messageMentionsBot(message, instance.session.State.User.ID) {
+func (instance *bot) resolveImplicitParentMessage(
+	message *discordgo.Message,
+	botUserID string,
+) (*discordgo.Message, bool) {
+	if message.MessageReference != nil || messageMentionsBot(message, botUserID) {
 		return nil, false
 	}
 
@@ -984,7 +990,7 @@ func (instance *bot) resolveImplicitParentMessage(message *discordgo.Message) (*
 		return nil, true
 	}
 
-	if !found || !previousMessageCanChain(message, previousMessage, instance.session.State.User.ID) {
+	if !found || !previousMessageCanChain(message, previousMessage, botUserID) {
 		return nil, false
 	}
 
@@ -996,6 +1002,10 @@ func previousMessageCanChain(
 	previousMessage *discordgo.Message,
 	botUserID string,
 ) bool {
+	if message == nil || message.Author == nil {
+		return false
+	}
+
 	expectedAuthorID := message.Author.ID
 	if isDirectMessage(message) {
 		expectedAuthorID = botUserID

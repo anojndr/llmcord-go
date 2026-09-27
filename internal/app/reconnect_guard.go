@@ -26,12 +26,9 @@ import (
 //     intervals;
 //   - an HTTP probe to the gateway URL, polled while the connection is
 //     broken, provides a reliable "the network is back" signal: the moment
-//     the probe succeeds again the stale session/sequence state is cleared
-//     so the next connect takes Discord's resume path, which Discord
-//     services almost instantly and without a fresh identify;
-//   - reconnect-delay caps are applied after each reconnect attempt so the
-//     wait never spirals out during a long outage, while the same attempt
-//     counter keeps the wait short once the network is back.
+//     the probe succeeds again the stale resume state is cleared so the
+//     next connect identifies fresh (Op 2 Identify) instead of attempting
+//     a resume (Op 6 Resume) the gateway would reject.
 //
 // The discordgo library keeps the session's session ID and gateway sequence
 // in unexported fields, so the probe watcher cannot read them directly.
@@ -147,10 +144,8 @@ func (instance *bot) forceReconnectOnProbeRecovery() {
 	}
 }
 
-// clearStaleProbeState forgets resume state on the current session so the
-// reconnection identifies fresh. The gateway probe URL stays armed, so the
-// next outage is still detected even while the library's reconnect loop is
-// sleeping in its backoff.
+// clearStaleProbeState clears the session's resume state so the reconnect
+// loop below identifies fresh instead of attempting a stale resume.
 func (instance *bot) clearStaleProbeState() {
 	session := instance.session
 	if session == nil {
@@ -160,7 +155,7 @@ func (instance *bot) clearStaleProbeState() {
 	if instance.reconnectGuardEnabled() &&
 		sessionStateReflectorReady() &&
 		hasSessionResumeState(session) {
-		logInfo("discord gateway state reset for a fresh connect")
+		logInfo("discord gateway resume state observed before reconnect")
 		clearSessionResumeState(session)
 	}
 }
@@ -386,7 +381,7 @@ func (instance *bot) resetGatewayProbeState() {
 	if instance.reconnectGuardEnabled() &&
 		sessionStateReflectorReady() &&
 		hasSessionResumeState(session) {
-		logInfo("discord gateway state reset for a fresh connect")
+		logInfo("discord gateway resume state observed before reconnect")
 		clearSessionResumeState(session)
 	}
 }

@@ -7,14 +7,17 @@ import (
 	"github.com/bwmarrin/discordgo"
 )
 
-// discordgo keeps the gateway resume state (unexported `sessionID` string
-// and `sequence *int64` fields on its Session) private, but the reconnect
-// guard needs to know whether a session still carries resume state so that
-// clearing it for a fresh identify can be decided correctly. sessionState
-// mirrors them via reflection, reading only; mutating fields belonging to a
-// library type is fragile across upgrades, so writes go through
-// clearSessionResumeState only, which validates the field shape once against
-// a dummy session and skips silently if the shape changed.
+// discordgo keeps the gateway resume state (unexported sessionID string and
+// sequence *int64 fields on its Session) private by design: closing the
+// session preserves them so the next Open resumes (Op 6 Resume), while a
+// rejected resume makes the gateway answer Op 9 Invalid Session and
+// discordgo re-identifies itself (Op 2 Identify). The reconnect guard only
+// needs a read-only view of that state, so sessionState mirrors the two
+// fields via reflection and never mutates library internals.
+type discordSessionState struct {
+	sessionID string
+	seq       int64
+}
 
 // discordSessionFieldNames resolves the names of the unexported resume
 // fields on the discordgo Session type, or the first error that explains why
@@ -47,11 +50,6 @@ func sessionStateReflectorReady() bool {
 	_, _, err := discordSessionFieldNames()
 
 	return err == nil
-}
-
-type discordSessionState struct {
-	sessionID string
-	seq       int64
 }
 
 // sessionState reads the resume state (session ID and gateway sequence)
@@ -95,40 +93,18 @@ func sessionState(session *discordgo.Session) discordSessionState {
 	return state
 }
 
-// clearSessionResumeState forgets the gateway resume state on a session so
-// the next connection identifies fresh. It is a no-op when the discordgo
-// field shape has changed (the library already reconnects, just via resumes
-// that may be rejected).
-func clearSessionResumeState(session *discordgo.Session) {
-	if session == nil {
-		return
-	}
-
-	sessionIDFieldName, sequenceFieldName, err := discordSessionFieldNames()
-	if err != nil {
-		return
-	}
-
-	sessionValue := reflect.ValueOf(session).Elem()
-
-	sessionIDField := sessionValue.FieldByName(sessionIDFieldName)
-	sequenceField := sessionValue.FieldByName(sequenceFieldName)
-
-	session.RLock()
-	defer session.RUnlock()
-
-	if sessionIDField.IsValid() && sessionIDField.CanSet() && sessionIDField.Kind() == reflect.String {
-		sessionIDField.SetString("")
-	}
-
-	if sequenceField.IsValid() && sequenceField.CanSet() && sequenceField.Kind() == reflect.Pointer {
-		if sequenceField.IsNil() {
-			return
-		}
-
-		sequenceValue := sequenceField.Elem()
-		if sequenceValue.IsValid() && sequenceValue.CanSet() && sequenceValue.Kind() == reflect.Int64 {
-			sequenceValue.SetInt(0)
-		}
-	}
+// clearSessionResumeState is intentionally a no-op. discordgo keeps the
+// gateway resume state (unexported sessionID string and sequence *int64 on
+// its Session) private; reflection cannot set those fields (CanSet is false
+// without unsafe), and discordgo's CloseWithCode deliberately preserves them
+// so the library's reconnect loop can resume (wsapi.go: CloseWithCode only
+// closes the websocket and emits Disconnect; reconnect calls Open, which
+// sends Op 6 Resume whenever sessionID/sequence are set, Op 2 Identify
+// otherwise). A rejected resume is already handled by the library: the
+// gateway answers Op 9 Invalid Session and discordgo re-identifies itself.
+// The callers' intent — forcing a fresh identify on probe recovery — is met
+// without touching resume state: Session.Close also triggers the reconnect
+// loop, so the watchdog/awake paths only need to close the session and let
+// the library resume or re-identify as the gateway directs.
+func clearSessionResumeState(_ *discordgo.Session) {
 }

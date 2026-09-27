@@ -454,6 +454,55 @@ func TestNewReplyMessageDisablesReplyAuthorMention(t *testing.T) {
 	}
 }
 
+func TestNewReplyMessageWithoutReferenceOmitsMessageReference(t *testing.T) {
+	t.Parallel()
+
+	send := newReplyMessage(nil)
+	if send.Reference != nil {
+		t.Fatalf("expected nil message reference, got %#v", send.Reference)
+	}
+}
+
+func TestSendReplyMessageWithoutTargetReturnsInvalid(t *testing.T) {
+	t.Parallel()
+
+	session, err := discordgo.New("Bot discord-token")
+	if err != nil {
+		t.Fatalf("create discord session: %v", err)
+	}
+
+	instance := new(bot)
+	instance.session = session
+
+	tracker := newResponseTracker(nil, "openai/gpt-5.1")
+
+	_, _, err = instance.sendReplyMessage(tracker, newReplyMessage(nil))
+	if err == nil {
+		t.Fatal("expected error for nil reply target")
+	}
+}
+
+func TestEditEmbedMessageWithoutMessageReturnsInvalid(t *testing.T) {
+	t.Parallel()
+
+	session, err := discordgo.New("Bot discord-token")
+	if err != nil {
+		t.Fatalf("create discord session: %v", err)
+	}
+
+	instance := new(bot)
+	instance.session = session
+
+	err = instance.editEmbedMessage(
+		nil,
+		buildResponseEmbed("hello", "openai/gpt-5.1", embedColorComplete, nil, ""),
+		nil,
+	)
+	if err == nil {
+		t.Fatal("expected error for nil edit message")
+	}
+}
+
 func TestBuildResponseEmbedSetsConfiguredModelAsAuthor(t *testing.T) {
 	t.Parallel()
 

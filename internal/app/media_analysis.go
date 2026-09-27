@@ -228,7 +228,7 @@ func (instance *bot) messagePartsForMessage(
 	defer node.mu.Unlock()
 
 	if !node.initialized {
-		instance.initializeNode(ctx, message, node)
+		instance.initializeNode(ctx, message, node, instance.currentBotUserID())
 	}
 
 	parts := make([]contentPart, 0, len(node.media))
@@ -335,7 +335,7 @@ func (instance *bot) immediateReplyTargetMessage(
 	defer node.mu.Unlock()
 
 	if !node.initialized {
-		instance.initializeNode(ctx, sourceMessage, node)
+		instance.initializeNode(ctx, sourceMessage, node, instance.currentBotUserID())
 	}
 
 	if node.parentMessage == nil {
@@ -386,7 +386,7 @@ func (instance *bot) replyTargetAttachmentSourceMessage(
 	defer node.mu.Unlock()
 
 	if !node.initialized {
-		instance.initializeNode(ctx, replyTarget, node)
+		instance.initializeNode(ctx, replyTarget, node, instance.currentBotUserID())
 	}
 
 	if node.role != messageRoleAssistant {

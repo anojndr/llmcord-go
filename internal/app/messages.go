@@ -23,7 +23,7 @@ func (instance *bot) handleMessageCreate(
 	_ *discordgo.Session,
 	messageCreate *discordgo.MessageCreate,
 ) {
-	if messageCreate == nil || messageCreate.Message == nil {
+	if messageCreate == nil || messageCreate.Message == nil || messageCreate.Author == nil {
 		return
 	}
 
@@ -39,10 +39,7 @@ func (instance *bot) handleMessageCreate(
 		return
 	}
 
-	botUserID := ""
-	if instance.session.State != nil && instance.session.State.User != nil {
-		botUserID = instance.session.State.User.ID
-	}
+	botUserID := instance.currentBotUserID()
 
 	loadedConfig, err := instance.loadConfigCached()
 	if err != nil {
@@ -106,6 +103,17 @@ func (instance *bot) handleMessageCreate(
 	instance.nodes.evictExcess()
 }
 
+// currentBotUserID returns the bot's Discord user ID, or "" when the gateway
+// session or its cached user state is unavailable (startup, reconnect, or
+// direct unit-test construction where discordgo has not fired Ready).
+func (instance *bot) currentBotUserID() string {
+	if instance == nil || instance.session == nil || instance.session.State == nil || instance.session.State.User == nil {
+		return ""
+	}
+
+	return instance.session.State.User.ID
+}
+
 // handleMessageShortCircuits runs the pre-LLM reply paths (Facebook videos,
 // YouTube Shorts) and the ignore gate. True means the message is fully
 // handled and the caller must return without responding.
@@ -137,7 +145,7 @@ func (instance *bot) handleMessageShortCircuits(message *discordgo.Message, botU
 }
 
 func shouldIgnoreIncomingMessage(message *discordgo.Message, botUserID string) bool {
-	if message.Author == nil || message.Author.Bot {
+	if message == nil || message.Author == nil || message.Author.Bot {
 		return true
 	}
 
@@ -679,7 +687,7 @@ func (instance *bot) persistAugmentedSourceMessage(
 
 	node.mu.Lock()
 	if !node.initialized {
-		instance.initializeNode(ctx, sourceMessage, node)
+		instance.initializeNode(ctx, sourceMessage, node, instance.currentBotUserID())
 	}
 
 	node.text = text
@@ -1084,7 +1092,7 @@ func (instance *bot) messageNodeURLExtractionText(
 	defer node.mu.Unlock()
 
 	if !node.initialized {
-		instance.initializeNode(ctx, message, node)
+		instance.initializeNode(ctx, message, node, instance.currentBotUserID())
 	}
 
 	if node.role != messageRoleUser {

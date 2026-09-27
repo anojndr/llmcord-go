@@ -8,6 +8,7 @@ import (
 	providers "llmcord-go/internal/providers"
 	searchtypes "llmcord-go/internal/searchtypes"
 	"net/http"
+	"os"
 	"regexp"
 	"slices"
 	"strings"
@@ -1848,7 +1849,10 @@ func newReplyMessage(reference *discordgo.Message) *discordgo.MessageSend {
 	allowedMentions.RepliedUser = false
 
 	send.AllowedMentions = allowedMentions
-	send.Reference = reference.Reference()
+	if reference != nil {
+		send.Reference = reference.Reference()
+	}
+
 	send.Flags = discordgo.MessageFlagsSuppressNotifications
 
 	return send
@@ -1863,6 +1867,9 @@ func (instance *bot) sendReplyMessage(
 	}
 
 	target := referenceTarget(tracker)
+	if target == nil {
+		return nil, pendingResponse{}, fmt.Errorf("send reply message without target: %w", os.ErrInvalid)
+	}
 
 	sentMessage, err := instance.session.ChannelMessageSendComplex(target.ChannelID, send)
 	if err != nil {
@@ -1887,9 +1894,16 @@ func (instance *bot) editEmbedMessage(
 		return errNilSession
 	}
 
+	if message == nil {
+		return fmt.Errorf("edit message without message: %w", os.ErrInvalid)
+	}
+
 	edit := discordgo.NewMessageEdit(message.ChannelID, message.ID)
 	edit.SetEmbeds([]*discordgo.MessageEmbed{embed})
-	edit.Components = &components
+
+	if components != nil {
+		edit.Components = &components
+	}
 
 	_, err := instance.session.ChannelMessageEditComplex(edit)
 	if err != nil {
