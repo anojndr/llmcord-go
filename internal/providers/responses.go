@@ -209,6 +209,57 @@ func (client openAIClient) streamResponses(
 	request ChatCompletionRequest,
 	handle func(StreamDelta) error,
 ) error {
+	return client.streamResponsesWithPayloadTooLargeRetry(ctx, request, handle)
+}
+
+// streamResponsesWithPayloadTooLargeRetry sends one Responses request and,
+// on an HTTP 413 (e.g. a proxy FUNCTION_PAYLOAD_TOO_LARGE rejection of an
+// image-bearing request), retries once with every embedded image
+// recompressed near-losslessly. The original failure returns unchanged
+// when nothing shrank.
+func (client openAIClient) streamResponsesWithPayloadTooLargeRetry(
+	ctx context.Context,
+	request ChatCompletionRequest,
+	handle func(StreamDelta) error,
+) error {
+	contentSent := false
+	wrappedHandle := func(delta StreamDelta) error {
+		if deltaReferencesContent(delta) {
+			contentSent = true
+		}
+
+		return handle(delta)
+	}
+
+	err := client.streamResponsesAttempt(ctx, request, wrappedHandle)
+	if contentSent || !IsPayloadTooLargeError(err) {
+		return err
+	}
+
+	compressedRequest, summary, ok := compressedRequestWithSmallerImages(request)
+	if !ok {
+		return err
+	}
+
+	logWarn(
+		"retrying responses request with compressed images after payload too large",
+		err,
+		"images",
+		summary.images,
+		"original_bytes",
+		summary.originalBytes,
+		"compressed_bytes",
+		summary.compressedBytes,
+	)
+
+	return client.streamResponsesAttempt(ctx, compressedRequest, handle)
+}
+
+func (client openAIClient) streamResponsesAttempt(
+	ctx context.Context,
+	request ChatCompletionRequest,
+	handle func(StreamDelta) error,
+) error {
 	requestBody, err := buildResponsesRequestBody(request)
 	if err != nil {
 		return fmt.Errorf("build responses request body: %w", err)

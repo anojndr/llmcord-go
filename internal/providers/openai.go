@@ -46,7 +46,7 @@ func (client openAIClient) streamChatCompletion(
 	handle func(StreamDelta) error,
 ) error {
 	if request.Provider.UseResponsesAPI {
-		return client.streamResponses(ctx, request, handle)
+		return client.streamResponsesWithPayloadTooLargeRetry(ctx, request, handle)
 	}
 
 	requestURL, err := buildChatCompletionURL(request.Provider.BaseURL, request.Provider.ExtraQuery)
@@ -56,11 +56,94 @@ func (client openAIClient) streamChatCompletion(
 
 	requestBody := buildChatCompletionRequestBody(request)
 
+	contentSent := false
+	wrappedHandle := func(delta StreamDelta) error {
+		if deltaReferencesContent(delta) {
+			contentSent = true
+		}
+
+		return handle(delta)
+	}
+
 	statusCode, statusText, responseHeaders, responseBody, err := client.streamChatCompletionAttempt(
 		ctx,
 		request,
 		requestURL,
 		requestBody,
+		wrappedHandle,
+	)
+	if err != nil {
+		if contentSent || !IsPayloadTooLargeError(err) {
+			return err
+		}
+
+		return client.streamChatCompletionWithCompressedImages(
+			ctx,
+			request,
+			requestURL,
+			err,
+			handle,
+		)
+	}
+
+	if statusCode == 0 {
+		return nil
+	}
+
+	statusErr := NewOpenAIProviderStatusError(
+		"chat completion request failed",
+		statusCode,
+		statusText,
+		responseHeaders,
+		responseBody,
+		false,
+	)
+	if !IsPayloadTooLargeError(statusErr) {
+		return statusErr
+	}
+
+	return client.streamChatCompletionWithCompressedImages(
+		ctx,
+		request,
+		requestURL,
+		statusErr,
+		handle,
+	)
+}
+
+// streamChatCompletionWithCompressedImages retries a 413 chat-completions
+// rejection with every embedded image recompressed near-losslessly. The
+// original failure returns unchanged when nothing shrank.
+func (client openAIClient) streamChatCompletionWithCompressedImages(
+	ctx context.Context,
+	request ChatCompletionRequest,
+	requestURL string,
+	statusErr error,
+	handle func(StreamDelta) error,
+) error {
+	compressedRequest, summary, ok := compressedRequestWithSmallerImages(request)
+	if !ok {
+		return statusErr
+	}
+
+	logWarn(
+		"retrying chat completion with compressed images after payload too large",
+		statusErr,
+		"images",
+		summary.images,
+		"original_bytes",
+		summary.originalBytes,
+		"compressed_bytes",
+		summary.compressedBytes,
+	)
+
+	compressedBody := buildChatCompletionRequestBody(compressedRequest)
+
+	statusCode, statusText, responseHeaders, responseBody, err := client.streamChatCompletionAttempt(
+		ctx,
+		compressedRequest,
+		requestURL,
+		compressedBody,
 		handle,
 	)
 	if err != nil {
