@@ -24,20 +24,21 @@ const (
 	iphoneWatcherSearchURL    = "https://store.smart.com.ph/search?q=iphone%2018%20pro%20max"
 	iphoneWatcherGridEndpoint = "https://store.smart.com.ph/on/demandware.store/Sites-smart-Site/default/" +
 		"Search-UpdateGrid"
-	iphoneWatcherGridPageSize  = 12
-	iphoneWatcherMaxGridPages  = 8
-	iphoneWatcherTileMarker    = "tile-product"
-	iphoneWatcherPollInterval  = time.Second
-	iphoneWatcherFetchTimeout  = 20 * time.Second
-	iphoneWatcherBodyLimit     = 4 << 20
-	iphoneWatcherMentionUserID = "676735636656357396"
-	iphoneWatcherLiveChannelID = "978995705215606817"
-	iphoneWatcherTestChannelID = "1390087889173610568"
-	iphoneWatcherTestEnvVar    = "LLMCORD_IPHONE_WATCH_TEST"
-	iphoneWatcherChannelEnvVar = "LLMCORD_IPHONE_WATCH_CHANNEL"
-	iphoneWatcherAlertCount    = 10
-	iphoneWatcherAlertText     = "<@" + iphoneWatcherMentionUserID + "> IPHONE 18 PRO MAX IS RELEASED"
-	iphoneWatcherUserAgent     = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 " +
+	iphoneWatcherGridPageSize      = 12
+	iphoneWatcherMaxGridPages      = 8
+	iphoneWatcherAppleGridPageSize = 10
+	iphoneWatcherTileMarker        = "tile-product"
+	iphoneWatcherPollInterval      = time.Second
+	iphoneWatcherFetchTimeout      = 20 * time.Second
+	iphoneWatcherBodyLimit         = 4 << 20
+	iphoneWatcherMentionUserID     = "676735636656357396"
+	iphoneWatcherLiveChannelID     = "978995705215606817"
+	iphoneWatcherTestChannelID     = "1390087889173610568"
+	iphoneWatcherTestEnvVar        = "LLMCORD_IPHONE_WATCH_TEST"
+	iphoneWatcherChannelEnvVar     = "LLMCORD_IPHONE_WATCH_CHANNEL"
+	iphoneWatcherAlertCount        = 10
+	iphoneWatcherAlertText         = "<@" + iphoneWatcherMentionUserID + "> IPHONE 18 PRO MAX IS RELEASED"
+	iphoneWatcherUserAgent         = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 " +
 		"(KHTML, like Gecko) Chrome/126.0 Safari/537.36"
 )
 
@@ -58,7 +59,7 @@ func watcherGridURL(start int) string {
 func watcherGridAppleURL(start int) string {
 	return fmt.Sprintf(
 		iphoneWatcherGridEndpoint+"?cgid=postpaid-phones&prefn1=brand&prefv1=Apple&sz=%d&start=%d",
-		iphoneWatcherGridPageSize,
+		iphoneWatcherAppleGridPageSize,
 		start,
 	)
 }
@@ -78,10 +79,6 @@ func iphoneWatcherChannelIDFromEnv(getenv func(string) string) string {
 
 func iphoneWatcherChannelID() string {
 	return iphoneWatcherChannelIDFromEnv(os.Getenv)
-}
-
-func iphone18ProMaxReleased(body string) bool {
-	return iphone18ProMaxPattern.MatchString(body)
 }
 
 func stripWatcherScripts(body string) string {
@@ -228,6 +225,15 @@ func (instance *bot) markIPhone18Released() {
 	instance.iphoneReleased.Store(true)
 }
 
+func (instance *bot) persistIPhone18Released() {
+	if instance == nil {
+		return
+	}
+
+	instance.botStateGeneration.Add(1)
+	instance.persistBotStateBestEffort()
+}
+
 func (instance *bot) isIPhone18Released() bool {
 	if instance == nil {
 		return false
@@ -257,6 +263,7 @@ func (instance *bot) handleWatcherStatusCommand(
 	}
 
 	released := instance.isIPhone18Released()
+	checkErr := ""
 
 	if !released {
 		checkCtx, cancel := context.WithTimeout(context.Background(), iphoneWatcherFetchTimeout)
@@ -265,6 +272,8 @@ func (instance *bot) handleWatcherStatusCommand(
 		liveReleased, err := instance.checkSmartStoreForIPhone18(checkCtx)
 		if err != nil {
 			logWarn("check smart store for watcherstatus command", err)
+
+			checkErr = " (live check failed; showing last known state)"
 		} else if liveReleased {
 			released = true
 
@@ -275,7 +284,7 @@ func (instance *bot) handleWatcherStatusCommand(
 	return editInteractionResponseText(
 		session,
 		interaction.Interaction,
-		watcherStatusText(released, instance.iphoneCheckCountValue()),
+		watcherStatusText(released, instance.iphoneCheckCountValue())+checkErr,
 	)
 }
 
@@ -315,24 +324,18 @@ func fetchWatcherPage(ctx context.Context, client *http.Client, pageURL string) 
 	return body, nil
 }
 
-func checkSmartStoreURLForIPhone18(ctx context.Context, client *http.Client, storeURL string) (bool, error) {
-	body, err := fetchWatcherPage(ctx, client, storeURL)
-	if err != nil {
-		return false, err
-	}
-
-	return listingPageMentionsRelease(string(body)), nil
-}
-
 // checkListingForIPhone18 crawls one category listing: the first page plus
 // Show More grid pages until a page renders fewer tiles than a full page
 // or the page cap is reached, so a release buried past page one is never
-// missed while typical rounds stay at a handful of fetches.
+// missed while typical rounds stay at a handful of fetches. gridPageSize is
+// the full-page tile count for this listing: 12 on the postpaid-phones
+// grid, 10 on the Apple-brand grid.
 func checkListingForIPhone18(
 	ctx context.Context,
 	client *http.Client,
 	firstURL string,
 	gridURL func(start int) string,
+	gridPageSize int,
 ) (bool, error) {
 	body, err := fetchWatcherPage(ctx, client, firstURL)
 	if err != nil {
@@ -343,8 +346,12 @@ func checkListingForIPhone18(
 		return true, nil
 	}
 
+	if gridPageSize <= 0 {
+		gridPageSize = iphoneWatcherGridPageSize
+	}
+
 	for page := range iphoneWatcherMaxGridPages {
-		start := (page + 1) * iphoneWatcherGridPageSize
+		start := (page + 1) * gridPageSize
 
 		gridBody, err := fetchWatcherPage(ctx, client, gridURL(start))
 		if err != nil {
@@ -357,7 +364,7 @@ func checkListingForIPhone18(
 			return true, nil
 		}
 
-		if len(gridTiles) < iphoneWatcherGridPageSize {
+		if len(gridTiles) < gridPageSize {
 			return false, nil
 		}
 	}
@@ -375,14 +382,26 @@ func (instance *bot) checkSmartStoreForIPhone18(ctx context.Context) (bool, erro
 		instance.iphoneCheckCount.Add(1)
 	}
 
-	released, err := checkListingForIPhone18(ctx, client, iphoneWatcherStoreURL, watcherGridURL)
+	released, err := checkListingForIPhone18(
+		ctx,
+		client,
+		iphoneWatcherStoreURL,
+		watcherGridURL,
+		iphoneWatcherGridPageSize,
+	)
 	if err != nil || released {
 		return released, err
 	}
 
-	released, err = checkListingForIPhone18(ctx, client, iphoneWatcherAppleURL, watcherGridAppleURL)
-	if err != nil || released {
-		return released, err
+	appleReleased, err := checkListingForIPhone18(
+		ctx,
+		client,
+		iphoneWatcherAppleURL,
+		watcherGridAppleURL,
+		iphoneWatcherAppleGridPageSize,
+	)
+	if err != nil || appleReleased {
+		return appleReleased, err
 	}
 
 	body, err := fetchWatcherPage(ctx, client, iphoneWatcherSearchURL)
@@ -417,6 +436,14 @@ func (instance *bot) startIPhoneWatcher(ctx context.Context) {
 	instance.watcherMu.Lock()
 	if instance.watcherRunning {
 		instance.watcherMu.Unlock()
+
+		return
+	}
+
+	if instance.isIPhone18Released() {
+		instance.watcherMu.Unlock()
+
+		slog.Info("iphone watcher already released; poll loop not started")
 
 		return
 	}
@@ -492,9 +519,12 @@ func (instance *bot) runIPhoneWatcherLoop(ctx context.Context, channelID string)
 
 			if err := instance.sendIPhone18ReleaseAlerts(channelID); err != nil {
 				logWarn("send iphone release alerts", err)
+				instance.iphoneReleased.Store(false)
 
 				continue
 			}
+
+			instance.persistIPhone18Released()
 
 			slog.Info("iphone 18 pro max alerts sent", "channel_id", channelID, "count", iphoneWatcherAlertCount)
 

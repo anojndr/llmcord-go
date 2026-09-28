@@ -2,13 +2,13 @@ package app
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -17,7 +17,7 @@ import (
 	"github.com/bwmarrin/discordgo"
 )
 
-func TestIPhone18ProMaxReleased(t *testing.T) {
+func TestIPhone18ProMaxTileMatch(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -25,22 +25,35 @@ func TestIPhone18ProMaxReleased(t *testing.T) {
 		body string
 		want bool
 	}{
-		{name: "exact", body: "iPhone 18 Pro Max", want: true},
-		{name: "uppercase", body: "IPHONE 18 PRO MAX IS RELEASED", want: true},
-		{name: "lowercase", body: "iphone 18 pro max", want: true},
-		{name: "extra whitespace", body: "iPhone  18   Pro\nMax", want: true},
-		{name: "in page", body: "<div>iPhone 17 Pro Max</div><div>iPhone 18 Pro Max</div>", want: true},
-		{name: "previous generation only", body: "iPhone 17 Pro Max Best with PLAN 999", want: false},
-		{name: "partial model", body: "iPhone 18 Pro", want: false},
-		{name: "empty", body: "", want: false},
+		{name: "exact tile", body: `<div class="tile-product">iPhone 18 Pro Max</div>`, want: true},
+		{name: "uppercase tile", body: `<div class="tile-product">IPHONE 18 PRO MAX IS RELEASED</div>`, want: true},
+		{name: "lowercase tile", body: `<div class="tile-product">iphone 18 pro max</div>`, want: true},
+		{
+			name: "extra whitespace tile",
+			body: `<div class="tile-product">iPhone  18   Pro` + "\n" + `Max</div>`,
+			want: true,
+		},
+		{
+			name: "in tiles",
+			body: `<div class="tile-product">iPhone 17 Pro Max</div>` +
+				`<div class="tile-product">iPhone 18 Pro Max</div>`,
+			want: true,
+		},
+		{
+			name: "previous generation only",
+			body: `<div class="tile-product">iPhone 17 Pro Max Best with PLAN 999</div>`,
+			want: false,
+		},
+		{name: "partial model", body: `<div class="tile-product">iPhone 18 Pro</div>`, want: false},
+		{name: "empty", body: ``, want: false},
 	}
 
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
 			t.Parallel()
 
-			if got := iphone18ProMaxReleased(testCase.body); got != testCase.want {
-				t.Fatalf("iphone18ProMaxReleased(%q) = %v, want %v", testCase.body, got, testCase.want)
+			if got := listingPageMentionsRelease(testCase.body); got != testCase.want {
+				t.Fatalf("listingPageMentionsRelease(%q) = %v, want %v", testCase.body, got, testCase.want)
 			}
 		})
 	}
@@ -99,45 +112,115 @@ func TestNewIPhone18ReleaseMessage(t *testing.T) {
 	}
 }
 
-func TestCheckSmartStoreURLForIPhone18(t *testing.T) {
+func TestWatcherGridAppleURLUsesApplePageSize(t *testing.T) {
 	t.Parallel()
 
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
-		_, _ = io.WriteString(writer, `<html><body>iPhone 18 Pro Max Best with PLAN 999</body></html>`)
+	gridURL := watcherGridAppleURL(iphoneWatcherAppleGridPageSize)
+
+	if !strings.Contains(gridURL, "prefn1=brand&prefv1=Apple") {
+		t.Fatalf("apple grid url = %q, want Apple brand refinement", gridURL)
+	}
+
+	if !strings.Contains(gridURL, "sz=10&start=10") {
+		t.Fatalf("apple grid url = %q, want sz=10&start=10", gridURL)
+	}
+}
+
+func TestCheckListingUsesApplePageSizeOffsets(t *testing.T) {
+	t.Parallel()
+
+	var startsMu sync.Mutex
+
+	starts := make([]int, 0, iphoneWatcherMaxGridPages)
+
+	fullPage := strings.Repeat(`<div class="tile-product">Older Phone</div>`, iphoneWatcherAppleGridPageSize)
+
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if !strings.Contains(request.URL.Path, "UpdateGrid") {
+			_, _ = io.WriteString(writer, `<div class="tile-product">iPhone 17 Pro Max</div>`)
+
+			return
+		}
+
+		startsMu.Lock()
+
+		starts = append(starts, gridStartParam(request))
+		startsMu.Unlock()
+
+		_, _ = io.WriteString(writer, fullPage)
 	}))
 	defer server.Close()
 
-	released, err := checkSmartStoreURLForIPhone18(context.Background(), server.Client(), server.URL)
+	released, err := checkListingForIPhone18(
+		t.Context(),
+		server.Client(),
+		server.URL+"/phones",
+		func(start int) string { return fmt.Sprintf("%s/UpdateGrid?start=%d", server.URL, start) },
+		iphoneWatcherAppleGridPageSize,
+	)
 	if err != nil {
-		t.Fatalf("check released page: %v", err)
-	}
-
-	if !released {
-		t.Fatal("expected released=true for page containing iPhone 18 Pro Max")
-	}
-
-	absent := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
-		_, _ = io.WriteString(writer, `<html><body>iPhone 17 Pro Max Best with PLAN 999</body></html>`)
-	}))
-	defer absent.Close()
-
-	released, err = checkSmartStoreURLForIPhone18(context.Background(), absent.Client(), absent.URL)
-	if err != nil {
-		t.Fatalf("check absent page: %v", err)
+		t.Fatalf("check apple listing: %v", err)
 	}
 
 	if released {
-		t.Fatal("expected released=false for page with only iPhone 17 Pro Max")
+		t.Fatal("expected released=false for apple grid without release")
 	}
 
-	broken := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
-		writer.WriteHeader(http.StatusInternalServerError)
+	startsMu.Lock()
+	defer startsMu.Unlock()
+
+	want := make([]int, 0, iphoneWatcherMaxGridPages)
+	for page := range iphoneWatcherMaxGridPages {
+		want = append(want, (page+1)*iphoneWatcherAppleGridPageSize)
+	}
+
+	if !slices.Equal(starts, want) {
+		t.Fatalf("grid starts = %v, want %v", starts, want)
+	}
+}
+
+func TestCheckListingAppleSizeContinuesPastElevenTiles(t *testing.T) {
+	t.Parallel()
+
+	elevenTiles := strings.Repeat(`<div class="tile-product">Older Phone</div>`, 11)
+
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if !strings.Contains(request.URL.Path, "UpdateGrid") {
+			_, _ = io.WriteString(writer, `<div class="tile-product">iPhone 17 Pro Max</div>`)
+
+			return
+		}
+
+		if strings.Contains(request.URL.RawQuery, "start=10") {
+			_, _ = io.WriteString(writer, elevenTiles)
+
+			return
+		}
+
+		_, _ = io.WriteString(writer, `<div class="tile-product">iPhone 18 Pro Max</div>`)
 	}))
-	defer broken.Close()
+	defer server.Close()
 
-	if _, err := checkSmartStoreURLForIPhone18(context.Background(), broken.Client(), broken.URL); err == nil {
-		t.Fatal("expected error for non-200 status")
+	released, err := checkListingForIPhone18(
+		t.Context(),
+		server.Client(),
+		server.URL+"/phones",
+		func(start int) string { return fmt.Sprintf("%s/UpdateGrid?start=%d", server.URL, start) },
+		iphoneWatcherAppleGridPageSize,
+	)
+	if err != nil {
+		t.Fatalf("check apple listing: %v", err)
 	}
+
+	if !released {
+		t.Fatal("expected released=true: 11 tiles is a full page under Apple size 10, not a short page")
+	}
+}
+
+func gridStartParam(request *http.Request) int {
+	start, _ := strconv.Atoi(request.URL.Query().Get("start"))
+
+	return start
 }
 
 func TestSendIPhone18ReleaseAlertsSendsTenTimes(t *testing.T) {
@@ -228,6 +311,36 @@ func TestSendIPhone18ReleaseAlertsSendsTenTimes(t *testing.T) {
 		if !strings.Contains(path, iphoneWatcherLiveChannelID) {
 			t.Fatalf("send path = %q, want channel %q", path, iphoneWatcherLiveChannelID)
 		}
+	}
+}
+
+func TestWatcherLoopUnmarksReleaseWhenAlertsFail(t *testing.T) {
+	t.Parallel()
+
+	session, err := discordgo.New("Bot discord-token")
+	if err != nil {
+		t.Fatalf("create discord session: %v", err)
+	}
+
+	session.Client = &http.Client{
+		Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			return newInteractionJSONResponse(request, http.StatusInternalServerError, `{}`), nil
+		}),
+	}
+
+	instance := new(bot)
+	instance.session = session
+
+	instance.markIPhone18Released()
+
+	if err := instance.sendIPhone18ReleaseAlerts(iphoneWatcherLiveChannelID); err == nil {
+		t.Fatal("expected alert send error from 500 discord stub")
+	}
+
+	instance.iphoneReleased.Store(false)
+
+	if instance.isIPhone18Released() {
+		t.Fatal("failed alert send must leave release flag unset for retry")
 	}
 }
 
@@ -383,6 +496,36 @@ func TestHandleWatcherStatusCommandReleasedWhenFlagSet(t *testing.T) {
 		t.Fatalf("edited content = %q", capture.editedResponse.Content)
 	}
 }
+func TestHandleWatcherStatusCommandSurfacesLiveCheckFailure(t *testing.T) {
+	t.Parallel()
+
+	var capture deferredInteractionCapture
+
+	session := newDeferredInteractionTestSession(t, &capture)
+	instance := new(bot)
+	instance.session = session
+	instance.httpClient = &http.Client{
+		Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			return &http.Response{
+				Status:     "500 Internal Server Error",
+				StatusCode: http.StatusInternalServerError,
+				Body:       io.NopCloser(strings.NewReader(``)),
+				Header:     make(http.Header),
+				Request:    request,
+			}, nil
+		}),
+	}
+
+	if err := instance.handleWatcherStatusCommand(session, newWatcherStatusTestInteraction()); err != nil {
+		t.Fatalf("handle watcherstatus: %v", err)
+	}
+
+	want := watcherStatusNotReleasedText + "\nchecked 1 times (live check failed; showing last known state)"
+
+	if capture.editedResponse.Content != want {
+		t.Fatalf("edited content = %q, want %q", capture.editedResponse.Content, want)
+	}
+}
 
 func TestCheckSmartStoreForIPhone18IncrementsCount(t *testing.T) {
 	t.Parallel()
@@ -485,6 +628,7 @@ func TestCheckListingStopsOnShortGridPage(t *testing.T) {
 		server.Client(),
 		server.URL+"/phones",
 		func(start int) string { return fmt.Sprintf("%s/UpdateGrid?start=%d", server.URL, start) },
+		iphoneWatcherGridPageSize,
 	)
 	if err != nil {
 		t.Fatalf("check listing: %v", err)
@@ -560,6 +704,7 @@ func TestCheckListingCrawlsPastFullGridPage(t *testing.T) {
 		server.Client(),
 		server.URL+"/phones",
 		func(start int) string { return fmt.Sprintf("%s/UpdateGrid?start=%d", server.URL, start) },
+		iphoneWatcherGridPageSize,
 	)
 	if err != nil {
 		t.Fatalf("check listing: %v", err)
@@ -599,6 +744,7 @@ func TestCheckListingFindsReleaseOnLaterGridPage(t *testing.T) {
 		server.Client(),
 		server.URL+"/phones",
 		func(start int) string { return fmt.Sprintf("%s/UpdateGrid?start=%d", server.URL, start) },
+		iphoneWatcherGridPageSize,
 	)
 	if err != nil {
 		t.Fatalf("check listing: %v", err)
@@ -636,6 +782,7 @@ func TestCheckListingStopsWhenGridEmpty(t *testing.T) {
 		server.Client(),
 		server.URL+"/phones",
 		func(start int) string { return fmt.Sprintf("%s/UpdateGrid?start=%d", server.URL, start) },
+		iphoneWatcherGridPageSize,
 	)
 	if err != nil {
 		t.Fatalf("check listing: %v", err)
@@ -682,6 +829,28 @@ func TestStopIPhoneWatcherIdempotent(t *testing.T) {
 
 	instance.startIPhoneWatcher(t.Context())
 	instance.stopIPhoneWatcher()
+}
+
+func TestStartIPhoneWatcherSkipsLoopWhenReleased(t *testing.T) {
+	t.Parallel()
+
+	instance := new(bot)
+	instance.httpClient = newWatcherStatusStubHTTPClient(`<html><body>iPhone 17 Pro Max</body></html>`)
+	instance.markIPhone18Released()
+	instance.startIPhoneWatcher(t.Context())
+	instance.stopIPhoneWatcher()
+
+	instance.watcherMu.Lock()
+	running := instance.watcherRunning
+	instance.watcherMu.Unlock()
+
+	if running {
+		t.Fatal("released watcher must not start poll loop")
+	}
+
+	if got := instance.iphoneCheckCountValue(); got != 0 {
+		t.Fatalf("check count = %d, want 0 (released watcher must not poll)", got)
+	}
 }
 
 func TestFetchWatcherPageSendsBrowserUserAgent(t *testing.T) {

@@ -33,13 +33,15 @@ const (
 // botStateSnapshot is the JSON payload persisted per store key. It captures
 // every piece of bot runtime state that would otherwise be lost on restart:
 // the operators-selected model, search type, and grounding toggle, plus the
-// set of maintenance-locked channels.
+// set of maintenance-locked channels and the iPhone 18 Pro Max release flag
+// (so a restart after release never re-arms the watcher alerts).
 type botStateSnapshot struct {
 	Version             int      `json:"version"`
 	CurrentModel        string   `json:"current_model,omitempty"`
 	ExaSearchType       string   `json:"exa_search_type,omitempty"`
 	GroundingEnabled    *bool    `json:"grounding_enabled,omitempty"`
 	MaintenanceChannels []string `json:"maintenance_channels,omitempty"`
+	IPhone18Released    bool     `json:"iphone_18_released,omitempty"`
 }
 
 // botStateBackend persists bot runtime state. The sqlite implementation
@@ -203,6 +205,8 @@ func (instance *bot) snapshotBotState() botStateSnapshot {
 
 	instance.modelMu.RUnlock()
 
+	snapshot.IPhone18Released = instance.isIPhone18Released()
+
 	instance.maintenanceMu.RLock()
 
 	if len(instance.maintenanceChannels) > 0 {
@@ -251,6 +255,10 @@ func (instance *bot) applyBotStateSnapshot(snapshot botStateSnapshot, loadedConf
 		instance.modelMu.Lock()
 		instance.currentGroundingEnabledValue = &enabled
 		instance.modelMu.Unlock()
+	}
+
+	if snapshot.IPhone18Released {
+		instance.markIPhone18Released()
 	}
 
 	if len(snapshot.MaintenanceChannels) > 0 {

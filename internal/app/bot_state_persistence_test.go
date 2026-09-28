@@ -88,7 +88,11 @@ func newTestBotWithStateBackend(backend botStateBackend, loadedConfig config) *b
 	return instance
 }
 
-func waitForBotStateSnapshot(t *testing.T, backend *testBotStateBackend, want func(botStateSnapshot) bool) botStateSnapshot {
+func waitForBotStateSnapshot(
+	t *testing.T,
+	backend *testBotStateBackend,
+	want func(botStateSnapshot) bool,
+) botStateSnapshot {
 	t.Helper()
 
 	deadline := time.Now().Add(2 * time.Second)
@@ -204,6 +208,7 @@ func TestBotStateApplyRejectsUnknownValues(t *testing.T) {
 		ExaSearchType:       "not-a-search-type",
 		GroundingEnabled:    &grounding,
 		MaintenanceChannels: []string{"", "  ", "channel-9"},
+		IPhone18Released:    false,
 	}
 
 	instance.loadPersistedBotState(loadedConfig)
@@ -241,6 +246,30 @@ func TestBotStateLoadMissingKeepsDefaults(t *testing.T) {
 
 	if instance.isMaintenanceChannel("channel-123") {
 		t.Fatal("missing snapshot created maintenance channel")
+	}
+}
+func TestBotStateReleaseFlagPersistsAcrossRestart(t *testing.T) {
+	t.Parallel()
+
+	loadedConfig := testBotStateConfig()
+	backend := newTestBotStateBackend()
+	instance := newTestBotWithStateBackend(backend, loadedConfig)
+	instance.markIPhone18Released()
+	instance.persistIPhone18Released()
+
+	saved := waitForBotStateSnapshot(t, backend, func(snapshot botStateSnapshot) bool {
+		return snapshot.IPhone18Released
+	})
+
+	if !saved.IPhone18Released {
+		t.Fatal("release flag was not persisted")
+	}
+
+	restarted := newTestBotWithStateBackend(backend, loadedConfig)
+	restarted.loadPersistedBotState(loadedConfig)
+
+	if !restarted.isIPhone18Released() {
+		t.Fatal("restart lost release flag")
 	}
 }
 
