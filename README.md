@@ -143,7 +143,7 @@ Generic website URL extraction follows `extraction_order` (default Firecrawl -> 
 
 - Configuration reloads from disk on incoming messages and slash commands, so `config.yaml` changes apply without a restart.
 - Environment variables: `LLMCORD_CONFIG_PATH` (preferred; legacy `CONFIG_PATH` still works), `LLMCORD_HTTP_ADDR` (bind address, else `PORT`), `LLMCORD_LOG_LEVEL` (`debug`/`info`/`warn`/`error`), `LLMCORD_LOG_FORMAT` (`text`/`json`).
-- Discord gateway connections are not retried automatically: if the gateway drops, the bot stays disconnected until the next restart (the process manager restarts it), instead of reconnecting in the background.
+- Discord gateway connections use discordgo's reconnect loop (`ShouldReconnectOnError`): transient drops resume the existing session over websocket with backoff, re-apply the configured custom status on `READY`/`RESUMED`, and log disconnects; a fresh process still opens the session once at startup.
 - Every log record includes source file and line; errors carry stack traces, and panics in handlers are recovered and logged.
 - Generic website fetching rejects localhost, private, link-local, and unsafe redirects; with a Firecrawl key, Scrape handles the extraction instead.
 - AliExpress product pages are replaced with the embedded product ID, OG title, and image list.

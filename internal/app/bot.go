@@ -22,6 +22,7 @@ import (
 type bot struct {
 	configPath                   string
 	session                      *discordgo.Session
+	updateCustomStatus           func(*discordgo.Session, string) error
 	sessionClose                 func(*discordgo.Session) error
 	httpClient                   *http.Client
 	chatCompletions              chatCompletionStreamer
@@ -158,8 +159,10 @@ func newBot(ctx context.Context, configPath string, loadedConfig config) (*bot, 
 		return nil, fmt.Errorf("create discord session: %w", err)
 	}
 
-	// Auto-reconnect is fully removed: a dropped gateway stays down until restart.
-	discordSession.ShouldReconnectOnError = false
+	// Keep discordgo's gateway reconnect loop enabled so transient drops resume
+	// the session (read errors, missed heartbeat ACKs, Op 7) with exponential
+	// backoff instead of parking the bot offline until restart.
+	discordSession.ShouldReconnectOnError = true
 
 	discordSession.Client = &http.Client{
 		Transport: newOptimizedHTTPTransport(),
@@ -172,6 +175,7 @@ func newBot(ctx context.Context, configPath string, loadedConfig config) (*bot, 
 	instance.configPath = configPath
 	instance.seedConfigCache(loadedConfig)
 	instance.session = discordSession
+	instance.updateCustomStatus = (*discordgo.Session).UpdateCustomStatus
 	instance.finalRenderCheckDelays = []time.Duration{finalRenderCheckDelay, finalRenderRecheckDelay}
 	instance.httpClient = httpClient
 	instance.chatCompletions = providers.NewChatCompletionRouter(httpClient)
@@ -224,6 +228,8 @@ func newBot(ctx context.Context, configPath string, loadedConfig config) (*bot, 
 		discordgo.IntentsDirectMessages |
 		discordgo.IntentsMessageContent
 	discordSession.AddHandler(recoverHandler(instance.handleReady))
+	discordSession.AddHandler(recoverHandler(instance.handleResumed))
+	discordSession.AddHandler(recoverHandler(instance.handleDisconnect))
 	discordSession.AddHandler(recoverHandler(instance.handleChannelUpdate))
 	discordSession.AddHandler(recoverHandler(instance.handleInteractionCreate))
 	discordSession.AddHandler(recoverHandler(instance.handleMessageCreate))
@@ -472,6 +478,43 @@ func (instance *bot) open(ctx context.Context, loadedConfig config) error {
 
 func (instance *bot) handleReady(_ *discordgo.Session, _ *discordgo.Ready) {
 	instance.markDiscordReady()
+	instance.restorePresenceAfterReconnect()
+}
+
+func (instance *bot) handleResumed(_ *discordgo.Session, _ *discordgo.Resumed) {
+	slog.Info("discord gateway session resumed")
+	instance.restorePresenceAfterReconnect()
+}
+
+func (instance *bot) handleDisconnect(_ *discordgo.Session, _ *discordgo.Disconnect) {
+	if instance != nil && instance.botClosed.Load() {
+		return
+	}
+
+	slog.Warn("discord gateway disconnected; waiting for discordgo reconnect")
+}
+
+func (instance *bot) restorePresenceAfterReconnect() {
+	if instance == nil || instance.session == nil {
+		return
+	}
+
+	updateStatus := instance.updateCustomStatus
+	if updateStatus == nil {
+		updateStatus = (*discordgo.Session).UpdateCustomStatus
+	}
+
+	loadedConfig, err := instance.loadConfigCached()
+	if err != nil {
+		logWarn("reload config for reconnect presence", err)
+
+		return
+	}
+
+	err = updateStatus(instance.session, statusMessage(loadedConfig.StatusMessage))
+	if err != nil {
+		logWarn("restore status message after reconnect", err)
+	}
 }
 
 func (instance *bot) markDiscordReady() {
@@ -519,7 +562,12 @@ func (instance *bot) configureSession(loadedConfig config) error {
 		return fmt.Errorf("sync commands: %w", err)
 	}
 
-	err = instance.session.UpdateCustomStatus(statusMessage(loadedConfig.StatusMessage))
+	updateStatus := instance.updateCustomStatus
+	if updateStatus == nil {
+		updateStatus = (*discordgo.Session).UpdateCustomStatus
+	}
+
+	err = updateStatus(instance.session, statusMessage(loadedConfig.StatusMessage))
 	if err != nil {
 		return fmt.Errorf("update status message: %w", err)
 	}
@@ -527,6 +575,11 @@ func (instance *bot) configureSession(loadedConfig config) error {
 	return nil
 }
 func (instance *bot) close() error {
+	if instance == nil {
+		return nil
+	}
+
+	instance.botClosed.Store(true)
 	instance.stopIPhoneWatcher()
 
 	var sessionErr error
