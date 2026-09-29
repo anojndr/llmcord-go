@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/bwmarrin/discordgo"
@@ -55,6 +56,93 @@ func TestPersistAugmentedSourceMessageRetainsTikTokAndFacebookVideoContextInFoll
 	)
 
 	assertRetainedVideoHistory(t, history)
+}
+
+// TestPersistAugmentedSourceMessageDropsTranscribedVoiceAudio is the
+// regression test for the 9router OpenCode Responses 400 ("input[N].content
+// did not match any supported type"): voice-message audio transcribed for an
+// OpenCode reply model must persist as text only, so a follow-up rebuilt
+// from the reply chain never resends the input_audio part the backend
+// rejects in history. Models with native audio keep their bytes.
+func TestPersistAugmentedSourceMessageDropsTranscribedVoiceAudio(t *testing.T) {
+	t.Parallel()
+
+	transcribedText := "transcribe this" + "\n\n" + mediaAnalysisOpenTag + "\nvoice transcription\n" +
+		mediaAnalysisCloseTag
+
+	newVoiceConversation := func() []chatMessage {
+		return []chatMessage{
+			{
+				Role: messageRoleUser,
+				Content: []contentPart{
+					{"type": contentTypeText, "text": transcribedText},
+					{
+						"type":               contentTypeAudioData,
+						contentFieldBytes:    []byte("voice-bytes"),
+						contentFieldMIMEType: "audio/ogg",
+						contentFieldFilename: "voice-message.ogg",
+					},
+				},
+			},
+		}
+	}
+
+	t.Run("non-native audio keeps text transcription only", func(t *testing.T) {
+		t.Parallel()
+
+		text, media, err := retainedMessageNodeContent(newVoiceConversation()[0].Content)
+		if err != nil {
+			t.Fatalf("normalize retained user content: %v", err)
+		}
+
+		media = retainedHistoryMedia(messageRoleUser, text, media, false)
+
+		if len(media) != 0 {
+			t.Fatalf("expected transcribed audio bytes to be dropped, got %#v", media)
+		}
+
+		if !strings.Contains(text, mediaAnalysisOpenTag) {
+			t.Fatalf("expected transcription text to be retained, got %q", text)
+		}
+	})
+
+	t.Run("native audio keeps bytes", func(t *testing.T) {
+		t.Parallel()
+
+		text, media, err := retainedMessageNodeContent(newVoiceConversation()[0].Content)
+		if err != nil {
+			t.Fatalf("normalize retained user content: %v", err)
+		}
+
+		media = retainedHistoryMedia(messageRoleUser, text, media, true)
+
+		if len(media) != 1 || media[0]["type"] != contentTypeAudioData {
+			t.Fatalf("expected native audio bytes to be kept, got %#v", media)
+		}
+	})
+
+	t.Run("untranscribed audio keeps bytes", func(t *testing.T) {
+		t.Parallel()
+
+		text, media, err := retainedMessageNodeContent([]contentPart{
+			{"type": contentTypeText, "text": "transcribe this"},
+			{
+				"type":               contentTypeAudioData,
+				contentFieldBytes:    []byte("voice-bytes"),
+				contentFieldMIMEType: "audio/ogg",
+				contentFieldFilename: "voice-message.ogg",
+			},
+		})
+		if err != nil {
+			t.Fatalf("normalize retained user content: %v", err)
+		}
+
+		media = retainedHistoryMedia(messageRoleUser, text, media, false)
+
+		if len(media) != 1 || media[0]["type"] != contentTypeAudioData {
+			t.Fatalf("expected untranscribed audio bytes to be kept, got %#v", media)
+		}
+	})
 }
 
 type historyRetentionFixture struct {
@@ -249,6 +337,7 @@ func persistAugmentedSourceConversation(
 		context.Background(),
 		sourceMessage,
 		conversation,
+		true,
 	)
 	if err != nil {
 		t.Fatalf("persist augmented source message: %v", err)

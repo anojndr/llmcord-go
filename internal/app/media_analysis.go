@@ -80,19 +80,10 @@ func (instance *bot) maybeAugmentConversationWithGeminiMedia(
 		return nil, fmt.Errorf("build media analysis content options: %w", err)
 	}
 
-	mediaParts, err := instance.audioVideoPartsForMessages(
-		ctx,
-		instance.attachmentAugmentationMessages(ctx, sourceMessage),
-	)
+	mediaParts, err := instance.mediaPartsForPreprocessing(ctx, sourceMessage, contentOptions)
 	if err != nil {
-		return nil, fmt.Errorf("load media parts for gemini analysis: %w", err)
+		return nil, err
 	}
-
-	// Only preprocess the attachments the reply model cannot take
-	// itself: native audio (input_audio) and, for MiMo models, native
-	// video (video_url) already ride the request. Preprocessing those
-	// again would only duplicate the bytes as text.
-	mediaParts = mediaPartsNeedingPreprocessing(mediaParts, contentOptions)
 
 	if len(mediaParts) == 0 {
 		return conversation, nil
@@ -149,6 +140,155 @@ func (instance *bot) maybeAugmentConversationWithGeminiMedia(
 	}
 
 	return augmentedConversation, nil
+}
+
+// mediaPartsForPreprocessing loads the clips the reply model cannot hear or
+// see itself: the current turn's attachment context (source message plus
+// immediate reply ancestry) filtered to what the model lacks natively, plus
+// earlier reply-chain voice turns the model cannot replay from history.
+func (instance *bot) mediaPartsForPreprocessing(
+	ctx context.Context,
+	sourceMessage *discordgo.Message,
+	options messageContentOptions,
+) ([]contentPart, error) {
+	mediaParts, err := instance.audioVideoPartsForMessages(
+		ctx,
+		instance.attachmentAugmentationMessages(ctx, sourceMessage),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("load media parts for gemini analysis: %w", err)
+	}
+
+	// Only preprocess the attachments the reply model cannot take
+	// itself: native audio (input_audio) and, for MiMo models, native
+	// video (video_url) already ride the request. Preprocessing those
+	// again would only duplicate the bytes as text.
+	mediaParts = mediaPartsNeedingPreprocessing(mediaParts, options)
+
+	historyParts := instance.historyAudioPartsForModel(sourceMessage, options, mediaParts)
+
+	return append(mediaParts, historyParts...), nil
+}
+
+// historyAudioPartsForModel collects the voice-message audio of earlier
+// reply-chain turns that the reply model cannot replay natively. The bot
+// keeps every turn's raw audio bytes on its history node (see
+// retainedMessageNodeContent), and the request rebuilds them into input_audio
+// parts whenever the model allows audio — but 9router's OpenCode route
+// rejects input_audio in any non-latest input item ("input[N].content did
+// not match any supported type", verified live on muse-spark), so those
+// bytes must travel as a text transcription instead. Only non-MiMo OpenCode
+// models set allowAudio=false (see messageContentOptionsForModel); every
+// other model replays its history parts natively and needs nothing here.
+// Only turns already stored in the chain are collected; the source message's
+// own audio is transcribed through the normal mediaParts path above, which
+// also persists the transcription onto its node for later turns. Parts
+// already covered by the current turn's preprocessing (alreadyTranscribed).
+func (instance *bot) historyAudioPartsForModel(
+	sourceMessage *discordgo.Message,
+	options messageContentOptions,
+	alreadyTranscribed []contentPart,
+) []contentPart {
+	if options.allowAudio {
+		return nil
+	}
+
+	if sourceMessage == nil || instance == nil || instance.nodes == nil {
+		return nil
+	}
+
+	sourceNode, found := instance.nodes.get(strings.TrimSpace(sourceMessage.ID))
+	if !found || sourceNode == nil {
+		return nil
+	}
+
+	sourceNode.mu.Lock()
+	parentMessage := sourceNode.parentMessage
+	sourceNode.mu.Unlock()
+
+	var historyParts []contentPart
+
+	visited := make(map[string]struct{})
+
+	for parentMessage != nil {
+		parentID := strings.TrimSpace(parentMessage.ID)
+		if parentID == "" {
+			break
+		}
+
+		if _, seen := visited[parentID]; seen {
+			break
+		}
+
+		visited[parentID] = struct{}{}
+
+		parentNode, found := instance.nodes.get(parentID)
+		if !found || parentNode == nil {
+			break
+		}
+
+		parentNode.mu.Lock()
+		media := append([]contentPart(nil), parentNode.media...)
+		nextParent := parentNode.parentMessage
+		parentNode.mu.Unlock()
+
+		for _, part := range media {
+			partType, _ := part[messageTypeKey].(string)
+			if partType != contentTypeAudioData {
+				continue
+			}
+
+			if audioPartAlreadyTranscribed(part, alreadyTranscribed) ||
+				audioPartAlreadyTranscribed(part, historyParts) {
+				continue
+			}
+
+			historyParts = append(historyParts, cloneContentPart(part))
+		}
+
+		parentMessage = nextParent
+	}
+
+	return historyParts
+}
+
+// audioPartAlreadyTranscribed reports whether an audio part is already
+// covered by the given transcription set: same MIME type, filename, and byte
+// length. The reply target's clip is loaded both as the current turn's
+// attachment context and as chain history; without this check it would be
+// transcribed twice and the transcription appended twice. Length (not a
+// content hash) is the identity on purpose: voice-message filenames repeat,
+// so a same-length same-name collision could theoretically skip a distinct
+// clip, but the bytes stay in history either way — the cost is a missing
+// duplicate transcription, never a 400 or data loss.
+func audioPartAlreadyTranscribed(part contentPart, alreadyTranscribed []contentPart) bool {
+	partBytes, _, partFilename, partErr := attachmentBinaryData(part)
+	if partErr != nil {
+		return false
+	}
+
+	partMIME, _ := part[contentFieldMIMEType].(string)
+
+	for _, other := range alreadyTranscribed {
+		if otherType, _ := other[messageTypeKey].(string); otherType != contentTypeAudioData {
+			continue
+		}
+
+		otherBytes, _, otherFilename, otherErr := attachmentBinaryData(other)
+		if otherErr != nil {
+			continue
+		}
+
+		otherMIME, _ := other[contentFieldMIMEType].(string)
+
+		if len(otherBytes) == len(partBytes) &&
+			strings.TrimSpace(otherMIME) == strings.TrimSpace(partMIME) &&
+			strings.TrimSpace(otherFilename) == strings.TrimSpace(partFilename) {
+			return true
+		}
+	}
+
+	return false
 }
 
 func configuredModelAPIKind(
@@ -267,6 +407,13 @@ func (instance *bot) messagePartsForMessages(
 	return parts, nil
 }
 
+// attachmentAugmentationMessages scopes media preprocessing to the messages
+// the reply model can no longer hear or see itself: the source message and
+// its immediate reply ancestry. History turns keep their own stored context
+// (native parts or earlier transcriptions); re-transcribing them here would
+// duplicate their bytes as text on every follow-up. The same scope feeds
+// attachmentPreprocessingMessageIDSet, which only suppresses the
+// unsupported-attachment warning.
 func (instance *bot) attachmentAugmentationMessages(
 	ctx context.Context,
 	sourceMessage *discordgo.Message,

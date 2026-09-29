@@ -434,6 +434,7 @@ func TestPersistAugmentedSourceMessageRetainsExtractedPDFTextAndImagesInFollowUp
 		context.Background(),
 		sourceMessage,
 		augmentedConversation,
+		true,
 	)
 	if err != nil {
 		t.Fatalf("persist augmented source message: %v", err)

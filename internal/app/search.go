@@ -847,7 +847,7 @@ func (instance *bot) retainWebSearchResults(
 		return
 	}
 
-	err = instance.persistAugmentedSourceMessage(ctx, tracker.sourceMessage, augmentedMessages)
+	err = instance.persistAugmentedSourceMessage(ctx, tracker.sourceMessage, augmentedMessages, true)
 	if err != nil {
 		logWarn("persist augmented source message after web search", err)
 	}

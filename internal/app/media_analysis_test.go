@@ -69,9 +69,10 @@ func TestAppendMediaAnalysesToConversationPreservesImages(t *testing.T) {
 func TestMaybeAugmentConversationWithGeminiMediaAppendsAnalysesForNonGeminiModel(t *testing.T) {
 	t.Parallel()
 
-	// Audio rides OpenAI requests natively (input_audio), so only the
-	// video part still needs a text analysis.
+	// OpenCode models do not replay audio natively; they get a text
+	// transcription, so both parts still need a text analysis.
 	expectedAnalyses := []string{
+		"Audio transcription per timestamp:\n\n0s to 10s: hello there",
 		"Video description per timestamp:\n\n0s to 10s: somebody waves",
 	}
 
@@ -109,7 +110,7 @@ func TestMaybeAugmentConversationWithGeminiMediaAppendsAnalysesForNonGeminiModel
 	augmentedConversation, err := instance.maybeAugmentConversationWithGeminiMedia(
 		context.Background(),
 		testMediaAnalysisConfig(),
-		"openai/gpt-5",
+		"openai/oc/test-model",
 		sourceMessage,
 		conversation,
 	)
@@ -117,7 +118,7 @@ func TestMaybeAugmentConversationWithGeminiMediaAppendsAnalysesForNonGeminiModel
 		t.Fatalf("augment conversation with gemini media: %v", err)
 	}
 
-	if *callIndex != 1 {
+	if *callIndex != 2 {
 		t.Fatalf("unexpected gemini analysis call count: %d", *callIndex)
 	}
 
@@ -153,8 +154,8 @@ func TestMaybeAugmentConversationWithGeminiMediaRunsAnalysesConcurrentlyAndKeeps
 		secondAnalysis = "Video description per timestamp:\n\n0s to 10s: hello from second video"
 	)
 
-	// Two video parts (audio would ride the request natively): the
-	// concurrent client asserts per-part prompts and keeps call order.
+	// Two video parts: the concurrent client asserts per-part prompts and
+	// keeps call order.
 	chatClient, callCount := newConcurrentGeminiMediaAnalysisChatClient(
 		t,
 		firstAnalysis,
@@ -216,6 +217,7 @@ func TestMaybeAugmentConversationWithGeminiMediaAppendsReplyTargetAnalysesForNon
 	t.Parallel()
 
 	expectedAnalyses := []string{
+		"Audio transcription per timestamp:\n\n0s to 10s: reply target hello there",
 		"Video description per timestamp:\n\n0s to 10s: reply target somebody waves",
 	}
 
@@ -257,7 +259,7 @@ func TestMaybeAugmentConversationWithGeminiMediaAppendsReplyTargetAnalysesForNon
 	augmentedConversation, err := instance.maybeAugmentConversationWithGeminiMedia(
 		context.Background(),
 		testMediaAnalysisConfig(),
-		"openai/gpt-5",
+		"openai/oc/test-model",
 		sourceMessage,
 		[]chatMessage{{Role: messageRoleUser, Content: "<@123>: summarize the replied media"}},
 	)
@@ -265,7 +267,7 @@ func TestMaybeAugmentConversationWithGeminiMediaAppendsReplyTargetAnalysesForNon
 		t.Fatalf("augment conversation with replied gemini media: %v", err)
 	}
 
-	if *callIndex != 1 {
+	if *callIndex != 2 {
 		t.Fatalf("unexpected gemini analysis call count: %d", *callIndex)
 	}
 

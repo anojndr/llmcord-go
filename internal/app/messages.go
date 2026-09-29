@@ -656,7 +656,12 @@ func (instance *bot) augmentPreparedMessageResponse(
 		return nil, nil, nil, fmt.Errorf("augment conversation: %w", err)
 	}
 
-	err = instance.persistAugmentedSourceMessage(ctx, message, messages)
+	contentOptions, contentOptionsErr := messageContentOptionsForModel(loadedConfig, providerSlashModel)
+	if contentOptionsErr != nil {
+		return nil, nil, nil, fmt.Errorf("build persist content options: %w", contentOptionsErr)
+	}
+
+	err = instance.persistAugmentedSourceMessage(ctx, message, messages, contentOptions.allowAudio)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("persist augmented source message: %w", err)
 	}
@@ -668,6 +673,7 @@ func (instance *bot) persistAugmentedSourceMessage(
 	ctx context.Context,
 	sourceMessage *discordgo.Message,
 	conversation []chatMessage,
+	nativeAudio bool,
 ) error {
 	if sourceMessage == nil {
 		return nil
@@ -682,6 +688,16 @@ func (instance *bot) persistAugmentedSourceMessage(
 	if err != nil {
 		return fmt.Errorf("normalize retained user content: %w", err)
 	}
+
+	// Voice-message audio transcribed for this reply (see
+	// maybeAugmentConversationWithGeminiMedia) stays a text transcription
+	// in later turns: the transcription rides in node.text, while the raw
+	// bytes are dropped so follow-ups never rebuild the input_audio part
+	// 9router's OpenCode route rejects in history ("input[N].content did
+	// not match any supported type", verified live). Only OpenCode replies
+	// pass nativeAudio=false (see messageContentOptionsForModel); models
+	// that replay audio natively keep their bytes.
+	media = retainedHistoryMedia(conversation[index].Role, text, media, nativeAudio)
 
 	node := instance.nodes.getOrCreate(sourceMessage.ID)
 
@@ -725,6 +741,48 @@ func retainedMessageNodeContent(content any) (string, []contentPart, error) {
 			os.ErrInvalid,
 		)
 	}
+}
+
+// retainedHistoryMedia drops raw voice-message audio once its transcription
+// is stored in the node's text. Transcribed history turns keep talking
+// about their audio through the transcription text (rendered into the user
+// query by maybeAugmentConversationWithGeminiMedia); re-sending the bytes
+// would rebuild the input_audio part the OpenCode route rejects in history.
+// Audio is dropped only when the node actually carries a transcription —
+// text without a media_analysis block keeps its bytes so a still-unheard
+// clip is never silenced — and only for OpenCode replies, which
+// persistAugmentedSourceMessage passes as nativeAudio=false. Non-audio
+// parts pass through untouched.
+func retainedHistoryMedia(role string, text string, media []contentPart, nativeAudio bool) []contentPart {
+	if nativeAudio || role != messageRoleUser || len(media) == 0 {
+		return media
+	}
+
+	hasAudio := false
+
+	for _, part := range media {
+		if partType, _ := part[messageTypeKey].(string); partType == contentTypeAudioData {
+			hasAudio = true
+
+			break
+		}
+	}
+
+	if !hasAudio || !strings.Contains(text, mediaAnalysisOpenTag) {
+		return media
+	}
+
+	retained := make([]contentPart, 0, len(media))
+
+	for _, part := range media {
+		if partType, _ := part[messageTypeKey].(string); partType == contentTypeAudioData {
+			continue
+		}
+
+		retained = append(retained, part)
+	}
+
+	return retained
 }
 
 func retainedMessageText(text string) string {
@@ -936,8 +994,14 @@ func messageContentOptionsForModel(
 		// format}} inside input content (openai-openapi InputAudio).
 		// Formerly only Gemini received raw audio; other models got a
 		// Gemini transcription spliced in as text. Sending the bytes lets
-		// audio-capable OpenAI-compatible models hear the original clip.
-		options.allowAudio = true
+		// audio-capable OpenAI-compatible models hear the original clip —
+		// but 9router's OpenCode route rejects input_audio in any non-latest
+		// input item ("input[N].content did not match any supported type",
+		// verified live on muse-spark), so non-MiMo OpenCode models get a
+		// preprocessed text transcription instead (see
+		// maybeAugmentConversationWithGeminiMedia). MiMo models keep native
+		// audio: they speak audio natively like they speak video_url.
+		options.allowAudio = isMimoVideoModel(providerSlashModel) || !isOpenCodeModel(providerSlashModel)
 		// Video rides the same request as a MiMo video_url part
 		// (type video_url + data: URL, fps, media_resolution) — but only
 		// MiMo-family models speak it. Anything else keeps video out of
