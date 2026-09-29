@@ -26,6 +26,7 @@ type bot struct {
 	sessionClose                 func(*discordgo.Session) error
 	httpClient                   *http.Client
 	chatCompletions              chatCompletionStreamer
+	jevRouterOverride            jevRouter
 	webSearch                    webSearcher
 	visualSearch                 visualSearcher
 	serpAPIVisualSearch          serpAPIVisualSearcher

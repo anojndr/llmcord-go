@@ -385,6 +385,24 @@ type rawGistConfig struct {
 	Filename    scalarString     `yaml:"filename"`
 }
 
+type rawSmartRoutingConfig struct {
+	Channels scalarStringList        `yaml:"channels"`
+	Endpoint scalarString            `yaml:"endpoint"`
+	Model    scalarString            `yaml:"model"`
+	APIKey   scalarStringList        `yaml:"api_key"`
+	Tiers    map[string]scalarString `yaml:"tiers"`
+}
+
+type smartRoutingConfig struct {
+	Channels   []string
+	ChannelSet map[string]struct{}
+	Endpoint   string
+	Model      string
+	APIKey     string
+	APIKeys    []string
+	Tiers      map[string]string
+}
+
 type providerConfig struct {
 	Name                        string
 	BaseURL                     string
@@ -497,6 +515,7 @@ type rawConfig struct {
 	Redis                      rawRedisConfig               `yaml:"redis"`
 	Gist                       rawGistConfig                `yaml:"gist"`
 	AutoAppendPhrases          rawAutoAppendPhrasesConfig   `yaml:"auto_append_phrases"`
+	SmartRouting               rawSmartRoutingConfig        `yaml:"smart_routing"`
 	Models                     map[string]map[string]any    `yaml:"models"`
 	ChannelModelLocks          map[string]scalarString      `yaml:"channel_model_locks"`
 	MediaAnalysisModel         scalarString                 `yaml:"media_analysis_model"`
@@ -520,6 +539,7 @@ type config struct {
 	Redis                      redisConfig
 	Gist                       gistConfig
 	AutoAppendPhrases          autoAppendPhrasesConfig
+	SmartRouting               smartRoutingConfig
 	Models                     map[string]map[string]any
 	ModelOrder                 []string
 	ChannelModelLocks          map[string]string
@@ -601,6 +621,7 @@ func buildLoadedConfig(
 		Redis:                      normalizeRedisConfig(rawLoadedConfig.Redis),
 		Gist:                       normalizeGistConfig(rawLoadedConfig.Gist),
 		AutoAppendPhrases:          normalizeAutoAppendPhrases(rawLoadedConfig.AutoAppendPhrases),
+		SmartRouting:               normalizeSmartRoutingConfig(rawLoadedConfig.SmartRouting),
 		Models:                     rawLoadedConfig.Models,
 		ModelOrder:                 modelOrder,
 		ChannelModelLocks:          channelModelLocks,
@@ -910,6 +931,154 @@ func normalizeGistConfig(rawLoadedConfig rawGistConfig) gistConfig {
 	}
 }
 
+// normalizeSmartRoutingConfig resolves the Jev smart auto-routing section:
+// channel allowlist, endpoint/model defaults, key round-robin inputs, and
+// tier-to-model mapping. Empty tiers with no channels disables routing.
+func normalizeSmartRoutingConfig(rawLoadedConfig rawSmartRoutingConfig) smartRoutingConfig {
+	apiKeys := normalizeAPIKeys([]string(rawLoadedConfig.APIKey))
+
+	endpoint := strings.TrimSpace(string(rawLoadedConfig.Endpoint))
+	if endpoint == "" {
+		endpoint = defaultJevEndpoint
+	}
+
+	model := strings.TrimSpace(string(rawLoadedConfig.Model))
+	if model == "" {
+		model = defaultJevModel
+	}
+
+	channels := normalizeSmartRoutingChannels([]string(rawLoadedConfig.Channels))
+
+	channelSet := make(map[string]struct{}, len(channels))
+	for _, channelID := range channels {
+		channelSet[channelID] = struct{}{}
+	}
+
+	return smartRoutingConfig{
+		Channels:   channels,
+		ChannelSet: channelSet,
+		Endpoint:   endpoint,
+		Model:      model,
+		APIKey:     firstAPIKey(apiKeys),
+		APIKeys:    apiKeys,
+		Tiers:      normalizeSmartRoutingTiers(rawLoadedConfig.Tiers),
+	}
+}
+
+func normalizeSmartRoutingChannels(candidates []string) []string {
+	channels := make([]string, 0, len(candidates))
+
+	seen := make(map[string]struct{}, len(candidates))
+	for _, candidate := range candidates {
+		trimmed := strings.TrimSpace(candidate)
+		if trimmed == "" {
+			continue
+		}
+
+		if _, ok := seen[trimmed]; ok {
+			continue
+		}
+
+		seen[trimmed] = struct{}{}
+		channels = append(channels, trimmed)
+	}
+
+	return channels
+}
+
+func normalizeSmartRoutingTiers(rawTiers map[string]scalarString) map[string]string {
+	if len(rawTiers) == 0 {
+		return nil
+	}
+
+	tiers := make(map[string]string, len(rawTiers))
+	for tier, model := range rawTiers {
+		trimmedTier := strings.ToLower(strings.TrimSpace(tier))
+
+		trimmedModel := strings.TrimSpace(string(model))
+		if trimmedTier == "" || trimmedModel == "" {
+			continue
+		}
+
+		tiers[trimmedTier] = trimmedModel
+	}
+
+	return tiers
+}
+
+// validateSmartRoutingConfig checks the Jev routing section: tier models must
+// name configured models, channels must not collide with channel_model_locks
+// (locks win deterministically), and tiers require channels to take effect.
+func validateSmartRoutingConfig(loadedConfig config) error {
+	err := validateSmartRoutingPresence(loadedConfig.SmartRouting)
+	if err != nil {
+		return err
+	}
+
+	err = validateSmartRoutingTiers(loadedConfig)
+	if err != nil {
+		return err
+	}
+
+	return validateSmartRoutingChannels(loadedConfig)
+}
+
+func validateSmartRoutingPresence(routing smartRoutingConfig) error {
+	if len(routing.Channels) == 0 && len(routing.Tiers) == 0 {
+		return nil
+	}
+
+	if len(routing.Channels) > 0 && len(routing.Tiers) == 0 {
+		return fmt.Errorf("smart_routing.tiers must map tiers to models when channels are set: %w", os.ErrInvalid)
+	}
+
+	if len(routing.Tiers) > 0 && len(routing.Channels) == 0 {
+		return fmt.Errorf("smart_routing.channels must list at least one channel when tiers are set: %w", os.ErrInvalid)
+	}
+
+	return nil
+}
+
+func validateSmartRoutingTiers(loadedConfig config) error {
+	if len(loadedConfig.SmartRouting.Channels) == 0 && len(loadedConfig.SmartRouting.Tiers) == 0 {
+		return nil
+	}
+
+	knownTiers := make(map[string]struct{}, len(jevTierOrder()))
+	for _, tier := range jevTierOrder() {
+		knownTiers[tier] = struct{}{}
+	}
+
+	for tier, modelName := range loadedConfig.SmartRouting.Tiers {
+		if _, ok := knownTiers[tier]; !ok {
+			return fmt.Errorf("smart_routing.tiers has unknown tier %q: %w", tier, os.ErrInvalid)
+		}
+
+		if !loadedConfig.hasModel(modelName) {
+			return fmt.Errorf("smart_routing.tiers %q references undefined model %q: %w", tier, modelName, os.ErrNotExist)
+		}
+	}
+
+	for _, tier := range jevTierOrder() {
+		modelName, ok := loadedConfig.SmartRouting.Tiers[tier]
+		if !ok || strings.TrimSpace(modelName) == "" {
+			return fmt.Errorf("smart_routing.tiers is missing tier %q: %w", tier, os.ErrInvalid)
+		}
+	}
+
+	return nil
+}
+
+func validateSmartRoutingChannels(loadedConfig config) error {
+	for _, channelID := range loadedConfig.SmartRouting.Channels {
+		if _, locked := loadedConfig.ChannelModelLocks[channelID]; locked {
+			return fmt.Errorf("smart_routing.channels %q collides with channel_model_locks (locks win): %w", channelID, os.ErrInvalid)
+		}
+	}
+
+	return nil
+}
+
 func normalizeWebSearchConfig(
 	rawLoadedConfig rawWebSearchConfig,
 	topLevelOrder webSearchOrder,
@@ -1062,6 +1231,11 @@ func validateConfig(loadedConfig config) error {
 	}
 
 	err = validateChannelModelLocks(loadedConfig)
+	if err != nil {
+		return err
+	}
+
+	err = validateSmartRoutingConfig(loadedConfig)
 	if err != nil {
 		return err
 	}

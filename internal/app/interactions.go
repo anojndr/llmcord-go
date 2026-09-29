@@ -846,6 +846,14 @@ func (instance *bot) handleModelCommand(
 		)
 	}
 
+	if smartRoutingChannelRoutable(loadedConfig, channelIDs) {
+		return editInteractionResponseText(
+			session,
+			interaction.Interaction,
+			"Smart auto-routing is enabled in this channel: Jev picks the model per message, so `/model` is disabled here.",
+		)
+	}
+
 	return handleConfiguredModelCommand(
 		session,
 		interaction,
@@ -989,6 +997,17 @@ func (instance *bot) handleModelAutocomplete(
 		)
 	}
 
+	if smartRoutingChannelRoutable(loadedConfig, channelIDs) {
+		return respondInteractionChoices(
+			session,
+			interaction.Interaction,
+			smartRoutingAutocompleteChoices(
+				loadedConfig,
+				interactionOptionString(interaction.ApplicationCommandData().Options),
+			),
+		)
+	}
+
 	return handleConfiguredModelAutocomplete(
 		session,
 		interaction,
@@ -1062,6 +1081,32 @@ func lockedModelAutocompleteChoices(
 	choice.Value = lockedModel
 
 	return []*discordgo.ApplicationCommandOptionChoice{choice}
+}
+
+// smartRoutingAutocompleteChoices lists the Jev-routed tier models so users
+// see what auto-routing can pick; selecting one still reports routing.
+func smartRoutingAutocompleteChoices(
+	loadedConfig config,
+	currentText string,
+) []*discordgo.ApplicationCommandOptionChoice {
+	choices := make([]*discordgo.ApplicationCommandOptionChoice, 0, len(jevTierOrder()))
+	for _, tier := range jevTierOrder() {
+		modelName, ok := loadedConfig.SmartRouting.Tiers[tier]
+		if !ok || !containsFold(modelName, currentText) {
+			continue
+		}
+
+		choice := new(discordgo.ApplicationCommandOptionChoice)
+		choice.Name = "~ " + modelName + " (" + tier + ", auto)"
+		choice.Value = modelName
+		choices = append(choices, choice)
+
+		if len(choices) == maxAutocompleteChoices {
+			break
+		}
+	}
+
+	return choices
 }
 
 func exaSearchTypeAutocompleteChoices(

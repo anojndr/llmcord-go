@@ -224,6 +224,15 @@ const (
 	userAgentHeader                    = "User-Agent"
 	requestBodyBaseFields              = 3
 	configuredModelParts               = 2
+	// jevSmartRoutingTuning configures Jev (TypeSafe System One) smart
+	// auto-routing: one Choice call per message picks a model tier, then the
+	// tier maps to a configured model (see smart_routing in config-example.yaml).
+	defaultJevEndpoint   = "http://localhost:20128/v1/systemone"
+	defaultJevModel      = "oc/jev-1.13-free"
+	jevRequestTimeout    = 10 * time.Second
+	jevResponseMaxLength = 64 * 1024
+	jevStateMaxRunes     = 4000
+	jevTierQuestionID    = "tier"
 	// openCodeModelSegment is the configured model name segment of models
 	// served by OpenCode (9router's "oc" alias), such as
 	// "xiaomi/oc/mimo-v2.6-flash-free:vision".

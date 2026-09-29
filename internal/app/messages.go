@@ -81,7 +81,7 @@ func (instance *bot) handleMessageCreate(
 		return
 	}
 
-	currentModel := instance.currentModelForChannelIDs(loadedConfig, channelIDs)
+	currentModel := instance.modelForIncomingMessage(loadedConfig, message, channelIDs)
 
 	err = instance.respondToMessage(
 		context.Background(),
@@ -101,6 +101,43 @@ func (instance *bot) handleMessageCreate(
 	}
 
 	instance.nodes.evictExcess()
+}
+
+// modelForIncomingMessage resolves the reply model: channel locks first,
+// then Jev smart auto-routing for allowlisted channels, then the global
+// default. Jev failures fall back to the channel default.
+func (instance *bot) modelForIncomingMessage(
+	loadedConfig config,
+	message *discordgo.Message,
+	channelIDs []string,
+) string {
+	if lockedModel, ok := loadedConfig.lockedModelForChannelIDs(channelIDs); ok {
+		return lockedModel
+	}
+
+	if !smartRoutingChannelRoutable(loadedConfig, channelIDs) {
+		return instance.currentModelForConfig(loadedConfig)
+	}
+
+	routedModel, _, ok := instance.resolveSmartRoutingModel(
+		context.Background(),
+		loadedConfig,
+		channelIDs,
+		jevRoutingState(trimBotMention(messageContentForRouting(message), instance.currentBotUserID())),
+	)
+	if !ok {
+		return instance.currentModelForConfig(loadedConfig)
+	}
+
+	return routedModel
+}
+
+func messageContentForRouting(message *discordgo.Message) string {
+	if message == nil {
+		return ""
+	}
+
+	return message.Content
 }
 
 // currentBotUserID returns the bot's Discord user ID, or "" when the gateway
