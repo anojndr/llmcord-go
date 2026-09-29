@@ -20,19 +20,21 @@ const (
 	jevTierFlagship = "flagship"
 	jevTierBalanced = "balanced"
 	jevTierFast     = "fast"
+	jevTierLite     = "lite"
 	jevTierEco      = "eco"
 )
 
 func jevTierOrder() []string {
-	return []string{jevTierFlagship, jevTierBalanced, jevTierFast, jevTierEco}
+	return []string{jevTierFlagship, jevTierBalanced, jevTierFast, jevTierLite, jevTierEco}
 }
 
 func jevTierCriteria() map[string]string {
 	return map[string]string{
 		jevTierFlagship: "Hard reasoning, complex coding, math proofs, multi-step analysis, nuanced or high-stakes requests. Needs maximum intelligence (10/10, ~50.7s e2e).",
 		jevTierBalanced: "Moderate difficulty, explanations, writing help, general questions. Strong intelligence (8/10, ~34.3s e2e) with lower latency than flagship.",
-		jevTierFast:     "Simple factual questions, quick lookups, low complexity (7/10, ~12.7s e2e). Speed matters more than depth.",
-		jevTierEco:      "Trivial chit-chat, greetings, acknowledgements, very simple questions (5/10, ~17.6s e2e). Cheapest and fastest tier.",
+		jevTierFast:     "Simple factual questions, quick lookups, low complexity (6/10, ~12.7s e2e). Speed matters more than depth.",
+		jevTierLite:     "Lightweight questions, casual help, low stakes (4/10, ~18.4s e2e). Faster and cheaper than the upper tiers.",
+		jevTierEco:      "Trivial chit-chat, greetings, acknowledgements, very simple questions (2/10, ~17.6s e2e). Cheapest and fastest tier.",
 	}
 }
 

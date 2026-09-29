@@ -21,6 +21,7 @@ const (
 	testJevFlagshipModel = "openai/flagship-model"
 	testJevBalancedModel = "openai/balanced-model"
 	testJevFastModel     = "openai/fast-model"
+	testJevLiteModel     = "openai/lite-model"
 	testJevEcoModel      = "openai/eco-model"
 )
 
@@ -38,6 +39,7 @@ models:
   %s:
   %s:
   %s:
+  %s:
 smart_routing:
   channels:
     - %s
@@ -47,9 +49,10 @@ smart_routing:
     flagship: %s
     balanced: %s
     fast: %s
+    lite: %s
     eco: %s
-`, testJevFlagshipModel, testJevBalancedModel, testJevFastModel, testJevEcoModel,
-		testJevChannel, testJevFlagshipModel, testJevBalancedModel, testJevFastModel, testJevEcoModel,
+`, testJevFlagshipModel, testJevBalancedModel, testJevFastModel, testJevLiteModel, testJevEcoModel,
+		testJevChannel, testJevFlagshipModel, testJevBalancedModel, testJevFastModel, testJevLiteModel, testJevEcoModel,
 	) + extraText
 
 	err := os.WriteFile(configPath, []byte(configText), 0o600)
@@ -65,6 +68,7 @@ func smartRoutingTestTiers() map[string]string {
 		jevTierFlagship: testJevFlagshipModel,
 		jevTierBalanced: testJevBalancedModel,
 		jevTierFast:     testJevFastModel,
+		jevTierLite:     testJevLiteModel,
 		jevTierEco:      testJevEcoModel,
 	}
 }
@@ -80,9 +84,10 @@ func smartRoutingTestConfig() config {
 			testJevFlagshipModel: nil,
 			testJevBalancedModel: nil,
 			testJevFastModel:     nil,
+			testJevLiteModel:     nil,
 			testJevEcoModel:      nil,
 		},
-		ModelOrder: []string{testJevFlagshipModel, testJevBalancedModel, testJevFastModel, testJevEcoModel},
+		ModelOrder: []string{testJevFlagshipModel, testJevBalancedModel, testJevFastModel, testJevLiteModel, testJevEcoModel},
 		SmartRouting: smartRoutingConfig{
 			Channels:   []string{testJevChannel},
 			ChannelSet: channelSet,
@@ -198,6 +203,7 @@ smart_routing:
     flagship: openai/missing-model
     balanced: openai/missing-model
     fast: openai/missing-model
+    lite: openai/missing-model
     eco: openai/missing-model
 `,
 			fragment: "references undefined model",
@@ -212,7 +218,8 @@ smart_routing:
     flagship: %s
     balanced: %s
     fast: %s
-`, firstTestModel, firstTestModel, firstTestModel),
+    lite: %s
+`, firstTestModel, firstTestModel, firstTestModel, firstTestModel),
 			fragment: "missing tier",
 		},
 		{
@@ -225,9 +232,10 @@ smart_routing:
     flagship: %s
     balanced: %s
     fast: %s
+    lite: %s
     eco: %s
     ultra: %s
-`, firstTestModel, firstTestModel, firstTestModel, firstTestModel, firstTestModel),
+`, firstTestModel, firstTestModel, firstTestModel, firstTestModel, firstTestModel, firstTestModel),
 			fragment: "unknown tier",
 		},
 		{
@@ -242,8 +250,9 @@ smart_routing:
     flagship: %s
     balanced: %s
     fast: %s
+    lite: %s
     eco: %s
-`, firstTestModel, firstTestModel, firstTestModel, firstTestModel, firstTestModel),
+`, firstTestModel, firstTestModel, firstTestModel, firstTestModel, firstTestModel, firstTestModel),
 			fragment: "collides with channel_model_locks",
 		},
 	}
@@ -348,6 +357,27 @@ func TestResolveSmartRoutingModelMapsTierToModel(t *testing.T) {
 	}
 
 	if modelName != testJevFastModel || tier != jevTierFast {
+		t.Fatalf("unexpected route: %q %q", modelName, tier)
+	}
+}
+
+func TestResolveSmartRoutingModelMapsLiteTierToModel(t *testing.T) {
+	t.Parallel()
+
+	loadedConfig := smartRoutingTestConfig()
+	instance := newSmartRoutingStubBot(&stubJevRouter{tier: jevTierLite, confidence: 0.8})
+
+	modelName, tier, ok := instance.resolveSmartRoutingModel(
+		t.Context(),
+		loadedConfig,
+		[]string{testJevChannel},
+		"what is a good cheap lunch nearby?",
+	)
+	if !ok {
+		t.Fatal("expected routing to succeed")
+	}
+
+	if modelName != testJevLiteModel || tier != jevTierLite {
 		t.Fatalf("unexpected route: %q %q", modelName, tier)
 	}
 }
@@ -517,7 +547,7 @@ func TestSmartRoutingAutocompleteListsTierModels(t *testing.T) {
 		}
 	}
 
-	for _, want := range []string{testJevFlagshipModel, testJevBalancedModel, testJevFastModel, testJevEcoModel} {
+	for _, want := range []string{testJevFlagshipModel, testJevBalancedModel, testJevFastModel, testJevLiteModel, testJevEcoModel} {
 		if _, ok := seen[want]; !ok {
 			t.Fatalf("missing tier model %q in %#v", want, seen)
 		}
