@@ -1257,6 +1257,11 @@ func validateDatabaseConfig(loadedConfig databaseConfig) error {
 	return nil
 }
 
+// validateMediaAnalysisModel checks the preprocessor tried when the reply
+// model cannot hear audio or see video itself. Any configured model works:
+// the preprocessor request goes through the normal provider router, which
+// converts audio to input_audio and video to video_url for
+// OpenAI-compatible providers (same as media_analysis_model_fallback).
 func validateMediaAnalysisModel(loadedConfig config) error {
 	if strings.TrimSpace(loadedConfig.MediaAnalysisModel) == "" {
 		return nil
@@ -1267,26 +1272,6 @@ func validateMediaAnalysisModel(loadedConfig config) error {
 			"media_analysis_model %q is not defined in models: %w",
 			loadedConfig.MediaAnalysisModel,
 			os.ErrNotExist,
-		)
-	}
-
-	apiKind, err := configuredModelAPIKind(
-		loadedConfig,
-		loadedConfig.MediaAnalysisModel,
-	)
-	if err != nil {
-		return fmt.Errorf(
-			"inspect media_analysis_model %q: %w",
-			loadedConfig.MediaAnalysisModel,
-			err,
-		)
-	}
-
-	if apiKind != providerAPIKindGemini && loadedConfig.MediaAnalysisModel != defaultMimoMediaAnalysisModel {
-		return fmt.Errorf(
-			"media_analysis_model %q must use a gemini provider: %w",
-			loadedConfig.MediaAnalysisModel,
-			os.ErrInvalid,
 		)
 	}
 

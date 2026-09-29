@@ -1775,7 +1775,7 @@ web_search:
 	}
 }
 
-func TestLoadConfigRejectsNonGeminiMediaAnalysisModel(t *testing.T) {
+func TestLoadConfigAcceptsOpenAICompatibleMediaAnalysisModel(t *testing.T) {
 	t.Parallel()
 
 	tempDir := t.TempDir()
@@ -1783,11 +1783,11 @@ func TestLoadConfigRejectsNonGeminiMediaAnalysisModel(t *testing.T) {
 	configText := `
 bot_token: discord-token
 providers:
-  openai:
+  9router:
     base_url: https://api.example.com/v1
 models:
-  openai/first-model:
-media_analysis_model: openai/first-model
+  9router/ag/gemini-3.8-flash-low:vision:
+media_analysis_model: 9router/ag/gemini-3.8-flash-low:vision
 `
 
 	err := os.WriteFile(configPath, []byte(configText), 0o600)
@@ -1795,9 +1795,13 @@ media_analysis_model: openai/first-model
 		t.Fatalf("write config file: %v", err)
 	}
 
-	_, err = loadConfig(configPath)
-	if err == nil {
-		t.Fatal("expected non-gemini media analysis model to fail validation")
+	loadedConfig, err := loadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config with OpenAI-compatible media analysis model: %v", err)
+	}
+
+	if loadedConfig.MediaAnalysisModel != "9router/ag/gemini-3.8-flash-low:vision" {
+		t.Fatalf("unexpected media analysis model: %q", loadedConfig.MediaAnalysisModel)
 	}
 }
 
