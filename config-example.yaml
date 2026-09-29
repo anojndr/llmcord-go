@@ -347,6 +347,31 @@ models:
 channel_model_locks:
   # "123456789012345678": google/gemini-3.6-flash
 
+# -----------------------------------------------------------------------------
+# Smart auto-routing — Jev (TypeSafe System One) picks a model tier per message
+# in the listed channels: one `choice` call maps the user query to flagship /
+# balanced / fast / eco, then each tier maps to a configured model. Channel
+# locks always win; a smart-routed channel must not also appear in
+# channel_model_locks. Jev failures (timeout, status, decode, unknown tier)
+# fall back to the global default model. `/model` is disabled in routed
+# channels (autocomplete lists the tier models with `~ <model> (<tier>, auto)`).
+# -----------------------------------------------------------------------------
+# smart_routing:
+#   # Channels where Jev classifies every reply (for example "1553823182207721888").
+#   channels:
+#     - "1553823182207721888"
+#   # Jev System One endpoint. Default: http://localhost:20128/v1/systemone
+#   endpoint: http://localhost:20128/v1/systemone
+#   # Jev model for the routing call. Default: oc/jev-1.13-free
+#   model: oc/jev-1.13-free
+#   # Optional bearer key(s) for the routing endpoint; string or list (round-robin).
+#   # api_key: sk-8d2d957c7ec204c4-f233nq-b39d4fba
+#   tiers:
+#     flagship: 9router/oc/muse-spark-1.3-contributor-free:vision
+#     balanced: 9router-fast/oc/muse-spark-1.3-contributor-free:vision
+#     fast: 9router/ag/gemini-3.8-flash-low:vision
+#     eco: xiaomi/oc/mimo-v2.6-flash-free:vision
+
 media_analysis_model: google/gemini-3.6-flash
 # Backup preprocessor tried when media_analysis_model fails on a part (for
 # example MiMo outage → Gemini). Must name a different configured model.
