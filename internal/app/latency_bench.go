@@ -14,20 +14,28 @@ import (
 	"github.com/bwmarrin/discordgo"
 )
 
-// latencyBenchQuery is the fixed end-to-end prompt every locked channel's
-// model must answer, so rankings compare the same workload.
+// latencyBenchQuery is the fixed end-to-end prompt every benchmarked model
+// must answer, so rankings compare the same workload.
 const latencyBenchQuery = "iphone 18 pro max news in the philippines"
 
-// latencyBenchCommandName is the slash command that benchmarks every
-// channel_model_locks model end to end.
+// latencyBenchCommandName is the slash command that benchmarks models end to
+// end. Without an option it benchmarks every channel_model_locks model; with
+// the model option it benchmarks one configured model alone.
 const latencyBenchCommandName = "latency"
 
 // latencyBenchCommandDescription describes the latency benchmark command.
-const latencyBenchCommandDescription = "Benchmark every channel_model_locks model end to end"
+const latencyBenchCommandDescription = "Benchmark channel_model_locks models or one model end to end"
+
+// latencyBenchModelOptionName is the optional single-model override for the
+// latency benchmark command.
+const latencyBenchModelOptionName = "model"
+
+// latencyBenchModelOptionDescription describes the single-model override.
+const latencyBenchModelOptionDescription = "Single model to benchmark (defaults to every channel_model_locks model)"
 
 const (
-	// latencyBenchConcurrency bounds how many locked models run at once,
-	// mirroring the external request pool instead of hammering every
+	// latencyBenchConcurrency bounds how many benchmarked models run at
+	// once, mirroring the external request pool instead of hammering every
 	// provider in parallel.
 	latencyBenchConcurrency = externalRequestConcurrency
 	// latencyBenchRequestTimeout bounds one model's whole benchmark turn
@@ -65,6 +73,15 @@ func newLatencyBenchCommand() *discordgo.ApplicationCommand {
 	command.Name = latencyBenchCommandName
 	command.Description = latencyBenchCommandDescription
 	command.Type = discordgo.ChatApplicationCommand
+
+	option := new(discordgo.ApplicationCommandOption)
+	option.Name = latencyBenchModelOptionName
+	option.Description = latencyBenchModelOptionDescription
+	option.Type = discordgo.ApplicationCommandOptionString
+	option.Required = false
+	option.Autocomplete = true
+
+	command.Options = []*discordgo.ApplicationCommandOption{option}
 
 	return command
 }
@@ -134,6 +151,17 @@ func formatLatencyBenchResults(results []latencyBenchResult, guildID string) str
 	return formatLatencyBenchTable(results, guildID, false)
 }
 
+// formatLatencyBenchSingleResult renders one model's benchmark turn without
+// a channel link: single-model runs are not tied to a locked channel.
+func formatLatencyBenchSingleResult(result latencyBenchResult) string {
+	return fmt.Sprintf(
+		"Model latency for `%s`: `%s` — %s",
+		latencyBenchQuery,
+		result.model,
+		formatLatencyBenchLatency(result, true),
+	)
+}
+
 func formatLatencyBenchTable(results []latencyBenchResult, guildID string, withReasons bool) string {
 	lines := make([]string, 0, len(results)+1)
 	lines = append(lines, "Model latency (fastest to slowest) for `"+latencyBenchQuery+"`:")
@@ -190,9 +218,9 @@ func orderedChannelModelLockModels(channelModelLocks map[string]string) []string
 	return models
 }
 
-// latencyBenchRequest builds one locked model's benchmark request: the
-// fixed query through the normal per-model request builder (provider
-// routing, system prompt, auto-append suffixes, web_search tool).
+// latencyBenchRequest builds one model's benchmark request: the fixed query
+// through the normal per-model request builder (provider routing, system
+// prompt, auto-append suffixes, web_search tool).
 func (instance *bot) latencyBenchRequest(
 	loadedConfig config,
 	target latencyBenchResult,
@@ -434,9 +462,9 @@ func (instance *bot) streamBenchmarkToolFreeAnswer(
 	}
 }
 
-// benchmarkLockedModel runs one locked model's benchmark turn end to end
-// (stream plus its single web_search tool round) and measures wall-clock
-// latency from start to the finished answer.
+// benchmarkLockedModel runs one model's benchmark turn end to end (stream
+// plus its single web_search tool round) and measures wall-clock latency
+// from start to the finished answer.
 func (instance *bot) benchmarkLockedModel(
 	ctx context.Context,
 	loadedConfig config,
@@ -497,8 +525,17 @@ func (instance *bot) runLatencyBenchmark(
 	ctx context.Context,
 	loadedConfig config,
 ) []latencyBenchResult {
-	targets := latencyBenchTargets(loadedConfig.ChannelModelLocks)
+	return instance.runLatencyBenchmarkTargets(ctx, loadedConfig, latencyBenchTargets(loadedConfig.ChannelModelLocks))
+}
 
+// runLatencyBenchmarkTargets benchmarks the given targets concurrently and
+// returns the turns ranked fastest to slowest. A model whose request
+// cannot even be built is ranked as failed without blocking the rest.
+func (instance *bot) runLatencyBenchmarkTargets(
+	ctx context.Context,
+	loadedConfig config,
+	targets []latencyBenchResult,
+) []latencyBenchResult {
 	jobs := make([]latencyBenchJob, len(targets))
 	for index, target := range targets {
 		request, err := instance.latencyBenchRequest(loadedConfig, target)
@@ -552,7 +589,7 @@ func (instance *bot) handleLatencyBenchCommand(
 	session *discordgo.Session,
 	interaction *discordgo.InteractionCreate,
 ) error {
-	// Defer first: every locked model streams a full reply, so the ranking
+	// Defer first: every benchmark streams a full reply, so the result
 	// takes far longer than Discord's 3-second initial-response window.
 	if err := respondInteractionDeferredWithFlags(
 		session,
@@ -571,6 +608,11 @@ func (instance *bot) handleLatencyBenchCommand(
 			interaction.Interaction,
 			"Failed to load configuration.",
 		)
+	}
+
+	requestedModel := strings.TrimSpace(interactionOptionString(interaction.ApplicationCommandData().Options))
+	if requestedModel != "" {
+		return instance.handleLatencyBenchSingleModel(session, interaction, loadedConfig, requestedModel)
 	}
 
 	if len(loadedConfig.ChannelModelLocks) == 0 {
@@ -607,5 +649,65 @@ func (instance *bot) handleLatencyBenchCommand(
 		session,
 		interaction.Interaction,
 		formatLatencyBenchResults(results, guildID),
+	)
+}
+
+func (instance *bot) handleLatencyBenchAutocomplete(
+	session *discordgo.Session,
+	interaction *discordgo.InteractionCreate,
+) error {
+	loadedConfig, err := instance.loadConfigCached()
+	if err != nil {
+		return fmt.Errorf("load config for autocomplete: %w", err)
+	}
+
+	return handleConfiguredModelAutocomplete(
+		session,
+		interaction,
+		instance.currentModelForConfig(loadedConfig),
+		loadedConfig,
+	)
+}
+
+// handleLatencyBenchSingleModel benchmarks one configured model alone,
+// without requiring channel_model_locks.
+func (instance *bot) handleLatencyBenchSingleModel(
+	session *discordgo.Session,
+	interaction *discordgo.InteractionCreate,
+	loadedConfig config,
+	requestedModel string,
+) error {
+	if !loadedConfig.hasModel(requestedModel) {
+		return editInteractionResponseText(
+			session,
+			interaction.Interaction,
+			"Unknown model.",
+		)
+	}
+
+	progressText := fmt.Sprintf("Benchmarking `%s` for `%s` …", requestedModel, latencyBenchQuery)
+	if err := editInteractionResponseText(session, interaction.Interaction, progressText); err != nil {
+		logWarn("update latency command progress", err)
+	}
+
+	results := instance.runLatencyBenchmarkTargets(
+		context.Background(),
+		loadedConfig,
+		[]latencyBenchResult{{model: requestedModel}},
+	)
+	if len(results) != 1 {
+		return editInteractionResponseText(
+			session,
+			interaction.Interaction,
+			"Failed to benchmark model.",
+		)
+	}
+
+	slog.Info("latency benchmark finished", "model", requestedModel)
+
+	return editInteractionResponseText(
+		session,
+		interaction.Interaction,
+		formatLatencyBenchSingleResult(results[0]),
 	)
 }

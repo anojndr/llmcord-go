@@ -130,6 +130,7 @@ Generic website URL extraction follows `extraction_order` (default Firecrawl -> 
 - `/editchannelname <channelid> <newchannelname>`: rename a channel (requires `Manage Channels`)
 - `/movechannel <channelid> <movement> <howmany>`: move a channel up/down by visible sibling channels within its category (requires `Manage Channels`)
 - `/latency`: benchmark every `channel_model_locks` model with `iphone 18 pro max news in the philippines` and rank fastest to slowest with channel links
+- `/latency <model>`: benchmark one configured model alone with the same query (no channel link)
 - `/maintenance start <channel_id>`: lock a channel so only user `676735636656357396` and the bot `1307756710072549439` can send messages (denies `Send Messages` for `@everyone`, allows for those users; bot also deletes messages from anyone else, so not even admins can bypass; only `676735636656357396` may invoke the command)
 - `/maintenance stop <channel_id>`: unlock a maintenance-locked channel (removes the permission overwrites; only `676735636656357396` may invoke)
 - Attach files or images for multimodal context

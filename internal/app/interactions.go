@@ -99,7 +99,15 @@ func (instance *bot) handleApplicationCommandInteraction(
 	case moveChannelCommandName:
 		return instance.handleMoveChannelCommand(session, interaction)
 	case latencyBenchCommandName:
-		return instance.handleLatencyBenchCommand(session, interaction)
+		if interaction.Type == discordgo.InteractionApplicationCommand {
+			return instance.handleLatencyBenchCommand(session, interaction)
+		}
+
+		if interaction.Type == discordgo.InteractionApplicationCommandAutocomplete {
+			return instance.handleLatencyBenchAutocomplete(session, interaction)
+		}
+
+		return nil
 	case maintenanceCommandName:
 		return instance.handleMaintenanceCommand(session, interaction)
 	case watcherStatusCommandName:

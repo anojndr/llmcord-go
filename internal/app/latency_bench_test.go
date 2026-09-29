@@ -43,6 +43,18 @@ func TestNewLatencyBenchCommand(t *testing.T) {
 	if command.Type != discordgo.ChatApplicationCommand {
 		t.Fatalf("command type = %v, want chat", command.Type)
 	}
+
+	if len(command.Options) != 1 {
+		t.Fatalf("option count = %d, want 1", len(command.Options))
+	}
+
+	option := command.Options[0]
+	if option.Name != latencyBenchModelOptionName ||
+		option.Type != discordgo.ApplicationCommandOptionString ||
+		option.Required ||
+		!option.Autocomplete {
+		t.Fatalf("unexpected model option: %+v", option)
+	}
 }
 
 func TestLatencyBenchChannelLink(t *testing.T) {
@@ -115,6 +127,25 @@ func TestFormatLatencyBenchResultsLinksChannels(t *testing.T) {
 		if !strings.Contains(formatted, want) {
 			t.Fatalf("formatted ranking %q missing %q", formatted, want)
 		}
+	}
+}
+
+func TestFormatLatencyBenchSingleResult(t *testing.T) {
+	t.Parallel()
+
+	result := latencyBenchResult{model: firstTestModel, latency: 1500 * time.Millisecond}
+	formatted := formatLatencyBenchSingleResult(result)
+	want := "Model latency for `" + latencyBenchQuery + "`: `" + firstTestModel + "` — 1.5s"
+
+	if formatted != want {
+		t.Fatalf("formatted single result = %q, want %q", formatted, want)
+	}
+
+	failed := latencyBenchResult{model: secondTestModel, failed: true, err: errors.New("boom")}
+	formatted = formatLatencyBenchSingleResult(failed)
+
+	if !strings.Contains(formatted, "`"+secondTestModel+"`") || !strings.Contains(formatted, "failed: boom") {
+		t.Fatalf("unexpected formatted single failure: %q", formatted)
 	}
 }
 
@@ -257,6 +288,10 @@ func TestRunLatencyBenchmarkMarksStreamFailure(t *testing.T) {
 }
 
 func newLatencyBenchCommandInteraction() *discordgo.InteractionCreate {
+	return newLatencyBenchCommandInteractionWithModel("")
+}
+
+func newLatencyBenchCommandInteractionWithModel(model string) *discordgo.InteractionCreate {
 	interaction := new(discordgo.Interaction)
 	interaction.ID = "interaction-id"
 	interaction.AppID = "application-id"
@@ -265,9 +300,19 @@ func newLatencyBenchCommandInteraction() *discordgo.InteractionCreate {
 	interaction.GuildID = "978995704666136646"
 	interaction.ChannelID = "invoking-channel"
 
+	commandData := discordgo.ApplicationCommandInteractionData{Name: latencyBenchCommandName}
+
+	if strings.TrimSpace(model) != "" {
+		option := new(discordgo.ApplicationCommandInteractionDataOption)
+		option.Name = latencyBenchModelOptionName
+		option.Type = discordgo.ApplicationCommandOptionString
+		option.Value = model
+		commandData.Options = []*discordgo.ApplicationCommandInteractionDataOption{option}
+	}
+
 	result := new(discordgo.InteractionCreate)
 	result.Interaction = interaction
-	interaction.Data = discordgo.ApplicationCommandInteractionData{Name: latencyBenchCommandName}
+	interaction.Data = commandData
 
 	return result
 }
@@ -362,6 +407,124 @@ func TestHandleLatencyBenchCommandRejectsEmptyLocks(t *testing.T) {
 	}
 }
 
+func TestHandleLatencyBenchCommandBenchmarksSingleModel(t *testing.T) {
+	t.Parallel()
+
+	configPath := writeModelConfig(t)
+	chatClient := newStubChatClient(func(
+		_ context.Context,
+		request chatCompletionRequest,
+		handle func(streamDelta) error,
+	) error {
+		if request.ConfiguredModel != secondTestModel {
+			t.Errorf("benchmarked model = %q, want %q", request.ConfiguredModel, secondTestModel)
+		}
+
+		return handle(newStreamDelta("answer", finishReasonStop))
+	})
+	webSearch := newStubWebSearchClient(func(
+		_ context.Context,
+		_ config,
+		queries []string,
+	) ([]webSearchResult, error) {
+		return []webSearchResult{{Query: queries[0], Text: testWebSearchResultText}}, nil
+	})
+
+	var capture deferredInteractionCapture
+
+	session := newInteractionTestSessionWithTransport(t, roundTripFunc(func(
+		request *http.Request,
+	) (*http.Response, error) {
+		t.Helper()
+
+		capture.requestCount++
+
+		switch capture.requestCount {
+		case 1:
+			return captureDeferredInteractionRequest(t, request, &capture.deferredResponse)
+		case 2, 3:
+			return captureEditedInteractionRequest(t, request, &capture.editedResponse)
+		default:
+			t.Fatalf("unexpected interaction request count: %d", capture.requestCount)
+
+			return nil, errUnexpectedTestRequest
+		}
+	}))
+
+	instance := newModelTestBot(configPath)
+	instance.chatCompletions = chatClient
+	instance.webSearch = webSearch
+
+	if err := instance.handleLatencyBenchCommand(session, newLatencyBenchCommandInteractionWithModel(secondTestModel)); err != nil {
+		t.Fatalf("handle latency command: %v", err)
+	}
+
+	assertDeferredInteractionResponse(t, &capture.deferredResponse)
+
+	want := "Model latency for `" + latencyBenchQuery + "`: `" + secondTestModel + "`"
+	if !strings.Contains(capture.editedResponse.Content, want) {
+		t.Fatalf("single-model result %q missing %q", capture.editedResponse.Content, want)
+	}
+}
+
+func TestHandleLatencyBenchCommandRejectsUnknownModel(t *testing.T) {
+	t.Parallel()
+
+	var capture deferredInteractionCapture
+
+	session := newDeferredInteractionTestSession(t, &capture)
+	instance := newModelTestBot(writeModelConfig(t))
+
+	if err := instance.handleLatencyBenchCommand(session, newLatencyBenchCommandInteractionWithModel("openai/unknown-model")); err != nil {
+		t.Fatalf("handle latency command: %v", err)
+	}
+
+	assertDeferredInteractionResponse(t, &capture.deferredResponse)
+
+	if capture.editedResponse.Content != "Unknown model." {
+		t.Fatalf("unexpected response: %q", capture.editedResponse.Content)
+	}
+}
+
+func TestHandleLatencyBenchAutocompleteListsModels(t *testing.T) {
+	t.Parallel()
+
+	var response discordgo.InteractionResponse
+
+	session := newInteractionTestSession(t, &response)
+	instance := newModelTestBot(writeModelConfig(t))
+
+	interaction := newLatencyBenchCommandInteractionWithModel("")
+	interaction.Type = discordgo.InteractionApplicationCommandAutocomplete
+	interaction.Data = discordgo.ApplicationCommandInteractionData{
+		Name: latencyBenchCommandName,
+		Options: []*discordgo.ApplicationCommandInteractionDataOption{
+			{
+				Name:    latencyBenchModelOptionName,
+				Type:    discordgo.ApplicationCommandOptionString,
+				Value:   "second",
+				Focused: true,
+			},
+		},
+	}
+
+	if err := instance.handleLatencyBenchAutocomplete(session, interaction); err != nil {
+		t.Fatalf("handle latency autocomplete: %v", err)
+	}
+
+	if response.Type != discordgo.InteractionApplicationCommandAutocompleteResult {
+		t.Fatalf("unexpected autocomplete response type: %v", response.Type)
+	}
+
+	if response.Data == nil || len(response.Data.Choices) != 1 {
+		t.Fatalf("unexpected autocomplete choices: %+v", response.Data)
+	}
+
+	if response.Data.Choices[0].Value != secondTestModel {
+		t.Fatalf("unexpected autocomplete choice: %+v", response.Data.Choices[0])
+	}
+}
+
 func TestApplicationCommandDispatchesLatencyBench(t *testing.T) {
 	t.Parallel()
 
@@ -417,5 +580,40 @@ channel_model_locks:
 
 	if !strings.Contains(capture.editedResponse.Content, "https://discord.com/channels/978995704666136646/channel-a") {
 		t.Fatalf("ranking missing channel link: %q", capture.editedResponse.Content)
+	}
+}
+
+func TestApplicationCommandDispatchesLatencyBenchAutocomplete(t *testing.T) {
+	t.Parallel()
+
+	var response discordgo.InteractionResponse
+
+	session := newInteractionTestSession(t, &response)
+	instance := newModelTestBot(writeModelConfig(t))
+
+	interaction := newLatencyBenchCommandInteractionWithModel("")
+	interaction.Type = discordgo.InteractionApplicationCommandAutocomplete
+	interaction.Data = discordgo.ApplicationCommandInteractionData{
+		Name: latencyBenchCommandName,
+		Options: []*discordgo.ApplicationCommandInteractionDataOption{
+			{
+				Name:    latencyBenchModelOptionName,
+				Type:    discordgo.ApplicationCommandOptionString,
+				Value:   "",
+				Focused: true,
+			},
+		},
+	}
+
+	if err := instance.handleApplicationCommandInteraction(session, interaction); err != nil {
+		t.Fatalf("dispatch latency autocomplete: %v", err)
+	}
+
+	if response.Type != discordgo.InteractionApplicationCommandAutocompleteResult {
+		t.Fatalf("unexpected autocomplete response type: %v", response.Type)
+	}
+
+	if response.Data == nil || len(response.Data.Choices) != 2 {
+		t.Fatalf("unexpected autocomplete choices: %+v", response.Data)
 	}
 }
