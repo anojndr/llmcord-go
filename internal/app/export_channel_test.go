@@ -133,6 +133,26 @@ func exportChannelUnknownChannelRoundTrip(
 ) roundTripFunc {
 	t.Helper()
 
+	return exportChannelStatusRoundTrip(t, capture, http.StatusNotFound, `{"message":"Unknown Channel","code":10003}`)
+}
+
+func exportChannelForumRoundTrip(
+	t *testing.T,
+	capture *deferredInteractionCapture,
+) roundTripFunc {
+	t.Helper()
+
+	return exportChannelStatusRoundTrip(t, capture, http.StatusOK, `{"id":"channel-1","name":"forum","type":15}`)
+}
+
+func exportChannelStatusRoundTrip(
+	t *testing.T,
+	capture *deferredInteractionCapture,
+	status int,
+	body string,
+) roundTripFunc {
+	t.Helper()
+
 	return func(request *http.Request) (*http.Response, error) {
 		t.Helper()
 
@@ -140,9 +160,7 @@ func exportChannelUnknownChannelRoundTrip(
 		case request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/callback"):
 			return captureDeferredInteractionRequest(t, request, &capture.deferredResponse)
 		case request.Method == http.MethodGet && request.URL.Path == "/api/v9/channels/channel-1":
-			body := `{"message":"Unknown Channel","code":10003}`
-
-			return newInteractionJSONResponse(request, http.StatusNotFound, body), nil
+			return newInteractionJSONResponse(request, status, body), nil
 		case request.Method == http.MethodPatch && strings.HasSuffix(request.URL.Path, "/messages/@original"):
 			return captureEditedInteractionRequest(t, request, &capture.editedResponse)
 		default:
@@ -584,6 +602,22 @@ func TestHandleApplicationCommandInteractionRoutesExport(t *testing.T) {
 	}
 }
 
+func TestRunExportChannelRequiresBotSession(t *testing.T) {
+	t.Parallel()
+
+	session, err := discordgo.New("Bot discord-token")
+	if err != nil {
+		t.Fatalf("create discord session: %v", err)
+	}
+
+	interaction := &discordgo.Interaction{ID: "interaction-id"}
+
+	err = new(bot).runExportChannel(session, interaction, "channel-1", 100)
+	if err == nil || !strings.Contains(err.Error(), "without bot session") {
+		t.Fatalf("expected missing session error, got %v", err)
+	}
+}
+
 func TestHandleExportChannelCommandReportsUnknownChannel(t *testing.T) {
 	t.Parallel()
 
@@ -636,6 +670,81 @@ func TestHandleExportChannelCommandReportsMissingAccess(t *testing.T) {
 
 	if len(capture.edits) == 0 || !strings.Contains(capture.edits[len(capture.edits)-1], "lacks access") {
 		t.Fatalf("expected missing-access guidance, got %#v", capture.edits)
+	}
+}
+
+func TestHandleExportChannelCommandRejectsForumChannel(t *testing.T) {
+	t.Parallel()
+
+	var capture deferredInteractionCapture
+
+	session := newInteractionTestSessionWithTransport(t, exportChannelForumRoundTrip(t, &capture))
+
+	interaction := newExportChannelCommandInteraction("channel-1", 100, maintenanceOwnerID)
+
+	instance := new(bot)
+	instance.session = session
+
+	err := instance.handleExportChannelCommand(session, interaction)
+	if err != nil {
+		t.Fatalf("handle export channel command: %v", err)
+	}
+
+	if !strings.Contains(capture.editedResponse.Content, "forum channel") {
+		t.Fatalf("expected forum guidance, got %q", capture.editedResponse.Content)
+	}
+}
+
+func TestFetchExportChannelMessagesRetriesTransientPage(t *testing.T) {
+	t.Parallel()
+
+	first := time.Date(2026, time.September, 30, 12, 0, 0, 0, time.UTC)
+	message := newExportChannelMessage("only", "user-1", "alice", "hello", false, first)
+
+	calls := 0
+
+	session, err := discordgo.New("Bot discord-token")
+	if err != nil {
+		t.Fatalf("create discord session: %v", err)
+	}
+
+	session.Client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		t.Helper()
+
+		calls++
+
+		// 500 (not 502) bypasses discordgo's internal 502 retry, so the
+		// first page attempt surfaces to loadExportChannelPage, which
+		// retries once with backoff before succeeding.
+		if calls == 1 {
+			return newInteractionJSONResponse(request, http.StatusInternalServerError, `{"message":"Server Error"}`), nil
+		}
+
+		if calls == 2 {
+			body, marshalErr := json.Marshal([]*discordgo.Message{message})
+			if marshalErr != nil {
+				t.Fatalf("marshal history page: %v", marshalErr)
+			}
+
+			return newInteractionJSONResponse(request, http.StatusOK, string(body)), nil
+		}
+
+		return newInteractionJSONResponse(request, http.StatusOK, `[]`), nil
+	})
+
+	messages, _, err := fetchExportChannelMessages(session, "channel-1", 100000, nil)
+	if err != nil {
+		t.Fatalf("fetch export channel messages: %v", err)
+	}
+
+	// 1 failed page + 1 successful page + 1 empty tail page: the middle
+	// call proves the outer retry loop, not discordgo internals.
+	if calls != 3 {
+		t.Fatalf("expected outer page retry, got %d calls", calls)
+	}
+
+	if len(messages) != 1 || messages[0].ID != "only" {
+		t.Fatalf("expected retried page kept, got %+v", messages)
 	}
 }
 
@@ -693,6 +802,11 @@ func TestDescribeExportChannelError(t *testing.T) {
 		t.Fatalf("expected missing-permissions guidance, got %q", got)
 	}
 
+	rateLimited := &discordgo.RateLimitError{RateLimit: &discordgo.RateLimit{}}
+	if got := describeExportChannelError("channel-1", rateLimited); !strings.Contains(got, "rate-limited") {
+		t.Fatalf("expected rate-limit guidance, got %q", got)
+	}
+
 	wrapped := fmt.Errorf("load channel messages for export: %w", missingAccess)
 	if got := describeExportChannelError("channel-1", wrapped); !strings.Contains(got, "lacks access") {
 		t.Fatalf("expected wrapped REST error to map, got %q", got)
@@ -704,8 +818,80 @@ func TestDescribeExportChannelError(t *testing.T) {
 	}
 
 	got := describeExportChannelError("channel-1", errUnexpectedTestRequest)
-	if got != "Failed to export channel `channel-1`." {
-		t.Fatalf("expected generic fallback, got %q", got)
+	if !strings.Contains(got, "Failed to export channel `channel-1`") {
+		t.Fatalf("expected fallback to keep transport detail, got %q", got)
+	}
+
+	if !strings.Contains(got, "unexpected test request") {
+		t.Fatalf("expected fallback to keep transport detail, got %q", got)
+	}
+
+	if got := describeExportChannelError("channel-1", nil); got != "Failed to export channel `channel-1`." {
+		t.Fatalf("expected nil fallback, got %q", got)
+	}
+}
+
+func TestValidateExportChannel(t *testing.T) {
+	t.Parallel()
+
+	if got := validateExportChannel(nil, "channel-1"); !strings.Contains(got, "was not found") {
+		t.Fatalf("expected nil channel to report not found, got %q", got)
+	}
+
+	for channelType, label := range map[discordgo.ChannelType]string{
+		discordgo.ChannelTypeGuildCategory:   "category",
+		discordgo.ChannelTypeGuildVoice:      "voice channel",
+		discordgo.ChannelTypeGuildStageVoice: "stage channel",
+		discordgo.ChannelTypeGuildForum:      "forum channel",
+		discordgo.ChannelTypeGuildMedia:      "media channel",
+	} {
+		channel := &discordgo.Channel{ID: "channel-1", Type: channelType}
+		if got := validateExportChannel(channel, "channel-1"); !strings.Contains(got, label) {
+			t.Fatalf("expected %s guidance, got %q", label, got)
+		}
+	}
+
+	for _, channelType := range []discordgo.ChannelType{
+		discordgo.ChannelTypeGuildText,
+		discordgo.ChannelTypeDM,
+		discordgo.ChannelTypeGuildPublicThread,
+	} {
+		channel := &discordgo.Channel{ID: "channel-1", Type: channelType}
+		if got := validateExportChannel(channel, "channel-1"); got != "" {
+			t.Fatalf("expected text-like channel accepted, got %q", got)
+		}
+	}
+}
+
+func TestIsRetryableExportChannelError(t *testing.T) {
+	t.Parallel()
+
+	if !isRetryableExportChannelError(&discordgo.RateLimitError{RateLimit: &discordgo.RateLimit{}}) {
+		t.Fatal("expected rate limit error to be retryable")
+	}
+
+	retryableResponse := &http.Response{StatusCode: http.StatusBadGateway}
+	retryableErr := &discordgo.RESTError{Response: retryableResponse}
+	if !isRetryableExportChannelError(retryableErr) {
+		t.Fatal("expected 5xx REST error to be retryable")
+	}
+
+	fatalErr := newDiscordRESTError(discordgo.ErrCodeUnknownChannel, "Unknown Channel")
+	if isRetryableExportChannelError(fatalErr) {
+		t.Fatal("expected unknown channel to be fatal")
+	}
+
+	exhausted := fmt.Errorf("load channel messages for export: %w", errExceededExportMaxRetries)
+	if !isRetryableExportChannelError(exhausted) {
+		t.Fatal("expected exhausted discordgo 502 retry to stay retryable")
+	}
+
+	if !isRetryableExportChannelError(io.EOF) {
+		t.Fatal("expected EOF to be retryable")
+	}
+
+	if isRetryableExportChannelError(errUnexpectedTestRequest) {
+		t.Fatal("expected opaque error to be fatal")
 	}
 }
 

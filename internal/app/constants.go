@@ -127,6 +127,9 @@ const (
 	prematureStreamRetryMaxAttempts       = 5
 	prematureStreamRetryFixedDelay        = 1 * time.Second
 	unofferedToolCallMaxAttempts          = 3
+	exportChannelRetryMaxAttempts         = 5
+	exportChannelRetryBaseDelay           = time.Second
+	exportChannelPageStallMaxAttempts     = 3
 	finalRenderCheckDelay                 = 3 * time.Second
 	finalRenderRecheckDelay               = 12 * time.Second
 	externalRequestConcurrency            = 8

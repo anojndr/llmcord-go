@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -38,6 +41,8 @@ const (
 // exportChannelMinTokens floors the tokens option at one via the Discord client.
 // It must be addressable because discordgo takes MinValue as *float64.
 var exportChannelMinTokens = 1.0 //nolint:gochecknoglobals // discordgo *float64 address
+
+var errExceededExportMaxRetries = errors.New("exceeded max retries HTTP 502")
 
 // exportChannelMessage is one user-authored Discord message in newest-to-oldest
 // order. Bot and webhook messages are never included.
@@ -180,13 +185,27 @@ func (instance *bot) runExportChannel(
 	channelID string,
 	tokenLimit int,
 ) error {
-	if _, err := instance.channelByID(channelID); err != nil {
+	if instance == nil || instance.session == nil {
+		return fmt.Errorf("export channel without bot session: %w", os.ErrInvalid)
+	}
+
+	// All Discord reads use the bot session (authenticated identity with
+	// channel access), never the interaction parameter: the gateway session
+	// carries the token and caches the bot resolves channelByID against.
+	channel, err := instance.channelByID(channelID)
+	if err != nil {
 		logWarn("export channel failed to load channel", err, "channel_id", channelID)
 
 		return editInteractionResponseText(session, interaction, describeExportChannelError(channelID, err))
 	}
 
-	messages, tokens, err := instance.fetchExportWithProgress(session, interaction, channelID, tokenLimit)
+	if message := validateExportChannel(channel, channelID); message != "" {
+		return editInteractionResponseText(session, interaction, message)
+	}
+
+	exportSession := instance.session
+
+	messages, tokens, err := instance.fetchExportWithProgress(exportSession, interaction, channelID, tokenLimit)
 	if err != nil {
 		logWarn("export channel failed to load messages", err, "channel_id", channelID)
 
@@ -293,8 +312,18 @@ func sendExportChannelFile(
 
 // describeExportChannelError maps a Discord history failure to an actionable
 // reply: unknown channel (wrong ID), missing access (bot not in the channel
-// or no View/History), or the raw API message otherwise.
+// or no View/History), rate limited (back off and retry), or the raw API
+// message otherwise. The fallback keeps the transport detail (`HTTP 403 ...`,
+// timeout) so the generic reply still names the cause.
 func describeExportChannelError(channelID string, err error) string {
+	var rateLimitErr *discordgo.RateLimitError
+	if errors.As(err, &rateLimitErr) {
+		return fmt.Sprintf(
+			"Discord rate-limited the export of channel `%s`. Wait a minute and try again.",
+			channelID,
+		)
+	}
+
 	var restErr *discordgo.RESTError
 	if errors.As(err, &restErr) && restErr.Message != nil {
 		switch restErr.Message.Code {
@@ -315,7 +344,89 @@ func describeExportChannelError(channelID string, err error) string {
 		}
 	}
 
+	if err != nil {
+		return fmt.Sprintf("Failed to export channel `%s`: %v.", channelID, err)
+	}
+
 	return fmt.Sprintf("Failed to export channel `%s`.", channelID)
+}
+
+// validateExportChannel rejects channels that cannot hold exportable message
+// history (categories, voice, forum roots), mirroring DiscordChatExporter's
+// forum guard: those channel objects resolve fine but their message listing
+// never returns usable history.
+func validateExportChannel(channel *discordgo.Channel, channelID string) string {
+	if channel == nil {
+		return fmt.Sprintf(
+			"Channel `%s` was not found. Check the `channelid` (right-click the channel > Copy Channel ID).",
+			channelID,
+		)
+	}
+
+	if exportChannelHasHistory(channel.Type) {
+		return ""
+	}
+
+	return fmt.Sprintf(
+		"Channel `%s` is a %s and has no message history to export. Pick a text channel, thread, or DM instead.",
+		channelID,
+		exportChannelTypeLabel(channel.Type),
+	)
+}
+
+// exportChannelHasHistory reports whether a Discord channel type can hold
+// message history worth exporting. Text-like channels, threads, news, DMs,
+// and stores qualify; categories, voice/stage, forums, media, and directory
+// roots never return usable history from the messages endpoint.
+func exportChannelHasHistory(channelType discordgo.ChannelType) bool {
+	switch channelType {
+	case discordgo.ChannelTypeGuildText,
+		discordgo.ChannelTypeDM,
+		discordgo.ChannelTypeGroupDM,
+		discordgo.ChannelTypeGuildNews,
+		discordgo.ChannelTypeGuildStore,
+		discordgo.ChannelTypeGuildNewsThread,
+		discordgo.ChannelTypeGuildPublicThread,
+		discordgo.ChannelTypeGuildPrivateThread:
+		return true
+	case discordgo.ChannelTypeGuildVoice,
+		discordgo.ChannelTypeGuildCategory,
+		discordgo.ChannelTypeGuildStageVoice,
+		discordgo.ChannelTypeGuildDirectory,
+		discordgo.ChannelTypeGuildForum,
+		discordgo.ChannelTypeGuildMedia:
+		return false
+	default:
+		return false
+	}
+}
+
+func exportChannelTypeLabel(channelType discordgo.ChannelType) string {
+	switch channelType {
+	case discordgo.ChannelTypeGuildText,
+		discordgo.ChannelTypeDM,
+		discordgo.ChannelTypeGroupDM,
+		discordgo.ChannelTypeGuildNews,
+		discordgo.ChannelTypeGuildStore,
+		discordgo.ChannelTypeGuildNewsThread,
+		discordgo.ChannelTypeGuildPublicThread,
+		discordgo.ChannelTypeGuildPrivateThread:
+		return "message channel"
+	case discordgo.ChannelTypeGuildCategory:
+		return "category"
+	case discordgo.ChannelTypeGuildVoice:
+		return "voice channel"
+	case discordgo.ChannelTypeGuildStageVoice:
+		return "stage channel"
+	case discordgo.ChannelTypeGuildForum:
+		return "forum channel"
+	case discordgo.ChannelTypeGuildMedia:
+		return "media channel"
+	case discordgo.ChannelTypeGuildDirectory:
+		return "directory"
+	default:
+		return "channel"
+	}
 }
 
 // fetchExportChannelMessages pages a channel newest-to-oldest, keeps only
@@ -332,11 +443,12 @@ func fetchExportChannelMessages(
 	scanned := 0
 	tokens := 0
 	beforeID := ""
+	stalls := 0
 
 	for {
-		page, err := session.ChannelMessages(channelID, exportChannelPageSize, beforeID, "", "")
+		page, err := loadExportChannelPage(session, channelID, beforeID)
 		if err != nil {
-			return nil, 0, fmt.Errorf("load channel messages for export: %w", err)
+			return nil, 0, err
 		}
 
 		if len(page) == 0 {
@@ -358,13 +470,103 @@ func fetchExportChannelMessages(
 
 		oldestID := page[len(page)-1].ID
 		if oldestID == "" || oldestID == beforeID {
-			break
+			stalls++
+
+			if stalls >= exportChannelPageStallMaxAttempts {
+				break
+			}
+
+			continue
 		}
 
+		stalls = 0
 		beforeID = oldestID
 	}
 
 	return messages, tokens, nil
+}
+
+// loadExportChannelPage fetches one newest-to-oldest history page, retrying
+// DiscordChatExporter-style transient failures (429/5xx, timeouts, EOF) with
+// exponential backoff so one flaky page never fails the whole export.
+// Fatal failures (unknown channel, missing access) return immediately.
+func loadExportChannelPage(
+	session *discordgo.Session,
+	channelID string,
+	beforeID string,
+) ([]*discordgo.Message, error) {
+	var err error
+
+	var page []*discordgo.Message
+
+	for attempt := range exportChannelRetryMaxAttempts {
+		if attempt > 0 {
+			time.Sleep(exportChannelRetryBaseDelay * time.Duration(1<<uint(attempt-1)))
+		}
+
+		page, err = session.ChannelMessages(channelID, exportChannelPageSize, beforeID, "", "")
+		if err == nil {
+			return page, nil
+		}
+
+		if !isRetryableExportChannelError(err) {
+			break
+		}
+
+		logWarn(
+			"export channel page failed transiently; retrying",
+			err,
+			"channel_id",
+			channelID,
+			"attempt",
+			attempt+1,
+			"max_attempts",
+			exportChannelRetryMaxAttempts,
+		)
+	}
+
+	return nil, fmt.Errorf("load channel messages for export: %w", err)
+}
+
+// isRetryableExportChannelError reports transient Discord failures worth a
+// retry: rate limits, 5xx, timeouts, EOF hiccups. Unknown channel, missing
+// access, and other client errors are fatal and must surface immediately.
+func isRetryableExportChannelError(err error) bool {
+	var rateLimitErr *discordgo.RateLimitError
+	if errors.As(err, &rateLimitErr) {
+		return true
+	}
+
+	var restErr *discordgo.RESTError
+	if errors.As(err, &restErr) {
+		if restErr.Response != nil {
+			if restErr.Response.StatusCode == http.StatusTooManyRequests {
+				return true
+			}
+
+			if restErr.Response.StatusCode >= http.StatusInternalServerError {
+				return true
+			}
+		}
+
+		return false
+	}
+
+	// discordgo absorbs 502s internally up to MaxRestRetries, then surfaces
+	// a plain "Exceeded Max retries HTTP 502 ..." error instead of a
+	// *RESTError. A persistent 502 must keep backing off, not abort. Match
+	// case-insensitively: discordgo capitalizes, the sentinel does not.
+	if errors.Is(err, errExceededExportMaxRetries) ||
+		strings.Contains(strings.ToLower(err.Error()), errExceededExportMaxRetries.Error()) {
+		return true
+	}
+
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		return urlErr.Timeout() || urlErr.Temporary()
+	}
+
+	return errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)
 }
 
 // appendExportChannelPage keeps one newest-to-oldest page of user messages
