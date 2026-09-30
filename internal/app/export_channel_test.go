@@ -895,6 +895,130 @@ func TestIsRetryableExportChannelError(t *testing.T) {
 	}
 }
 
+func TestDecodeExportChannelMessagesToleratesUnknownComponent(t *testing.T) {
+	t.Parallel()
+
+	body := `[{
+		"id": "msg-1",
+		"channel_id": "channel-1",
+		"author": {"id": "user-1", "username": "alice"},
+		"content": "hello",
+		"timestamp": "2026-09-30T12:00:00Z",
+		"components": [{"type": 20, "id": 1, "label": "future"}]
+	}]`
+
+	messages, err := decodeExportChannelMessages([]byte(body))
+	if err != nil {
+		t.Fatalf("decode export channel messages: %v", err)
+	}
+
+	if len(messages) != 1 || messages[0].ID != "msg-1" || messages[0].Content != "hello" {
+		t.Fatalf("expected tolerant decode to keep message fields, got %+v", messages)
+	}
+
+	if messages[0].Author == nil || messages[0].Author.Username != "alice" {
+		t.Fatalf("expected author preserved, got %+v", messages[0].Author)
+	}
+}
+
+func TestDecodeExportChannelMessagesKeepsKnownComponents(t *testing.T) {
+	t.Parallel()
+
+	body := `[{
+		"id": "msg-1",
+		"channel_id": "channel-1",
+		"author": {"id": "user-1", "username": "alice"},
+		"content": "hello",
+		"timestamp": "2026-09-30T12:00:00Z",
+		"components": [{"type": 1, "components": [{"type": 2, "style": 1, "label": "ok", "custom_id": "ok"}]}]
+	}]`
+
+	messages, err := decodeExportChannelMessages([]byte(body))
+	if err != nil {
+		t.Fatalf("decode export channel messages: %v", err)
+	}
+
+	if len(messages) != 1 || len(messages[0].Components) != 1 {
+		t.Fatalf("expected known components preserved, got %+v", messages)
+	}
+}
+
+func TestDecodeExportChannelMessagesRejectsGarbage(t *testing.T) {
+	t.Parallel()
+
+	if _, err := decodeExportChannelMessages([]byte(`not json`)); err == nil {
+		t.Fatal("expected invalid page to fail")
+	}
+
+	if _, err := decodeExportChannelMessages([]byte(`[{"id":}`)); err == nil {
+		t.Fatal("expected invalid message to fail")
+	}
+}
+
+func TestDecodeExportChannelMessagesToleratesNestedUnknownComponent(t *testing.T) {
+	t.Parallel()
+
+	body := `[{
+		"id": "msg-1",
+		"channel_id": "channel-1",
+		"author": {"id": "user-1", "username": "alice"},
+		"content": "hello",
+		"timestamp": "2026-09-30T12:00:00Z",
+		"referenced_message": {
+			"id": "msg-0",
+			"channel_id": "channel-1",
+			"author": {"id": "user-2", "username": "bob"},
+			"content": "parent",
+			"timestamp": "2026-09-30T11:00:00Z",
+			"components": [{"type": 20, "id": 2, "label": "future"}]
+		}
+	}]`
+
+	messages, err := decodeExportChannelMessages([]byte(body))
+	if err != nil {
+		t.Fatalf("decode export channel messages: %v", err)
+	}
+
+	if len(messages) != 1 || messages[0].ReferencedMessage == nil || messages[0].ReferencedMessage.Content != "parent" {
+		t.Fatalf("expected nested message preserved, got %+v", messages)
+	}
+}
+
+func TestDecodeExportChannelMessagesToleratesSnapshotUnknownComponent(t *testing.T) {
+	t.Parallel()
+
+	body := `[{
+		"id": "msg-1",
+		"channel_id": "channel-1",
+		"author": {"id": "user-1", "username": "alice"},
+		"content": "hello",
+		"timestamp": "2026-09-30T12:00:00Z",
+		"message_snapshots": [{
+			"message": {
+				"id": "msg-0",
+				"channel_id": "channel-1",
+				"author": {"id": "user-2", "username": "bob"},
+				"content": "forwarded",
+				"timestamp": "2026-09-30T11:00:00Z",
+				"components": [{"type": 20, "id": 3, "label": "future"}]
+			}
+		}]
+	}]`
+
+	messages, err := decodeExportChannelMessages([]byte(body))
+	if err != nil {
+		t.Fatalf("decode export channel messages: %v", err)
+	}
+
+	if len(messages) != 1 || len(messages[0].MessageSnapshots) != 1 {
+		t.Fatalf("expected snapshot preserved, got %+v", messages)
+	}
+
+	if messages[0].MessageSnapshots[0].Message == nil || messages[0].MessageSnapshots[0].Message.Content != "forwarded" {
+		t.Fatalf("expected inner snapshot message preserved, got %+v", messages[0].MessageSnapshots[0])
+	}
+}
+
 func TestSyncCommandsRegistersExportCommand(t *testing.T) {
 	t.Parallel()
 

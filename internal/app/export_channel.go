@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -504,7 +505,7 @@ func loadExportChannelPage(
 			time.Sleep(exportChannelRetryBaseDelay * time.Duration(1<<uint(attempt-1)))
 		}
 
-		page, err = session.ChannelMessages(channelID, exportChannelPageSize, beforeID, "", "")
+		page, err = loadExportChannelPageOnce(session, channelID, beforeID)
 		if err == nil {
 			return page, nil
 		}
@@ -526,6 +527,38 @@ func loadExportChannelPage(
 	}
 
 	return nil, fmt.Errorf("load channel messages for export: %w", err)
+}
+
+// loadExportChannelPageOnce fetches one history page with a component-tolerant
+// decode: discordgo's Message unmarshal fails the whole page on any unknown
+// component type (e.g. newer modal-only types leaking into messages), while
+// the export only needs author/content/timestamp. The raw request reuses the
+// session transport (auth, rate limits), then each message decodes with
+// unknown components stripped before the discordgo parse.
+func loadExportChannelPageOnce(
+	session *discordgo.Session,
+	channelID string,
+	beforeID string,
+) ([]*discordgo.Message, error) {
+	endpoint := discordgo.EndpointChannelMessages(channelID)
+
+	query := url.Values{}
+	query.Set("limit", strconv.Itoa(exportChannelPageSize))
+
+	if beforeID != "" {
+		query.Set("before", beforeID)
+	}
+
+	if encoded := query.Encode(); encoded != "" {
+		endpoint += "?" + encoded
+	}
+
+	body, err := session.RequestWithBucketID("GET", endpoint, nil, discordgo.EndpointChannelMessages(channelID))
+	if err != nil {
+		return nil, fmt.Errorf("fetch channel messages for export: %w", err)
+	}
+
+	return decodeExportChannelMessages(body)
 }
 
 // isRetryableExportChannelError reports transient Discord failures worth a
@@ -567,6 +600,152 @@ func isRetryableExportChannelError(err error) bool {
 	}
 
 	return errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)
+}
+
+// decodeExportChannelMessages parses one raw history page, dropping message
+// components discordgo cannot decode yet (newer types like modal-only kinds
+// leaking into message payloads). Dropped components never affect the export:
+// only author, content, and timestamp are snapshotted downstream.
+func decodeExportChannelMessages(body []byte) ([]*discordgo.Message, error) {
+	var rawMessages []json.RawMessage
+	if err := json.Unmarshal(body, &rawMessages); err != nil {
+		return nil, fmt.Errorf("decode channel messages for export: %w", err)
+	}
+
+	messages := make([]*discordgo.Message, 0, len(rawMessages))
+
+	for _, rawMessage := range rawMessages {
+		message, err := decodeExportChannelMessage(rawMessage)
+		if err != nil {
+			return nil, err
+		}
+
+		messages = append(messages, message)
+	}
+
+	return messages, nil
+}
+
+func decodeExportChannelMessage(rawMessage json.RawMessage) (*discordgo.Message, error) {
+	var message discordgo.Message
+	if err := json.Unmarshal(rawMessage, &message); err == nil {
+		return &message, nil
+	}
+
+	stripped, stripErr := stripExportMessageComponents(rawMessage)
+	if stripErr != nil {
+		return nil, fmt.Errorf("decode channel message for export: %w", stripErr)
+	}
+
+	if err := json.Unmarshal(stripped, &message); err != nil {
+		return nil, fmt.Errorf("decode channel message for export: %w", err)
+	}
+
+	return &message, nil
+}
+
+func stripExportMessageComponents(rawMessage json.RawMessage) (json.RawMessage, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(rawMessage, &fields); err != nil {
+		return nil, fmt.Errorf("split channel message fields for export: %w", err)
+	}
+
+	delete(fields, "components")
+
+	// Replies, forwards, and thread starters nest whole messages that can
+	// carry the same unknown components; strip them recursively so one
+	// nested payload cannot fail the page either.
+	for _, nestedKey := range []string{"referenced_message", "message_snapshots", "interaction_metadata"} {
+		nested, ok := fields[nestedKey]
+		if !ok {
+			continue
+		}
+
+		strippedNested, err := stripExportNestedComponents(nested)
+		if err != nil {
+			return nil, err
+		}
+
+		fields[nestedKey] = strippedNested
+	}
+
+	stripped, err := json.Marshal(fields)
+	if err != nil {
+		return nil, fmt.Errorf("encode stripped channel message for export: %w", err)
+	}
+
+	return stripped, nil
+}
+
+func stripExportNestedComponents(raw json.RawMessage) (json.RawMessage, error) {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" || strings.EqualFold(trimmed, "null") {
+		return raw, nil
+	}
+
+	if strings.HasPrefix(trimmed, "[") {
+		var items []json.RawMessage
+		if err := json.Unmarshal(raw, &items); err != nil {
+			return nil, fmt.Errorf("split nested messages for export: %w", err)
+		}
+
+		for index, item := range items {
+			stripped, err := stripExportSnapshotValue(item)
+			if err != nil {
+				return nil, err
+			}
+
+			items[index] = stripped
+		}
+
+		encoded, err := json.Marshal(items)
+		if err != nil {
+			return nil, fmt.Errorf("encode stripped nested messages for export: %w", err)
+		}
+
+		return encoded, nil
+	}
+
+	return stripExportMessageValue(raw)
+}
+
+// stripExportSnapshotValue strips a message_snapshot wrapper: the real message
+// lives under `message`, so the wrapper itself has no components to strip.
+// Without unwrapping, a forwarded message with an unknown component still
+// fails the page on the second parse.
+func stripExportSnapshotValue(raw json.RawMessage) (json.RawMessage, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return nil, fmt.Errorf("split nested snapshot for export: %w", err)
+	}
+
+	inner, ok := fields["message"]
+	if !ok {
+		return stripExportMessageValue(raw)
+	}
+
+	stripped, err := stripExportMessageValue(inner)
+	if err != nil {
+		return nil, err
+	}
+
+	fields["message"] = stripped
+
+	encoded, err := json.Marshal(fields)
+	if err != nil {
+		return nil, fmt.Errorf("encode stripped nested snapshot for export: %w", err)
+	}
+
+	return encoded, nil
+}
+
+func stripExportMessageValue(raw json.RawMessage) (json.RawMessage, error) {
+	stripped, err := stripExportMessageComponents(raw)
+	if err != nil {
+		return nil, err
+	}
+
+	return stripped, nil
 }
 
 // appendExportChannelPage keeps one newest-to-oldest page of user messages
