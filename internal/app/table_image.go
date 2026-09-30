@@ -51,6 +51,8 @@ const (
 )
 
 var tableImageFallbackFontOrder = []string{
+	"NotoSansSymbols-Regular.ttf",
+	"NotoSansSymbols2-Regular.ttf",
 	"NotoSansCJK-Regular.ttc",
 	"NotoSansArabic-Regular.ttf",
 	"NotoSansHebrew-Regular.ttf",
@@ -441,7 +443,12 @@ func tableImageEmojiGlyphRanges(
 			continue
 		}
 
-		if !tableImageRunePrefersColorBitmap(textRune) {
+		// Keycap bases (digits, #, *) stay vector unconditionally: Noto
+		// stores them as monochrome keycap-component strikes, and any
+		// pixel-color test cannot tell them apart from genuinely grey
+		// emoji. Every other strike record is indexed; the draw path
+		// decides bitmap-vs-vector per rune.
+		if tableImageRuneIsKeycapBase(textRune) {
 			continue
 		}
 
@@ -452,26 +459,22 @@ func tableImageEmojiGlyphRanges(
 }
 
 // tableImageRunePrefersColorBitmap reports whether a rune should render from
-// the CBDT color strike instead of a vector face. Noto Color Emoji maps many
-// text codepoints (digits, #, * and other text-presentation symbols) to
-// monochrome keycap-base bitmaps; those must stay on the vector path, or a
-// genuinely grey emoji (🩶, 🩷) becomes indistinguishable from a keycap base
-// under any pixel-color test. Supplementary-plane pictographs always render
-// as emoji and take the bitmap path. BMP symbols take it only with an
-// immediately following VS16 (⚡ vs ⚡️), matching platform text-vs-emoji
-// behavior; without the selector the base stays vector.
+// the CBDT color strike instead of a vector face. Keycap bases (digits, #,
+// *) stay vector unconditionally: Noto stores them as monochrome
+// keycap-component strikes, and any pixel-color test cannot tell them apart
+// from genuinely grey emoji (🩶, 🩷). Every other indexed rune defaults to
+// the color bitmap whenever the strike has a decodable record for it, so a
+// BMP pictograph without a vector face (✅ U+2705, ❌ U+274C, ❤ U+2764,
+// ⚡ U+26A1) renders full-color instead of tofu. A rune whose strike record
+// the indexer skipped (never mapped) stays vector.
 func tableImageRunePrefersColorBitmap(textRune rune) bool {
-	return textRune >= 0x1F000
+	return !tableImageRuneIsKeycapBase(textRune)
 }
 
-func tableImageRunePrefersColorBitmapAt(runes []rune, index int) bool {
-	textRune := runes[index]
-
-	if textRune >= 0x1F000 {
-		return true
-	}
-
-	return tableImageEmojiPresentationPairBefore(runes, index)
+// tableImageRuneIsKeycapBase reports the monochrome keycap-component bases
+// (digits, #, *) that must never take the emoji bitmap path.
+func tableImageRuneIsKeycapBase(textRune rune) bool {
+	return textRune >= '0' && textRune <= '9' || textRune == '#' || textRune == '*'
 }
 
 func tableImageEmojiGlyphRecord(
@@ -1167,24 +1170,20 @@ func splitWideTableWord(fonts tableImageFontSet, face font.Face, word string, ma
 func tableImageMeasure(fonts tableImageFontSet, face font.Face, text string) fixed.Int26_6 {
 	var width fixed.Int26_6
 
-	runes := []rune(text)
-
-	for index, textRune := range runes {
+	for _, textRune := range text {
 		if tableImageIsEmojiModifier(textRune) {
 			continue
 		}
 
-		width += tableImageMeasuredAdvance(fonts, face, runes, index)
+		width += tableImageMeasuredAdvance(fonts, face, textRune)
 	}
 
 	return width
 }
 
-func tableImageMeasuredAdvance(fonts tableImageFontSet, face font.Face, runes []rune, index int) fixed.Int26_6 {
-	textRune := runes[index]
-
+func tableImageMeasuredAdvance(fonts tableImageFontSet, face font.Face, textRune rune) fixed.Int26_6 {
 	if fonts.emoji != nil && fonts.emoji.has(textRune) &&
-		tableImageRunePrefersColorBitmapAt(runes, index) {
+		tableImageRunePrefersColorBitmap(textRune) {
 		return fixed.I(fonts.emoji.advancePixels(tableImageLineHeight(face)))
 	}
 
@@ -1214,9 +1213,10 @@ func tableImageVectorAdvance(fonts tableImageFontSet, face font.Face, textRune r
 }
 
 func tableImageRuneFace(fonts tableImageFontSet, face font.Face, textRune rune) font.Face {
-	if fonts.emoji != nil && fonts.emoji.has(textRune) {
-		return face
-	}
+	// No bitmap early-return: an indexed emoji rune takes the CBDT bitmap
+	// path in the draw callers and never reaches this helper. Falling
+	// through to the vector chain is the correct fallback when the bitmap
+	// blit fails (missing strike, decode error, non-RGBA target).
 
 	if _, ok := face.GlyphAdvance(textRune); ok {
 		return face
@@ -1265,15 +1265,13 @@ func drawTableRow(
 }
 
 func tableImageDrawString(fonts tableImageFontSet, active *font.Drawer, text string) {
-	runes := []rune(text)
-
-	for index, textRune := range runes {
+	for _, textRune := range text {
 		if tableImageIsEmojiModifier(textRune) {
 			continue
 		}
 
 		if fonts.emoji != nil && fonts.emoji.has(textRune) &&
-			tableImageRunePrefersColorBitmapAt(runes, index) {
+			tableImageRunePrefersColorBitmap(textRune) {
 			tableImageDrawEmoji(fonts, active, textRune)
 
 			continue
@@ -1281,14 +1279,6 @@ func tableImageDrawString(fonts tableImageFontSet, active *font.Drawer, text str
 
 		tableImageDrawVectorGlyph(fonts, active, textRune)
 	}
-}
-
-// tableImageEmojiPresentationPairBefore reports whether the rune at index is
-// immediately followed by VS16, requesting emoji presentation for a BMP base
-// (⚡ vs ⚡️). The bitmap path applies only with the selector; without it the
-// base stays vector, matching platform text-vs-emoji behavior.
-func tableImageEmojiPresentationPairBefore(runes []rune, index int) bool {
-	return index+1 < len(runes) && runes[index+1] == 0xFE0F
 }
 
 func tableImageDrawVectorGlyph(fonts tableImageFontSet, active *font.Drawer, textRune rune) {

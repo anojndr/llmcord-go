@@ -119,7 +119,7 @@ func TestRenderIssueTableDrawsEmojiInColor(t *testing.T) {
 		t.Fatal("expected emoji font for color emoji rendering")
 	}
 
-	for _, textRune := range []rune{0x1F680, 0x1F3AF, 0x1F40C} {
+	for _, textRune := range []rune{0x1F680, 0x1F3AF, 0x1F40C, 0x2705, 0x274C, 0x2764, 0x26A1} {
 		if !fonts.emoji.has(textRune) {
 			t.Fatalf("expected emoji glyph for U+%X", textRune)
 		}
@@ -129,20 +129,26 @@ func TestRenderIssueTableDrawsEmojiInColor(t *testing.T) {
 		}
 	}
 
+	for _, textRune := range []rune{'0', '#', '*'} {
+		if fonts.emoji.has(textRune) {
+			t.Fatalf("expected keycap base U+%X to stay vector", textRune)
+		}
+
+		if tableImageRunePrefersColorBitmap(textRune) {
+			t.Fatalf("expected keycap base U+%X to stay vector", textRune)
+		}
+	}
+
 	if !tableImageRunePrefersColorBitmap(0x1F680) {
 		t.Fatal("expected supplementary-plane emoji to prefer the color bitmap")
 	}
 
-	if tableImageRunePrefersColorBitmap(0x26A1) {
-		t.Fatal("expected text-presentation lightning to stay vector without VS16")
+	if !tableImageRunePrefersColorBitmap(0x2705) {
+		t.Fatal("expected BMP check mark to prefer the color bitmap")
 	}
 
-	if !tableImageRunePrefersColorBitmapAt([]rune{0x26A1, 0xFE0F}, 0) {
-		t.Fatal("expected lightning with VS16 to take the color bitmap")
-	}
-
-	if tableImageRunePrefersColorBitmapAt([]rune{0x26A1}, 0) {
-		t.Fatal("expected bare lightning to stay vector")
+	if !tableImageRunePrefersColorBitmap(0x26A1) {
+		t.Fatal("expected BMP lightning to prefer the color bitmap")
 	}
 
 	imageBytes, err := renderMarkdownTablePNG(markdownTable{
@@ -160,6 +166,76 @@ func TestRenderIssueTableDrawsEmojiInColor(t *testing.T) {
 
 	if !tableImageHasNonGrayPixel(decoded) {
 		t.Fatal("expected color emoji pixels in rendered table")
+	}
+}
+
+func TestRenderUserTableDrawsBMPCheckAndCrossInColor(t *testing.T) {
+	t.Parallel()
+
+	fonts, err := loadTableImageFonts()
+	if err != nil {
+		t.Fatalf("load table fonts: %v", err)
+	}
+
+	if fonts.emoji == nil {
+		t.Fatal("expected emoji font for color emoji rendering")
+	}
+
+	for _, textRune := range []rune{0x2705, 0x274C} {
+		if !fonts.emoji.has(textRune) {
+			t.Fatalf("expected emoji glyph for U+%X", textRune)
+		}
+
+		if _, ok := fonts.emoji.decoded(textRune); !ok {
+			t.Fatalf("expected decodable emoji bitmap for U+%X", textRune)
+		}
+	}
+
+	imageBytes, err := renderMarkdownTablePNG(markdownTable{
+		header: []string{"Do ✅", "Don't ❌"},
+		rows: [][]string{
+			{"Meet up + test before paying", "Send GCash first to strangers"},
+			{"Ask for FurMark temp video", "Buy \"miner cards, no box, no receipt\" without testing"},
+			{"Check warranty status on brand site", "Buy from Shopee/Lazada (overpriced stock)"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("render user table png: %v", err)
+	}
+
+	decoded, err := png.Decode(bytes.NewReader(imageBytes))
+	if err != nil {
+		t.Fatalf("decode user table png: %v", err)
+	}
+
+	if !tableImageHasNonGrayPixel(decoded) {
+		t.Fatal("expected color emoji pixels in rendered user table")
+	}
+}
+
+func TestTableImageRuneFaceFallsBackThroughVectorChain(t *testing.T) {
+	t.Parallel()
+
+	fonts, err := loadTableImageFonts()
+	if err != nil {
+		t.Fatalf("load table fonts: %v", err)
+	}
+
+	// U+2764 has a color bitmap and vector coverage outside the primary
+	// faces (Noto Sans Symbols2): the face resolver must walk the fallback
+	// chain instead of returning the primary face (which would draw tofu
+	// if the emoji blit ever fails).
+	if _, ok := fonts.regular.GlyphAdvance(0x2764); ok {
+		t.Skip("primary face covers U+2764; fallback walk not exercised")
+	}
+
+	got := tableImageRuneFace(fonts, fonts.regular, 0x2764)
+	if got == nil {
+		t.Fatal("expected non-nil fallback face")
+	}
+
+	if _, ok := got.GlyphAdvance(0x2764); !ok {
+		t.Fatal("expected resolved face to carry U+2764")
 	}
 }
 
