@@ -2,6 +2,7 @@ package app
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -80,7 +81,7 @@ func newExportChannelHistorySession(
 ) *discordgo.Session {
 	t.Helper()
 
-	server := &exportChannelTestServer{t: t, capture: capture}
+	server := &exportChannelTestServer{t: t, capture: capture, channelBody: `{"id":"channel-1","name":"general"}`}
 
 	server.remaining = append([][]*discordgo.Message(nil), pages...)
 
@@ -88,9 +89,13 @@ func newExportChannelHistorySession(
 }
 
 type exportChannelTestServer struct {
-	t         *testing.T
-	capture   *exportChannelUploadCapture
-	remaining [][]*discordgo.Message
+	t             *testing.T
+	capture       *exportChannelUploadCapture
+	remaining     [][]*discordgo.Message
+	channelBody   string
+	channelStatus int
+	historyBody   string
+	historyStatus int
 }
 
 func (server *exportChannelTestServer) roundTrip(request *http.Request) (*http.Response, error) {
@@ -99,8 +104,10 @@ func (server *exportChannelTestServer) roundTrip(request *http.Request) (*http.R
 	switch {
 	case request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/callback"):
 		return captureDeferredInteractionRequest(server.t, request, &server.capture.deferred)
+	case request.Method == http.MethodGet && request.URL.Path == "/api/v9/channels/channel-1":
+		return server.serveChannel(request)
 	case request.Method == http.MethodGet && strings.HasSuffix(request.URL.Path, "/channels/channel-1/messages"):
-		return server.serveHistory(request), nil
+		return server.serveHistory(request)
 	case request.Method == http.MethodPatch && strings.HasSuffix(request.URL.Path, "/messages/@original"):
 		return server.serveEdit(request)
 	default:
@@ -110,8 +117,48 @@ func (server *exportChannelTestServer) roundTrip(request *http.Request) (*http.R
 	}
 }
 
-func (server *exportChannelTestServer) serveHistory(request *http.Request) *http.Response {
+func (server *exportChannelTestServer) serveChannel(request *http.Request) (*http.Response, error) {
 	server.t.Helper()
+
+	if server.channelStatus != 0 {
+		return newInteractionJSONResponse(request, server.channelStatus, server.channelBody), nil
+	}
+
+	return newInteractionJSONResponse(request, http.StatusOK, server.channelBody), nil
+}
+
+func exportChannelUnknownChannelRoundTrip(
+	t *testing.T,
+	capture *deferredInteractionCapture,
+) roundTripFunc {
+	t.Helper()
+
+	return func(request *http.Request) (*http.Response, error) {
+		t.Helper()
+
+		switch {
+		case request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/callback"):
+			return captureDeferredInteractionRequest(t, request, &capture.deferredResponse)
+		case request.Method == http.MethodGet && request.URL.Path == "/api/v9/channels/channel-1":
+			body := `{"message":"Unknown Channel","code":10003}`
+
+			return newInteractionJSONResponse(request, http.StatusNotFound, body), nil
+		case request.Method == http.MethodPatch && strings.HasSuffix(request.URL.Path, "/messages/@original"):
+			return captureEditedInteractionRequest(t, request, &capture.editedResponse)
+		default:
+			t.Fatalf("unexpected request: %s %s", request.Method, request.URL.Path)
+
+			return nil, errUnexpectedTestRequest
+		}
+	}
+}
+
+func (server *exportChannelTestServer) serveHistory(request *http.Request) (*http.Response, error) {
+	server.t.Helper()
+
+	if server.historyStatus != 0 {
+		return newInteractionJSONResponse(request, server.historyStatus, server.historyBody), nil
+	}
 
 	page := []*discordgo.Message{}
 
@@ -120,7 +167,7 @@ func (server *exportChannelTestServer) serveHistory(request *http.Request) *http
 		server.remaining = server.remaining[1:]
 	}
 
-	return newJSONResponse(server.t, request, page)
+	return newJSONResponse(server.t, request, page), nil
 }
 
 func (server *exportChannelTestServer) serveEdit(request *http.Request) (*http.Response, error) {
@@ -225,12 +272,15 @@ func TestHandleExportChannelCommandRequiresOwner(t *testing.T) {
 	session := newDeferredInteractionTestSession(t, &capture)
 	interaction := newExportChannelCommandInteraction("channel-1", 100, "some-other-user")
 
-	err := new(bot).handleExportChannelCommand(session, interaction)
+	instance := new(bot)
+	instance.session = session
+
+	err := instance.handleExportChannelCommand(session, interaction)
 	if err != nil {
 		t.Fatalf("handle export channel command: %v", err)
 	}
 
-	assertDeferredEphemeralInteractionResponse(t, &capture.deferredResponse)
+	assertDeferredInteractionResponse(t, &capture.deferredResponse)
 
 	if capture.requestCount != 2 {
 		t.Fatalf("unexpected interaction request count: got %d want 2", capture.requestCount)
@@ -264,12 +314,15 @@ func TestHandleExportChannelCommandValidatesInput(t *testing.T) {
 			session := newDeferredInteractionTestSession(t, &capture)
 			interaction := newExportChannelCommandInteraction(test.channelID, test.tokens, maintenanceOwnerID)
 
-			err := new(bot).handleExportChannelCommand(session, interaction)
+			instance := new(bot)
+			instance.session = session
+
+			err := instance.handleExportChannelCommand(session, interaction)
 			if err != nil {
 				t.Fatalf("handle export channel command: %v", err)
 			}
 
-			assertDeferredEphemeralInteractionResponse(t, &capture.deferredResponse)
+			assertDeferredInteractionResponse(t, &capture.deferredResponse)
 
 			if capture.editedResponse.Content != test.want {
 				t.Fatalf("unexpected edited response: got %q want %q", capture.editedResponse.Content, test.want)
@@ -454,12 +507,15 @@ func TestHandleExportChannelCommandUploadsJSON(t *testing.T) {
 
 	interaction := newExportChannelCommandInteraction("channel-1", 100000, maintenanceOwnerID)
 
-	err := new(bot).handleExportChannelCommand(session, interaction)
+	instance := new(bot)
+	instance.session = session
+
+	err := instance.handleExportChannelCommand(session, interaction)
 	if err != nil {
 		t.Fatalf("handle export channel command: %v", err)
 	}
 
-	assertDeferredEphemeralInteractionResponse(t, &capture.deferred)
+	assertDeferredInteractionResponse(t, &capture.deferred)
 
 	if len(capture.edits) == 0 {
 		t.Fatal("expected progress bar edits before the final upload")
@@ -515,13 +571,141 @@ func TestHandleApplicationCommandInteractionRoutesExport(t *testing.T) {
 	session := newExportChannelHistorySession(t, pages, &capture)
 	interaction := newExportChannelCommandInteraction("channel-1", 100000, maintenanceOwnerID)
 
-	err := new(bot).handleApplicationCommandInteraction(session, interaction)
+	instance := new(bot)
+	instance.session = session
+
+	err := instance.handleApplicationCommandInteraction(session, interaction)
 	if err != nil {
 		t.Fatalf("handle application command interaction: %v", err)
 	}
 
 	if capture.filename != "export-channel-1.json" {
 		t.Fatalf("expected export dispatch to upload JSON, got %q", capture.filename)
+	}
+}
+
+func TestHandleExportChannelCommandReportsUnknownChannel(t *testing.T) {
+	t.Parallel()
+
+	var capture deferredInteractionCapture
+
+	session := newInteractionTestSessionWithTransport(t, exportChannelUnknownChannelRoundTrip(t, &capture))
+
+	interaction := newExportChannelCommandInteraction("channel-1", 100, maintenanceOwnerID)
+
+	instance := new(bot)
+	instance.session = session
+
+	err := instance.handleExportChannelCommand(session, interaction)
+	if err != nil {
+		t.Fatalf("handle export channel command: %v", err)
+	}
+
+	assertDeferredInteractionResponse(t, &capture.deferredResponse)
+
+	if !strings.Contains(capture.editedResponse.Content, "was not found") {
+		t.Fatalf("expected unknown-channel guidance, got %q", capture.editedResponse.Content)
+	}
+}
+
+func TestHandleExportChannelCommandReportsMissingAccess(t *testing.T) {
+	t.Parallel()
+
+	var capture exportChannelUploadCapture
+
+	session := newExportChannelHistorySession(t, nil, &capture)
+
+	instance := new(bot)
+	instance.session = session
+
+	server := &exportChannelTestServer{
+		t:             t,
+		capture:       &capture,
+		channelBody:   `{"id":"channel-1","name":"general"}`,
+		historyStatus: http.StatusForbidden,
+		historyBody:   `{"message":"Missing Access","code":50001}`,
+	}
+	session.Client.Transport = roundTripFunc(server.roundTrip)
+
+	interaction := newExportChannelCommandInteraction("channel-1", 100, maintenanceOwnerID)
+
+	err := instance.handleExportChannelCommand(session, interaction)
+	if err != nil {
+		t.Fatalf("handle export channel command: %v", err)
+	}
+
+	if len(capture.edits) == 0 || !strings.Contains(capture.edits[len(capture.edits)-1], "lacks access") {
+		t.Fatalf("expected missing-access guidance, got %#v", capture.edits)
+	}
+}
+
+func TestHandleExportChannelCommandUnwrapsChannelMention(t *testing.T) {
+	t.Parallel()
+
+	first := time.Date(2026, time.September, 30, 12, 0, 0, 0, time.UTC)
+	pages := [][]*discordgo.Message{{newExportChannelMessage("only", "user-1", "alice", "hello", false, first)}}
+
+	var capture exportChannelUploadCapture
+
+	session := newExportChannelHistorySession(t, pages, &capture)
+	interaction := newExportChannelCommandInteraction("<#channel-1>", 100000, maintenanceOwnerID)
+
+	instance := new(bot)
+	instance.session = session
+
+	err := instance.handleExportChannelCommand(session, interaction)
+	if err != nil {
+		t.Fatalf("handle export channel command: %v", err)
+	}
+
+	if capture.filename != "export-channel-1.json" {
+		t.Fatalf("expected mention to resolve to channel-1, got %q", capture.filename)
+	}
+}
+
+func TestNormalizeExportChannelID(t *testing.T) {
+	t.Parallel()
+
+	if got := normalizeExportChannelID("  <#channel-1>  "); got != "channel-1" {
+		t.Fatalf("expected mention unwrapped, got %q", got)
+	}
+
+	if got := normalizeExportChannelID("  channel-1  "); got != "channel-1" {
+		t.Fatalf("expected whitespace trimmed, got %q", got)
+	}
+}
+
+func TestDescribeExportChannelError(t *testing.T) {
+	t.Parallel()
+
+	unknownChannel := newDiscordRESTError(discordgo.ErrCodeUnknownChannel, "Unknown Channel")
+	if got := describeExportChannelError("channel-1", unknownChannel); !strings.Contains(got, "was not found") {
+		t.Fatalf("expected unknown-channel guidance, got %q", got)
+	}
+
+	missingAccess := newDiscordRESTError(discordgo.ErrCodeMissingAccess, "Missing Access")
+	if got := describeExportChannelError("channel-1", missingAccess); !strings.Contains(got, "lacks access") {
+		t.Fatalf("expected missing-access guidance, got %q", got)
+	}
+
+	missingPermissions := newDiscordRESTError(discordgo.ErrCodeMissingPermissions, "Missing Permissions")
+	if got := describeExportChannelError("channel-1", missingPermissions); !strings.Contains(got, "lacks access") {
+		t.Fatalf("expected missing-permissions guidance, got %q", got)
+	}
+
+	wrapped := fmt.Errorf("load channel messages for export: %w", missingAccess)
+	if got := describeExportChannelError("channel-1", wrapped); !strings.Contains(got, "lacks access") {
+		t.Fatalf("expected wrapped REST error to map, got %q", got)
+	}
+
+	other := newDiscordRESTError(discordgo.ErrCodeUnknownMessage, "Unknown Message")
+	if got := describeExportChannelError("channel-1", other); !strings.Contains(got, "Discord says") {
+		t.Fatalf("expected raw Discord message surfaced, got %q", got)
+	}
+
+	got := describeExportChannelError("channel-1", errUnexpectedTestRequest)
+	if got != "Failed to export channel `channel-1`." {
+		t.Fatalf("expected generic fallback, got %q", got)
 	}
 }
 

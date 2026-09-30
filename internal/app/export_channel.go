@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -106,7 +107,7 @@ func (instance *bot) handleExportChannelCommand(
 	err := respondInteractionDeferredWithFlags(
 		session,
 		interaction.Interaction,
-		discordgo.MessageFlagsEphemeral,
+		0,
 	)
 	if err != nil {
 		return fmt.Errorf("defer export interaction response: %w", err)
@@ -152,7 +153,7 @@ func exportChannelInputOptions(
 	tokensOption := commandData.GetOption(exportChannelTokensOptionName)
 
 	if channelIDOption != nil {
-		channelID = channelIDOption.StringValue()
+		channelID = normalizeExportChannelID(channelIDOption.StringValue())
 	}
 
 	if tokensOption != nil {
@@ -162,21 +163,34 @@ func exportChannelInputOptions(
 	return channelID, tokenLimit
 }
 
+// normalizeExportChannelID trims whitespace and unwraps channel mentions
+// (`<#123>`, pasted with brackets) to the raw channel ID Discord expects.
+func normalizeExportChannelID(rawChannelID string) string {
+	trimmed := strings.TrimSpace(rawChannelID)
+	if strings.HasPrefix(trimmed, "<#") && strings.HasSuffix(trimmed, ">") {
+		trimmed = strings.TrimSuffix(strings.TrimPrefix(trimmed, "<#"), ">")
+	}
+
+	return strings.TrimSpace(trimmed)
+}
+
 func (instance *bot) runExportChannel(
 	session *discordgo.Session,
 	interaction *discordgo.Interaction,
 	channelID string,
 	tokenLimit int,
 ) error {
+	if _, err := instance.channelByID(channelID); err != nil {
+		logWarn("export channel failed to load channel", err, "channel_id", channelID)
+
+		return editInteractionResponseText(session, interaction, describeExportChannelError(channelID, err))
+	}
+
 	messages, tokens, err := instance.fetchExportWithProgress(session, interaction, channelID, tokenLimit)
 	if err != nil {
 		logWarn("export channel failed to load messages", err, "channel_id", channelID)
 
-		return editInteractionResponseText(
-			session,
-			interaction,
-			fmt.Sprintf("Failed to export channel `%s`.", channelID),
-		)
+		return editInteractionResponseText(session, interaction, describeExportChannelError(channelID, err))
 	}
 
 	if len(messages) == 0 {
@@ -275,6 +289,33 @@ func sendExportChannelFile(
 	}
 
 	return nil
+}
+
+// describeExportChannelError maps a Discord history failure to an actionable
+// reply: unknown channel (wrong ID), missing access (bot not in the channel
+// or no View/History), or the raw API message otherwise.
+func describeExportChannelError(channelID string, err error) string {
+	var restErr *discordgo.RESTError
+	if errors.As(err, &restErr) && restErr.Message != nil {
+		switch restErr.Message.Code {
+		case discordgo.ErrCodeUnknownChannel:
+			return fmt.Sprintf(
+				"Channel `%s` was not found. Check the `channelid` (right-click the channel > Copy Channel ID).",
+				channelID,
+			)
+		case discordgo.ErrCodeMissingAccess, discordgo.ErrCodeMissingPermissions:
+			return fmt.Sprintf(
+				"Cannot read channel `%s`: the bot lacks access. Check View Channel and Read Message History.",
+				channelID,
+			)
+		default:
+			if strings.TrimSpace(restErr.Message.Message) != "" {
+				return fmt.Sprintf("Failed to export channel `%s`: Discord says %q.", channelID, restErr.Message.Message)
+			}
+		}
+	}
+
+	return fmt.Sprintf("Failed to export channel `%s`.", channelID)
 }
 
 // fetchExportChannelMessages pages a channel newest-to-oldest, keeps only
