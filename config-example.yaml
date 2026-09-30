@@ -365,7 +365,7 @@ channel_model_locks:
 #   # Jev model for the routing call. Default: oc/jev-1.13-free
 #   model: oc/jev-1.13-free
 #   # Optional bearer key(s) for the routing endpoint; string or list (round-robin).
-#   # api_key: sk-8d2d957c7ec204c4-f233nq-b39d4fba
+#   # api_key: YOUR_JEV_API_KEY
 #   tiers:
 #     flagship: 9router/oc/muse-spark-1.3-contributor-free:vision
 #     balanced: 9router-fast/oc/muse-spark-1.3-contributor-free:vision
