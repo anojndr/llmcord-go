@@ -22,6 +22,13 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
+# Go's build cache writes large temp files under $TMPDIR (/tmp is a small
+# tmpfs here and fills up with "no space left on device" link errors). Point
+# both temp dirs at repo disk so `go run`/`go build` always have room.
+export TMPDIR="${TMPDIR:-$PWD/.tmp}"
+export GOTMPDIR="${GOTMPDIR:-$TMPDIR}"
+mkdir -p "$TMPDIR"
+
 LOG_FILE="${LLMCORD_LOG_FILE:-llmcord-go.log}"
 ONLINE_TIMEOUT="${LLMCORD_ONLINE_TIMEOUT:-90}"
 
