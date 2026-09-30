@@ -63,7 +63,12 @@ func TestSyncCommandsRegistersChannelCommand(t *testing.T) {
 		t.Fatalf("sync commands: %v", err)
 	}
 
-	for _, expectedName := range []string{createChannelCommandName, editChannelNameCommandName, moveChannelCommandName, latencyBenchCommandName} {
+	expectedCommands := []string{
+		createChannelCommandName, editChannelNameCommandName, moveChannelCommandName,
+		latencyBenchCommandName, exportChannelCommandName,
+	}
+
+	for _, expectedName := range expectedCommands {
 		found := false
 
 		for _, command := range registeredCommands {

@@ -23,7 +23,7 @@ const (
 	defaultMaxMessages                = 25
 	systemPromptTimeBucketMinutes     = 10
 	maxMessageNodes                   = 500
-	registeredCommandCount            = 9
+	registeredCommandCount            = 10
 	maxAutocompleteChoices            = 25
 	statusMessageMaxLength            = 128
 	streamingIndicator                = " ..."
@@ -77,16 +77,22 @@ const (
 	moveChannelMovementUp                 = "up"
 	moveChannelMovementDown               = "down"
 
-	maintenanceCommandName                = "maintenance"
-	maintenanceCommandDescription         = "Manage maintenance mode for a channel"
-	maintenanceStartSubcommandName        = "start"
-	maintenanceStartSubcommandDescription = "Enable maintenance mode for a channel"
-	maintenanceStopSubcommandName         = "stop"
-	maintenanceStopSubcommandDescription  = "Disable maintenance mode for a channel"
-	maintenanceChannelIDOptionName        = "channel_id"
-	maintenanceChannelIDOptionDescription = "ID of the channel to manage"
-	maintenanceOwnerID                    = "676735636656357396"
-	maintenanceBotID                      = "1307756710072549439"
+	maintenanceCommandName                  = "maintenance"
+	maintenanceCommandDescription           = "Manage maintenance mode for a channel"
+	maintenanceStartSubcommandName          = "start"
+	maintenanceStartSubcommandDescription   = "Enable maintenance mode for a channel"
+	maintenanceStopSubcommandName           = "stop"
+	maintenanceStopSubcommandDescription    = "Disable maintenance mode for a channel"
+	maintenanceChannelIDOptionName          = "channel_id"
+	maintenanceChannelIDOptionDescription   = "ID of the channel to manage"
+	maintenanceOwnerID                      = "676735636656357396"
+	maintenanceBotID                        = "1307756710072549439"
+	exportChannelCommandName                = "export"
+	exportChannelCommandDescription         = "Export user messages from a channel to JSON"
+	exportChannelChannelIDOptionName        = "channelid"
+	exportChannelChannelIDOptionDescription = "ID of the channel to export"
+	exportChannelTokensOptionName           = "tokens"
+	exportChannelTokensOptionDescription    = "Maximum OpenAI tokens to include"
 
 	watcherStatusCommandName        = "watcherstatus"
 	watcherStatusCommandDescription = "Check whether the iPhone 18 Pro Max is released yet"

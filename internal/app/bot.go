@@ -629,6 +629,7 @@ func (instance *bot) syncCommands() error {
 	commands = append(commands, newMoveChannelCommand())
 	commands = append(commands, newLatencyBenchCommand())
 	commands = append(commands, newMaintenanceCommand())
+	commands = append(commands, newExportChannelCommand())
 	commands = append(commands, newWatcherStatusCommand())
 
 	_, err := instance.session.ApplicationCommandBulkOverwrite(

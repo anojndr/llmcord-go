@@ -134,6 +134,7 @@ Generic website URL extraction follows `extraction_order` (default Firecrawl -> 
 - `/latency <model>`: benchmark one configured model alone with the same query (no channel link)
 - `/maintenance start <channel_id>`: lock a channel so only user `676735636656357396` and the bot `1307756710072549439` can send messages (denies `Send Messages` for `@everyone`, allows for those users; bot also deletes messages from anyone else, so not even admins can bypass; only `676735636656357396` may invoke the command)
 - `/maintenance stop <channel_id>`: unlock a maintenance-locked channel (removes the permission overwrites; only `676735636656357396` may invoke)
+- `/export <channelid> <tokens>`: export newest-to-oldest user messages (bot messages excluded) up to an OpenAI token budget as a JSON file with username and timestamp per message, live countdown progress bar included (only `676735636656357396` may invoke)
 - Attach files or images for multimodal context
   Text-like files (JSON, CSV, logs, Markdown, source) are inlined when the provider can't read raw files; others stay attachments with metadata summaries, including ZIP manifests. Gemini sends single-image prompts text-first and uploads images over 4 MiB via the Files API.
 - Start a prompt with `vsearch` for reverse-image lookup
