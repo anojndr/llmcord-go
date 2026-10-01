@@ -48,12 +48,10 @@ var errExceededExportMaxRetries = errors.New("exceeded max retries HTTP 502")
 // exportChannelMessage is one user-authored Discord message in newest-to-oldest
 // order. Bot and webhook messages are never included.
 type exportChannelMessage struct {
-	ID        string `json:"id"`
-	AuthorID  string `json:"author_id"`
 	Username  string `json:"username"`
 	Content   string `json:"content"`
 	Timestamp string `json:"timestamp"`
-	Tokens    int    `json:"tokens"`
+	tokens    int
 }
 
 // exportChannelPayload is the JSON document attached to the export reply.
@@ -864,12 +862,12 @@ func appendExportChannelPage(
 			continue
 		}
 
-		if tokens+entry.Tokens > tokenLimit {
+		if tokens+entry.tokens > tokenLimit {
 			return messages, tokens, true
 		}
 
 		messages = append(messages, entry)
-		tokens += entry.Tokens
+		tokens += entry.tokens
 	}
 
 	return messages, tokens, false
@@ -879,58 +877,46 @@ func appendExportChannelPage(
 // bot, webhook, or unattributed messages which must never be exported.
 func exportChannelEntry(message *discordgo.Message) (exportChannelMessage, bool) {
 	if message == nil || message.Author == nil || message.Author.Bot {
-		return exportChannelMessage{ID: "", AuthorID: "", Username: "", Content: "", Timestamp: "", Tokens: 0}, false
+		return exportChannelMessage{Username: "", Content: "", Timestamp: "", tokens: 0}, false
 	}
 
 	if message.WebhookID != "" {
-		return exportChannelMessage{ID: "", AuthorID: "", Username: "", Content: "", Timestamp: "", Tokens: 0}, false
+		return exportChannelMessage{Username: "", Content: "", Timestamp: "", tokens: 0}, false
 	}
 
 	username := xFixupDisplayName(message)
 	entry := exportChannelMessage{
-		ID:        message.ID,
-		AuthorID:  message.Author.ID,
 		Username:  username,
 		Content:   message.Content,
 		Timestamp: "",
-		Tokens:    0,
+		tokens:    0,
 	}
 
 	if !message.Timestamp.IsZero() {
 		entry.Timestamp = message.Timestamp.UTC().Format(time.RFC3339)
 	}
 
-	entry.Tokens = estimateExportMessageTokens(entry)
+	entry.tokens = estimateExportMessageTokens(entry)
 
 	return entry, true
 }
 
 // estimateExportMessageTokens approximates one exported message's share of
 // the final JSON file in OpenAI tokens. The budget counts the entire JSON
-// document, so every serialized field (id, author, timestamp, keys,
-// punctuation, indentation, and the entry's own token count) contributes —
-// not just content plus username. Entries marshal with the same two-space
-// indent as the final file, nested two levels deep (payload object plus
-// messages array) with a trailing separator comma, and the self-referential
-// Tokens field iterates to a digit-width fixpoint.
+// document, so every serialized field (username, content, timestamp, keys,
+// punctuation, and indentation) contributes. Entries marshal with the same
+// two-space indent as the final file, nested two levels deep (payload object
+// plus messages array) with a trailing separator comma.
 func estimateExportMessageTokens(entry exportChannelMessage) int {
-	for range exportChannelTokenStampMaxIterations {
-		encoded, err := json.MarshalIndent(entry, "    ", "  ")
-		if err != nil {
-			return estimateOpenAITextTokens(entry.Content) +
-				estimateOpenAITextTokens(entry.Username) +
-				exportChannelTokensPerMessage
-		}
-
-		stamped := estimateOpenAITextTokens(string(encoded) + ",")
-		if stamped == entry.Tokens {
-			return stamped
-		}
-
-		entry.Tokens = stamped
+	encoded, err := json.MarshalIndent(entry, "    ", "  ")
+	if err != nil {
+		return estimateOpenAITextTokens(entry.Content) +
+			estimateOpenAITextTokens(entry.Username) +
+			estimateOpenAITextTokens(entry.Timestamp) +
+			exportChannelTokensPerMessage
 	}
 
-	return entry.Tokens
+	return estimateOpenAITextTokens(string(encoded) + ",")
 }
 
 // estimateOpenAITextTokens approximates plain text in OpenAI tokens at

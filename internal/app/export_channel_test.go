@@ -377,7 +377,7 @@ func TestFetchExportChannelMessagesSkipsBotsAndRespectsBudget(t *testing.T) {
 		t.Fatal("expected user messages to export")
 	}
 
-	fullBudget := headerTokens + newestEntry.Tokens + oldestEntry.Tokens
+	fullBudget := headerTokens + newestEntry.tokens + oldestEntry.tokens
 
 	onPageCalls := 0
 
@@ -402,7 +402,7 @@ func TestFetchExportChannelMessagesSkipsBotsAndRespectsBudget(t *testing.T) {
 		t.Fatalf("expected only user messages, got %+v", messages)
 	}
 
-	if messages[0].ID != "newest" || messages[1].ID != "oldest" {
+	if messages[0].Username != "alice" || messages[1].Username != "bob" {
 		t.Fatalf("expected newest-to-oldest order, got %+v", messages)
 	}
 
@@ -410,7 +410,7 @@ func TestFetchExportChannelMessagesSkipsBotsAndRespectsBudget(t *testing.T) {
 		t.Fatalf("expected username and timestamp on newest message, got %+v", messages[0])
 	}
 
-	if messages[0].Tokens+messages[1].Tokens+headerTokens != tokens {
+	if messages[0].tokens+messages[1].tokens+headerTokens != tokens {
 		t.Fatalf("expected running total to sum header plus entries, got %+v (%d tokens)", messages, tokens)
 	}
 
@@ -421,12 +421,12 @@ func TestFetchExportChannelMessagesSkipsBotsAndRespectsBudget(t *testing.T) {
 	// limit needs its own header reserve: the shared headerTokens was
 	// measured at the full limit's digit width, which overcounts a small
 	// budget and would admit the message.
-	tightLimit := headerTokens + newestEntry.Tokens - 1
+	tightLimit := headerTokens + newestEntry.tokens - 1
 	tightHeader := exportChannelPayloadHeaderTokens("channel-1", tightLimit)
 
 	session = newExportChannelHistorySession(t, pages, &capture)
 
-	messages, tokens, err = fetchExportChannelMessages(session, "channel-1", tightHeader+newestEntry.Tokens-1, nil)
+	messages, tokens, err = fetchExportChannelMessages(session, "channel-1", tightHeader+newestEntry.tokens-1, nil)
 	if err != nil {
 		t.Fatalf("fetch export channel messages with tight budget: %v", err)
 	}
@@ -440,12 +440,9 @@ func TestMarshalExportChannelPayloadStampsFileTokens(t *testing.T) {
 	t.Parallel()
 
 	messages := []exportChannelMessage{{
-		ID:        "msg-1",
-		AuthorID:  "user-1",
 		Username:  "alice",
 		Content:   "hello",
 		Timestamp: "2026-09-30T12:00:00Z",
-		Tokens:    0,
 	}}
 
 	payload := buildExportChannelPayload("channel-1", 100000, messages, 0)
@@ -464,22 +461,18 @@ func TestTrimExportChannelPayloadEnforcesFileLimit(t *testing.T) {
 	t.Parallel()
 
 	newest := exportChannelMessage{
-		ID:        "newest",
-		AuthorID:  "user-1",
 		Username:  "alice",
 		Content:   "newest hello",
 		Timestamp: "2026-09-30T12:05:00Z",
 	}
-	newest.Tokens = estimateExportMessageTokens(newest)
+	newest.tokens = estimateExportMessageTokens(newest)
 
 	oldest := exportChannelMessage{
-		ID:        "oldest",
-		AuthorID:  "user-2",
 		Username:  "bob",
 		Content:   "oldest hello",
 		Timestamp: "2026-09-30T12:00:00Z",
 	}
-	oldest.Tokens = estimateExportMessageTokens(oldest)
+	oldest.tokens = estimateExportMessageTokens(oldest)
 
 	probe := buildExportChannelPayload("channel-1", 100000, []exportChannelMessage{newest}, 0)
 	if _, err := marshalExportChannelPayload(&probe); err != nil {
@@ -492,7 +485,7 @@ func TestTrimExportChannelPayloadEnforcesFileLimit(t *testing.T) {
 
 	trimmed, payload, encoded := trimExportChannelPayload("channel-1", limit, []exportChannelMessage{newest, oldest})
 
-	if len(trimmed) != 1 || trimmed[0].ID != "newest" {
+	if len(trimmed) != 1 || trimmed[0].Content != "newest hello" {
 		t.Fatalf("expected oldest-first trim to keep newest, got %+v", trimmed)
 	}
 
@@ -517,23 +510,19 @@ func TestEstimateOpenAITextTokens(t *testing.T) {
 	}
 
 	entry := exportChannelMessage{
-		ID:        "msg-1",
-		AuthorID:  "user-1",
 		Username:  "alice",
 		Content:   "hello",
 		Timestamp: "2026-09-30T12:00:00Z",
-		Tokens:    0,
 	}
 
-	stamped := entry
-	stamped.Tokens = estimateExportMessageTokens(entry)
+	stampedTokens := estimateExportMessageTokens(entry)
 
-	encoded, err := json.MarshalIndent(stamped, "    ", "  ")
+	encoded, err := json.MarshalIndent(entry, "    ", "  ")
 	if err != nil {
 		t.Fatalf("marshal export entry: %v", err)
 	}
 
-	if stamped.Tokens != estimateOpenAITextTokens(string(encoded)+",") {
+	if stampedTokens != estimateOpenAITextTokens(string(encoded)+",") {
 		t.Fatal("expected message estimate to cover the full serialized JSON entry")
 	}
 
@@ -671,13 +660,17 @@ func TestHandleExportChannelCommandUploadsJSON(t *testing.T) {
 		t.Fatalf("unexpected export payload header: %+v", payload)
 	}
 
-	if len(payload.Messages) != 2 || payload.Messages[0].ID != "newest" || payload.Messages[1].ID != "oldest" {
+	if len(payload.Messages) != 2 ||
+		payload.Messages[0].Content != "newest hello" ||
+		payload.Messages[1].Content != "oldest hello" {
 		t.Fatalf("expected newest-to-oldest user messages, got %+v", payload.Messages)
 	}
 
-	if payload.Messages[0].Username != "alice" || payload.Messages[0].AuthorID != "user-1" {
+	if payload.Messages[0].Username != "alice" {
 		t.Fatalf("expected username attribution, got %+v", payload.Messages[0])
 	}
+
+	assertExportMessagesOnlyIncludeKeys(t, capture.fileContents)
 
 	if payload.Messages[0].Timestamp != second.UTC().Format(time.RFC3339) {
 		t.Fatalf("expected message timestamp, got %+v", payload.Messages[0])
@@ -685,6 +678,29 @@ func TestHandleExportChannelCommandUploadsJSON(t *testing.T) {
 
 	if payload.Tokens != estimateOpenAITextTokens(capture.fileContents) {
 		t.Fatalf("expected token total to match final JSON file, got %+v", payload)
+	}
+}
+
+func assertExportMessagesOnlyIncludeKeys(t *testing.T, fileContents string) {
+	t.Helper()
+
+	var rawPayload struct {
+		Messages []map[string]any `json:"messages"`
+	}
+	if err := json.Unmarshal([]byte(fileContents), &rawPayload); err != nil {
+		t.Fatalf("decode raw export payload: %v", err)
+	}
+
+	for index, msg := range rawPayload.Messages {
+		if len(msg) != 3 {
+			t.Fatalf("expected message %d to have exactly 3 keys, got %d: %+v", index, len(msg), msg)
+		}
+
+		for _, key := range []string{"username", "content", "timestamp"} {
+			if _, ok := msg[key]; !ok {
+				t.Fatalf("message %d missing expected key %q: %+v", index, key, msg)
+			}
+		}
 	}
 }
 
@@ -853,7 +869,7 @@ func TestFetchExportChannelMessagesRetriesTransientPage(t *testing.T) {
 		t.Fatalf("expected outer page retry, got %d calls", calls)
 	}
 
-	if len(messages) != 1 || messages[0].ID != "only" {
+	if len(messages) != 1 || messages[0].Content != "hello" {
 		t.Fatalf("expected retried page kept, got %+v", messages)
 	}
 }
@@ -980,8 +996,7 @@ func TestIsRetryableExportChannelError(t *testing.T) {
 		t.Fatal("expected rate limit error to be retryable")
 	}
 
-	retryableResponse := &http.Response{StatusCode: http.StatusBadGateway}
-	retryableErr := &discordgo.RESTError{Response: retryableResponse}
+	retryableErr := &discordgo.RESTError{Response: &http.Response{StatusCode: http.StatusBadGateway}}
 	if !isRetryableExportChannelError(retryableErr) {
 		t.Fatal("expected 5xx REST error to be retryable")
 	}
