@@ -319,17 +319,18 @@ func TestSmartRoutingChannelRoutable(t *testing.T) {
 type stubJevRouter struct {
 	tier       string
 	confidence float64
+	nsfw       bool
 	err        error
 	states     []string
 }
 
-func (router *stubJevRouter) routeTier(_ context.Context, _ config, state string) (string, float64, error) {
+func (router *stubJevRouter) routeTier(_ context.Context, _ config, state string) (string, float64, bool, error) {
 	router.states = append(router.states, state)
 	if router.err != nil {
-		return "", 0, router.err
+		return "", 0, false, router.err
 	}
 
-	return router.tier, router.confidence, nil
+	return router.tier, router.confidence, router.nsfw, nil
 }
 
 func newSmartRoutingStubBot(router jevRouter) *bot {
@@ -382,6 +383,99 @@ func TestResolveSmartRoutingModelMapsLiteTierToModel(t *testing.T) {
 	}
 }
 
+func TestResolveSmartRoutingModelReroutesNSFWOffGemini(t *testing.T) {
+	t.Parallel()
+
+	loadedConfig := smartRoutingTestConfig()
+	loadedConfig.Providers["gemini"] = providerConfig{Name: "gemini"}
+	loadedConfig.Models["gemini/gemini-model"] = nil
+	loadedConfig.ModelOrder = append(loadedConfig.ModelOrder, "gemini/gemini-model")
+	loadedConfig.SmartRouting.Tiers[jevTierFast] = "gemini/gemini-model"
+
+	instance := newSmartRoutingStubBot(&stubJevRouter{tier: jevTierFast, confidence: 0.9, nsfw: true})
+
+	modelName, tier, ok := instance.resolveSmartRoutingModel(
+		t.Context(),
+		loadedConfig,
+		[]string{testJevChannel},
+		"explicit query",
+	)
+	if !ok {
+		t.Fatal("expected NSFW routing to succeed")
+	}
+
+	if modelName != testJevFlagshipModel || tier != jevTierFlagship {
+		t.Fatalf("expected NSFW reroute to flagship %q, got %q %q", testJevFlagshipModel, modelName, tier)
+	}
+}
+
+func TestResolveSmartRoutingModelKeepsSFWGeminiRoute(t *testing.T) {
+	t.Parallel()
+
+	loadedConfig := smartRoutingTestConfig()
+	loadedConfig.Providers["gemini"] = providerConfig{Name: "gemini"}
+	loadedConfig.Models["gemini/gemini-model"] = nil
+	loadedConfig.ModelOrder = append(loadedConfig.ModelOrder, "gemini/gemini-model")
+	loadedConfig.SmartRouting.Tiers[jevTierFast] = "gemini/gemini-model"
+
+	instance := newSmartRoutingStubBot(&stubJevRouter{tier: jevTierFast, confidence: 0.9, nsfw: false})
+
+	modelName, tier, ok := instance.resolveSmartRoutingModel(
+		t.Context(),
+		loadedConfig,
+		[]string{testJevChannel},
+		"is it raining?",
+	)
+	if !ok {
+		t.Fatal("expected routing to succeed")
+	}
+
+	if modelName != "gemini/gemini-model" || tier != jevTierFast {
+		t.Fatalf("unexpected route: %q %q", modelName, tier)
+	}
+}
+
+func TestResolveSmartRoutingModelFallsBackWhenNSFWWithoutNonGeminiTier(t *testing.T) {
+	t.Parallel()
+
+	loadedConfig := smartRoutingTestConfig()
+	loadedConfig.Providers = map[string]providerConfig{
+		"gemini": {Name: "gemini"},
+	}
+	loadedConfig.Models = map[string]map[string]any{
+		"gemini/flagship-model": nil,
+		"gemini/balanced-model": nil,
+		"gemini/fast-model":     nil,
+		"gemini/lite-model":     nil,
+		"gemini/eco-model":      nil,
+	}
+	loadedConfig.ModelOrder = []string{
+		"gemini/flagship-model",
+		"gemini/balanced-model",
+		"gemini/fast-model",
+		"gemini/lite-model",
+		"gemini/eco-model",
+	}
+	loadedConfig.SmartRouting.Tiers = map[string]string{
+		jevTierFlagship: "gemini/flagship-model",
+		jevTierBalanced: "gemini/balanced-model",
+		jevTierFast:     "gemini/fast-model",
+		jevTierLite:     "gemini/lite-model",
+		jevTierEco:      "gemini/eco-model",
+	}
+
+	instance := newSmartRoutingStubBot(&stubJevRouter{tier: jevTierFast, confidence: 0.9, nsfw: true})
+
+	if _, _, ok := instance.resolveSmartRoutingModel(
+		t.Context(),
+		loadedConfig,
+		[]string{testJevChannel},
+		"explicit query",
+	); ok {
+		t.Fatal("expected NSFW routing without non-Gemini tier to fall back")
+	}
+}
+
 func TestResolveSmartRoutingModelFallsBackOnJevFailure(t *testing.T) {
 	t.Parallel()
 
@@ -415,20 +509,61 @@ func TestJevClientSendsChoiceRequestAndParsesTier(t *testing.T) {
 	loadedConfig.SmartRouting.APIKey = "jev-test-key"
 	loadedConfig.SmartRouting.APIKeys = nil
 
-	server := newJevChoiceStubServer(t, `{"model":"jev-1.13-free","answers":{"tier":{"type":"choice","choice":"balanced","probabilities":{"balanced":0.9,"flagship":0.1},"confidence":0.85}},"usage":{}}`)
+	server := newJevChoiceStubServer(t, `{"model":"jev-1.13-free","answers":{"tier":{"type":"choice","choice":"balanced","probabilities":{"balanced":0.9,"flagship":0.1},"confidence":0.85},"nsfw":{"type":"noul","noul":0.05}},"usage":{}}`)
 	client := newJevClient(server.Client())
 
 	// Point the resolved endpoint at the stub by overriding the config copy.
 	routedConfig := loadedConfig
 	routedConfig.SmartRouting.Endpoint = server.URL
 
-	tier, confidence, err := client.routeTier(t.Context(), routedConfig, "explain photosynthesis")
+	tier, confidence, nsfw, err := client.routeTier(t.Context(), routedConfig, "explain photosynthesis")
 	if err != nil {
 		t.Fatalf("route tier: %v", err)
 	}
 
-	if tier != jevTierBalanced || confidence != 0.85 {
-		t.Fatalf("unexpected route: %q %v", tier, confidence)
+	if tier != jevTierBalanced || confidence != 0.85 || nsfw {
+		t.Fatalf("unexpected route: %q %v nsfw=%v", tier, confidence, nsfw)
+	}
+}
+
+func TestJevClientParsesNSFWNoul(t *testing.T) {
+	t.Parallel()
+
+	loadedConfig := smartRoutingTestConfig()
+	loadedConfig.SmartRouting.APIKey = "jev-test-key"
+	loadedConfig.SmartRouting.APIKeys = nil
+
+	server := newJevChoiceStubServer(t, `{"model":"jev-1.13-free","answers":{"tier":{"type":"choice","choice":"fast","probabilities":{"fast":0.9},"confidence":0.9},"nsfw":{"type":"noul","noul":0.95}},"usage":{}}`)
+	client := newJevClient(server.Client())
+
+	routedConfig := loadedConfig
+	routedConfig.SmartRouting.Endpoint = server.URL
+
+	tier, _, nsfw, err := client.routeTier(t.Context(), routedConfig, "explicit query")
+	if err != nil {
+		t.Fatalf("route tier: %v", err)
+	}
+
+	if tier != jevTierFast || !nsfw {
+		t.Fatalf("expected NSFW fast route, got %q nsfw=%v", tier, nsfw)
+	}
+}
+
+func TestJevClientRejectsMissingNSFWAnswer(t *testing.T) {
+	t.Parallel()
+
+	loadedConfig := smartRoutingTestConfig()
+	loadedConfig.SmartRouting.APIKey = "jev-test-key"
+	loadedConfig.SmartRouting.APIKeys = nil
+
+	server := newJevChoiceStubServer(t, `{"model":"jev-1.13-free","answers":{"tier":{"type":"choice","choice":"fast","probabilities":{"fast":0.9},"confidence":0.9}},"usage":{}}`)
+	client := newJevClient(server.Client())
+
+	routedConfig := loadedConfig
+	routedConfig.SmartRouting.Endpoint = server.URL
+
+	if _, _, _, err := client.routeTier(t.Context(), routedConfig, "explicit query"); err == nil {
+		t.Fatal("expected missing NSFW answer to fail")
 	}
 }
 
@@ -469,6 +604,11 @@ func newJevChoiceStubServer(t *testing.T, responseBody string) *httptest.Server 
 
 		if len(question.Criteria) != len(jevTierOrder()) {
 			t.Errorf("unexpected Jev criteria count: %d", len(question.Criteria))
+		}
+
+		nsfwQuestion, ok := decoded.Questions[jevNSFWQuestionID]
+		if !ok || nsfwQuestion.Type != "noul" {
+			t.Errorf("missing Jev NSFW noul question: %#v", decoded.Questions)
 		}
 
 		responseWriter.Header().Set("Content-Type", "application/json")

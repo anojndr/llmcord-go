@@ -349,11 +349,13 @@ channel_model_locks:
 
 # -----------------------------------------------------------------------------
 # Smart auto-routing — Jev (TypeSafe System One) picks a model tier per message
-# in the listed channels: one `choice` call maps the user query to flagship /
-# balanced / fast / lite / eco, then each tier maps to a configured model. Channel
-# locks always win; a smart-routed channel must not also appear in
-# channel_model_locks. Jev failures (timeout, status, decode, unknown tier)
-# fall back to the global default model. `/model` is disabled in routed
+# in the listed channels: one call asks a `choice` tier question (flagship /
+# balanced / fast / lite / eco, then each tier maps to a configured model) plus
+# an `nsfw` noul question in parallel. NSFW queries never use Gemini tier models
+# (safety filters block explicit content) and reroute to the first non-Gemini
+# tier instead. Channel locks always win; a smart-routed channel must not also
+# appear in channel_model_locks. Jev failures (timeout, status, decode, unknown
+# tier) fall back to the global default model. `/model` is disabled in routed
 # channels (autocomplete lists the tier models with `~ <model> (<tier>, auto)`).
 # -----------------------------------------------------------------------------
 # smart_routing:
