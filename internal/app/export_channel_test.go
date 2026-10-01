@@ -367,8 +367,17 @@ func TestFetchExportChannelMessagesSkipsBotsAndRespectsBudget(t *testing.T) {
 
 	session := newExportChannelHistorySession(t, pages, &capture)
 
-	oldestTokens := estimateExportMessageTokens("bob", "oldest hello")
-	newestTokens := estimateExportMessageTokens("alice", "newest hello")
+	const tokenLimit = 100000
+
+	headerTokens := exportChannelPayloadHeaderTokens("channel-1", tokenLimit)
+	newestEntry, newestOK := exportChannelEntry(newestUser)
+	oldestEntry, oldestOK := exportChannelEntry(oldestUser)
+
+	if !newestOK || !oldestOK {
+		t.Fatal("expected user messages to export")
+	}
+
+	fullBudget := headerTokens + newestEntry.Tokens + oldestEntry.Tokens
 
 	onPageCalls := 0
 
@@ -376,7 +385,7 @@ func TestFetchExportChannelMessagesSkipsBotsAndRespectsBudget(t *testing.T) {
 		onPageCalls++
 	}
 
-	messages, tokens, err := fetchExportChannelMessages(session, "channel-1", newestTokens+oldestTokens, onPage)
+	messages, tokens, err := fetchExportChannelMessages(session, "channel-1", tokenLimit, onPage)
 	if err != nil {
 		t.Fatalf("fetch export channel messages: %v", err)
 	}
@@ -385,8 +394,8 @@ func TestFetchExportChannelMessagesSkipsBotsAndRespectsBudget(t *testing.T) {
 		t.Fatalf("expected progress callback per page, got %d calls", onPageCalls)
 	}
 
-	if tokens != newestTokens+oldestTokens {
-		t.Fatalf("unexpected token total: got %d want %d", tokens, newestTokens+oldestTokens)
+	if tokens != fullBudget {
+		t.Fatalf("unexpected token total: got %d want %d", tokens, fullBudget)
 	}
 
 	if len(messages) != 2 {
@@ -401,14 +410,94 @@ func TestFetchExportChannelMessagesSkipsBotsAndRespectsBudget(t *testing.T) {
 		t.Fatalf("expected username and timestamp on newest message, got %+v", messages[0])
 	}
 
-	// A budget below the newest message stops before including anything.
-	messages, tokens, err = fetchExportChannelMessages(session, "channel-1", newestTokens-1, nil)
+	if messages[0].Tokens+messages[1].Tokens+headerTokens != tokens {
+		t.Fatalf("expected running total to sum header plus entries, got %+v (%d tokens)", messages, tokens)
+	}
+
+	// A budget below the header plus newest message stops before including anything.
+	// The history session is single-pass (pages drain as they are served), so
+	// rebuild it: reusing the exhausted session would return zero messages
+	// regardless of the budget and never exercise the boundary. The tight
+	// limit needs its own header reserve: the shared headerTokens was
+	// measured at the full limit's digit width, which overcounts a small
+	// budget and would admit the message.
+	tightLimit := headerTokens + newestEntry.Tokens - 1
+	tightHeader := exportChannelPayloadHeaderTokens("channel-1", tightLimit)
+
+	session = newExportChannelHistorySession(t, pages, &capture)
+
+	messages, tokens, err = fetchExportChannelMessages(session, "channel-1", tightHeader+newestEntry.Tokens-1, nil)
 	if err != nil {
 		t.Fatalf("fetch export channel messages with tight budget: %v", err)
 	}
 
-	if len(messages) != 0 || tokens != 0 {
+	if len(messages) != 0 {
 		t.Fatalf("expected empty export under budget, got %+v (%d tokens)", messages, tokens)
+	}
+}
+
+func TestMarshalExportChannelPayloadStampsFileTokens(t *testing.T) {
+	t.Parallel()
+
+	messages := []exportChannelMessage{{
+		ID:        "msg-1",
+		AuthorID:  "user-1",
+		Username:  "alice",
+		Content:   "hello",
+		Timestamp: "2026-09-30T12:00:00Z",
+		Tokens:    0,
+	}}
+
+	payload := buildExportChannelPayload("channel-1", 100000, messages, 0)
+
+	encoded, err := marshalExportChannelPayload(&payload)
+	if err != nil {
+		t.Fatalf("marshal export channel payload: %v", err)
+	}
+
+	if payload.Tokens != estimateOpenAITextTokens(string(encoded)) {
+		t.Fatalf("expected stamped total to match file bytes, got %+v", payload)
+	}
+}
+
+func TestTrimExportChannelPayloadEnforcesFileLimit(t *testing.T) {
+	t.Parallel()
+
+	newest := exportChannelMessage{
+		ID:        "newest",
+		AuthorID:  "user-1",
+		Username:  "alice",
+		Content:   "newest hello",
+		Timestamp: "2026-09-30T12:05:00Z",
+	}
+	newest.Tokens = estimateExportMessageTokens(newest)
+
+	oldest := exportChannelMessage{
+		ID:        "oldest",
+		AuthorID:  "user-2",
+		Username:  "bob",
+		Content:   "oldest hello",
+		Timestamp: "2026-09-30T12:00:00Z",
+	}
+	oldest.Tokens = estimateExportMessageTokens(oldest)
+
+	probe := buildExportChannelPayload("channel-1", 100000, []exportChannelMessage{newest}, 0)
+	if _, err := marshalExportChannelPayload(&probe); err != nil {
+		t.Fatalf("marshal probe payload: %v", err)
+	}
+
+	// Limit fits the newest message but not both: the trim must drop the
+	// oldest and keep the stamped file within budget.
+	limit := probe.Tokens
+
+	trimmed, payload, encoded := trimExportChannelPayload("channel-1", limit, []exportChannelMessage{newest, oldest})
+
+	if len(trimmed) != 1 || trimmed[0].ID != "newest" {
+		t.Fatalf("expected oldest-first trim to keep newest, got %+v", trimmed)
+	}
+
+	if payload.Tokens > limit || estimateOpenAITextTokens(string(encoded)) > limit {
+		t.Fatalf("expected stamped file within limit %d, got %+v", limit, payload)
 	}
 }
 
@@ -427,9 +516,30 @@ func TestEstimateOpenAITextTokens(t *testing.T) {
 		t.Fatalf("expected eight characters to cost two tokens, got %d", estimateOpenAITextTokens("abcdefgh"))
 	}
 
-	if estimateExportMessageTokens("alice", "hello") !=
-		estimateOpenAITextTokens("hello")+estimateOpenAITextTokens("alice")+exportChannelTokensPerMessage {
-		t.Fatal("expected username plus per-message overhead in message estimate")
+	entry := exportChannelMessage{
+		ID:        "msg-1",
+		AuthorID:  "user-1",
+		Username:  "alice",
+		Content:   "hello",
+		Timestamp: "2026-09-30T12:00:00Z",
+		Tokens:    0,
+	}
+
+	stamped := entry
+	stamped.Tokens = estimateExportMessageTokens(entry)
+
+	encoded, err := json.MarshalIndent(stamped, "    ", "  ")
+	if err != nil {
+		t.Fatalf("marshal export entry: %v", err)
+	}
+
+	if stamped.Tokens != estimateOpenAITextTokens(string(encoded)+",") {
+		t.Fatal("expected message estimate to cover the full serialized JSON entry")
+	}
+
+	contentOnly := estimateOpenAITextTokens("hello") + estimateOpenAITextTokens("alice")
+	if estimateExportMessageTokens(entry) <= contentOnly {
+		t.Fatal("expected JSON keys and metadata to cost more than content plus username")
 	}
 }
 
@@ -573,8 +683,8 @@ func TestHandleExportChannelCommandUploadsJSON(t *testing.T) {
 		t.Fatalf("expected message timestamp, got %+v", payload.Messages[0])
 	}
 
-	if payload.Tokens != payload.Messages[0].Tokens+payload.Messages[1].Tokens {
-		t.Fatalf("expected token total to match entries: %+v", payload)
+	if payload.Tokens != estimateOpenAITextTokens(capture.fileContents) {
+		t.Fatalf("expected token total to match final JSON file, got %+v", payload)
 	}
 }
 

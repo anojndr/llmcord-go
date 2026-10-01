@@ -130,6 +130,7 @@ const (
 	exportChannelRetryMaxAttempts         = 5
 	exportChannelRetryBaseDelay           = time.Second
 	exportChannelPageStallMaxAttempts     = 3
+	exportChannelTokenStampMaxIterations  = 5
 	finalRenderCheckDelay                 = 3 * time.Second
 	finalRenderRecheckDelay               = 12 * time.Second
 	externalRequestConcurrency            = 8

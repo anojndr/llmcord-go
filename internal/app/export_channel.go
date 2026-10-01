@@ -221,12 +221,26 @@ func (instance *bot) runExportChannel(
 		)
 	}
 
-	exportJSON, err := json.MarshalIndent(buildExportChannelPayload(channelID, tokenLimit, messages, tokens), "", "  ")
+	payload := buildExportChannelPayload(channelID, tokenLimit, messages, tokens)
+
+	exportJSON, err := marshalExportChannelPayload(&payload)
 	if err != nil {
 		return fmt.Errorf("marshal channel export: %w", err)
 	}
 
-	return sendExportChannelFile(session, interaction, channelID, messages, tokens, tokenLimit, exportJSON)
+	if payload.Tokens > tokenLimit {
+		messages, payload, exportJSON = trimExportChannelPayload(channelID, tokenLimit, messages)
+
+		if len(messages) == 0 {
+			return editInteractionResponseText(
+				session,
+				interaction,
+				"No user messages fit within the token limit.",
+			)
+		}
+	}
+
+	return sendExportChannelFile(session, interaction, channelID, messages, payload.Tokens, tokenLimit, exportJSON)
 }
 
 func (instance *bot) fetchExportWithProgress(
@@ -272,6 +286,93 @@ func buildExportChannelPayload(
 		Order:        exportChannelOrder,
 		Messages:     messages,
 	}
+}
+
+// marshalExportChannelPayload serializes the payload with its Tokens field
+// stamped to the file's own size, iterated to a fixpoint: stamping the
+// count changes the file bytes (digit width), which changes the count.
+// Convergence is by digit width (a handful of iterations); the loop cap is
+// a safety net that keeps the last rendering.
+func marshalExportChannelPayload(payload *exportChannelPayload) ([]byte, error) {
+	for range exportChannelTokenStampMaxIterations {
+		encoded, err := json.MarshalIndent(payload, "", "  ")
+		if err != nil {
+			return nil, fmt.Errorf("encode channel export for export: %w", err)
+		}
+
+		stamped := estimateOpenAITextTokens(string(encoded))
+		if stamped == payload.Tokens {
+			return encoded, nil
+		}
+
+		payload.Tokens = stamped
+	}
+
+	encoded, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("encode channel export for export: %w", err)
+	}
+
+	payload.Tokens = estimateOpenAITextTokens(string(encoded))
+
+	final, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("encode channel export for export: %w", err)
+	}
+
+	return final, nil
+}
+
+// trimExportChannelPayload drops oldest messages until the stamped file fits
+// the token limit. The running estimates overshoot slightly (reserve widths,
+// separator commas), so the stamped total can exceed the limit by a digit
+// width even when paging stopped in budget; trimming oldest-first keeps the
+// newest messages the command promises.
+func trimExportChannelPayload(
+	channelID string,
+	tokenLimit int,
+	messages []exportChannelMessage,
+) ([]exportChannelMessage, exportChannelPayload, []byte) {
+	payload := buildExportChannelPayload(channelID, tokenLimit, messages, 0)
+
+	for len(messages) > 0 {
+		encoded, err := marshalExportChannelPayload(&payload)
+		if err != nil || payload.Tokens <= tokenLimit {
+			return messages, payload, encoded
+		}
+
+		messages = messages[:len(messages)-1]
+		payload = buildExportChannelPayload(channelID, tokenLimit, messages, 0)
+	}
+
+	encoded, _ := marshalExportChannelPayload(&payload)
+
+	return nil, payload, encoded
+}
+
+// exportChannelPayloadHeaderTokens reserves budget for the JSON envelope
+// around the messages array (header keys, braces, indentation), so the
+// running message total plus this reserve tracks the final file size. The
+// Tokens field uses the limit's digit width (an upper bound the final stamp
+// can only shrink) and MessageCount uses the same width; ExportedAt renders
+// at fixed RFC3339 width, so the reserve never undercounts the envelope.
+func exportChannelPayloadHeaderTokens(channelID string, tokenLimit int) int {
+	header := exportChannelPayload{
+		ChannelID:    channelID,
+		ExportedAt:   time.Now().UTC().Format(time.RFC3339),
+		TokenLimit:   tokenLimit,
+		Tokens:       tokenLimit,
+		MessageCount: tokenLimit,
+		Order:        exportChannelOrder,
+		Messages:     []exportChannelMessage{},
+	}
+
+	encoded, err := json.MarshalIndent(header, "", "  ")
+	if err != nil {
+		return estimateOpenAITextTokens(channelID) + exportChannelTokensPerMessage
+	}
+
+	return estimateOpenAITextTokens(string(encoded))
 }
 
 func sendExportChannelFile(
@@ -442,7 +543,7 @@ func fetchExportChannelMessages(
 ) ([]exportChannelMessage, int, error) {
 	messages := make([]exportChannelMessage, 0, exportChannelPageSize)
 	scanned := 0
-	tokens := 0
+	tokens := exportChannelPayloadHeaderTokens(channelID, tokenLimit)
 	beforeID := ""
 	stalls := 0
 
@@ -792,23 +893,44 @@ func exportChannelEntry(message *discordgo.Message) (exportChannelMessage, bool)
 		Username:  username,
 		Content:   message.Content,
 		Timestamp: "",
-		Tokens:    estimateExportMessageTokens(username, message.Content),
+		Tokens:    0,
 	}
 
 	if !message.Timestamp.IsZero() {
 		entry.Timestamp = message.Timestamp.UTC().Format(time.RFC3339)
 	}
 
+	entry.Tokens = estimateExportMessageTokens(entry)
+
 	return entry, true
 }
 
-// estimateExportMessageTokens approximates one exported message in OpenAI
-// tokens: content plus username at roughly four characters per token, plus
-// the per-message chat formatting overhead.
-func estimateExportMessageTokens(username, content string) int {
-	return estimateOpenAITextTokens(content) +
-		estimateOpenAITextTokens(username) +
-		exportChannelTokensPerMessage
+// estimateExportMessageTokens approximates one exported message's share of
+// the final JSON file in OpenAI tokens. The budget counts the entire JSON
+// document, so every serialized field (id, author, timestamp, keys,
+// punctuation, indentation, and the entry's own token count) contributes —
+// not just content plus username. Entries marshal with the same two-space
+// indent as the final file, nested two levels deep (payload object plus
+// messages array) with a trailing separator comma, and the self-referential
+// Tokens field iterates to a digit-width fixpoint.
+func estimateExportMessageTokens(entry exportChannelMessage) int {
+	for range exportChannelTokenStampMaxIterations {
+		encoded, err := json.MarshalIndent(entry, "    ", "  ")
+		if err != nil {
+			return estimateOpenAITextTokens(entry.Content) +
+				estimateOpenAITextTokens(entry.Username) +
+				exportChannelTokensPerMessage
+		}
+
+		stamped := estimateOpenAITextTokens(string(encoded) + ",")
+		if stamped == entry.Tokens {
+			return stamped
+		}
+
+		entry.Tokens = stamped
+	}
+
+	return entry.Tokens
 }
 
 // estimateOpenAITextTokens approximates plain text in OpenAI tokens at
