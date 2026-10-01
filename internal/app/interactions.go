@@ -112,8 +112,6 @@ func (instance *bot) handleApplicationCommandInteraction(
 		return instance.handleMaintenanceCommand(session, interaction)
 	case exportChannelCommandName:
 		return instance.handleExportChannelCommand(session, interaction)
-	case watcherStatusCommandName:
-		return instance.handleWatcherStatusCommand(session, interaction)
 	default:
 		return nil
 	}

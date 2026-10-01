@@ -47,8 +47,8 @@ func TestWebSearchToolQueriesRequireVerbatimEntity(t *testing.T) {
 	for _, want := range []string{
 		"Repeat the exact same key entity or topic verbatim in every query",
 		"even if the entity looks unreleased, unfamiliar, or misspelled",
-		"iPhone 18 Pro Max price Philippines",
-		"never 'iPhone 16 Pro Max' or 'iPhone 17 Pro Max'",
+		"Pixel 10 Pro XL price Philippines",
+		"never 'Pixel 9 Pro XL' or 'Pixel 8 Pro'",
 	} {
 		if !strings.Contains(queriesDescription, want) {
 			t.Fatalf("web_search queries description missing %q: got %q", want, queriesDescription)

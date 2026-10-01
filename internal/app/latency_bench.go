@@ -16,7 +16,7 @@ import (
 
 // latencyBenchQuery is the fixed end-to-end prompt every benchmarked model
 // must answer, so rankings compare the same workload.
-const latencyBenchQuery = "iphone 18 pro max news in the philippines"
+const latencyBenchQuery = "latest smartphone news in the philippines"
 
 // latencyBenchCommandName is the slash command that benchmarks models end to
 // end. Without an option it benchmarks every channel_model_locks model; with

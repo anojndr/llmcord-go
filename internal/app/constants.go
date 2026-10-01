@@ -23,7 +23,7 @@ const (
 	defaultMaxMessages                = 25
 	systemPromptTimeBucketMinutes     = 10
 	maxMessageNodes                   = 500
-	registeredCommandCount            = 10
+	registeredCommandCount            = 9
 	maxAutocompleteChoices            = 25
 	statusMessageMaxLength            = 128
 	streamingIndicator                = " ..."
@@ -93,11 +93,6 @@ const (
 	exportChannelChannelIDOptionDescription = "ID of the channel to export"
 	exportChannelTokensOptionName           = "tokens"
 	exportChannelTokensOptionDescription    = "Maximum OpenAI tokens to include"
-
-	watcherStatusCommandName        = "watcherstatus"
-	watcherStatusCommandDescription = "Check whether the iPhone 18 Pro Max is released yet"
-	watcherStatusNotReleasedText    = "iphone 18 pro max not released yet"
-	watcherStatusReleasedText       = "iphone 18 pro max released!"
 
 	optimizedHTTPDialTimeout              = 30 * time.Second
 	optimizedHTTPDialKeepAlive            = 30 * time.Second

@@ -203,7 +203,7 @@ func TestRunLatencyBenchmarkRanksFastestFirst(t *testing.T) {
 			return handle(toolCallDelta(providers.FunctionToolCall{
 				ID:        "call_1",
 				Name:      providers.WebSearchToolName,
-				Arguments: `{"objective": "Find phone news", "search_queries": ["iphone 18 pro max philippines"]}`,
+				Arguments: `{"objective": "Find phone news", "search_queries": ["latest smartphone news philippines"]}`,
 			}))
 		}
 

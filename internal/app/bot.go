@@ -73,12 +73,6 @@ type bot struct {
 	redisConfigured              atomic.Bool
 	redisReachable               atomic.Bool
 	botClosed                    atomic.Bool
-	iphoneReleased               atomic.Bool
-	iphoneCheckCount             atomic.Uint64
-	watcherMu                    sync.Mutex
-	watcherCancel                context.CancelFunc
-	watcherWg                    sync.WaitGroup
-	watcherRunning               bool
 	finalRenderCheckDelays       []time.Duration
 }
 
@@ -461,8 +455,6 @@ func (instance *bot) open(ctx context.Context, loadedConfig config) error {
 
 	instance.markSessionConfigured()
 
-	instance.startIPhoneWatcher(ctx)
-
 	if loadedConfig.ClientID != "" {
 		slog.Info(
 			"bot invite url",
@@ -581,7 +573,6 @@ func (instance *bot) close() error {
 	}
 
 	instance.botClosed.Store(true)
-	instance.stopIPhoneWatcher()
 
 	var sessionErr error
 
@@ -630,7 +621,6 @@ func (instance *bot) syncCommands() error {
 	commands = append(commands, newLatencyBenchCommand())
 	commands = append(commands, newMaintenanceCommand())
 	commands = append(commands, newExportChannelCommand())
-	commands = append(commands, newWatcherStatusCommand())
 
 	_, err := instance.session.ApplicationCommandBulkOverwrite(
 		instance.session.State.User.ID,
