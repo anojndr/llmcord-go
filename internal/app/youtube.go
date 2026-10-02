@@ -1150,32 +1150,38 @@ func parseYouTubeCommentsResponse(
 }
 
 func extractYouTubeContinuationItems(response map[string]any) []any {
+	// The first next-page payload answers with a commentsHeaderRenderer
+	// endpoint carrying zero comments, followed by the endpoint with the
+	// commentThreadRenderer items. Merge every endpoint's items so the
+	// header-only page never shadows the comments.
 	onResponseReceivedEndpoints, found := anySliceAt(response, "onResponseReceivedEndpoints")
 	if !found {
 		return nil
 	}
 
+	var continuationItems []any
+
 	for _, endpoint := range onResponseReceivedEndpoints {
-		continuationItems, continuationItemsFound := anySliceAt(
+		reloadItems, reloadFound := anySliceAt(
 			endpoint,
 			"reloadContinuationItemsCommand",
 			"continuationItems",
 		)
-		if continuationItemsFound {
-			return continuationItems
+		if reloadFound {
+			continuationItems = append(continuationItems, reloadItems...)
 		}
 
-		continuationItems, continuationItemsFound = anySliceAt(
+		appendItems, appendFound := anySliceAt(
 			endpoint,
 			"appendContinuationItemsAction",
 			"continuationItems",
 		)
-		if continuationItemsFound {
-			return continuationItems
+		if appendFound {
+			continuationItems = append(continuationItems, appendItems...)
 		}
 	}
 
-	return nil
+	return continuationItems
 }
 
 func extractYouTubeCommentEntities(response map[string]any) map[string]youtubeComment {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -16,12 +17,15 @@ import (
 )
 
 const (
-	defaultRedditBaseURL  = "https://www.reddit.com"
-	redditWarningText     = "Warning: Reddit content unavailable"
-	redditDefaultDepth    = "10"
-	redditDefaultLimit    = "500"
-	redditRawJSONValue    = "1"
-	minimumRedditListings = 2
+	defaultRedditBaseURL      = "https://www.reddit.com"
+	defaultArcticShiftBaseURL = "https://arctic-shift.photon-reddit.com"
+	redditWarningText         = "Warning: Reddit content unavailable"
+	redditDefaultDepth        = "10"
+	redditDefaultLimit        = "500"
+	redditRawJSONValue        = "1"
+	arcticShiftCommentLimit   = 100
+	arcticShiftCommentSort    = "desc"
+	minimumRedditListings     = 2
 )
 
 var redditURLRegexp = regexp.MustCompile(
@@ -33,9 +37,10 @@ type redditFetcher interface {
 }
 
 type redditClient struct {
-	httpClient *http.Client
-	baseURL    string
-	userAgent  string
+	httpClient      *http.Client
+	baseURL         string
+	arcticShiftBase string
+	userAgent       string
 }
 
 type redditThreadRequest struct {
@@ -127,9 +132,10 @@ func (replies *redditReplies) UnmarshalJSON(data []byte) error {
 
 func newRedditClient(httpClient *http.Client) redditClient {
 	return redditClient{
-		httpClient: newRedditHTTPClient(httpClient),
-		baseURL:    defaultRedditBaseURL,
-		userAgent:  youtubeUserAgent,
+		httpClient:      newRedditHTTPClient(httpClient),
+		baseURL:         defaultRedditBaseURL,
+		arcticShiftBase: defaultArcticShiftBaseURL,
+		userAgent:       youtubeUserAgent,
 	}
 }
 
@@ -212,19 +218,30 @@ func (client redditClient) fetch(ctx context.Context, rawURL string) (redditThre
 	}
 
 	responseBody, err := client.doRequest(ctx, requestURL)
-	if err != nil {
-		return redditThreadContent{}, fmt.Errorf("fetch reddit thread for %q: %w", rawURL, err)
+	if err == nil {
+		threadContent, parseErr := parseRedditThreadResponse(responseBody)
+		if parseErr != nil {
+			return redditThreadContent{}, fmt.Errorf("parse reddit thread for %q: %w", rawURL, parseErr)
+		}
+
+		threadContent.URL = publicRedditURL(threadRequest.ThreadPath)
+		threadContent.JSONURL = publicRedditURL(threadRequest.JSONPath)
+
+		return threadContent, nil
 	}
 
-	threadContent, err := parseRedditThreadResponse(responseBody)
-	if err != nil {
-		return redditThreadContent{}, fmt.Errorf("parse reddit thread for %q: %w", rawURL, err)
+	// Reddit's JSON endpoints answer datacenter egress with a 403
+	// network-policy block page, so fall back to the unauthenticated Arctic
+	// Shift archive for the same thread instead of failing the augmentation.
+	arcticContent, arcticErr := client.fetchArcticShiftThread(ctx, threadRequest)
+	if arcticErr != nil {
+		return redditThreadContent{}, errors.Join(
+			fmt.Errorf("fetch reddit thread for %q: %w", rawURL, err),
+			fmt.Errorf("fetch arctic shift thread for %q: %w", rawURL, arcticErr),
+		)
 	}
 
-	threadContent.URL = publicRedditURL(threadRequest.ThreadPath)
-	threadContent.JSONURL = publicRedditURL(threadRequest.JSONPath)
-
-	return threadContent, nil
+	return arcticContent, nil
 }
 
 func (client redditClient) doRequest(ctx context.Context, requestURL string) ([]byte, error) {
@@ -331,6 +348,15 @@ func isRedditHost(host string) bool {
 	normalizedHost = strings.TrimPrefix(normalizedHost, "www.")
 
 	return normalizedHost == "reddit.com" || strings.HasSuffix(normalizedHost, ".reddit.com")
+}
+
+func isRedditInternalURL(rawURL string) bool {
+	parsedURL, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || !isWebsiteScheme(parsedURL.Scheme) {
+		return false
+	}
+
+	return isRedditHost(parsedURL.Hostname())
 }
 
 func resolveRedditRequestURL(baseURL, requestPath string) (string, error) {
@@ -465,6 +491,207 @@ func defaultRedditAuthor(author string) string {
 	}
 
 	return trimmedAuthor
+}
+
+type arcticShiftPost struct {
+	ID                string  `json:"id"`
+	Author            string  `json:"author"`
+	CreatedUTC        float64 `json:"created_utc"`
+	NumComments       int     `json:"num_comments"`
+	Permalink         string  `json:"permalink"`
+	Score             int     `json:"score"`
+	Selftext          string  `json:"selftext"`
+	Subreddit         string  `json:"subreddit"`
+	SubredditPrefixed string  `json:"subreddit_name_prefixed"`
+	Title             string  `json:"title"`
+	UpvoteRatio       float64 `json:"upvote_ratio"`
+	URL               string  `json:"url"`
+}
+
+type arcticShiftPostsResponse struct {
+	Data []arcticShiftPost `json:"data"`
+}
+
+type arcticShiftComment struct {
+	ID         string  `json:"id"`
+	Author     string  `json:"author"`
+	Body       string  `json:"body"`
+	Score      int     `json:"score"`
+	CreatedUTC float64 `json:"created_utc"`
+	Permalink  string  `json:"permalink"`
+}
+
+type arcticShiftCommentsResponse struct {
+	Data []arcticShiftComment `json:"data"`
+}
+
+func (client redditClient) fetchArcticShiftThread(
+	ctx context.Context,
+	threadRequest redditThreadRequest,
+) (redditThreadContent, error) {
+	threadID, err := redditThreadID(threadRequest.ThreadPath)
+	if err != nil {
+		return redditThreadContent{}, err
+	}
+
+	post, err := client.fetchArcticShiftPost(ctx, threadID)
+	if err != nil {
+		return redditThreadContent{}, err
+	}
+
+	comments, err := client.fetchArcticShiftComments(ctx, threadID)
+	if err != nil {
+		return redditThreadContent{}, err
+	}
+
+	threadContent := arcticShiftThreadContent(post, comments)
+	threadContent.URL = publicRedditURL(threadRequest.ThreadPath)
+	threadContent.JSONURL = publicRedditURL(threadRequest.JSONPath)
+
+	return threadContent, nil
+}
+
+func (client redditClient) fetchArcticShiftPost(
+	ctx context.Context,
+	threadID string,
+) (arcticShiftPost, error) {
+	requestURL, err := resolveRedditRequestURL(
+		arcticShiftBaseURL(client.arcticShiftBase),
+		"/api/posts/ids?ids="+url.QueryEscape(threadID),
+	)
+	if err != nil {
+		return arcticShiftPost{}, fmt.Errorf("resolve arctic shift post url: %w", err)
+	}
+
+	responseBody, err := client.doRequest(ctx, requestURL)
+	if err != nil {
+		return arcticShiftPost{}, fmt.Errorf("fetch arctic shift post: %w", err)
+	}
+
+	var response arcticShiftPostsResponse
+
+	err = json.Unmarshal(responseBody, &response)
+	if err != nil {
+		return arcticShiftPost{}, fmt.Errorf("decode arctic shift post: %w", err)
+	}
+
+	for _, post := range response.Data {
+		if strings.EqualFold(strings.TrimSpace(post.ID), threadID) {
+			return post, nil
+		}
+	}
+
+	return arcticShiftPost{}, fmt.Errorf("arctic shift post %q not found: %w", threadID, os.ErrNotExist)
+}
+
+func (client redditClient) fetchArcticShiftComments(
+	ctx context.Context,
+	threadID string,
+) ([]redditThreadComment, error) {
+	queryValues := make(url.Values)
+	queryValues.Set("link_id", threadID)
+	queryValues.Set("limit", strconv.Itoa(arcticShiftCommentLimit))
+	queryValues.Set("sort", arcticShiftCommentSort)
+
+	requestURL, err := resolveRedditRequestURL(
+		arcticShiftBaseURL(client.arcticShiftBase),
+		"/api/comments/search?"+queryValues.Encode(),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("resolve arctic shift comments url: %w", err)
+	}
+
+	responseBody, err := client.doRequest(ctx, requestURL)
+	if err != nil {
+		return nil, fmt.Errorf("fetch arctic shift comments: %w", err)
+	}
+
+	var response arcticShiftCommentsResponse
+
+	err = json.Unmarshal(responseBody, &response)
+	if err != nil {
+		return nil, fmt.Errorf("decode arctic shift comments: %w", err)
+	}
+
+	comments := make([]redditThreadComment, 0, len(response.Data))
+
+	for _, item := range response.Data {
+		comment := redditThreadComment{
+			Author:     defaultRedditAuthor(item.Author),
+			Body:       strings.TrimSpace(item.Body),
+			Score:      item.Score,
+			CreatedUTC: item.CreatedUTC,
+			Permalink:  publicRedditURL(item.Permalink),
+			Replies:    nil,
+		}
+		if strings.TrimSpace(comment.Body) == "" && comment.Author == "[deleted]" {
+			continue
+		}
+
+		comments = append(comments, comment)
+	}
+
+	return comments, nil
+}
+
+func arcticShiftBaseURL(configuredBase string) string {
+	if strings.TrimSpace(configuredBase) == "" {
+		return defaultArcticShiftBaseURL
+	}
+
+	return configuredBase
+}
+
+func redditThreadID(threadPath string) (string, error) {
+	segments := strings.Split(strings.Trim(threadPath, "/"), "/")
+
+	for index, segment := range segments {
+		if strings.EqualFold(segment, "comments") && index+1 < len(segments) {
+			threadID := strings.TrimSpace(segments[index+1])
+			if threadID == "" {
+				break
+			}
+
+			return threadID, nil
+		}
+	}
+
+	return "", fmt.Errorf("extract reddit thread id from %q: %w", threadPath, os.ErrInvalid)
+}
+
+func arcticShiftThreadContent(
+	post arcticShiftPost,
+	comments []redditThreadComment,
+) redditThreadContent {
+	subreddit := strings.TrimSpace(post.SubredditPrefixed)
+	if subreddit == "" && strings.TrimSpace(post.Subreddit) != "" {
+		subreddit = "r/" + strings.TrimSpace(post.Subreddit)
+	}
+
+	threadURL := strings.TrimSpace(post.URL)
+	if threadURL == "" && strings.TrimSpace(post.Permalink) != "" {
+		threadURL = publicRedditURL(post.Permalink)
+	}
+
+	linkedURL := strings.TrimSpace(post.URL)
+	if isRedditInternalURL(linkedURL) {
+		linkedURL = ""
+	}
+
+	return redditThreadContent{
+		URL:         threadURL,
+		JSONURL:     "",
+		Subreddit:   subreddit,
+		Title:       strings.TrimSpace(post.Title),
+		Author:      defaultRedditAuthor(post.Author),
+		Body:        strings.TrimSpace(post.Selftext),
+		Score:       post.Score,
+		UpvoteRatio: post.UpvoteRatio,
+		NumComments: post.NumComments,
+		CreatedUTC:  post.CreatedUTC,
+		LinkedURL:   linkedURL,
+		Comments:    comments,
+	}
 }
 
 func formatRedditURLContent(contents []redditThreadContent) string {

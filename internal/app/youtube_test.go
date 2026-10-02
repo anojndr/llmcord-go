@@ -1041,3 +1041,68 @@ func writeJSON(writer http.ResponseWriter, payload any) {
 		panic(err)
 	}
 }
+
+func TestExtractYouTubeContinuationItemsMergesHeaderOnlyFirstPage(t *testing.T) {
+	t.Parallel()
+
+	response := map[string]any{
+		"onResponseReceivedEndpoints": []any{
+			map[string]any{
+				"reloadContinuationItemsCommand": map[string]any{
+					"continuationItems": []any{
+						map[string]any{"commentsHeaderRenderer": map[string]any{}},
+					},
+				},
+			},
+			map[string]any{
+				"reloadContinuationItemsCommand": map[string]any{
+					"continuationItems": []any{
+						map[string]any{
+							"commentThreadRenderer": map[string]any{
+								"commentViewModel": map[string]any{
+									"commentViewModel": map[string]any{"commentKey": "comment-1"},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		"frameworkUpdates": map[string]any{
+			"entityBatchUpdate": map[string]any{
+				"mutations": []any{
+					map[string]any{
+						"entityKey": "comment-1",
+						"payload": map[string]any{
+							"commentEntityPayload": map[string]any{
+								"properties": map[string]any{
+									"replyLevel": float64(0),
+									"content":    map[string]any{"content": "Live comment"},
+								},
+								"author": map[string]any{"displayName": "Live author"},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	responseBody, err := json.Marshal(response)
+	if err != nil {
+		t.Fatalf("marshal comments response: %v", err)
+	}
+
+	comments, nextToken, err := parseYouTubeCommentsResponse(responseBody)
+	if err != nil {
+		t.Fatalf("parse youtube comments response: %v", err)
+	}
+
+	if len(comments) != 1 || comments[0].Text != "Live comment" {
+		t.Fatalf("expected header-only first endpoint not to shadow comments: %#v", comments)
+	}
+
+	if nextToken != "" {
+		t.Fatalf("unexpected next token: %q", nextToken)
+	}
+}

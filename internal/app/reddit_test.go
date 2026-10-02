@@ -475,6 +475,205 @@ func TestNewRedditClientForcesHTTP1WhenServerBlocksHTTP2(t *testing.T) {
 	}
 }
 
+func TestRedditClientFallsBackToArcticShiftAfterRedditBlock(t *testing.T) {
+	t.Parallel()
+
+	arcticServer := newArcticShiftFallbackTestServer(t)
+	defer arcticServer.Close()
+
+	redditServer := httptest.NewServer(http.HandlerFunc(func(
+		writer http.ResponseWriter,
+		request *http.Request,
+	) {
+		writer.Header().Set("Content-Type", "text/html")
+		writer.WriteHeader(http.StatusForbidden)
+
+		_, err := writer.Write([]byte("<body>You've been blocked by network security.</body>"))
+		if err != nil {
+			t.Fatalf("write blocked response: %v", err)
+		}
+	}))
+	defer redditServer.Close()
+
+	client := redditClient{
+		httpClient:      redditServer.Client(),
+		baseURL:         redditServer.URL,
+		arcticShiftBase: arcticServer.URL,
+		userAgent:       youtubeUserAgent,
+	}
+
+	result, err := client.fetch(
+		context.Background(),
+		"https://www.reddit.com/r/testing/comments/abc123/thread-title/",
+	)
+	if err != nil {
+		t.Fatalf("fetch reddit content via arctic fallback: %v", err)
+	}
+
+	assertArcticShiftFallbackContent(t, result)
+}
+
+func newArcticShiftFallbackTestServer(t *testing.T) *httptest.Server {
+	t.Helper()
+
+	return httptest.NewServer(http.HandlerFunc(func(
+		writer http.ResponseWriter,
+		request *http.Request,
+	) {
+		writer.Header().Set("Content-Type", "application/json")
+
+		switch request.URL.Path {
+		case "/api/posts/ids":
+			if request.URL.Query().Get("ids") != "abc123" {
+				t.Fatalf("unexpected arctic post ids: %q", request.URL.Query().Get("ids"))
+			}
+
+			_, err := writer.Write([]byte(`{"data":[{` +
+				`"id":"abc123",` +
+				`"author":"poster",` +
+				`"created_utc":1735179615,` +
+				`"num_comments":3,` +
+				`"permalink":"/r/testing/comments/abc123/thread-title/",` +
+				`"score":42,` +
+				`"selftext":"Archived post body",` +
+				`"subreddit":"testing",` +
+				`"subreddit_name_prefixed":"r/testing",` +
+				`"title":"Archived title",` +
+				`"upvote_ratio":0.97,` +
+				`"url":"https://www.reddit.com/r/testing/comments/abc123/thread-title/"` +
+				`}]}`))
+			if err != nil {
+				t.Fatalf("write arctic post response: %v", err)
+			}
+		case "/api/comments/search":
+			if request.URL.Query().Get("link_id") != "abc123" {
+				t.Fatalf("unexpected arctic link id: %q", request.URL.Query().Get("link_id"))
+			}
+
+			_, err := writer.Write([]byte(`{"data":[{` +
+				`"id":"c1",` +
+				`"author":"first",` +
+				`"body":"Archived comment",` +
+				`"score":12,` +
+				`"created_utc":1735179616,` +
+				`"permalink":"/r/testing/comments/abc123/thread-title/c1/"` +
+				`}]}`))
+			if err != nil {
+				t.Fatalf("write arctic comments response: %v", err)
+			}
+		default:
+			t.Fatalf("unexpected arctic path: %q", request.URL.Path)
+		}
+	}))
+}
+
+func assertArcticShiftFallbackContent(t *testing.T, result redditThreadContent) {
+	t.Helper()
+
+	if result.Title != "Archived title" {
+		t.Fatalf("unexpected title: %q", result.Title)
+	}
+
+	if result.Author != "poster" {
+		t.Fatalf("unexpected author: %q", result.Author)
+	}
+
+	if result.Body != "Archived post body" {
+		t.Fatalf("unexpected body: %q", result.Body)
+	}
+
+	if len(result.Comments) != 1 || result.Comments[0].Body != "Archived comment" {
+		t.Fatalf("unexpected comments: %#v", result.Comments)
+	}
+
+	if result.URL != "https://www.reddit.com/r/testing/comments/abc123/thread-title/" {
+		t.Fatalf("unexpected canonical url: %q", result.URL)
+	}
+
+	expectedJSONURL := "https://www.reddit.com/r/testing/comments/abc123/thread-title.json?depth=10&limit=500&raw_json=1"
+	if result.JSONURL != expectedJSONURL {
+		t.Fatalf("unexpected json url: got %q want %q", result.JSONURL, expectedJSONURL)
+	}
+}
+
+func TestRedditClientJoinsRedditAndArcticErrorsWhenBothFail(t *testing.T) {
+	t.Parallel()
+
+	arcticServer := httptest.NewServer(http.HandlerFunc(func(
+		writer http.ResponseWriter,
+		request *http.Request,
+	) {
+		http.Error(writer, "arctic down", http.StatusBadGateway)
+	}))
+	defer arcticServer.Close()
+
+	redditServer := httptest.NewServer(http.HandlerFunc(func(
+		writer http.ResponseWriter,
+		request *http.Request,
+	) {
+		http.Error(writer, "blocked", http.StatusForbidden)
+	}))
+	defer redditServer.Close()
+
+	client := redditClient{
+		httpClient:      redditServer.Client(),
+		baseURL:         redditServer.URL,
+		arcticShiftBase: arcticServer.URL,
+		userAgent:       youtubeUserAgent,
+	}
+
+	_, err := client.fetch(
+		context.Background(),
+		"https://www.reddit.com/r/testing/comments/abc123/thread-title/",
+	)
+	if err == nil {
+		t.Fatal("expected fetch to fail when reddit and arctic both fail")
+	}
+
+	if !strings.Contains(err.Error(), "fetch reddit thread") ||
+		!strings.Contains(err.Error(), "fetch arctic shift thread") {
+		t.Fatalf("expected joined reddit and arctic errors: %v", err)
+	}
+}
+
+func TestArcticShiftThreadContentUsesHostAwareInternalLinkCheck(t *testing.T) {
+	t.Parallel()
+
+	basePost := arcticShiftPost{
+		ID:                "abc123",
+		Author:            "poster",
+		CreatedUTC:        1735179615,
+		NumComments:       1,
+		Permalink:         "/r/testing/comments/abc123/thread-title/",
+		Score:             42,
+		Selftext:          "Body",
+		Subreddit:         "testing",
+		SubredditPrefixed: "r/testing",
+		Title:             "Title",
+		UpvoteRatio:       0.97,
+	}
+
+	external := basePost
+	external.URL = "https://www.reddit.com.evil.com/article"
+
+	if got := arcticShiftThreadContent(external, nil).LinkedURL; got != external.URL {
+		t.Fatalf("external lookalike url must stay a linked url, got %q", got)
+	}
+
+	for _, internalURL := range []string{
+		"https://www.reddit.com/r/testing/comments/abc123/thread-title/",
+		"https://old.reddit.com/r/testing/comments/abc123/thread-title/",
+		"http://www.reddit.com/r/testing/comments/abc123/thread-title/",
+	} {
+		internal := basePost
+		internal.URL = internalURL
+
+		if got := arcticShiftThreadContent(internal, nil).LinkedURL; got != "" {
+			t.Fatalf("internal reddit url %q must not be a linked url, got %q", internalURL, got)
+		}
+	}
+}
+
 func mockRedditThreadResponse(t *testing.T) string {
 	t.Helper()
 
