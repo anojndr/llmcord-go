@@ -157,6 +157,11 @@ const (
 	// and usually fall back to their snippet.
 	tinyFishSearchFetchDeadline    = 5 * time.Second
 	tinyFishSearchFetchConcurrency = 20
+	// searchURLFetcherTimeout is the hard wall-clock limit shared by YouTube
+	// and Reddit enrichment of search API results: both fetchers run under
+	// one deadline, and pages that miss it keep their search snippet instead
+	// of stalling the reply.
+	searchURLFetcherTimeout = 5 * time.Second
 	// tinyFishFetchCacheTTL bounds how long a fetched page is served from
 	// the in-memory fetch cache without another Fetch API round trip.
 	// Repeat URLs inside this window (overlapping queries, Show Sources,

@@ -755,7 +755,12 @@ func (instance *bot) runWebSearchQueries(
 	searchConfig := loadedConfig
 	searchConfig.WebSearch.Exa.SearchType = instance.exaSearchTypeForProvider(loadedConfig, configuredModel)
 
-	return instance.webSearch.search(ctx, searchConfig, queries)
+	results, err := instance.webSearch.search(ctx, searchConfig, queries)
+	if err != nil {
+		return nil, err
+	}
+
+	return instance.enrichWebSearchResults(ctx, searchConfig, results), nil
 }
 
 // runWebSearchToolPhase executes the function calls of one tool round and
