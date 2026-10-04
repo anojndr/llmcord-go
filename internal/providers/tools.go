@@ -8,19 +8,23 @@ import (
 
 const webSearchToolDescription = "Search the web and return result titles, URLs, and excerpts. " +
 	"Always search the web if the user told you to, like 'search the web' or something similar, " +
-	"unless web search is absolutely not needed."
+	"unless web search is absolutely not needed. " +
+	"When the user lists multiple distinct items, search each one separately: one query per item, " +
+	"never combine items into one query."
 
-const webSearchObjectiveDescription = "Describe the search goal in a concise, standalone sentence. " +
-	"Copy the user's key entity verbatim, including model numbers, versions, years, and proper nouns; " +
-	"never correct or substitute them (e.g. Pixel 10 Pro XL stays Pixel 10 Pro XL)."
+const webSearchObjectiveDescription = "One sentence naming the user's task plus the full item list " +
+	"copied character-for-character (hyphens, digits, dots kept). " +
+	"Example: Determine the most uncensored of big-pickle, fledge-alpha, ling-3.0-flash-fin, " +
+	"ling-3.1-flash, longcat-2.5-preview, mimo-v2.6-flash, muse-spark-1.3-contributor, " +
+	"nemotron-3-ultra, nemotron-3.5-lightning, space-bunny."
 
-const webSearchQueriesDescription = "Provide keyword queries of 3-6 words each. " +
-	"Repeat the exact same key entity or topic verbatim in every query; " +
-	"never substitute different model numbers, versions, years, or proper nouns, " +
-	"even if the entity looks unreleased, unfamiliar, or misspelled. " +
-	"For example, 'expected price of Pixel 10 Pro XL in the Philippines' uses " +
-	"'Pixel 10 Pro XL price Philippines', never 'Pixel 9 Pro XL' or 'Pixel 8 Pro'. " +
-	"For multiple queries, vary angles or aspects, not the entity name. " +
+const webSearchQueriesDescription = "One string per item in the user's list, in the same order. " +
+	"Copy each item name character-for-character including hyphens, digits, dots " +
+	"(big-pickle stays big-pickle, ling-3.0-flash-fin stays ling-3.0-flash-fin). " +
+	"Append the SAME 1-2 word topic suffix to every query " +
+	"(example: big-pickle uncensored, fledge-alpha uncensored). " +
+	"A query with 2+ item names in it is always wrong. " +
+	"Emit one query for every listed item; never merge, drop, or rename an item. " +
 	"Do not use sentences, instructions, or site: operators."
 
 // WebSearchToolName is the function name the model calls to search the web.

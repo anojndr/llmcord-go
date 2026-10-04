@@ -10,9 +10,15 @@ func TestWebSearchToolDescriptionIncludesUserInstruction(t *testing.T) {
 
 	tool := WebSearchTool(0)
 
-	const want = "Always search the web if the user told you to, like 'search the web' or something similar, unless web search is absolutely not needed."
-	if !strings.Contains(tool.Description, want) {
-		t.Fatalf("web_search tool description missing required instruction %q: got %q", want, tool.Description)
+	for _, want := range []string{
+		"Always search the web if the user told you to, like 'search the web' " +
+			"or something similar, unless web search is absolutely not needed.",
+		"one query per item",
+		"never combine items into one query",
+	} {
+		if !strings.Contains(tool.Description, want) {
+			t.Fatalf("web_search tool description missing required instruction %q: got %q", want, tool.Description)
+		}
 	}
 }
 
@@ -32,7 +38,10 @@ func TestWebSearchToolQueriesRequireVerbatimEntity(t *testing.T) {
 	}
 
 	objectiveDescription, _ := objective["description"].(string)
-	for _, want := range []string{"verbatim", "never correct or substitute"} {
+	for _, want := range []string{
+		"character-for-character",
+		"Determine the most uncensored of big-pickle",
+	} {
 		if !strings.Contains(objectiveDescription, want) {
 			t.Fatalf("web_search objective missing %q: got %q", want, objectiveDescription)
 		}
@@ -45,10 +54,11 @@ func TestWebSearchToolQueriesRequireVerbatimEntity(t *testing.T) {
 
 	queriesDescription, _ := queries["description"].(string)
 	for _, want := range []string{
-		"Repeat the exact same key entity or topic verbatim in every query",
-		"even if the entity looks unreleased, unfamiliar, or misspelled",
-		"Pixel 10 Pro XL price Philippines",
-		"never 'Pixel 9 Pro XL' or 'Pixel 8 Pro'",
+		"One string per item in the user's list",
+		"character-for-character including hyphens, digits, dots",
+		"big-pickle uncensored, fledge-alpha uncensored",
+		"A query with 2+ item names in it is always wrong",
+		"never merge, drop, or rename an item",
 	} {
 		if !strings.Contains(queriesDescription, want) {
 			t.Fatalf("web_search queries description missing %q: got %q", want, queriesDescription)
