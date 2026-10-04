@@ -397,6 +397,15 @@ func (client *stubWebSearchClient) search(
 	loadedConfig config,
 	queries []string,
 ) ([]webSearchResult, error) {
+	return client.searchWithPrefetch(ctx, loadedConfig, queries, nil)
+}
+
+func (client *stubWebSearchClient) searchWithPrefetch(
+	ctx context.Context,
+	loadedConfig config,
+	queries []string,
+	_ *specialistEnrichPrefetch,
+) ([]webSearchResult, error) {
 	client.mu.Lock()
 	copiedQueries := make([]string, len(queries))
 	copy(copiedQueries, queries)

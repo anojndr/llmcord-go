@@ -162,6 +162,17 @@ const (
 	// one deadline, and pages that miss it keep their search snippet instead
 	// of stalling the reply.
 	searchURLFetcherTimeout = 5 * time.Second
+	// specialistEnrichPrefetchQueueSize caps queued YouTube/Reddit URLs for
+	// the background enrichment prefetch. maxURLs bounds each query's URLs
+	// and a tool round carries a handful of queries, so the queue never
+	// fills in practice; an overflow drops the URL and the sequential tail
+	// fetches it instead of blocking search workers.
+	specialistEnrichPrefetchQueueSize = 64
+	// specialistEnrichPrefetchLifetime bounds the background prefetch
+	// worker: it must cover the whole search window (slowest search query
+	// plus the bounded TinyFish fetch phase plus the prefetch's own fetch
+	// batches) without leaking when the caller moves on.
+	specialistEnrichPrefetchLifetime = 5 * time.Minute
 	// tinyFishFetchCacheTTL bounds how long a fetched page is served from
 	// the in-memory fetch cache without another Fetch API round trip.
 	// Repeat URLs inside this window (overlapping queries, Show Sources,

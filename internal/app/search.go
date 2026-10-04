@@ -65,6 +65,12 @@ type chatCompletionStreamer interface {
 
 type webSearcher interface {
 	search(ctx context.Context, loadedConfig config, queries []string) ([]webSearchResult, error)
+	searchWithPrefetch(
+		ctx context.Context,
+		loadedConfig config,
+		queries []string,
+		prefetch *specialistEnrichPrefetch,
+	) ([]webSearchResult, error)
 }
 
 type searchMetadata = searchtypes.SearchMetadata
@@ -745,7 +751,10 @@ func (instance *bot) webSearchToolEnabled(
 
 // runWebSearchQueries executes the routed TinyFish -> Exa -> Tavily search
 // for the given queries. A provider-level exa_search_type wins over the
-// runtime /searchtype value; /searchtype remains the fallback.
+// runtime /searchtype value; /searchtype remains the fallback. YouTube and
+// Reddit enrichment prefetches specialist URLs in the background while the
+// search chain runs, then merges with a sequential tail for URLs the
+// prefetch missed, so results match the old sequential path.
 func (instance *bot) runWebSearchQueries(
 	ctx context.Context,
 	loadedConfig config,
@@ -755,12 +764,48 @@ func (instance *bot) runWebSearchQueries(
 	searchConfig := loadedConfig
 	searchConfig.WebSearch.Exa.SearchType = instance.exaSearchTypeForProvider(loadedConfig, configuredModel)
 
-	results, err := instance.webSearch.search(ctx, searchConfig, queries)
+	if !instance.supportsSpecialistPrefetch(searchConfig) {
+		results, err := instance.webSearch.search(ctx, searchConfig, queries)
+		if err != nil {
+			return nil, err
+		}
+
+		return instance.enrichWebSearchResults(ctx, searchConfig, results), nil
+	}
+
+	prefetch := newSpecialistEnrichPrefetch(instance, searchSpecialistContentMaxChars(searchConfig))
+
+	results, err := instance.webSearch.searchWithPrefetch(ctx, searchConfig, queries, prefetch)
 	if err != nil {
+		prefetch.cancel()
+
 		return nil, err
 	}
 
-	return instance.enrichWebSearchResults(ctx, searchConfig, results), nil
+	return prefetch.finish(ctx, searchConfig, results), nil
+}
+
+// supportsSpecialistPrefetch reports whether the background YouTube/Reddit
+// prefetch can change anything: at least one specialist fetcher configured
+// and the TinyFish provider (the only path that streams per-query search
+// outcomes while fetching) present and keyed. Otherwise the search runs the
+// old sequential path with no worker and no double fetch.
+func (instance *bot) supportsSpecialistPrefetch(searchConfig config) bool {
+	if instance == nil || (instance.youtube == nil && instance.reddit == nil) {
+		return false
+	}
+
+	if len(searchConfig.WebSearch.TinyFish.apiKeys()) == 0 {
+		return false
+	}
+
+	for _, provider := range searchConfig.WebSearch.Order {
+		if provider == webSearchProviderTinyFish {
+			return true
+		}
+	}
+
+	return len(searchConfig.WebSearch.Order) == 0
 }
 
 // runWebSearchToolPhase executes the function calls of one tool round and
@@ -951,6 +996,21 @@ func (client routedWebSearchClient) search(
 	loadedConfig config,
 	queries []string,
 ) ([]webSearchResult, error) {
+	return client.searchWithPrefetch(ctx, loadedConfig, queries, nil)
+}
+
+// searchWithPrefetch runs the fallback chain while the specialist prefetch
+// (when non-nil) enriches URLs concurrently: TinyFish streams per-query
+// search outcomes into the prefetch so YouTube/Reddit fetches overlap the
+// TinyFish page-fetch phase, and Exa/Tavily/Parallel results prefetch from
+// their formatted texts once their search returns. Fallback ordering and
+// error aggregation are unchanged.
+func (client routedWebSearchClient) searchWithPrefetch(
+	ctx context.Context,
+	loadedConfig config,
+	queries []string,
+	prefetch *specialistEnrichPrefetch,
+) ([]webSearchResult, error) {
 	order := loadedConfig.WebSearch.Order
 	if len(order) == 0 {
 		order = defaultWebSearchOrder
@@ -969,7 +1029,7 @@ func (client routedWebSearchClient) search(
 				continue
 			}
 
-			results, err := client.tinyFish.search(ctx, loadedConfig, queries)
+			results, err := client.tinyFish.searchWithPrefetch(ctx, loadedConfig, queries, prefetch)
 			if err == nil {
 				return results, nil
 			}
@@ -989,8 +1049,10 @@ func (client routedWebSearchClient) search(
 				continue
 			}
 
-			results, err := client.exa.search(ctx, loadedConfig, queries)
+			results, err := client.exa.searchWithPrefetch(ctx, loadedConfig, queries, prefetch)
 			if err == nil {
+				prefetchResultURLs(ctx, prefetch, results)
+
 				return results, nil
 			}
 
@@ -1004,8 +1066,10 @@ func (client routedWebSearchClient) search(
 				continue
 			}
 
-			results, err := client.tavily.search(ctx, loadedConfig, queries)
+			results, err := client.tavily.searchWithPrefetch(ctx, loadedConfig, queries, prefetch)
 			if err == nil {
+				prefetchResultURLs(ctx, prefetch, results)
+
 				return results, nil
 			}
 
@@ -1019,8 +1083,10 @@ func (client routedWebSearchClient) search(
 				continue
 			}
 
-			results, err := client.parallel.search(ctx, loadedConfig, queries)
+			results, err := client.parallel.searchWithPrefetch(ctx, loadedConfig, queries, prefetch)
 			if err == nil {
+				prefetchResultURLs(ctx, prefetch, results)
+
 				return results, nil
 			}
 
@@ -1079,6 +1145,41 @@ func (client routedWebSearchClient) search(
 
 		return nil, fmt.Errorf("%s: %w", strings.Join(parts, ", "), joined)
 	}
+}
+
+// prefetchResultURLs queues the specialist URLs of one fallback provider's
+// formatted results for background enrichment. Unlike TinyFish (which
+// streams per-query search outcomes while fetching), the Exa/Tavily/Parallel
+// clients return fully formatted texts, so the whole batch prefetches at
+// once. Extraction happens from the result texts because the raw URL lists
+// are internal to each query call.
+func prefetchResultURLs(ctx context.Context, prefetch *specialistEnrichPrefetch, results []webSearchResult) {
+	if prefetch == nil {
+		return
+	}
+
+	urls := make([]string, 0, len(results))
+	seen := make(map[string]struct{})
+
+	for _, result := range results {
+		for _, source := range extractSearchSources(result.Text) {
+			trimmedURL := strings.TrimSpace(source.URL)
+			if trimmedURL == "" {
+				continue
+			}
+
+			key := strings.ToLower(trimmedURL)
+			if _, seenURL := seen[key]; seenURL {
+				continue
+			}
+
+			seen[key] = struct{}{}
+
+			urls = append(urls, trimmedURL)
+		}
+	}
+
+	prefetch.prefetchURLs(ctx, urls)
 }
 
 func contentPartImageURL(part contentPart) (string, error) {
@@ -1474,6 +1575,18 @@ func (client exaSearchClient) search(
 	})
 }
 
+// searchWithPrefetch runs the Exa search; the routed caller prefetches the
+// formatted results after search returns, so the prefetch is accepted here
+// and ignored to keep the fallback dispatch uniform.
+func (client exaSearchClient) searchWithPrefetch(
+	ctx context.Context,
+	loadedConfig config,
+	queries []string,
+	_ *specialistEnrichPrefetch,
+) ([]webSearchResult, error) {
+	return client.search(ctx, loadedConfig, queries)
+}
+
 func (client tavilySearchClient) search(
 	ctx context.Context,
 	loadedConfig config,
@@ -1495,6 +1608,18 @@ func (client tavilySearchClient) search(
 			return client.searchQuery(queryContext, apiKey, query, maxURLs, maxChars)
 		})
 	})
+}
+
+// searchWithPrefetch runs the Tavily search; the routed caller prefetches
+// the formatted results after search returns, so the prefetch is accepted
+// here and ignored to keep the fallback dispatch uniform.
+func (client tavilySearchClient) searchWithPrefetch(
+	ctx context.Context,
+	loadedConfig config,
+	queries []string,
+	_ *specialistEnrichPrefetch,
+) ([]webSearchResult, error) {
+	return client.search(ctx, loadedConfig, queries)
 }
 
 func searchQueriesConcurrently[T any](
@@ -1795,6 +1920,18 @@ func (client parallelSearchClient) search(
 			return client.searchQuery(queryContext, apiKey, query, maxURLs, maxChars)
 		})
 	})
+}
+
+// searchWithPrefetch runs the Parallel search+extract; the routed caller
+// prefetches the formatted results after search returns, so the prefetch is
+// accepted here and ignored to keep the fallback dispatch uniform.
+func (client parallelSearchClient) searchWithPrefetch(
+	ctx context.Context,
+	loadedConfig config,
+	queries []string,
+	_ *specialistEnrichPrefetch,
+) ([]webSearchResult, error) {
+	return client.search(ctx, loadedConfig, queries)
 }
 
 func (client parallelSearchClient) searchQuery(
@@ -2119,6 +2256,22 @@ func (client tinyFishSearchClient) search(
 	loadedConfig config,
 	queries []string,
 ) ([]webSearchResult, error) {
+	return client.searchWithPrefetch(ctx, loadedConfig, queries, nil)
+}
+
+// searchWithPrefetch runs the TinyFish search+fetch pipeline and streams
+// each query's freshly searched URLs into the specialist prefetch as soon
+// as they arrive, so YouTube/Reddit fetches overlap the remaining
+// search/fetch work instead of serializing after it. A nil prefetch
+// preserves the old sequential behavior. Merging still blocks until every
+// query's search and the bounded fetch phase complete, so results are
+// identical.
+func (client tinyFishSearchClient) searchWithPrefetch(
+	ctx context.Context,
+	loadedConfig config,
+	queries []string,
+	prefetch *specialistEnrichPrefetch,
+) ([]webSearchResult, error) {
 	apiKeys := loadedConfig.WebSearch.TinyFish.apiKeys()
 	if len(apiKeys) == 0 {
 		return nil, fmt.Errorf("tinyfish search is not configured: %w", os.ErrNotExist)
@@ -2127,13 +2280,14 @@ func (client tinyFishSearchClient) search(
 	maxURLs := loadedConfig.WebSearch.maxURLs()
 	maxChars := loadedConfig.WebSearch.TinyFish.maxCharsPerResult()
 
-	// Phase 1: searches run concurrently; the fetch in phase 2 needs every
-	// query's URLs first, so enrichment cannot overlap the searches.
+	// Phase 1: searches run concurrently; the prefetch fires per query as
+	// soon as its search outcomes arrive, so specialist enrichment overlaps
+	// the remaining searches and the phase-2 page fetch below.
 	outcomes, err := searchQueriesConcurrently(ctx, queries, func(
 		queryContext context.Context,
 		query string,
 	) (tinyFishQueryOutcome, error) {
-		return tryAllAPIKeys(queryContext, client.keys, apiKeys, func(apiKey string) (tinyFishQueryOutcome, error) {
+		outcome, err := tryAllAPIKeys(queryContext, client.keys, apiKeys, func(apiKey string) (tinyFishQueryOutcome, error) {
 			searchResults, err := client.searchQuery(queryContext, apiKey, query)
 			if err != nil {
 				return tinyFishQueryOutcome{}, err
@@ -2145,16 +2299,35 @@ func (client tinyFishSearchClient) search(
 
 			return tinyFishQueryOutcome{query: query, results: searchResults}, nil
 		})
+		if err == nil && prefetch != nil {
+			prefetch.prefetchURLs(queryContext, tinyFishOutcomeURLs(outcome))
+		}
+
+		return outcome, err
 	})
 	if err != nil {
 		return nil, err
 	}
 
-	// Phase 2: one deduplicated fetch across all queries, bounded by the
-	// fetch deadline. Overlapping URLs (common when the model issues related
-	// queries) are fetched once, and repeat URLs inside the cache TTL cost
-	// no round trip at all.
-	fetchedTextMap, fetchedTitleMap := client.enrichTinyFishOutcomes(ctx, apiKeys, outcomes)
+	// Phase 2 runs the page fetch in a goroutine while the prefetch worker
+	// keeps draining queued specialist URLs in the background; the single
+	// drain happens in prefetch.finish below, so prefetched results survive
+	// until the merge. The fetch deadline bounds only the page fetch;
+	// specialist URLs keep their own searchURLFetcherTimeout budget per
+	// batch.
+	fetchDone := make(chan struct{})
+
+	var fetchedTextMap map[string]string
+
+	var fetchedTitleMap map[string]string
+
+	go func() {
+		defer close(fetchDone)
+
+		fetchedTextMap, fetchedTitleMap = client.enrichTinyFishOutcomes(ctx, apiKeys, outcomes)
+	}()
+
+	<-fetchDone
 
 	formatted := make([]webSearchResult, len(outcomes))
 	for index, outcome := range outcomes {
@@ -2174,6 +2347,31 @@ func (client tinyFishSearchClient) search(
 	}
 
 	return formatted, nil
+}
+
+// tinyFishOutcomeURLs returns the deduplicated result URLs of one searched
+// query, in first-seen order.
+func tinyFishOutcomeURLs(outcome tinyFishQueryOutcome) []string {
+	urls := make([]string, 0, len(outcome.results))
+	seen := make(map[string]struct{}, len(outcome.results))
+
+	for _, result := range outcome.results {
+		trimmedURL := strings.TrimSpace(result.URL)
+		if trimmedURL == "" {
+			continue
+		}
+
+		key := strings.ToLower(trimmedURL)
+		if _, seenURL := seen[key]; seenURL {
+			continue
+		}
+
+		seen[key] = struct{}{}
+
+		urls = append(urls, trimmedURL)
+	}
+
+	return urls
 }
 
 func (client tinyFishSearchClient) enrichTinyFishOutcomes(
