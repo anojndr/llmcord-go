@@ -354,10 +354,10 @@ func (instance *bot) benchmarkToolRoundAnswer(
 		outcome.toolCallResponse.Calls,
 	)
 
-	request.ToolRounds = append(slices.Clone(request.ToolRounds), providers.ToolRound{
-		Response: outcome.toolCallResponse,
-		Outputs:  outputs,
-	})
+	request.ToolRounds = append(
+		slices.Clone(request.ToolRounds),
+		finalWebSearchToolRound(outcome.toolCallResponse, outputs),
+	)
 
 	if instance.ignoresToolChoiceNone(request.ConfiguredModel) {
 		return instance.streamBenchmarkToolFreeAnswer(ctx, request)

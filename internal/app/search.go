@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -55,6 +56,17 @@ const (
 		"Retry the call with search_queries set to 1-3 short topic phrases, e.g. " +
 		`{"objective": "Find the latest news", "search_queries": ["philippines news today"]}.`
 	webSearchFailedOutput = "Error: the web search failed, so no search results are available."
+
+	// webSearchFinalRoundNotice closes the outputs of a reply's only tool
+	// round. The follow-up forbids tool calls (tool_choice "none") or offers
+	// no tools, and the model is never told: asked to cross-check, Claude
+	// announced search after search it could not make, until max_tokens
+	// (verified live on 9router-Anthropic). Told the search is over, it
+	// answers and names what it could not verify.
+	webSearchFinalRoundNotice = "Web search is finished for this reply: that was the only search, " +
+		"and web_search cannot be called again. Answer the user now with the information you already have. " +
+		"If something you wanted to look up or cross-check is not covered, say what is unverified " +
+		"instead of searching again."
 )
 
 type chatCompletionStreamer interface {
@@ -746,6 +758,24 @@ func webSearchToolOutputs(
 	}
 
 	return outputs
+}
+
+// finalWebSearchToolRound builds a reply's only tool round: the executed
+// calls plus their outputs, the last of which ends with
+// webSearchFinalRoundNotice, so the forced final answer reads it right
+// before answering. The outputs slice is not modified.
+func finalWebSearchToolRound(
+	response *providers.ToolCallResponse,
+	outputs []providers.FunctionToolOutput,
+) providers.ToolRound {
+	outputs = slices.Clone(outputs)
+
+	if len(outputs) > 0 {
+		last := &outputs[len(outputs)-1]
+		last.Output = strings.TrimSpace(strings.TrimSpace(last.Output) + "\n\n" + webSearchFinalRoundNotice)
+	}
+
+	return providers.ToolRound{Response: response, Outputs: outputs}
 }
 
 // webSearchResultsForQueries returns the results for each query in query

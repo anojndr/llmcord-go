@@ -662,10 +662,12 @@ func isInvalidPreviousResponseError(err error) bool {
 // batch), the round's tool-call response and one output per call are
 // appended as a tool round, and the only follow-up runs with tool_choice
 // "none", so the model must answer from those results instead of searching
-// again. The provider replays the round after the conversation in its
-// native wire format (assistant tool_calls plus tool messages on Chat
-// Completions; output items plus function_call_output items, or
-// previous_response_id chaining, on the Responses API). The conversation
+// again. tool_choice is invisible to the model, so the round's last output
+// ends with webSearchFinalRoundNotice, telling it the search is over (see
+// finalWebSearchToolRound). The provider replays the round after the
+// conversation in its native wire format (assistant tool_calls plus tool
+// messages on Chat Completions; output items plus function_call_output
+// items, or previous_response_id chaining, on the Responses API). The conversation
 // messages and tool definitions never change, so the follow-up extends a
 // byte-identical prefix and the provider's prompt cache keeps matching.
 // A backend that does not enforce tool_choice "none" gets the follow-up
@@ -708,10 +710,10 @@ func (instance *bot) generateResponseWithWebSearchTool(
 		round.toolCallResponse.Calls,
 	)
 
-	request.ToolRounds = append(slices.Clone(request.ToolRounds), providers.ToolRound{
-		Response: round.toolCallResponse,
-		Outputs:  outputs,
-	})
+	request.ToolRounds = append(
+		slices.Clone(request.ToolRounds),
+		finalWebSearchToolRound(round.toolCallResponse, outputs),
+	)
 
 	return instance.runForcedFinalAnswerRound(ctx, request, tracker, warnings, round)
 }

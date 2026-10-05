@@ -328,6 +328,69 @@ func TestRespondToMessageForcesFinalAnswerAfterOneWebSearchToolRound(t *testing.
 	}
 
 	assertToolRoundOutputContains(t, finalRequest.ToolRounds[0], "call_round_1", testWebSearchResultText)
+
+	// tool_choice is invisible to the model: the output itself says the
+	// search is over, so the model answers instead of announcing searches.
+	output, _ := toolRoundOutput(finalRequest.ToolRounds[0], "call_round_1")
+	if !strings.HasSuffix(output, "\n\n"+webSearchFinalRoundNotice) {
+		t.Fatalf("expected the tool output to end with the final round notice, got %q", output)
+	}
+}
+
+func TestFinalWebSearchToolRoundEndsLastOutputWithNotice(t *testing.T) {
+	t.Parallel()
+
+	response := &providers.ToolCallResponse{Calls: parallelWebSearchToolCalls()}
+
+	testCases := []struct {
+		name    string
+		outputs []providers.FunctionToolOutput
+		want    []providers.FunctionToolOutput
+	}{
+		{
+			name: "only the last output gets the notice",
+			outputs: []providers.FunctionToolOutput{
+				{CallID: "call_1", Output: testWebSearchResultText},
+				{CallID: "call_2", Output: webSearchFailedOutput + "\n"},
+			},
+			want: []providers.FunctionToolOutput{
+				{CallID: "call_1", Output: testWebSearchResultText},
+				{CallID: "call_2", Output: webSearchFailedOutput + "\n\n" + webSearchFinalRoundNotice},
+			},
+		},
+		{
+			name:    "empty last output becomes the notice",
+			outputs: []providers.FunctionToolOutput{{CallID: "call_1", Output: " "}},
+			want:    []providers.FunctionToolOutput{{CallID: "call_1", Output: webSearchFinalRoundNotice}},
+		},
+		{
+			name:    "no outputs",
+			outputs: nil,
+			want:    nil,
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			original := slices.Clone(testCase.outputs)
+
+			round := finalWebSearchToolRound(response, testCase.outputs)
+
+			if round.Response != response {
+				t.Fatalf("expected the round to keep the tool-call response, got %#v", round.Response)
+			}
+
+			if !reflect.DeepEqual(round.Outputs, testCase.want) {
+				t.Fatalf("expected outputs %#v, got %#v", testCase.want, round.Outputs)
+			}
+
+			if !reflect.DeepEqual(testCase.outputs, original) {
+				t.Fatalf("expected the input outputs to stay unchanged, got %#v", testCase.outputs)
+			}
+		})
+	}
 }
 
 // newToolChoiceIgnoringChatClient mimics a backend that does not enforce
@@ -399,6 +462,10 @@ func assertToolFreeFinalAnswerRequest(
 	finalText := latestChatMessageText(finalRequest.Messages)
 	if !strings.Contains(finalText, webSearchSectionName) || !strings.Contains(finalText, testWebSearchResultText) {
 		t.Fatalf("expected the search results as text in the latest user message, got %q", finalText)
+	}
+
+	if !strings.HasSuffix(finalText, webSearchFinalRoundNotice) {
+		t.Fatalf("expected the latest user message to end with the final round notice, got %q", finalText)
 	}
 }
 
