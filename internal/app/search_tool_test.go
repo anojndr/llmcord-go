@@ -1160,11 +1160,19 @@ func TestRunWebSearchToolPhaseAnswersEveryCall(t *testing.T) {
 		_ config,
 		queries []string,
 	) ([]webSearchResult, error) {
-		if !slices.Equal(queries, []string{testWebSearchQueryOne}) {
-			t.Errorf("expected only the valid call's query to be searched, got %#v", queries)
+		want := []string{testWebSearchQueryOne, "bare query", "topic query", "list one", "list two", "variant query"}
+		if !slices.Equal(queries, want) {
+			t.Errorf("expected only the valid calls' queries to be searched, got %#v", queries)
 		}
 
-		return []webSearchResult{{Query: testWebSearchQueryOne, Text: testWebSearchResultText}}, nil
+		return []webSearchResult{
+			{Query: testWebSearchQueryOne, Text: testWebSearchResultText},
+			{Query: "bare query", Text: "bare result"},
+			{Query: "topic query", Text: "topic result"},
+			{Query: "list one", Text: "list one result"},
+			{Query: "list two", Text: "list two result"},
+			{Query: "variant query", Text: "variant result"},
+		}, nil
 	})
 
 	chatClient := newStubChatClient(func(
@@ -1193,7 +1201,27 @@ func TestRunWebSearchToolPhaseAnswersEveryCall(t *testing.T) {
 				Name:      providers.WebSearchToolName,
 				Arguments: `{"search_queries": ["` + testWebSearchQueryOne + `"]}`,
 			},
+			{
+				ID:        "call_bare_query",
+				Name:      providers.WebSearchToolName,
+				Arguments: `{"query": "bare query"}`,
+			},
+			{
+				ID:        "call_topic",
+				Name:      providers.WebSearchToolName,
+				Arguments: `{"topic": "topic query"}`,
+			},
+			{
+				ID:        "call_query_list",
+				Name:      providers.WebSearchToolName,
+				Arguments: `{"query": ["list one", "list two"]}`,
+			},
 			{ID: "call_unknown", Name: "get_weather", Arguments: `{"location": "Paris"}`},
+			{
+				ID:        "call_variant",
+				Name:      providers.WebSearchToolName + "_ide",
+				Arguments: `{"objective": "Find the latest news", "search_queries": ["variant query"]}`,
+			},
 			{ID: "call_malformed", Name: providers.WebSearchToolName, Arguments: `not json`},
 			{ID: "call_empty", Name: providers.WebSearchToolName, Arguments: `{"search_queries": ["  "]}`},
 		},
@@ -1210,7 +1238,11 @@ func TestRunWebSearchToolPhaseAnswersEveryCall(t *testing.T) {
 		want   string
 	}{
 		{callID: "call_search", want: testWebSearchResultText},
+		{callID: "call_bare_query", want: "bare result"},
+		{callID: "call_topic", want: "topic result"},
+		{callID: "call_query_list", want: "list one result"},
 		{callID: "call_unknown", want: `unknown function "get_weather"`},
+		{callID: "call_variant", want: "variant result"},
 		{callID: "call_malformed", want: webSearchInvalidArgumentsOutput},
 		{callID: "call_empty", want: webSearchNoQueriesOutput},
 	}
@@ -1389,6 +1421,29 @@ func TestExtractWebSearchQueries(t *testing.T) {
 				},
 			},
 			expected: []string{"one", "two", "three", "four", "five", "six", "seven"},
+		},
+		{
+			name: "supports bare query string and list shapes",
+			toolCalls: []providers.FunctionToolCall{
+				{ID: "a", Name: providers.WebSearchToolName, Arguments: `{"query": "alpha"}`},
+				{ID: "b", Name: providers.WebSearchToolName, Arguments: `{"query": ["beta", " gamma "]}`},
+			},
+			expected: []string{"alpha", "beta", "gamma"},
+		},
+		{
+			name: "accepts web_search name variants",
+			toolCalls: []providers.FunctionToolCall{
+				{ID: "a", Name: providers.WebSearchToolName + "_ide", Arguments: `{"search_queries": ["alpha"]}`},
+				{ID: "b", Name: "ide_" + providers.WebSearchToolName, Arguments: `{"search_queries": ["beta"]}`},
+			},
+			expected: []string{"alpha", "beta"},
+		},
+		{
+			name: "falls back to topic when no query field is present",
+			toolCalls: []providers.FunctionToolCall{
+				{ID: "a", Name: providers.WebSearchToolName, Arguments: `{"topic": "alpha news"}`},
+			},
+			expected: []string{"alpha news"},
 		},
 		{
 			name:      "no tool calls",

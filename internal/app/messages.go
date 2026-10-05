@@ -1023,6 +1023,17 @@ func messageContentOptionsForModel(
 		options.allowFiles = true
 		options.allowedDocumentMIMETypes = allowedGeminiDocumentMIMETypes()
 		options.allowVideo = true
+	} else if provider.apiKind() == providerAPIKindClaude {
+		// Claude natively reads images (base64/URL), PDFs (base64/URL),
+		// and plain-text documents. Audio and video have no Messages
+		// input blocks, so clips stay text placeholders here and the
+		// media preprocessor transcribes them (see
+		// maybeAugmentConversationWithGeminiMedia).
+		options.allowAudio = false
+		options.allowDocuments = true
+		options.allowFiles = true
+		options.allowedDocumentMIMETypes = allowedClaudeDocumentMIMETypes()
+		options.allowVideo = false
 	} else if provider.apiKind() == providerAPIKindOpenAI {
 		// Audio input is native on the OpenAI-family wire protocols: Chat
 		// Completions takes {type: input_audio, input_audio: {data, format}}
@@ -1432,6 +1443,12 @@ func normalizeModelAliasForProvider(
 
 		if dedicatedEffort, ok := dedicatedReasoningEffort(provider, modelParameters); ok {
 			extraBody = providers.ApplyDedicatedReasoningEffort(extraBody, modelName, dedicatedEffort, useResponsesAPI)
+		}
+	}
+
+	if providerAPIKind == providerAPIKindClaude {
+		if dedicatedEffort, ok := dedicatedReasoningEffort(provider, modelParameters); ok {
+			extraBody = providers.ApplyClaudeReasoningEffort(extraBody, dedicatedEffort)
 		}
 	}
 

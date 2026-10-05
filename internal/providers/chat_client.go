@@ -30,6 +30,7 @@ const (
 type ChatCompletionRouter struct {
 	openAI openAIClient
 	gemini geminiClient
+	claude claudeClient
 	keys   *APIKeyRotator
 }
 
@@ -38,6 +39,7 @@ func NewChatCompletionRouter(httpClient *http.Client) ChatCompletionRouter {
 	return ChatCompletionRouter{
 		openAI: newOpenAIClient(httpClient),
 		gemini: newGeminiClient(httpClient),
+		claude: newClaudeClient(httpClient),
 		keys:   NewAPIKeyRotator(),
 	}
 }
@@ -261,6 +263,10 @@ func IsTransientStreamError(err error) bool {
 		return true
 	}
 
+	if IsClaudeTransientError(err) {
+		return true
+	}
+
 	if errors.Is(err, io.ErrUnexpectedEOF) ||
 		errors.Is(err, io.EOF) ||
 		errors.Is(err, context.DeadlineExceeded) ||
@@ -324,6 +330,8 @@ func (client ChatCompletionRouter) streamChatCompletionOnce(
 	handle func(StreamDelta) error,
 ) error {
 	switch request.Provider.APIKind {
+	case ProviderAPIKindClaude:
+		return client.claude.streamChatCompletion(ctx, request, handle)
 	case ProviderAPIKindGemini:
 		return client.gemini.streamChatCompletion(ctx, request, handle)
 	case ProviderAPIKindOpenAI:

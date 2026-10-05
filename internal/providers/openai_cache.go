@@ -119,7 +119,7 @@ func openAIRequestPromptCacheKeyPrefix(request ChatCompletionRequest) string {
 		}
 
 		return ""
-	case ProviderAPIKindGemini:
+	case ProviderAPIKindGemini, ProviderAPIKindClaude:
 		return ""
 	default:
 		return ""

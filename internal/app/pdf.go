@@ -221,7 +221,8 @@ func documentNeedsLocalExtraction(
 	}
 
 	if normalizedType == mimeTypePDF {
-		return apiKind != providers.ProviderAPIKindGemini
+		return apiKind != providers.ProviderAPIKindGemini &&
+			apiKind != providers.ProviderAPIKindClaude
 	}
 
 	return false

@@ -791,6 +791,14 @@ func allowedGeminiDocumentMIMETypes() map[string]struct{} {
 	return documentMIMETypeSet(mimeTypePDF)
 }
 
+// allowedClaudeDocumentMIMETypes lists document types the Claude Messages
+// document block accepts natively: PDFs ride as base64 documents and
+// plain-text files ride as text documents. DOCX/PPTX need the app's local
+// extraction first (see documentNeedsLocalExtraction).
+func allowedClaudeDocumentMIMETypes() map[string]struct{} {
+	return documentMIMETypeSet(mimeTypePDF, "text/plain")
+}
+
 func attachmentContentType(attachment *discordgo.MessageAttachment) string {
 	if attachment == nil {
 		return ""

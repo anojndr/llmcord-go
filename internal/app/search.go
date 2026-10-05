@@ -51,8 +51,10 @@ const (
 	webSearchUnknownToolOutputFormat = "Error: unknown function %q. The only available function is %s."
 	webSearchInvalidArgumentsOutput  = "Error: the web_search arguments are not valid JSON " +
 		"with a search_queries array of strings."
-	webSearchNoQueriesOutput = "Error: web_search needs at least one non-empty search query."
-	webSearchFailedOutput    = "Error: the web search failed, so no search results are available."
+	webSearchNoQueriesOutput = "Error: web_search needs at least one non-empty search query. " +
+		"Retry the call with search_queries set to 1-3 short topic phrases, e.g. " +
+		`{"objective": "Find the latest news", "search_queries": ["philippines news today"]}.`
+	webSearchFailedOutput = "Error: the web search failed, so no search results are available."
 )
 
 type chatCompletionStreamer interface {
@@ -594,20 +596,24 @@ func parseWebSearchToolCalls(toolCalls []providers.FunctionToolCall) ([]webSearc
 }
 
 // webSearchToolCallQueries parses the search queries of one web_search call.
-// It accepts both "search_queries" (the Parallel Search schema) and
-// "queries" (legacy schema) for backward compatibility. It returns the
-// trimmed, deduplicated queries, or the error output for a call that cannot
-// run.
+// It accepts "search_queries" (the tool schema), "queries" (legacy schema),
+// plus the shapes proxies and Claude-family models emit: a bare "query"
+// string, a "query" array, and a "topic" string used as the query when no
+// query field is present. Tool-name variants with a web_search prefix or
+// suffix (e.g. 9router's web_search_ide) are treated as the web_search tool.
+// It returns the trimmed, deduplicated queries, or the error output for a
+// call that cannot run.
 func webSearchToolCallQueries(toolCall providers.FunctionToolCall) ([]string, string) {
-	name := strings.TrimSpace(toolCall.Name)
-	if name != providers.WebSearchToolName {
-		return nil, fmt.Sprintf(webSearchUnknownToolOutputFormat, name, providers.WebSearchToolName)
+	if !isWebSearchToolCall(toolCall.Name) {
+		return nil, fmt.Sprintf(webSearchUnknownToolOutputFormat, strings.TrimSpace(toolCall.Name), providers.WebSearchToolName)
 	}
 
 	var arguments struct {
 		Objective     string   `json:"objective"`
 		SearchQueries []string `json:"search_queries"`
 		Queries       []string `json:"queries"`
+		Query         any      `json:"query"`
+		Topic         string   `json:"topic"`
 	}
 
 	err := json.Unmarshal([]byte(toolCall.Arguments), &arguments)
@@ -620,6 +626,12 @@ func webSearchToolCallQueries(toolCall providers.FunctionToolCall) ([]string, st
 	rawQueries := arguments.SearchQueries
 	if len(rawQueries) == 0 {
 		rawQueries = arguments.Queries
+	}
+
+	rawQueries = append(rawQueries, webSearchQueryStrings(arguments.Query)...)
+
+	if len(rawQueries) == 0 && strings.TrimSpace(arguments.Topic) != "" {
+		rawQueries = append(rawQueries, arguments.Topic)
 	}
 
 	seenQueries := make(map[string]struct{}, len(rawQueries))
@@ -644,6 +656,51 @@ func webSearchToolCallQueries(toolCall providers.FunctionToolCall) ([]string, st
 	}
 
 	return queries, ""
+}
+
+// isWebSearchToolCall reports whether a tool name invokes the web_search
+// tool: the exact name plus proxy-suffixed variants (web_search_ide and
+// future kin) that carry the same search_queries/objective schema.
+func isWebSearchToolCall(name string) bool {
+	trimmed := strings.TrimSpace(name)
+	if trimmed == providers.WebSearchToolName {
+		return true
+	}
+
+	return strings.HasPrefix(trimmed, providers.WebSearchToolName+"_") ||
+		strings.HasSuffix(trimmed, "_"+providers.WebSearchToolName)
+}
+
+// webSearchQueryStrings normalizes the alternate "query" shapes: a plain
+// string or an array of strings. Anything else contributes nothing.
+func webSearchQueryStrings(value any) []string {
+	switch typed := value.(type) {
+	case nil:
+		return nil
+	case string:
+		if strings.TrimSpace(typed) == "" {
+			return nil
+		}
+
+		return []string{typed}
+	case []any:
+		queries := make([]string, 0, len(typed))
+
+		for _, item := range typed {
+			text, _ := item.(string)
+			if strings.TrimSpace(text) == "" {
+				continue
+			}
+
+			queries = append(queries, text)
+		}
+
+		return queries
+	case []string:
+		return typed
+	default:
+		return nil
+	}
 }
 
 // extractWebSearchQueries returns the union of the search queries requested
@@ -737,14 +794,19 @@ func webSearchResultsMatchingNoCall(parsedCalls []webSearchToolCall, results []w
 }
 
 // webSearchToolEnabled reports whether the provider's models should be
-// offered the web_search tool: explicit opt-out, non-Gemini API, no native
-// grounding, and at least one configured search provider.
+// offered the web_search tool: explicit opt-out, OpenAI-compatible or
+// Claude API, no native grounding, and at least one configured search
+// provider. Claude gets the same bot-side tool (the app executes queries
+// through its search chain) rather than Anthropic's server-side web
+// search, keeping results provider-independent.
 func (instance *bot) webSearchToolEnabled(
 	loadedConfig config,
 	provider providerConfig,
 ) bool {
+	apiKind := provider.apiKind()
+
 	return !provider.DisableWebSearch &&
-		provider.apiKind() == providerAPIKindOpenAI &&
+		(apiKind == providerAPIKindOpenAI || apiKind == providerAPIKindClaude) &&
 		!instance.currentGroundingEnabled(provider) &&
 		loadedConfig.WebSearch.hasWebSearchAPIKeys()
 }
@@ -828,11 +890,24 @@ func (instance *bot) runWebSearchToolPhase(
 ) ([]providers.FunctionToolOutput, []string, bool) {
 	parsedCalls, queries := parseWebSearchToolCalls(toolCalls)
 	if len(queries) == 0 {
+		argumentSummaries := make([]string, 0, len(toolCalls))
+
+		for _, toolCall := range toolCalls {
+			arguments := strings.TrimSpace(toolCall.Arguments)
+			if len(arguments) > 500 {
+				arguments = arguments[:500] + "…"
+			}
+
+			argumentSummaries = append(argumentSummaries, strings.TrimSpace(toolCall.Name)+":"+arguments)
+		}
+
 		logWarn(
 			"web_search tool called without usable queries",
 			nil,
 			"tool_calls",
 			len(toolCalls),
+			"arguments",
+			strings.Join(argumentSummaries, " | "),
 		)
 
 		return webSearchToolOutputs(parsedCalls, nil, ""), warnings, false

@@ -495,6 +495,7 @@ type providerAPIKind string
 const (
 	providerAPIKindOpenAI providerAPIKind = "openai"
 	providerAPIKindGemini providerAPIKind = "gemini"
+	providerAPIKindClaude providerAPIKind = "claude"
 )
 
 type rawConfig struct {
@@ -1286,23 +1287,33 @@ func validateConfiguredModels(loadedConfig config) error {
 		}
 
 		if provider.ReasoningEffort != "" {
-			if provider.apiKind() != providerAPIKindOpenAI {
+			switch provider.apiKind() {
+			case providerAPIKindClaude:
+				if !providers.IsValidClaudeEffort(provider.ReasoningEffort) {
+					return fmt.Errorf("provider %q: reasoning_effort %q is invalid: %w", providerName, provider.ReasoningEffort, os.ErrInvalid)
+				}
+			case providerAPIKindOpenAI:
+				if !providers.IsValidOpenAIReasoningEffort(provider.ReasoningEffort) {
+					return fmt.Errorf("provider %q: reasoning_effort %q is invalid: %w", providerName, provider.ReasoningEffort, os.ErrInvalid)
+				}
+			default:
 				return fmt.Errorf("provider %q: reasoning_effort is only valid for OpenAI-compatible providers: %w", providerName, os.ErrInvalid)
-			}
-
-			if !providers.IsValidOpenAIReasoningEffort(provider.ReasoningEffort) {
-				return fmt.Errorf("provider %q: reasoning_effort %q is invalid: %w", providerName, provider.ReasoningEffort, os.ErrInvalid)
 			}
 		}
 
 		modelParameters := loadedConfig.Models[modelName]
 		if effort, ok := modelReasoningEffortValue(modelParameters); ok {
-			if provider.apiKind() != providerAPIKindOpenAI {
+			switch provider.apiKind() {
+			case providerAPIKindClaude:
+				if !providers.IsValidClaudeEffort(effort) {
+					return fmt.Errorf("model %q: reasoning_effort %q is invalid: %w", modelName, effort, os.ErrInvalid)
+				}
+			case providerAPIKindOpenAI:
+				if !providers.IsValidOpenAIReasoningEffort(effort) {
+					return fmt.Errorf("model %q: reasoning_effort %q is invalid: %w", modelName, effort, os.ErrInvalid)
+				}
+			default:
 				return fmt.Errorf("model %q: reasoning_effort is only valid for OpenAI-compatible providers: %w", modelName, os.ErrInvalid)
-			}
-
-			if !providers.IsValidOpenAIReasoningEffort(effort) {
-				return fmt.Errorf("model %q: reasoning_effort %q is invalid: %w", modelName, effort, os.ErrInvalid)
 			}
 		}
 	}
@@ -1525,18 +1536,26 @@ func (loadedConfig config) lockedModelForChannelIDs(channelIDs []string) (string
 
 const (
 	providerNameSuffixGemini = "gemini"
+	providerNameSuffixClaude = "claude"
 )
 
-// apiKind infers the API kind from the provider name: names containing
-// "gemini" use the native Gemini API. Everything else is treated as
-// OpenAI-compatible, unless the base URL points at Gemini's OpenAI
-// compatibility endpoint.
+// apiKind infers the API kind from the provider name and `api:` override:
+// names containing "gemini" use the native Gemini API, names containing
+// "claude" or `api: claude-messages` use the native Claude Messages API.
+// Everything else is treated as OpenAI-compatible, unless the base URL
+// points at Gemini's OpenAI compatibility endpoint.
 func (provider providerConfig) apiKind() providerAPIKind {
+	if strings.EqualFold(strings.TrimSpace(provider.API), providers.ClaudeAPIName) {
+		return providerAPIKindClaude
+	}
+
 	providerName := strings.ToLower(strings.TrimSpace(provider.Name))
 
 	switch {
 	case strings.Contains(providerName, providerNameSuffixGemini):
 		return providerAPIKindGemini
+	case strings.Contains(providerName, providerNameSuffixClaude):
+		return providerAPIKindClaude
 	default:
 		if looksLikeGeminiCompatibilityBaseURL(provider.BaseURL) {
 			return providerAPIKindGemini
@@ -1563,14 +1582,19 @@ func (provider providerConfig) usesOpenRouter() bool {
 
 func (provider providerConfig) validate(providerName string) error {
 	if strings.TrimSpace(provider.API) != "" {
-		if provider.apiKind() != providerAPIKindOpenAI {
-			return fmt.Errorf("provider %q: api %q is only valid for OpenAI-compatible providers: %w", providerName, provider.API, os.ErrInvalid)
-		}
-
-		switch provider.API {
-		case providers.OpenAIAPIChatCompletions, providers.OpenAIAPIResponses:
+		switch provider.apiKind() {
+		case providerAPIKindOpenAI:
+			switch provider.API {
+			case providers.OpenAIAPIChatCompletions, providers.OpenAIAPIResponses:
+			default:
+				return fmt.Errorf("provider %q: api must be %q or %q: %w", providerName, providers.OpenAIAPIChatCompletions, providers.OpenAIAPIResponses, os.ErrInvalid)
+			}
+		case providerAPIKindClaude:
+			if !strings.EqualFold(strings.TrimSpace(provider.API), providers.ClaudeAPIName) {
+				return fmt.Errorf("provider %q: api must be %q: %w", providerName, providers.ClaudeAPIName, os.ErrInvalid)
+			}
 		default:
-			return fmt.Errorf("provider %q: api must be %q or %q: %w", providerName, providers.OpenAIAPIChatCompletions, providers.OpenAIAPIResponses, os.ErrInvalid)
+			return fmt.Errorf("provider %q: api %q is only valid for OpenAI-compatible providers: %w", providerName, provider.API, os.ErrInvalid)
 		}
 	}
 
@@ -1583,6 +1607,14 @@ func (provider providerConfig) validate(providerName string) error {
 				os.ErrInvalid,
 			)
 		}
+	}
+
+	if provider.apiKind() == providerAPIKindClaude {
+		if strings.TrimSpace(provider.ReasoningEffort) != "" && !providers.IsValidClaudeEffort(provider.ReasoningEffort) {
+			return fmt.Errorf("provider %q: reasoning_effort %q is invalid: %w", providerName, provider.ReasoningEffort, os.ErrInvalid)
+		}
+
+		return nil
 	}
 
 	if provider.apiKind() != providerAPIKindOpenAI {

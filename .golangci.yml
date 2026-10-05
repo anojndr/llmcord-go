@@ -46,6 +46,10 @@ linters:
             - golang.org/x/image/font/sfnt
             - golang.org/x/image/math/fixed
             - google.golang.org/genai
+            - github.com/anthropics/anthropic-sdk-go
+            - github.com/anthropics/anthropic-sdk-go/option
+            - github.com/anthropics/anthropic-sdk-go/packages/param
+            - github.com/anthropics/anthropic-sdk-go/packages/ssestream
             - gopkg.in/yaml.v3
     funlen:
       lines: 90

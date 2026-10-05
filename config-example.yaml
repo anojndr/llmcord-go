@@ -37,17 +37,21 @@ permissions:
     blocked_ids: []
 
 # -----------------------------------------------------------------------------
-# Providers — keyed by name; name containing "gemini" => native Gemini API
+# Providers — keyed by name; name containing "gemini" => native Gemini API,
+# name containing "claude" (or api: claude-messages) => native Claude API
 # `api_key` accepts string or YAML list (round-robin). `base_url` required
-# for OpenAI-compatible providers, omitted for native Gemini.
-# `api` selects the OpenAI wire protocol for OpenAI-compatible providers:
+# for OpenAI-compatible providers, omitted for native Gemini and Claude
+# (defaults to https://api.anthropic.com).
+# `api` selects the wire protocol:
 #   api: openai-chat-completions  -> POST {base_url}/chat/completions (messages/choices, [DONE])
 #   api: openai-responses          -> POST {base_url}/responses (input/output, typed SSE)
+#   api: claude-messages           -> POST {base_url}/v1/messages (Anthropic Messages SSE)
 # If omitted, the built-in `openai` provider defaults to `openai-responses`,
 # all other OpenAI-compatible providers default to `openai-chat-completions`.
-# `api` is only valid for OpenAI-compatible providers; Gemini providers
-# (name contains "gemini" or base_url with generativelanguage.googleapis.com)
-# must not set `api` (validation will fail).
+# `api` is only valid for OpenAI-compatible providers and Claude providers
+# (api: claude-messages); Gemini providers (name contains "gemini" or
+# base_url with generativelanguage.googleapis.com) must not set `api`
+# (validation will fail).
 # Per-provider flags: chain_previous_response (default true; set false when a
 #   Responses API backend rejects or mishandles previous_response_id chaining,
 #   e.g. some third-party bridges),
@@ -57,13 +61,16 @@ permissions:
 #   exa_search_type (pins Exa Search API `type` for this provider's models:
 #   `instant` | `fast` | `auto` | `deep-lite` | `deep` | `deep-reasoning`;
 #   overrides the runtime `/searchtype` fallback for that provider),
-# Per-provider reasoning effort for OpenAI-compatible providers:
+# Per-provider reasoning effort for OpenAI-compatible and Claude providers:
 #   reasoning_effort: none | minimal | low | medium | high | xhigh | max
 # Maps to reasoning.effort (api: openai-responses) or reasoning_effort
-# (api: openai-chat-completions). Values are normalized per model:
+# (api: openai-chat-completions); on Claude providers (api:
+# claude-messages, or name containing "claude") it maps to
+# output_config.effort ("none" disables thinking, "minimal" rounds up to
+# "low"). Values are normalized per model:
 # minimal→low for gpt-5.2/5.3/5.4 and gpt-6, xhigh/max→high for gpt-5.1.
 # Model-level reasoning_effort overrides this. Only valid for
-# OpenAI-compatible providers; Gemini providers must not set it
+# OpenAI-compatible and Claude providers; Gemini providers must not set it
 # (validation will fail). Explicit reasoning_effort wins over
 # alias suffixes like openai/gpt-5.4-low.
 # -----------------------------------------------------------------------------
@@ -93,6 +100,32 @@ providers:
     extra_query:
       api-version: 2024-12-01-preview
 
+  # Provider names containing `claude` use the native Claude Messages API
+  # (or set `api: claude-messages` on any provider name). `base_url`
+  # defaults to https://api.anthropic.com; `api_key` is the Anthropic key.
+  claude:
+    api: claude-messages
+    api_key:
+    # Per-provider thinking effort (output_config.effort): none | minimal | low | medium | high | xhigh | max
+    # reasoning_effort: medium
+    # Cap output tokens (default 64000 streaming, max 128000):
+    # extra_body:
+    #   max_tokens: 16000
+    # Skip prepending the global `system_prompt` to requests for this
+    # provider's models:
+    # dont_send_system_prompt: true
+    # Automatically append "search the web." to user queries if not already present:
+    # auto_append_search_web: true
+    # Automatically append "short answer." to user queries if not already present:
+    # auto_append_short_answer: true
+    # Automatically append "don't be sycophantic." to user queries if not already present:
+    # auto_append_dont_be_sycophantic: true
+    # Automatically append "make sure your output is adhd-friendly." to user queries if not already present:
+    # auto_append_adhd_friendly: true
+    # Automatically append "make sure your output is always in english unless instructed by the user to use another language." to user queries if not already present:
+    # auto_append_always_english: true
+    # Automatically append "always cross-check to ensure accuracy." to user queries if not already present:
+    # auto_append_cross_check: true
   # Provider names containing `gemini` use the native Gemini API.
   gemini:
     # `api_key` also accepts a YAML list; requests are round-robin across them.
@@ -114,7 +147,6 @@ providers:
     # auto_append_always_english: true
     # Automatically append "always cross-check to ensure accuracy." to user queries if not already present:
     # auto_append_cross_check: true
-    # Thought summaries are disabled by default. To turn them on:
     # extra_body:
     #   thinkingConfig:
     #     includeThoughts: true
