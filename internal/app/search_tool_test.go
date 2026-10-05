@@ -486,6 +486,81 @@ func TestRespondToMessageSkipsIgnoredToolChoiceNoneOnLaterReplies(t *testing.T) 
 	assertToolFreeFinalAnswerRequest(t, laterRequests[1], laterRequests[0])
 }
 
+func TestRespondToMessageRetriesEmptyForcedFinalAnswerWithoutTools(t *testing.T) {
+	t.Parallel()
+
+	// Claude on 9router intermittently ends the forced final answer
+	// (tool_choice "none") with thinking/signature blocks but no text:
+	// verified live against cc/claude-opus-5-5, where the identical
+	// follow-up alternates between text replies and thinking-only
+	// end_turn stops. The reply must fall back to the tool-free answer
+	// (results as conversation text, which always renders) instead of
+	// failing over with "The model returned an empty response."
+	chatClient := newStubChatClient(func(
+		_ context.Context,
+		request chatCompletionRequest,
+		handle func(streamDelta) error,
+	) error {
+		if len(request.Tools) == 0 {
+			return handle(newStreamDelta(testWebSearchToolAnswer, finishReasonStop))
+		}
+
+		if request.ToolChoice == providers.ToolChoiceNone {
+			// Thinking/signature blocks only: the Thinking delta the
+			// proxy streams here is empty, matching the live wire.
+			for _, delta := range []streamDelta{
+				{Thinking: "", FinishReason: ""},
+				{FinishReason: finishReasonStop},
+			} {
+				if err := handle(delta); err != nil {
+					return err
+				}
+			}
+
+			return nil
+		}
+
+		return handle(toolCallDelta(providers.FunctionToolCall{
+			ID:        "call_empty_retry",
+			Name:      providers.WebSearchToolName,
+			Arguments: `{"objective": "Find query results", "search_queries": ["` + testWebSearchQueryOne + `"]}`,
+		}))
+	})
+	webSearch := newSingleResultWebSearchClient()
+	instance := newSearchToolTestBot(t, chatClient, webSearch)
+
+	respondWithWebSearchTool(t, instance, newWebSearchToolTestConfig())
+
+	// Tool round, empty forced final answer, then the tool-free answer.
+	if len(chatClient.requests) != 3 {
+		t.Fatalf("expected 3 generation rounds, got %d", len(chatClient.requests))
+	}
+
+	if len(webSearch.calls) != 1 {
+		t.Fatalf("expected exactly 1 web search call, got %d", len(webSearch.calls))
+	}
+
+	toolRequest, forcedRequest := chatClient.requests[0], chatClient.requests[1]
+	if forcedRequest.ToolChoice != providers.ToolChoiceNone || len(forcedRequest.ToolRounds) != 1 {
+		t.Fatalf(
+			"expected the forced final answer first, got choice %q with %d tool rounds",
+			forcedRequest.ToolChoice,
+			len(forcedRequest.ToolRounds),
+		)
+	}
+
+	assertToolFreeFinalAnswerRequest(t, chatClient.requests[2], toolRequest)
+
+	responseNode := instance.nodes.getOrCreate("response-message")
+	responseNode.mu.Lock()
+	responseText := responseNode.text
+	responseNode.mu.Unlock()
+
+	if !strings.Contains(responseText, testWebSearchToolAnswer) {
+		t.Fatalf("expected the tool-free final answer in the response, got %q", responseText)
+	}
+}
+
 func TestIsOpenCodeModel(t *testing.T) {
 	t.Parallel()
 
@@ -942,56 +1017,6 @@ func TestToolFreeFinalAnswerRequestSendsToolRoundOutputsAsText(t *testing.T) {
 
 	if request.Messages[1].Content != userQuery || len(request.ToolRounds) != 1 {
 		t.Fatal("expected the original request to stay unchanged")
-	}
-}
-
-func TestRespondToMessageSurfacesEmptyResponseWhenForcedFinalAnswerIsEmpty(t *testing.T) {
-	t.Parallel()
-
-	var roundRequests []chatCompletionRequest
-
-	chatClient := newStubChatClient(func(
-		_ context.Context,
-		request chatCompletionRequest,
-		handle func(streamDelta) error,
-	) error {
-		roundRequests = append(roundRequests, request)
-
-		if request.ToolChoice == providers.ToolChoiceNone {
-			return handle(newStreamDelta("", finishReasonStop))
-		}
-
-		return handle(toolCallDelta(providers.FunctionToolCall{
-			ID:        "call_loop_" + strconv.Itoa(len(roundRequests)),
-			Name:      providers.WebSearchToolName,
-			Arguments: `{"objective": "Find query results", "search_queries": ["` + testWebSearchQueryOne + `"]}`,
-		}))
-	})
-
-	webSearch := newStubWebSearchClient(func(
-		_ context.Context,
-		_ config,
-		queries []string,
-	) ([]webSearchResult, error) {
-		return []webSearchResult{
-			{Query: queries[0], Text: testWebSearchResultText},
-		}, nil
-	})
-
-	instance := newSearchToolTestBot(t, chatClient, webSearch)
-
-	err := instance.respondToMessage(
-		context.Background(),
-		newWebSearchToolTestConfig(),
-		newWebSearchToolSourceMessage(),
-		testWebSearchMainModel,
-	)
-	if !errors.Is(err, errEmptyModelResponse) {
-		t.Fatalf("expected the empty-response error when the forced final answer is empty, got %v", err)
-	}
-
-	if len(roundRequests) != 2 {
-		t.Fatalf("expected 2 generation rounds (one tool round + forced final answer), got %d", len(roundRequests))
 	}
 }
 

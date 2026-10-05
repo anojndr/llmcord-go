@@ -491,7 +491,11 @@ func claudeTextLikePayload(mimeType, filename string) bool {
 
 // claudeToolParams converts provider-neutral function tools into Claude
 // custom tools. The bot only offers web_search, whose JSON schema maps
-// directly onto input_schema.
+// directly onto input_schema, with additionalProperties set explicitly:
+// strict tools require it (verified live: the 9router-Anthropic proxy
+// rejects strict tools whose object schema omits it with 400
+// "tools.0.custom: For 'object' type, 'additionalProperties' must be
+// explicitly set to false").
 func claudeToolParams(tools []FunctionTool) ([]anthropic.ToolUnionParam, error) {
 	if len(tools) == 0 {
 		return nil, nil
@@ -572,8 +576,9 @@ func claudeToolInputSchema(tool FunctionTool) (anthropic.ToolInputSchemaParam, e
 	}
 
 	return anthropic.ToolInputSchemaParam{
-		Properties: decoded,
-		Required:   required,
+		Properties:  decoded,
+		Required:    required,
+		ExtraFields: map[string]any{jsonSchemaAdditionalKey: false},
 	}, nil
 }
 

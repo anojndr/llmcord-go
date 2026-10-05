@@ -728,8 +728,11 @@ func (instance *bot) generateResponseWithWebSearchTool(
 // for an upstream that accepts nothing else). Tool calls made anyway are
 // never executed: the answer is requested again without tools, and the
 // model is remembered so its later final answers skip the ignored
-// tool_choice. OpenCode models (see isOpenCodeModel) skip it from their
-// first reply.
+// tool_choice. A forced answer that streams no visible answer at all (no
+// text and no tool calls, as Claude on 9router does intermittently —
+// thinking/signature blocks only) is also retried without tools, where
+// the results ride as conversation text and always render. OpenCode models
+// (see isOpenCodeModel) skip it from their first reply.
 func (instance *bot) runForcedFinalAnswerRound(
 	ctx context.Context,
 	request chatCompletionRequest,
@@ -756,11 +759,33 @@ func (instance *bot) runForcedFinalAnswerRound(
 		finalPrefill,
 	)
 	if finalErr != nil {
+		if errors.Is(finalErr, errEmptyModelResponse) {
+			logWarn(
+				"forced final answer streamed no visible answer; answering without tools",
+				nil,
+				"configured_model",
+				request.ConfiguredModel,
+			)
+
+			return instance.runToolFreeFinalAnswerRound(ctx, request, tracker, warnings, finalPrefill)
+		}
+
 		return final.rawAnswer, final.thinking, finalErr
 	}
 
 	if final.toolCallResponse == nil {
-		return final.rawAnswer, final.thinking, nil
+		if strings.TrimSpace(final.rawAnswer) != "" {
+			return final.rawAnswer, final.thinking, nil
+		}
+
+		logWarn(
+			"forced final answer streamed no visible answer; answering without tools",
+			nil,
+			"configured_model",
+			request.ConfiguredModel,
+		)
+
+		return instance.runToolFreeFinalAnswerRound(ctx, request, tracker, warnings, finalPrefill)
 	}
 
 	logWarn(

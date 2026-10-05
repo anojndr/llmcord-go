@@ -550,6 +550,31 @@ func TestClaudeToolParamsForwardsStrict(t *testing.T) {
 	}
 }
 
+func TestClaudeToolInputSchemaSetsAdditionalPropertiesExplicitly(t *testing.T) {
+	t.Parallel()
+
+	definitions, err := claudeToolParams([]FunctionTool{WebSearchTool(0)})
+	if err != nil {
+		t.Fatalf("build claude tools: %v", err)
+	}
+
+	if len(definitions) != 1 || definitions[0].OfTool == nil {
+		t.Fatalf("expected one custom tool, got %#v", definitions)
+	}
+
+	// Strict tools require additionalProperties explicitly (the
+	// 9router-Anthropic proxy rejects strict tools whose object schema
+	// omits it with a 400, verified live).
+	if !definitions[0].OfTool.Strict.Valid() || !definitions[0].OfTool.Strict.Value {
+		t.Fatalf("expected strict forwarded, got %#v", definitions[0].OfTool.Strict)
+	}
+
+	extra, ok := definitions[0].OfTool.InputSchema.ExtraFields[jsonSchemaAdditionalKey]
+	if !ok || extra != false {
+		t.Fatalf("expected additionalProperties false, got %#v", definitions[0].OfTool.InputSchema.ExtraFields)
+	}
+}
+
 func TestClaudeProviderSelected(t *testing.T) {
 	t.Parallel()
 
