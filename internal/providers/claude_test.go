@@ -517,6 +517,37 @@ func TestClaudeClientRejectsReservedExtraBodyKeys(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected reserved extra_body key to fail")
 	}
+
+	for _, key := range []string{"reasoningEffort", "output_config.effort"} {
+		_, err := claudeMessageParams(ChatCompletionRequest{
+			Model:    "claude-sonnet-5",
+			Messages: []ChatMessage{{Role: "user", Content: "hello"}},
+			Provider: ProviderRequestConfig{
+				APIKind:   ProviderAPIKindClaude,
+				ExtraBody: map[string]any{key: "turbo"},
+			},
+		})
+		if err == nil {
+			t.Fatalf("expected invalid effort under %q to fail", key)
+		}
+	}
+}
+
+func TestClaudeToolParamsForwardsStrict(t *testing.T) {
+	t.Parallel()
+
+	definitions, err := claudeToolParams([]FunctionTool{WebSearchTool(0)})
+	if err != nil {
+		t.Fatalf("build claude tools: %v", err)
+	}
+
+	if len(definitions) != 1 || definitions[0].OfTool == nil {
+		t.Fatalf("expected one custom tool, got %#v", definitions)
+	}
+
+	if !definitions[0].OfTool.Strict.Valid() || !definitions[0].OfTool.Strict.Value {
+		t.Fatalf("expected strict forwarded, got %#v", definitions[0].OfTool.Strict)
+	}
 }
 
 func TestClaudeProviderSelected(t *testing.T) {

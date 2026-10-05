@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	anthropic "github.com/anthropics/anthropic-sdk-go"
+	"github.com/anthropics/anthropic-sdk-go/packages/param"
 
 	searchtypes "llmcord-go/internal/searchtypes"
 	"llmcord-go/internal/support"
@@ -509,6 +510,7 @@ func claudeToolParams(tools []FunctionTool) ([]anthropic.ToolUnionParam, error) 
 				Name:        tool.Name,
 				Description: claudeOptString(tool.Description),
 				InputSchema: schema,
+				Strict:      claudeStrictOpt(tool.Strict),
 			},
 		})
 	}
@@ -516,6 +518,15 @@ func claudeToolParams(tools []FunctionTool) ([]anthropic.ToolUnionParam, error) 
 	return definitions, nil
 }
 
+// claudeStrictOpt forwards the provider-neutral Strict flag onto the
+// Claude tool definition. Nil keeps the API default.
+func claudeStrictOpt(strict *bool) param.Opt[bool] {
+	if strict == nil {
+		return param.Opt[bool]{}
+	}
+
+	return anthropic.Bool(*strict)
+}
 func claudeToolInputSchema(tool FunctionTool) (anthropic.ToolInputSchemaParam, error) {
 	properties := map[string]any{}
 	required := []string{}

@@ -212,7 +212,7 @@ func ValidateClaudeExtraBody(extraBody map[string]any) error {
 		switch normalizedKey {
 		case "model", "messages", "system", "tools", "tool_choice", "stream", "thinking":
 			return fmt.Errorf("claude extra_body must not override %q: %w", key, os.ErrInvalid)
-		case "effort", "reasoning_effort", "reasoningeffort":
+		case "effort", "reasoning_effort", "reasoningeffort", "output_config.effort":
 			effort, ok := value.(string)
 			if !ok {
 				return fmt.Errorf("claude extra_body effort must be a string: %w", os.ErrInvalid)
