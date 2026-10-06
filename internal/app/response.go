@@ -215,7 +215,9 @@ func (tracker *responseTracker) release(store *messageNodeStore, fullText string
 
 // generatedPrefill carries text accumulated during a web_search tool round
 // into the follow-up stream, so thinking and partial answers produced before
-// the tool call are not lost from the final render.
+// the tool call are not lost from the final render. The prefill answer is
+// terminated with a blank line, so the follow-up starts a new paragraph
+// instead of gluing onto the pre-tool text.
 type generatedPrefill struct {
 	rawAnswer string
 	thinking  string
@@ -254,9 +256,10 @@ func (instance *bot) runGenerationRound(
 		toolCallResponse:    nil,
 	}
 
-	if prefill.rawAnswer != "" {
-		streamState.rawAnswerText = prefill.rawAnswer
-		streamState.renderedAnswerText = providers.StreamingBridgeSourceAppendixVisibleText(prefill.rawAnswer)
+	if strings.TrimSpace(prefill.rawAnswer) != "" {
+		prefilledAnswerText := strings.TrimRight(prefill.rawAnswer, " \t\r\n") + "\n\n"
+		streamState.rawAnswerText = prefilledAnswerText
+		streamState.renderedAnswerText = providers.StreamingBridgeSourceAppendixVisibleText(prefilledAnswerText)
 
 		_ = accumulator.appendText(streamState.renderedAnswerText)
 	}

@@ -2035,12 +2035,9 @@ func TestRunGenerationRoundPreservesPrefillAcrossToolRounds(t *testing.T) {
 		t.Fatalf("run generation round: %v", err)
 	}
 
-	if !containsFold(round.rawAnswer, "Partial answer. ") {
-		t.Fatalf("expected prefill answer preserved, got %q", round.rawAnswer)
-	}
-
-	if !containsFold(round.rawAnswer, "Follow-up answer.") {
-		t.Fatalf("expected follow-up answer preserved, got %q", round.rawAnswer)
+	wantCombined := "Partial answer.\n\nFollow-up answer."
+	if round.rawAnswer != wantCombined {
+		t.Fatalf("expected prefill separated from follow-up by a blank line, got %q", round.rawAnswer)
 	}
 
 	if !containsFold(round.thinking, "Follow-up plan.") {
