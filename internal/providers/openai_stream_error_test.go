@@ -125,3 +125,58 @@ func TestOpenAIStreamStatusCodeFromText(t *testing.T) {
 		})
 	}
 }
+
+func TestResponsesStreamPayloadDeltaSurfacesErrorGivenAsString(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name    string
+		payload string
+	}{
+		{
+			name:    "bare string",
+			payload: `{"type":"response.failed","error":"turn timed out after 100s"}`,
+		},
+		{
+			name:    "object",
+			payload: `{"type":"response.failed","error":{"message":"turn timed out after 100s"}}`,
+		},
+		{
+			name: "string inside response",
+			payload: `{"type":"response.failed","response":{"status":"failed",` +
+				`"error":"turn timed out after 100s"}}`,
+		},
+		{
+			name: "object inside response",
+			payload: `{"type":"response.failed","response":{"status":"failed",` +
+				`"error":{"code":"server_error","message":"turn timed out after 100s"}}}`,
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, terminal, err := responsesStreamPayloadDelta(
+				[]byte(testCase.payload),
+				newResponsesStreamState(),
+			)
+			if !terminal {
+				t.Fatal("expected response.failed to end the stream")
+			}
+
+			if err == nil || !strings.Contains(err.Error(), "turn timed out after 100s") {
+				t.Fatalf("expected the provider's error message, got %v", err)
+			}
+		})
+	}
+}
+
+func TestOpenAIStreamPayloadDeltaSurfacesErrorGivenAsString(t *testing.T) {
+	t.Parallel()
+
+	_, err := openAIStreamPayloadDelta([]byte(`{"error":"upstream session expired"}`), nil)
+	if err == nil || !strings.Contains(err.Error(), "upstream session expired") {
+		t.Fatalf("expected the provider's error message, got %v", err)
+	}
+}

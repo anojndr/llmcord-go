@@ -51,12 +51,6 @@ const (
 	responsesStatusCompleted                      = "completed"
 )
 
-type responsesError struct {
-	Message string `json:"message"`
-	Type    string `json:"type"`
-	Code    any    `json:"code"`
-}
-
 type responsesIncompleteDetails struct {
 	Reason string `json:"reason"`
 }
@@ -107,7 +101,7 @@ type responsesStreamResponse struct {
 	ID                string                      `json:"id"`
 	Status            string                      `json:"status"`
 	Output            []responsesOutputItem       `json:"output"`
-	Error             *responsesError             `json:"error"`
+	Error             *streamEventError           `json:"error"`
 	IncompleteDetails *responsesIncompleteDetails `json:"incomplete_details"`
 }
 
@@ -124,7 +118,7 @@ type responsesStreamEvent struct {
 	Message   string                   `json:"message"`
 	Code      any                      `json:"code"`
 	Item      *responsesOutputItem     `json:"item"`
-	Error     *responsesError          `json:"error"`
+	Error     *streamEventError        `json:"error"`
 	Response  *responsesStreamResponse `json:"response"`
 }
 

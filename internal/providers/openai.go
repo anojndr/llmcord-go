@@ -972,15 +972,9 @@ func openAIStreamPayloadDelta(
 		FinishReason *string           `json:"finish_reason"`
 	}
 
-	type streamError struct {
-		Message string `json:"message"`
-		Type    string `json:"type"`
-		Code    any    `json:"code"`
-	}
-
 	type streamEnvelope struct {
-		Choices []streamChoice `json:"choices"`
-		Error   *streamError   `json:"error"`
+		Choices []streamChoice    `json:"choices"`
+		Error   *streamEventError `json:"error"`
 	}
 
 	var envelope streamEnvelope
@@ -1039,6 +1033,46 @@ func openAIStreamPayloadDelta(
 	}
 
 	return delta, nil
+}
+
+// streamEventError is the error carried by a streamed event. Some
+// OpenAI-compatible backends send it as a bare string instead of the
+// {message, type, code} object; the string becomes Message so the
+// provider's reason reaches logs and users instead of failing the decode
+// of the whole event.
+type streamEventError struct {
+	Message string `json:"message"`
+	Type    string `json:"type"`
+	Code    any    `json:"code"`
+}
+
+// UnmarshalJSON decodes an error object or a bare error string.
+func (streamErr *streamEventError) UnmarshalJSON(data []byte) error {
+	if len(data) > 0 && data[0] == '"' {
+		var message string
+
+		err := json.Unmarshal(data, &message)
+		if err != nil {
+			return fmt.Errorf("decode stream event error string: %w", err)
+		}
+
+		*streamErr = streamEventError{Message: message, Type: "", Code: nil}
+
+		return nil
+	}
+
+	type plainStreamEventError streamEventError
+
+	var decoded plainStreamEventError
+
+	err := json.Unmarshal(data, &decoded)
+	if err != nil {
+		return fmt.Errorf("decode stream event error: %w", err)
+	}
+
+	*streamErr = streamEventError(decoded)
+
+	return nil
 }
 
 func openAIStreamEventError(message string, eventType string, code any) error {
