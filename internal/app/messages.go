@@ -1049,7 +1049,12 @@ func messageContentOptionsForModel(
 		// preprocessed text transcription instead (see
 		// maybeAugmentConversationWithGeminiMedia). MiMo models keep native
 		// audio: they speak audio natively like they speak video_url.
-		options.allowAudio = isMimoVideoModel(providerSlashModel) || !isOpenCodeModel(providerSlashModel)
+		//
+		// Web-app bridges (DeepSeek, Google AI Mode) cannot listen at all and
+		// answered voice messages with "I can't hear the audio": providers
+		// set native_audio: false to get the transcription instead.
+		options.allowAudio = !provider.TranscribeAudio &&
+			(isMimoVideoModel(providerSlashModel) || !isOpenCodeModel(providerSlashModel))
 		// Video rides the same request as a MiMo video_url part
 		// (type video_url + data: URL, fps, media_resolution) — but only
 		// MiMo-family models speak it. Anything else keeps video out of

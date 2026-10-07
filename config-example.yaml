@@ -55,6 +55,8 @@ permissions:
 # Per-provider flags: chain_previous_response (default true; set false when a
 #   Responses API backend rejects or mishandles previous_response_id chaining,
 #   e.g. some third-party bridges),
+#   native_audio (default true; set false when the backend cannot listen to
+#   input_audio, so voice clips are transcribed via media_analysis_model),
 #   disable_search_decider (skips web search entirely for
 #   this provider's models; the web_search tool is not offered),
 #   dont_send_system_prompt,
@@ -206,6 +208,11 @@ providers:
     # previous_response_id (default true). Set false when a Responses API
     # backend rejects or mishandles chaining:
     # chain_previous_response: false
+    # Voice/audio attachments go out as native input_audio (default true).
+    # Set false for backends that cannot listen (e.g. the DeepSeek and Google
+    # AI Mode web bridges): clips are transcribed by media_analysis_model and
+    # sent as text instead:
+    # native_audio: false
     # `api` selects the wire protocol; the built-in `openai` provider defaults
     # to `openai-responses` (POST /responses). Set `api: openai-chat-completions`
     # to use Chat Completions instead (POST /chat/completions).

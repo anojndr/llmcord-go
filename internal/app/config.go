@@ -294,6 +294,7 @@ type rawProviderConfig struct {
 	APIKey                      scalarStringList `yaml:"api_key"`
 	ReasoningEffort             scalarString     `yaml:"reasoning_effort"`
 	ChainPreviousResponse       *bool            `yaml:"chain_previous_response"`
+	NativeAudio                 *bool            `yaml:"native_audio"`
 	ExaSearchType               scalarString     `yaml:"exa_search_type"`
 	EnableGrounding             *bool            `yaml:"enable_grounding"`
 	DisableWebSearch            *bool            `yaml:"disable_search_decider"`
@@ -404,13 +405,16 @@ type smartRoutingConfig struct {
 }
 
 type providerConfig struct {
-	Name                        string
-	BaseURL                     string
-	API                         string
-	APIKey                      string
-	APIKeys                     []string
-	ReasoningEffort             string
-	ChainPreviousResponse       bool
+	Name                  string
+	BaseURL               string
+	API                   string
+	APIKey                string
+	APIKeys               []string
+	ReasoningEffort       string
+	ChainPreviousResponse bool
+	// TranscribeAudio is the inverse of yaml native_audio (default false, so
+	// zero-value configs keep native input_audio).
+	TranscribeAudio             bool
 	ExaSearchType               string
 	EnableGrounding             bool
 	DisableWebSearch            bool
@@ -862,6 +866,7 @@ func normalizeProviderConfig(providerName string, rawProvider rawProviderConfig)
 		APIKeys:                     apiKeys,
 		ReasoningEffort:             reasoningEffort,
 		ChainPreviousResponse:       boolValueOrDefault(rawProvider.ChainPreviousResponse, true),
+		TranscribeAudio:             !boolValueOrDefault(rawProvider.NativeAudio, true),
 		ExaSearchType:               exaSearchType,
 		EnableGrounding:             boolValueOrDefault(rawProvider.EnableGrounding, false),
 		DisableWebSearch:            boolValueOrDefault(rawProvider.DisableWebSearch, false),

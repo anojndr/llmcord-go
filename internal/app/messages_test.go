@@ -9,6 +9,7 @@ import (
 	providers "llmcord-go/internal/providers"
 	"net/http"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -535,6 +536,53 @@ func TestMessageContentOptionsForModelLeavesOpenAIFilesDisabled(t *testing.T) {
 
 	if options.allowVideo {
 		t.Fatalf("expected non-mimo OpenAI video to remain disabled: %#v", options)
+	}
+}
+
+func TestMessageContentOptionsForModelTranscribesAudioWhenNotNative(t *testing.T) {
+	t.Parallel()
+
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+
+	err := os.WriteFile(configPath, []byte(`bot_token: test-token
+providers:
+  deepseek-bridge:
+    base_url: http://127.0.0.1:34868/v1
+    api: openai-responses
+    native_audio: false
+  grok-bridge:
+    base_url: http://127.0.0.1:45080/v1
+    api: openai-responses
+models:
+  deepseek-bridge/deepseek-chat:vision:
+  grok-bridge/grok-fast:vision:
+`), 0o600)
+	if err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	loadedConfig, err := loadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	testCases := []struct {
+		model     string
+		wantAudio bool
+	}{
+		{model: "deepseek-bridge/deepseek-chat:vision", wantAudio: false},
+		{model: "grok-bridge/grok-fast:vision", wantAudio: true},
+	}
+
+	for _, testCase := range testCases {
+		options, optionsErr := messageContentOptionsForModel(loadedConfig, testCase.model)
+		if optionsErr != nil {
+			t.Fatalf("build message content options for %s: %v", testCase.model, optionsErr)
+		}
+
+		if options.allowAudio != testCase.wantAudio {
+			t.Fatalf("%s: allowAudio = %v, want %v", testCase.model, options.allowAudio, testCase.wantAudio)
+		}
 	}
 }
 
