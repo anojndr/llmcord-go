@@ -1470,6 +1470,7 @@ func TestSendExportChannelFileFallsBackToChannelMessage(t *testing.T) {
 		100,
 		exportJSON,
 		false,
+		"",
 	)
 	if err != nil {
 		t.Fatalf("send export channel file: %v", err)
@@ -1538,5 +1539,245 @@ func TestFinishExportChannelReplySkipsDeadTokenEdits(t *testing.T) {
 
 	if fallbackCalls != 1 {
 		t.Fatalf("expected dead-token reply to go straight to the channel, got %d calls", fallbackCalls)
+	}
+}
+
+func TestFetchExportChannelMessagesReturnsPartialOnPageError(t *testing.T) {
+	t.Parallel()
+
+	first := time.Date(2026, time.September, 30, 12, 0, 0, 0, time.UTC)
+	kept := newExportChannelMessage("kept", "user-1", "alice", "hello", false, first)
+
+	session, err := discordgo.New("Bot discord-token")
+	if err != nil {
+		t.Fatalf("create discord session: %v", err)
+	}
+
+	calls := 0
+
+	session.Client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		t.Helper()
+
+		calls++
+
+		if calls == 1 {
+			body, marshalErr := json.Marshal([]*discordgo.Message{kept})
+			if marshalErr != nil {
+				t.Fatalf("marshal history page: %v", marshalErr)
+			}
+
+			return newInteractionJSONResponse(request, http.StatusOK, string(body)), nil
+		}
+
+		// Fatal 403: loadExportChannelPage does not retry, so the fetch
+		// returns the kept page alongside the load error; the caller still
+		// sends the file with a truncation note.
+		return newInteractionJSONResponse(request, http.StatusForbidden, `{"message":"Missing Access","code":50001}`), nil
+	})
+
+	messages, _, err := fetchExportChannelMessages(session, "channel-1", 100000, nil)
+	if err == nil {
+		t.Fatal("expected later-page load error alongside partial results")
+	}
+
+	if messages == nil {
+		t.Fatal("expected non-nil partial results on page error")
+	}
+
+	if len(messages) != 1 || messages[0].Content != "hello" {
+		t.Fatalf("expected partial page kept, got %+v", messages)
+	}
+}
+
+func TestFetchExportChannelMessagesReturnsEmptyOnFirstPageError(t *testing.T) {
+	t.Parallel()
+
+	session, err := discordgo.New("Bot discord-token")
+	if err != nil {
+		t.Fatalf("create discord session: %v", err)
+	}
+
+	session.Client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		t.Helper()
+
+		return newInteractionJSONResponse(request, http.StatusNotFound, `{"message":"Unknown Channel","code":10003}`), nil
+	})
+
+	messages, _, err := fetchExportChannelMessages(session, "channel-1", 100000, nil)
+	if err == nil {
+		t.Fatal("expected first-page load error so the caller shows guidance")
+	}
+
+	if messages == nil {
+		t.Fatal("expected empty non-nil slice alongside the load error")
+	}
+
+	if len(messages) != 0 {
+		t.Fatalf("expected zero messages on first-page error, got %+v", messages)
+	}
+}
+
+func TestRunExportChannelSendsPartialFileOnLaterPageError(t *testing.T) {
+	t.Parallel()
+
+	first := time.Date(2026, time.September, 30, 12, 0, 0, 0, time.UTC)
+	kept := newExportChannelMessage("kept", "user-1", "alice", "hello", false, first)
+
+	var capture exportChannelUploadCapture
+
+	server := &exportChannelTestServer{
+		t:           t,
+		capture:     &capture,
+		channelBody: `{"id":"channel-1","name":"general"}`,
+	}
+	server.remaining = [][]*discordgo.Message{{kept}}
+
+	calls := 0
+
+	session := newInteractionTestSessionWithTransport(t, func(request *http.Request) (*http.Response, error) {
+		t.Helper()
+
+		if request.Method == http.MethodGet && strings.HasSuffix(request.URL.Path, "/channels/channel-1/messages") {
+			calls++
+
+			if calls == 1 {
+				return server.serveHistory(request)
+			}
+
+			return newInteractionJSONResponse(request, http.StatusForbidden, `{"message":"Missing Access","code":50001}`), nil
+		}
+
+		return server.roundTrip(request)
+	})
+
+	interaction := newExportChannelCommandInteraction("channel-1", 100000, maintenanceOwnerID)
+
+	instance := new(bot)
+	instance.session = session
+
+	if err := instance.handleExportChannelCommand(session, interaction); err != nil {
+		t.Fatalf("handle export channel command: %v", err)
+	}
+
+	if capture.fileContents == "" {
+		t.Fatal("expected partial export file on later-page error")
+	}
+
+	finalContent := capture.edits[len(capture.edits)-1]
+	if !strings.Contains(finalContent, "Exported 1 user messages") || !strings.Contains(finalContent, "partial: stopped early:") {
+		t.Fatalf("expected truncated-export caption, got %q", finalContent)
+	}
+}
+
+func TestRunExportChannelShowsGuidanceOnFirstPageError(t *testing.T) {
+	t.Parallel()
+
+	var capture exportChannelUploadCapture
+
+	server := &exportChannelTestServer{
+		t:             t,
+		capture:       &capture,
+		channelBody:   `{"id":"channel-1","name":"general"}`,
+		historyStatus: http.StatusForbidden,
+		historyBody:   `{"message":"Missing Access","code":50001}`,
+	}
+	session := newInteractionTestSessionWithTransport(t, server.roundTrip)
+
+	interaction := newExportChannelCommandInteraction("channel-1", 100000, maintenanceOwnerID)
+
+	instance := new(bot)
+	instance.session = session
+
+	if err := instance.handleExportChannelCommand(session, interaction); err != nil {
+		t.Fatalf("handle export channel command: %v", err)
+	}
+
+	if capture.fileContents != "" {
+		t.Fatalf("expected no export file on first-page error, got %q", capture.fileContents)
+	}
+
+	if len(capture.edits) == 0 || !strings.Contains(capture.edits[len(capture.edits)-1], "lacks access") {
+		t.Fatalf("expected missing-access guidance, got %#v", capture.edits)
+	}
+}
+
+func TestSendExportChannelFileMarksPartialCaption(t *testing.T) {
+	t.Parallel()
+
+	caption := ""
+
+	transport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		t.Helper()
+
+		if request.Method == http.MethodPatch && strings.HasSuffix(request.URL.Path, "/messages/@original") {
+			if err := request.ParseMultipartForm(10 * 1024 * 1024); err != nil {
+				t.Fatalf("parse multipart export upload: %v", err)
+			}
+
+			var parsed discordgo.WebhookEdit
+			if err := json.Unmarshal([]byte(request.FormValue("payload_json")), &parsed); err != nil {
+				t.Fatalf("decode export payload: %v", err)
+			}
+
+			if parsed.Content != nil {
+				caption = *parsed.Content
+			}
+
+			return newInteractionJSONResponse(request, http.StatusOK, `{"id":"edited-message"}`), nil
+		}
+
+		t.Fatalf("unexpected request: %s %s", request.Method, request.URL.Path)
+
+		return nil, errUnexpectedTestRequest
+	})
+
+	session := newInteractionTestSessionWithTransport(t, transport)
+
+	interaction := &discordgo.Interaction{ID: "interaction-id", AppID: "application-id", Token: "interaction-token"}
+
+	err := sendExportChannelFile(
+		session,
+		interaction,
+		"channel-1",
+		[]exportChannelMessage{{Username: "alice", Content: "hi"}},
+		10,
+		100,
+		[]byte(`{"messages":[]}`),
+		false,
+		"Cannot read channel `channel`: the bot lacks access.",
+	)
+	if err != nil {
+		t.Fatalf("send export channel file: %v", err)
+	}
+
+	if !strings.Contains(caption, "Exported 1 user messages") ||
+		!strings.Contains(caption, "partial: stopped early:") {
+		t.Fatalf("expected partial caption, got %q", caption)
+	}
+}
+
+func TestFetchExportChannelStallHelper(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+
+	if isExportChannelStalled(now, now) {
+		t.Fatal("expected no stall at zero elapsed")
+	}
+
+	if isExportChannelStalled(now, now.Add(exportChannelStallTimeout)) {
+		t.Fatal("expected no stall exactly at the timeout boundary")
+	}
+
+	if !isExportChannelStalled(now, now.Add(exportChannelStallTimeout+time.Second)) {
+		t.Fatal("expected stall past the timeout")
+	}
+}
+
+func TestFetchExportChannelStallTimeoutIsTenMinutes(t *testing.T) {
+	t.Parallel()
+
+	if exportChannelStallTimeout != 10*time.Minute {
+		t.Fatalf("expected 10 minute stall timeout, got %v", exportChannelStallTimeout)
 	}
 }

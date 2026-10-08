@@ -32,9 +32,14 @@ const (
 	// exportChannelProgressEditInterval throttles the countdown bar so large
 	// exports do not hit webhook rate limits with an edit per history page.
 	exportChannelProgressEditInterval = 2 * time.Second
-	exportChannelBarRounding          = 0.5
-	exportChannelPercentMultiplier    = 100
-	exportChannelSecondsPerMinute     = 60
+	// exportChannelStallTimeout bounds history paging without kept-message
+	// growth and caps the whole fetch: if no kept messages accrue for this
+	// long, or fetching runs this long overall, paging stops and the export
+	// keeps whatever was collected so far.
+	exportChannelStallTimeout      = 10 * time.Minute
+	exportChannelBarRounding       = 0.5
+	exportChannelPercentMultiplier = 100
+	exportChannelSecondsPerMinute  = 60
 	// exportChannelRemainingRoundingSecond rounds countdown seconds to the
 	// nearest whole second instead of truncating partial seconds away.
 	exportChannelRemainingRoundingSecond = 0.5
@@ -212,7 +217,7 @@ func (instance *bot) runExportChannel(
 	exportSession := instance.session
 
 	messages, tokens, fetchErr := instance.fetchExportWithProgress(exportSession, interaction, channelID, tokenLimit)
-	if fetchErr.err != nil {
+	if fetchErr.err != nil && len(messages) == 0 {
 		logWarn("export channel failed to load messages", fetchErr.err, "channel_id", channelID)
 
 		return finishExportChannelReply(
@@ -224,6 +229,10 @@ func (instance *bot) runExportChannel(
 		)
 	}
 
+	if fetchErr.err != nil {
+		logWarn("export channel partially loaded messages", fetchErr.err, "channel_id", channelID)
+	}
+
 	if len(messages) == 0 {
 		return finishExportChannelReply(
 			session,
@@ -232,6 +241,11 @@ func (instance *bot) runExportChannel(
 			"No user messages fit within the token limit.",
 			fetchErr.tokenDead,
 		)
+	}
+
+	partialNote := ""
+	if fetchErr.err != nil {
+		partialNote = summarizeExportChannelFetchError(channelID, fetchErr.err)
 	}
 
 	payload := buildExportChannelPayload(channelID, tokenLimit, messages, tokens)
@@ -264,6 +278,7 @@ func (instance *bot) runExportChannel(
 		tokenLimit,
 		exportJSON,
 		fetchErr.tokenDead,
+		partialNote,
 	)
 }
 
@@ -432,6 +447,7 @@ func sendExportChannelFile(
 	tokens, tokenLimit int,
 	exportJSON []byte,
 	tokenDead bool,
+	partialNote string,
 ) error {
 	content := fmt.Sprintf(
 		"Exported %d user messages (%d/%d tokens) from <#%s>.",
@@ -440,6 +456,9 @@ func sendExportChannelFile(
 		tokenLimit,
 		channelID,
 	)
+	if note := strings.TrimSpace(partialNote); note != "" {
+		content = strings.TrimSuffix(content, ".") + " (partial: stopped early: " + note + ")."
+	}
 
 	if !tokenDead {
 		webhookEdit := new(discordgo.WebhookEdit)
@@ -621,6 +640,20 @@ func describeExportChannelError(channelID string, err error) string {
 	return fmt.Sprintf("Failed to export channel `%s`.", channelID)
 }
 
+// summarizeExportChannelFetchError condenses a history fetch failure for the
+// truncated-export caption: one line, no newlines, bounded length.
+func summarizeExportChannelFetchError(channelID string, err error) string {
+	summary := strings.Join(strings.Fields(describeExportChannelError(channelID, err)), " ")
+
+	const maxSummaryRunes = 200
+
+	if runeCount(summary) > maxSummaryRunes {
+		summary = truncateRunes(summary, maxSummaryRunes-1) + "…"
+	}
+
+	return summary
+}
+
 // validateExportChannel rejects channels that cannot hold exportable message
 // history (categories, voice, forum roots), mirroring DiscordChatExporter's
 // forum guard: those channel objects resolve fine but their message listing
@@ -703,6 +736,15 @@ func exportChannelTypeLabel(channelType discordgo.ChannelType) string {
 // user-authored messages, and stops before the OpenAI token budget overflows.
 // The returned slice stays newest-to-oldest. onPage reports progress after
 // every fetched page so the caller can refresh the countdown bar.
+//
+// A page load error stops paging and returns the partial results collected
+// so far alongside the load error: empty results mean the caller shows the
+// mapped guidance, partial results mean the caller still sends the file with
+// a truncation note. A stall (no kept-message growth for
+// exportChannelStallTimeout) or the overall fetch deadline
+// (exportChannelStallTimeout from fetch start) stops paging and returns the
+// partial results collected so far with a nil error. A hung
+// RequestWithBucketID is not interruptible; both checks apply between pages.
 func fetchExportChannelMessages(
 	session *discordgo.Session,
 	channelID string,
@@ -714,11 +756,20 @@ func fetchExportChannelMessages(
 	tokens := exportChannelPayloadHeaderTokens(channelID, tokenLimit)
 	beforeID := ""
 	stalls := 0
+	fetchStartedAt := time.Now()
+	lastProgress := fetchStartedAt
 
 	for {
+		now := time.Now()
+		if isExportChannelStalled(lastProgress, now) || isExportChannelStalled(fetchStartedAt, now) {
+			break
+		}
+
 		page, err := loadExportChannelPage(session, channelID, beforeID)
 		if err != nil {
-			return nil, 0, err
+			logWarn("export channel page failed; returning partial results", err, "channel_id", channelID)
+
+			return messages, tokens, err
 		}
 
 		if len(page) == 0 {
@@ -727,8 +778,13 @@ func fetchExportChannelMessages(
 
 		var done bool
 
+		keptBefore := len(messages)
 		messages, tokens, done = appendExportChannelPage(messages, tokens, page, tokenLimit)
 		scanned += len(page)
+
+		if len(messages) > keptBefore {
+			lastProgress = time.Now()
+		}
 
 		if onPage != nil {
 			onPage(len(messages), scanned, tokens)
@@ -754,6 +810,12 @@ func fetchExportChannelMessages(
 	}
 
 	return messages, tokens, nil
+}
+
+// isExportChannelStalled reports whether no kept-message progress happened
+// for longer than exportChannelStallTimeout.
+func isExportChannelStalled(lastProgress, now time.Time) bool {
+	return now.Sub(lastProgress) > exportChannelStallTimeout
 }
 
 // loadExportChannelPage fetches one newest-to-oldest history page, retrying
