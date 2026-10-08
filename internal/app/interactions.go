@@ -850,7 +850,7 @@ func (instance *bot) handleModelCommand(
 		return editInteractionResponseText(
 			session,
 			interaction.Interaction,
-			fmt.Sprintf("This channel is locked to `%s`. `/model` is disabled here.", lockedModel),
+			fmt.Sprintf("This channel is locked to `%s`. `/model-non-agent` is disabled here.", lockedModel),
 		)
 	}
 
@@ -858,7 +858,8 @@ func (instance *bot) handleModelCommand(
 		return editInteractionResponseText(
 			session,
 			interaction.Interaction,
-			"Smart auto-routing is enabled in this channel: Jev picks the model per message, so `/model` is disabled here.",
+			"Smart auto-routing is enabled in this channel: Jev picks the model per message, "+
+				"so `/model-non-agent` is disabled here.",
 		)
 	}
 

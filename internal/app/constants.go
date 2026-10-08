@@ -41,7 +41,7 @@ const (
 	embedColorComplete                = 0x006400
 	embedColorIncomplete              = 0xffa500
 	embedColorFailure                 = 0x8b0000
-	modelCommandName                  = "model"
+	modelCommandName                  = "model-non-agent"
 	modelCommandDescription           = "View or switch the current model"
 	modelOptionName                   = "model"
 	modelOptionDescription            = "Model to view or use"
@@ -87,7 +87,7 @@ const (
 	maintenanceChannelIDOptionDescription   = "ID of the channel to manage"
 	maintenanceOwnerID                      = "676735636656357396"
 	maintenanceBotID                        = "1307756710072549439"
-	exportChannelCommandName                = "export"
+	exportChannelCommandName                = "export-non-agent"
 	exportChannelCommandDescription         = "Export user messages from a channel to JSON"
 	exportChannelChannelIDOptionName        = "channelid"
 	exportChannelChannelIDOptionDescription = "ID of the channel to export"

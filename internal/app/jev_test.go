@@ -657,7 +657,8 @@ func TestHandleModelCommandRejectsSmartRoutedChannel(t *testing.T) {
 
 	assertDeferredInteractionResponse(t, &capture.deferredResponse)
 
-	const want = "Smart auto-routing is enabled in this channel: Jev picks the model per message, so `/model` is disabled here."
+	const want = "Smart auto-routing is enabled in this channel: Jev picks the model per message, " +
+		"so `/model-non-agent` is disabled here."
 	if capture.editedResponse.Content != want {
 		t.Fatalf("unexpected response content: got %q want %q", capture.editedResponse.Content, want)
 	}

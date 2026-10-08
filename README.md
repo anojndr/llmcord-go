@@ -52,7 +52,7 @@ The provided `docker-compose.yaml` mounts the repository root read-write for loc
 
 ### Render
 
-When `PORT` or `LLMCORD_HTTP_ADDR` is set, the bot exposes JSON health responses on `/` and `/healthz`. The included `render.yaml` uses the Docker runtime, points `LLMCORD_CONFIG_PATH` at `/etc/secrets/config.yaml`, and configures `healthCheckPath: /healthz`. For history and bot state (current `/model`, `/searchtype`, `/grounding`, `/maintenance` selections) that survive restarts, add a persistent SQLite `database.connection_string` file path.
+When `PORT` or `LLMCORD_HTTP_ADDR` is set, the bot exposes JSON health responses on `/` and `/healthz`. The included `render.yaml` uses the Docker runtime, points `LLMCORD_CONFIG_PATH` at `/etc/secrets/config.yaml`, and configures `healthCheckPath: /healthz`. For history and bot state (current `/model-non-agent`, `/searchtype`, `/grounding`, `/maintenance` selections) that survive restarts, add a persistent SQLite `database.connection_string` file path.
 
 ## Configuration
 
@@ -76,12 +76,12 @@ Providers are declared with `base_url` (OpenAI-compatible). The provider name se
 | --- | --- |
 | `providers` | Keyed by name. OpenAI-compatible providers use `base_url` and `api: openai-chat-completions` or `api: openai-responses` (built-in `openai` defaults to `openai-responses`, others default to `openai-chat-completions`); names containing `gemini` use the native Gemini API (with `enable_grounding: true` for the Google Search tool); names containing `claude` (or any provider with `api: claude-messages`) use the native Claude Messages API (`api_key` is the Anthropic key, `base_url` optional, `reasoning_effort` maps to `output_config.effort`). Per-provider `chain_previous_response: false` disables Responses API `previous_response_id` chaining for that provider's models (follow-ups resend the full reply chain statelessly); defaults to `true`. Per-provider `native_audio: false` keeps voice/audio attachments out of the request and sends a `media_analysis_model` transcription instead, for OpenAI-compatible backends that cannot listen to `input_audio` (e.g. the DeepSeek and Google AI Mode web bridges); defaults to `true`. Per-provider `disable_search_decider: true` disables web search entirely for a provider's models (the `web_search` tool is not offered); defaults to `false`. Per-provider `exa_search_type: deep` pins the Exa Search API `type` for that provider's models (`instant`, `fast`, `auto`, `deep-lite`, `deep`, `deep-reasoning`), overriding the `/searchtype` fallback. Per-provider `dont_send_system_prompt: true` skips prepending the global `system_prompt` to that provider's requests; defaults to `false`. Per-provider `auto_append_search_web`, `auto_append_short_answer`, `auto_append_dont_be_sycophantic`, `auto_append_adhd_friendly`, `auto_append_always_english`, `auto_append_cross_check` append the matching `auto_append_phrases.<name>` suffix to the user query when absent; all default to `false`. |
 | `models` | Ordered `<provider>/<model>` map. The first entry is the startup default. `:vision` is a local hint for image-capability heuristics. |
-| `channel_model_locks` | Map of channel IDs to configured models. `/model` is disabled in locked channels. |
-| `smart_routing` | Jev (TypeSafe System One) smart auto-routing: one call per message in `channels` asks a `choice` tier question plus an `nsfw` noul question in parallel, then maps the query to `tiers.flagship\|balanced\|fast\|lite\|eco`, each naming a configured model. NSFW queries never use Gemini tier models (safety filters block explicit content) and reroute to the first non-Gemini tier instead. Channel locks win over routing (a routed channel must not also be locked); Jev failures fall back to the global default. `/model` is disabled in routed channels. |
+| `channel_model_locks` | Map of channel IDs to configured models. `/model-non-agent` is disabled in locked channels. |
+| `smart_routing` | Jev (TypeSafe System One) smart auto-routing: one call per message in `channels` asks a `choice` tier question plus an `nsfw` noul question in parallel, then maps the query to `tiers.flagship\|balanced\|fast\|lite\|eco`, each naming a configured model. NSFW queries never use Gemini tier models (safety filters block explicit content) and reroute to the first non-Gemini tier instead. Channel locks win over routing (a routed channel must not also be locked); Jev failures fall back to the global default. `/model-non-agent` is disabled in routed channels. |
 | `media_analysis_model` | Model used to preprocess audio and video attachments the reply model cannot take itself; auto-selected when unset (defaults to `xiaomi/oc/mimo-v2.6-flash-free:vision` when present in `models`, else the first Gemini model). |
 | `media_analysis_model_fallback` | Backup preprocessor tried when the primary `media_analysis_model` fails on a part (for example MiMo outage → Gemini). Must name a different configured model; empty disables the second attempt. |
 | `fallback_model` | Model to fall back to before returning an error (defaults to `9router/stable_model:vision` when configured in `models`). The fallback attempt gets the `web_search` tool under the same conditions as the primary. |
-| `database.connection_string` | SQLite file path for persisted history and bot state (for example `llmcord.sqlite`). Without it, reply history and operator selections (`/model`, `/searchtype`, `/grounding`, `/maintenance`) live only in memory and are lost on restart. |
+| `database.connection_string` | SQLite file path for persisted history and bot state (for example `llmcord.sqlite`). Without it, reply history and operator selections (`/model-non-agent`, `/searchtype`, `/grounding`, `/maintenance`) live only in memory and are lost on restart. |
 | `database.store_key` | Logical key selecting the persisted history and bot-state rows. |
 | `redis.address` | Optional Redis `host:port` (for example `127.0.0.1:6379`). Blank disables Redis. When set, message dedup uses cluster-wide `SET NX`, TinyFish fetch results share across instances, and history plus bot state mirror into Redis with a 30-day TTL alongside SQLite. |
 | `redis.password` | Optional Redis password (requirepass / ACL user). |
@@ -124,7 +124,7 @@ Generic website URL extraction follows `extraction_order` (default Firecrawl -> 
 
 - Mention the bot in a guild channel, or write `at ai`
 - Reply to a message to continue the conversation
-- `/model`: switch the main reply model
+- `/model-non-agent`: switch the main reply model
 - `/searchtype`: switch the fallback Exa Search mode (`instant`, `fast`, `auto`, `deep-lite`, `deep`, `deep-reasoning`; lowest to highest latency; providers with `exa_search_type` override it)
 - `/grounding`: toggle native Gemini grounding
 - `/createchannel <channelname>`: create a text channel in the category you are currently in (requires `Manage Channels`)
@@ -134,7 +134,7 @@ Generic website URL extraction follows `extraction_order` (default Firecrawl -> 
 - `/latency <model>`: benchmark one configured model alone with the same query (no channel link)
 - `/maintenance start <channel_id>`: lock a channel so only user `676735636656357396` and the bot `1307756710072549439` can send messages (denies `Send Messages` for `@everyone`, allows for those users; bot also deletes messages from anyone else, so not even admins can bypass; only `676735636656357396` may invoke the command)
 - `/maintenance stop <channel_id>`: unlock a maintenance-locked channel (removes the permission overwrites; only `676735636656357396` may invoke)
-- `/export <channelid> <tokens>`: export newest-to-oldest user messages (bot messages excluded) up to an OpenAI token budget as a JSON file with username and timestamp per message, live countdown progress bar included (only `676735636656357396` may invoke)
+- `/export-non-agent <channelid> <tokens>`: export newest-to-oldest user messages (bot messages excluded) up to an OpenAI token budget as a JSON file with username and timestamp per message, live countdown progress bar included (only `676735636656357396` may invoke)
 - Attach files or images for multimodal context
   Text-like files (JSON, CSV, logs, Markdown, source) are inlined when the provider can't read raw files; others stay attachments with metadata summaries, including ZIP manifests. Gemini sends single-image prompts text-first and uploads images over 4 MiB via the Files API.
 - Start a prompt with `vsearch` for reverse-image lookup

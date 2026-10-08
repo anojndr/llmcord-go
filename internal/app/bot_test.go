@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"slices"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -12,7 +13,7 @@ import (
 	"github.com/bwmarrin/discordgo"
 )
 
-func TestSyncCommandsRegistersChannelCommand(t *testing.T) {
+func TestSyncCommandsRegistersExactCommandSet(t *testing.T) {
 	t.Parallel()
 
 	session, err := discordgo.New("Bot discord-token")
@@ -63,25 +64,19 @@ func TestSyncCommandsRegistersChannelCommand(t *testing.T) {
 		t.Fatalf("sync commands: %v", err)
 	}
 
-	expectedCommands := []string{
-		createChannelCommandName, editChannelNameCommandName, moveChannelCommandName,
-		latencyBenchCommandName, exportChannelCommandName,
+	registeredNames := make([]string, 0, len(registeredCommands))
+	for _, command := range registeredCommands {
+		registeredNames = append(registeredNames, command.Name)
 	}
 
-	for _, expectedName := range expectedCommands {
-		found := false
+	slices.Sort(registeredNames)
 
-		for _, command := range registeredCommands {
-			if command.Name == expectedName {
-				found = true
-
-				break
-			}
-		}
-
-		if !found {
-			t.Fatalf("expected %q among registered commands, got %+v", expectedName, registeredCommands)
-		}
+	expectedNames := []string{
+		"createchannel", "editchannelname", "export-non-agent", "grounding", "latency",
+		"maintenance", "model-non-agent", "movechannel", "searchtype",
+	}
+	if !slices.Equal(registeredNames, expectedNames) {
+		t.Fatalf("unexpected registered commands: got %q want %q", registeredNames, expectedNames)
 	}
 }
 

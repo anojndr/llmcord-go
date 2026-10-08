@@ -1186,7 +1186,7 @@ channel_model_locks:
 	assertDeferredInteractionResponse(t, &capture.deferredResponse)
 
 	expectedContent := fmt.Sprintf(
-		"This channel is locked to `%s`. `/model` is disabled here.",
+		"This channel is locked to `%s`. `/model-non-agent` is disabled here.",
 		secondTestModel,
 	)
 	if capture.editedResponse.Content != expectedContent {
