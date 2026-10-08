@@ -1894,6 +1894,23 @@ func TestIsUnknownInteractionErrorIgnoresOtherErrors(t *testing.T) {
 	}
 }
 
+func TestIsExpiredInteractionTokenErrorDetectsInvalidWebhookToken(t *testing.T) {
+	t.Parallel()
+
+	expired := fmt.Errorf(
+		"wrap: %w",
+		newDiscordRESTError(discordInvalidWebhookTokenCode, "Invalid Webhook Token"),
+	)
+
+	if !isExpiredInteractionTokenError(expired) {
+		t.Fatal("expected 50027 invalid webhook token to count as expired")
+	}
+
+	if !isUnknownInteractionError(expired) {
+		t.Fatal("expected 50027 to reuse the unknown-interaction discard path")
+	}
+}
+
 func writeModelConfig(t *testing.T) string {
 	t.Helper()
 

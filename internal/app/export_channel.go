@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -119,28 +120,34 @@ func (instance *bot) handleExportChannelCommand(
 
 	invokerID := maintenanceInvokerID(interaction)
 	if invokerID != maintenanceOwnerID {
-		return editInteractionResponseText(
+		return finishExportChannelReply(
 			session,
 			interaction.Interaction,
+			interaction.ChannelID,
 			"You do not have permission to export channels.",
+			false,
 		)
 	}
 
 	channelID, tokenLimit := exportChannelInputOptions(interaction.ApplicationCommandData())
 
 	if channelID == "" {
-		return editInteractionResponseText(
+		return finishExportChannelReply(
 			session,
 			interaction.Interaction,
+			interaction.ChannelID,
 			"`channelid` is required.",
+			false,
 		)
 	}
 
 	if tokenLimit <= 0 {
-		return editInteractionResponseText(
+		return finishExportChannelReply(
 			session,
 			interaction.Interaction,
+			interaction.ChannelID,
 			"`tokens` must be a positive integer.",
+			false,
 		)
 	}
 
@@ -195,27 +202,35 @@ func (instance *bot) runExportChannel(
 	if err != nil {
 		logWarn("export channel failed to load channel", err, "channel_id", channelID)
 
-		return editInteractionResponseText(session, interaction, describeExportChannelError(channelID, err))
+		return finishExportChannelReply(session, interaction, channelID, describeExportChannelError(channelID, err), false)
 	}
 
 	if message := validateExportChannel(channel, channelID); message != "" {
-		return editInteractionResponseText(session, interaction, message)
+		return finishExportChannelReply(session, interaction, channelID, message, false)
 	}
 
 	exportSession := instance.session
 
-	messages, tokens, err := instance.fetchExportWithProgress(exportSession, interaction, channelID, tokenLimit)
-	if err != nil {
-		logWarn("export channel failed to load messages", err, "channel_id", channelID)
+	messages, tokens, fetchErr := instance.fetchExportWithProgress(exportSession, interaction, channelID, tokenLimit)
+	if fetchErr.err != nil {
+		logWarn("export channel failed to load messages", fetchErr.err, "channel_id", channelID)
 
-		return editInteractionResponseText(session, interaction, describeExportChannelError(channelID, err))
+		return finishExportChannelReply(
+			session,
+			interaction,
+			channelID,
+			describeExportChannelError(channelID, fetchErr.err),
+			fetchErr.tokenDead,
+		)
 	}
 
 	if len(messages) == 0 {
-		return editInteractionResponseText(
+		return finishExportChannelReply(
 			session,
 			interaction,
+			channelID,
 			"No user messages fit within the token limit.",
+			fetchErr.tokenDead,
 		)
 	}
 
@@ -230,15 +245,36 @@ func (instance *bot) runExportChannel(
 		messages, payload, exportJSON = trimExportChannelPayload(channelID, tokenLimit, messages)
 
 		if len(messages) == 0 {
-			return editInteractionResponseText(
+			return finishExportChannelReply(
 				session,
 				interaction,
+				channelID,
 				"No user messages fit within the token limit.",
+				fetchErr.tokenDead,
 			)
 		}
 	}
 
-	return sendExportChannelFile(session, interaction, channelID, messages, payload.Tokens, tokenLimit, exportJSON)
+	return sendExportChannelFile(
+		session,
+		interaction,
+		channelID,
+		messages,
+		payload.Tokens,
+		tokenLimit,
+		exportJSON,
+		fetchErr.tokenDead,
+	)
+}
+
+// exportChannelFetchOutcome carries the fetched history plus whether the
+// interaction token died mid-export. Token death stops progress edits but
+// never aborts history paging: the run still finishes into the channel.
+type exportChannelFetchOutcome struct {
+	messages  []exportChannelMessage
+	tokens    int
+	err       error
+	tokenDead bool
 }
 
 func (instance *bot) fetchExportWithProgress(
@@ -246,27 +282,42 @@ func (instance *bot) fetchExportWithProgress(
 	interaction *discordgo.Interaction,
 	channelID string,
 	tokenLimit int,
-) ([]exportChannelMessage, int, error) {
+) ([]exportChannelMessage, int, exportChannelFetchOutcome) {
+	outcome := exportChannelFetchOutcome{
+		messages:  nil,
+		tokens:    0,
+		err:       nil,
+		tokenDead: false,
+	}
 	startedAt := time.Now()
 	lastProgressEdit := time.Time{}
 
 	onPage := func(kept, scanned, tokens int) {
 		now := time.Now()
 
+		if outcome.tokenDead {
+			return
+		}
+
 		if !lastProgressEdit.IsZero() && now.Sub(lastProgressEdit) < exportChannelProgressEditInterval {
 			return
 		}
 
 		lastProgressEdit = now
-		instance.editExportProgress(session, interaction, exportChannelProgress{
+
+		if err := instance.editExportProgress(session, interaction, exportChannelProgress{
 			kept:    kept,
 			scanned: scanned,
 			tokens:  tokens,
 			elapsed: now.Sub(startedAt),
-		}, channelID, tokenLimit)
+		}, channelID, tokenLimit); err != nil && isExpiredInteractionTokenError(err) {
+			outcome.tokenDead = true
+		}
 	}
 
-	return fetchExportChannelMessages(session, channelID, tokenLimit, onPage)
+	outcome.messages, outcome.tokens, outcome.err = fetchExportChannelMessages(session, channelID, tokenLimit, onPage)
+
+	return outcome.messages, outcome.tokens, outcome
 }
 
 func buildExportChannelPayload(
@@ -380,6 +431,7 @@ func sendExportChannelFile(
 	messages []exportChannelMessage,
 	tokens, tokenLimit int,
 	exportJSON []byte,
+	tokenDead bool,
 ) error {
 	content := fmt.Sprintf(
 		"Exported %d user messages (%d/%d tokens) from <#%s>.",
@@ -388,26 +440,144 @@ func sendExportChannelFile(
 		tokenLimit,
 		channelID,
 	)
-	webhookEdit := new(discordgo.WebhookEdit)
-	webhookEdit.Content = &content
-	webhookEdit.Files = []*discordgo.File{{
-		Name:        exportChannelFilename(channelID),
-		ContentType: exportChannelJSONContentType,
-		Reader:      bytes.NewReader(exportJSON),
-	}}
 
-	_, err := session.InteractionResponseEdit(interaction, webhookEdit)
-	if err != nil {
-		logWarn("edit interaction response with channel export", err, "channel_id", channelID)
+	if !tokenDead {
+		webhookEdit := new(discordgo.WebhookEdit)
+		webhookEdit.Content = &content
+		webhookEdit.Files = []*discordgo.File{{
+			Name:        exportChannelFilename(channelID),
+			ContentType: exportChannelJSONContentType,
+			Reader:      bytes.NewReader(exportJSON),
+		}}
 
-		return editInteractionResponseText(
-			session,
-			interaction,
-			"Couldn't export the channel right now.",
-		)
+		if _, err := session.InteractionResponseEdit(interaction, webhookEdit); err != nil {
+			if !isExpiredInteractionTokenError(err) {
+				logWarn("edit interaction response with channel export", err, "channel_id", channelID)
+
+				return finishExportChannelReply(
+					session,
+					interaction,
+					channelID,
+					"Couldn't export the channel right now.",
+					false,
+				)
+			}
+
+			tokenDead = true
+		}
+	}
+
+	if tokenDead {
+		return sendExportChannelMessage(session, interaction, channelID, content, exportJSON)
 	}
 
 	return nil
+}
+
+// finishExportChannelReply delivers one terminal export outcome. It tries the
+// interaction edit first and, only when the token is already dead or the edit
+// proves it dead, falls back to a regular channel message so the result is
+// never lost to a 401/50027 storm.
+func finishExportChannelReply(
+	session *discordgo.Session,
+	interaction *discordgo.Interaction,
+	channelID string,
+	content string,
+	tokenDead bool,
+) error {
+	if tokenDead {
+		return sendExportChannelMessage(session, interaction, channelID, content, nil)
+	}
+
+	if err := editInteractionResponseText(session, interaction, content); err != nil {
+		if !isExpiredInteractionTokenError(err) {
+			return fmt.Errorf("edit export reply: %w", err)
+		}
+
+		return sendExportChannelMessage(session, interaction, channelID, content, nil)
+	}
+
+	return nil
+}
+
+// sendExportChannelMessage posts the export outcome to the invoking channel.
+// File bytes stay attached on success (nil means a text-only error reply).
+func sendExportChannelMessage(
+	session *discordgo.Session,
+	interaction *discordgo.Interaction,
+	channelID string,
+	content string,
+	exportJSON []byte,
+) error {
+	targetID := exportChannelReplyTarget(interaction, channelID)
+	if targetID == "" {
+		return fmt.Errorf("export channel reply without target channel: %w", os.ErrInvalid)
+	}
+
+	if mention := exportChannelReplyMention(interaction); mention != "" {
+		content = "<@" + mention + "> " + strings.TrimSpace(content)
+	}
+
+	send := &discordgo.MessageSend{
+		Content:         content,
+		Embeds:          nil,
+		TTS:             false,
+		Components:      nil,
+		Files:           nil,
+		AllowedMentions: nil,
+		Reference:       nil,
+		StickerIDs:      nil,
+		Flags:           0,
+		Poll:            nil,
+		File:            nil,
+		Embed:           nil,
+	}
+	if len(exportJSON) > 0 {
+		send.Files = []*discordgo.File{{
+			Name:        exportChannelFilename(channelID),
+			ContentType: exportChannelJSONContentType,
+			Reader:      bytes.NewReader(exportJSON),
+		}}
+	}
+
+	if _, err := session.ChannelMessageSendComplex(targetID, send); err != nil {
+		return fmt.Errorf("send export channel message: %w", err)
+	}
+
+	slog.Info(
+		"export channel fell back to channel message",
+		"channel_id",
+		targetID,
+		"export_channel_id",
+		channelID,
+	)
+
+	return nil
+}
+
+// exportChannelReplyTarget prefers the channel the slash command ran in so a
+// dead token still lands where the invoker watches. The exported channel ID
+// is the fallback; both are the same for same-channel exports.
+func exportChannelReplyTarget(interaction *discordgo.Interaction, channelID string) string {
+	if interaction != nil && strings.TrimSpace(interaction.ChannelID) != "" {
+		return interaction.ChannelID
+	}
+
+	return channelID
+}
+
+// exportChannelReplyMention attributes the fallback message to the invoker
+// when Discord supplied one; otherwise the message stays untargeted.
+func exportChannelReplyMention(interaction *discordgo.Interaction) string {
+	if interaction != nil && interaction.Member != nil && interaction.Member.User != nil {
+		return interaction.Member.User.ID
+	}
+
+	if interaction != nil && interaction.User != nil {
+		return interaction.User.ID
+	}
+
+	return ""
 }
 
 // describeExportChannelError maps a Discord history failure to an actionable
@@ -936,12 +1106,22 @@ func (instance *bot) editExportProgress(
 	progress exportChannelProgress,
 	channelID string,
 	tokenLimit int,
-) {
+) error {
 	content := formatExportProgressContent(progress, channelID, tokenLimit)
 
 	if err := editInteractionResponseText(session, interaction, content); err != nil {
+		if isExpiredInteractionTokenError(err) {
+			slog.Info("export channel interaction token expired; stopping progress edits", "channel_id", channelID)
+
+			return err
+		}
+
 		logWarn("edit export progress", err, "channel_id", channelID)
+
+		return err
 	}
+
+	return nil
 }
 
 func formatExportProgressContent(

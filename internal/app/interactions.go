@@ -17,6 +17,12 @@ import (
 // (structs.go): the interaction token expired before the bot answered.
 const discordUnknownInteractionCode = discordgo.ErrCodeUnknownInteraction
 
+// discordInvalidWebhookTokenCode mirrors
+// discordgo.ErrCodeInvalidWebhookTokenProvided (structs.go): Discord rejects
+// interaction webhook edits with HTTP 401 code 50027 once the interaction
+// token expires 15 minutes after creation.
+const discordInvalidWebhookTokenCode = discordgo.ErrCodeInvalidWebhookTokenProvided
+
 // expiredInteractionLogArgsCap reserves the discard log's base attributes
 // plus one optional detail pair (see expiredInteractionDetail).
 const expiredInteractionLogArgsCap = 6
@@ -1291,7 +1297,16 @@ func isUnknownInteractionError(err error) bool {
 func isUnknownInteractionRESTError(err *discordgo.RESTError) bool {
 	return err != nil &&
 		err.Message != nil &&
-		err.Message.Code == discordUnknownInteractionCode
+		(err.Message.Code == discordUnknownInteractionCode ||
+			err.Message.Code == discordInvalidWebhookTokenCode)
+}
+
+// isExpiredInteractionTokenError reports a dead interaction token: Discord
+// answers follow-up edits with either 10062 (unknown interaction, when the
+// follow-up window never opened) or 401/50027 Invalid Webhook Token (when
+// the 15-minute token expired mid-export).
+func isExpiredInteractionTokenError(err error) bool {
+	return isUnknownInteractionError(err)
 }
 
 // expiredInteractionDetail names the slash command or component behind an

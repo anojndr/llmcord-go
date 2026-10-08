@@ -1202,3 +1202,341 @@ func TestSyncCommandsRegistersExportCommand(t *testing.T) {
 		}
 	}
 }
+func TestIsExpiredInteractionTokenErrorDetectsWebhookExpiry(t *testing.T) {
+	t.Parallel()
+
+	expired := fmt.Errorf(
+		"edit interaction response: %w",
+		newDiscordRESTError(discordInvalidWebhookTokenCode, "Invalid Webhook Token"),
+	)
+
+	if !isExpiredInteractionTokenError(expired) {
+		t.Fatal("expected wrapped 50027 edit failure to count as expired")
+	}
+
+	unknown := newDiscordRESTError(discordUnknownInteractionCode, "Unknown interaction")
+	if !isExpiredInteractionTokenError(unknown) {
+		t.Fatal("expected 10062 to keep counting as expired")
+	}
+
+	other := newDiscordRESTError(discordgo.ErrCodeUnknownChannel, "Unknown Channel")
+	if isExpiredInteractionTokenError(other) {
+		t.Fatal("expected unrelated REST code to stay live")
+	}
+}
+
+func TestEditExportProgressReportsExpiredToken(t *testing.T) {
+	t.Parallel()
+
+	var capture deferredInteractionCapture
+
+	transport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		t.Helper()
+
+		if request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/callback") {
+			return captureDeferredInteractionRequest(t, request, &capture.deferredResponse)
+		}
+
+		if request.Method == http.MethodPatch && strings.HasSuffix(request.URL.Path, "/messages/@original") {
+			return newInteractionJSONResponse(
+				request,
+				http.StatusUnauthorized,
+				`{"message":"Invalid Webhook Token","code":50027}`,
+			), nil
+		}
+
+		t.Fatalf("unexpected request: %s %s", request.Method, request.URL.Path)
+
+		return nil, errUnexpectedTestRequest
+	})
+
+	session := newInteractionTestSessionWithTransport(t, transport)
+
+	interaction := &discordgo.Interaction{ID: "interaction-id", AppID: "application-id", Token: "interaction-token"}
+
+	err := new(bot).editExportProgress(
+		session,
+		interaction,
+		exportChannelProgress{kept: 1, scanned: 2, tokens: 3},
+		"channel-1",
+		100,
+	)
+	if !isExpiredInteractionTokenError(err) {
+		t.Fatalf("expected expired token error, got %v", err)
+	}
+}
+
+func TestFetchExportWithProgressStopsEditingAfterTokenDeath(t *testing.T) {
+	t.Parallel()
+
+	first := time.Date(2026, time.September, 30, 12, 0, 0, 0, time.UTC)
+	second := time.Date(2026, time.September, 30, 12, 5, 0, 0, time.UTC)
+	third := time.Date(2026, time.September, 30, 12, 10, 0, 0, time.UTC)
+
+	firstMessage := newExportChannelMessage("newest", "user-1", "alice", "newest hello", false, third)
+	secondMessage := newExportChannelMessage("middle", "user-2", "bob", "middle hello", false, second)
+	thirdMessage := newExportChannelMessage("oldest", "user-3", "carol", "oldest hello", false, first)
+
+	var capture exportChannelUploadCapture
+	captureEdits := 0
+
+	server := &exportChannelTestServer{
+		t:           t,
+		capture:     &capture,
+		channelBody: `{"id":"channel-1","name":"general"}`,
+	}
+	server.remaining = [][]*discordgo.Message{{firstMessage}, {secondMessage}, {thirdMessage}}
+
+	transport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		t.Helper()
+
+		if request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/callback") {
+			return captureDeferredInteractionRequest(t, request, &capture.deferred)
+		}
+
+		if request.Method == http.MethodGet && strings.HasSuffix(request.URL.Path, "/channels/channel-1/messages") {
+			return server.serveHistory(request)
+		}
+
+		if request.Method == http.MethodPatch && strings.HasSuffix(request.URL.Path, "/messages/@original") {
+			captureEdits++
+
+			return newInteractionJSONResponse(
+				request,
+				http.StatusUnauthorized,
+				`{"message":"Invalid Webhook Token","code":50027}`,
+			), nil
+		}
+
+		t.Fatalf("unexpected request: %s %s", request.Method, request.URL.Path)
+
+		return nil, errUnexpectedTestRequest
+	})
+
+	session := newInteractionTestSessionWithTransport(t, transport)
+
+	interaction := &discordgo.Interaction{ID: "interaction-id", AppID: "application-id", Token: "interaction-token"}
+
+	messages, _, outcome := new(bot).fetchExportWithProgress(session, interaction, "channel-1", 100000)
+	if outcome.err != nil {
+		t.Fatalf("fetch export with progress: %v", outcome.err)
+	}
+
+	if !outcome.tokenDead {
+		t.Fatal("expected dead token flag after 50027 progress edit")
+	}
+
+	if len(messages) != 3 {
+		t.Fatalf("expected history fetch to continue past expiry, got %+v", messages)
+	}
+
+	if captureEdits != 1 {
+		t.Fatalf("expected exactly one dying edit and no retries, got %d", captureEdits)
+	}
+}
+
+func TestFetchExportWithProgressKeepsEditingAfterTransientEditFailure(t *testing.T) {
+	t.Parallel()
+
+	first := time.Date(2026, time.September, 30, 12, 0, 0, 0, time.UTC)
+	second := time.Date(2026, time.September, 30, 12, 5, 0, 0, time.UTC)
+	third := time.Date(2026, time.September, 30, 12, 10, 0, 0, time.UTC)
+
+	firstMessage := newExportChannelMessage("newest", "user-1", "alice", "newest hello", false, third)
+	secondMessage := newExportChannelMessage("middle", "user-2", "bob", "middle hello", false, second)
+	thirdMessage := newExportChannelMessage("oldest", "user-3", "carol", "oldest hello", false, first)
+
+	var capture exportChannelUploadCapture
+
+	captureEdits := 0
+
+	server := &exportChannelTestServer{
+		t:           t,
+		capture:     &capture,
+		channelBody: `{"id":"channel-1","name":"general"}`,
+	}
+	server.remaining = [][]*discordgo.Message{{firstMessage}, {secondMessage}, {thirdMessage}}
+
+	transport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		t.Helper()
+
+		if request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/callback") {
+			return captureDeferredInteractionRequest(t, request, &capture.deferred)
+		}
+
+		if request.Method == http.MethodGet && strings.HasSuffix(request.URL.Path, "/channels/channel-1/messages") {
+			return server.serveHistory(request)
+		}
+
+		if request.Method == http.MethodPatch && strings.HasSuffix(request.URL.Path, "/messages/@original") {
+			captureEdits++
+
+			if captureEdits == 1 {
+				return newInteractionJSONResponse(
+					request,
+					http.StatusTooManyRequests,
+					`{"message":"You are being rate limited.","code":0,"retry_after":0.1}`,
+				), nil
+			}
+
+			return newInteractionJSONResponse(request, http.StatusOK, `{}`), nil
+		}
+
+		t.Fatalf("unexpected request: %s %s", request.Method, request.URL.Path)
+
+		return nil, errUnexpectedTestRequest
+	})
+
+	session := newInteractionTestSessionWithTransport(t, transport)
+
+	interaction := &discordgo.Interaction{ID: "interaction-id", AppID: "application-id", Token: "interaction-token"}
+
+	messages, _, outcome := new(bot).fetchExportWithProgress(session, interaction, "channel-1", 100000)
+	if outcome.err != nil {
+		t.Fatalf("fetch export with progress: %v", outcome.err)
+	}
+
+	if outcome.tokenDead {
+		t.Fatal("expected transient progress edit failure to keep the token alive")
+	}
+
+	if len(messages) != 3 {
+		t.Fatalf("expected history fetch to continue past transient failure, got %+v", messages)
+	}
+
+	if captureEdits < 2 {
+		t.Fatalf("expected progress edits to continue after transient failure, got %d", captureEdits)
+	}
+}
+
+func TestSendExportChannelFileFallsBackToChannelMessage(t *testing.T) {
+	t.Parallel()
+
+	fallbackBodies := []string{}
+	fallbackFiles := 0
+	editCalls := 0
+
+	transport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		t.Helper()
+
+		switch {
+		case request.Method == http.MethodPatch && strings.HasSuffix(request.URL.Path, "/messages/@original"):
+			editCalls++
+
+			return newInteractionJSONResponse(
+				request,
+				http.StatusUnauthorized,
+				`{"message":"Invalid Webhook Token","code":50027}`,
+			), nil
+		case request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/channels/guild-channel/messages"):
+			body, readErr := io.ReadAll(request.Body)
+			if readErr != nil {
+				t.Fatalf("read fallback message body: %v", readErr)
+			}
+
+			fallbackBodies = append(fallbackBodies, string(body))
+			fallbackFiles++
+
+			return newInteractionJSONResponse(
+				request,
+				http.StatusOK,
+				`{"id":"fallback-message","channel_id":"guild-channel"}`,
+			), nil
+		default:
+			t.Fatalf("unexpected request: %s %s", request.Method, request.URL.Path)
+
+			return nil, errUnexpectedTestRequest
+		}
+	})
+
+	session := newInteractionTestSessionWithTransport(t, transport)
+
+	interaction := &discordgo.Interaction{
+		ID:        "interaction-id",
+		AppID:     "application-id",
+		Token:     "interaction-token",
+		ChannelID: "guild-channel",
+	}
+	interaction.Member = &discordgo.Member{User: &discordgo.User{ID: "invoker-id"}}
+
+	exportJSON := []byte(`{"messages":[]}`)
+
+	err := sendExportChannelFile(
+		session,
+		interaction,
+		"channel-1",
+		[]exportChannelMessage{{Username: "alice", Content: "hi"}},
+		10,
+		100,
+		exportJSON,
+		false,
+	)
+	if err != nil {
+		t.Fatalf("send export channel file: %v", err)
+	}
+
+	if editCalls != 1 {
+		t.Fatalf("expected one interaction edit attempt, got %d", editCalls)
+	}
+
+	if fallbackFiles != 1 || len(fallbackBodies) != 1 {
+		t.Fatalf(
+			"expected one fallback channel message, got %d uploads in %d bodies",
+			fallbackFiles,
+			len(fallbackBodies),
+		)
+	}
+
+	if !strings.Contains(fallbackBodies[0], "Exported 1 user messages") ||
+		!strings.Contains(fallbackBodies[0], "invoker-id") {
+		t.Fatalf("expected fallback to carry summary and invoker mention, got %q", fallbackBodies[0])
+	}
+}
+
+func TestFinishExportChannelReplySkipsDeadTokenEdits(t *testing.T) {
+	t.Parallel()
+
+	fallbackCalls := 0
+
+	transport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		t.Helper()
+
+		if request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/channels/guild-channel/messages") {
+			fallbackCalls++
+
+			return newInteractionJSONResponse(
+				request,
+				http.StatusOK,
+				`{"id":"fallback-message","channel_id":"guild-channel"}`,
+			), nil
+		}
+
+		t.Fatalf("unexpected request: %s %s", request.Method, request.URL.Path)
+
+		return nil, errUnexpectedTestRequest
+	})
+
+	session := newInteractionTestSessionWithTransport(t, transport)
+
+	interaction := &discordgo.Interaction{
+		ID:        "interaction-id",
+		AppID:     "application-id",
+		Token:     "interaction-token",
+		ChannelID: "guild-channel",
+	}
+
+	err := finishExportChannelReply(
+		session,
+		interaction,
+		"channel-1",
+		"No user messages fit within the token limit.",
+		true,
+	)
+	if err != nil {
+		t.Fatalf("finish export channel reply: %v", err)
+	}
+
+	if fallbackCalls != 1 {
+		t.Fatalf("expected dead-token reply to go straight to the channel, got %d calls", fallbackCalls)
+	}
+}
