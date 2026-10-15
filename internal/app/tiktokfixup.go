@@ -25,9 +25,10 @@ func fixupTikTokContent(content string) string {
 }
 
 // fixupLinkContent applies every delete-and-resend embed fixup in one pass so
-// a message containing both x.com and tiktok.com links needs a single resend.
+// a message containing x.com, tiktok.com, and instagram.com links needs a
+// single resend.
 func fixupLinkContent(content string) string {
-	return fixupTikTokContent(fixupXComContent(content))
+	return fixupInstagramContent(fixupTikTokContent(fixupXComContent(content)))
 }
 
 func shouldHandleTikTokFixup(message *discordgo.Message, botUserID string) bool {

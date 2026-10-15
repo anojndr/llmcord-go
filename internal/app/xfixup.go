@@ -207,7 +207,7 @@ func resendAllowedMentionUsers(message *discordgo.Message) []string {
 }
 
 // linkFixupExcluded reports whether at-ai/bot-mention rules suppress any
-// delete-and-resend link fixup (x.com, TikTok). Callers check their own
+// delete-and-resend link fixup (x.com, TikTok, Instagram). Callers check their own
 // domain substring and fixup-change gate separately.
 func linkFixupExcluded(message *discordgo.Message, botUserID string) bool {
 	// Exclude if contains "at ai" phrase (word-boundary, case-insensitive) or bot mention syntax.
@@ -238,7 +238,8 @@ func linkFixupExcluded(message *discordgo.Message, botUserID string) bool {
 }
 
 // resendFixedMessage deletes the original message and re-sends fixedContent
-// as the bot with attribution. fixupName labels log entries ("x.com", "tiktok").
+// as the bot with attribution. fixupName labels log entries ("x.com",
+// "tiktok", "instagram").
 func (instance *bot) resendFixedMessage(message *discordgo.Message, fixedContent, fixupName string) bool {
 	displayName := xFixupDisplayName(message)
 	newContent := attributionPrefix(displayName) + fixedContent
@@ -336,15 +337,19 @@ func shouldHandleXFixup(message *discordgo.Message, botUserID string) bool {
 	return fixupXComContent(message.Content) != message.Content
 }
 
-// handleLinkFixups runs every delete-and-resend embed fixup (x.com, TikTok)
-// before the normal reply pipeline. It reports whether a fixup consumed the
-// message; callers must still evict excess nodes on true.
+// handleLinkFixups runs every delete-and-resend embed fixup (x.com, TikTok,
+// Instagram) before the normal reply pipeline. It reports whether a fixup
+// consumed the message; callers must still evict excess nodes on true.
 func (instance *bot) handleLinkFixups(message *discordgo.Message, botUserID string) bool {
 	if instance.handleXFixup(message, botUserID) {
 		return true
 	}
 
-	return instance.handleTikTokFixup(message, botUserID)
+	if instance.handleTikTokFixup(message, botUserID) {
+		return true
+	}
+
+	return instance.handleInstagramFixup(message, botUserID)
 }
 
 func (instance *bot) handleXFixup(message *discordgo.Message, botUserID string) bool {
