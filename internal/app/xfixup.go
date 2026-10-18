@@ -9,13 +9,18 @@ import (
 	"github.com/bwmarrin/discordgo"
 )
 
-// xComSchemeRegexp matches https://x.com or https://www.x.com (case-insensitive)
-// with a capturing group for scheme and optional www. prefix preservation.
-var xComSchemeRegexp = regexp.MustCompile(`(?i)(https?://)(www\.)?x\.com\b`)
+// xComSchemeURLRegexp matches full x.com URLs with scheme, optional www,
+// path/query/fragment (case-insensitive).
+var xComSchemeURLRegexp = regexp.MustCompile(`(?i)https?://(?:www\.)?x\.com\b[^\s<>()]*`)
 
-// xComBareRegexp matches bare x.com occurrences not preceded by alphanumeric
-// to avoid double-replacing fixupx.com. It captures the preceding char/anchor.
-var xComBareRegexp = regexp.MustCompile(`(?i)(^|[^a-zA-Z0-9])x\.com\b`)
+// xComBareURLRegexp matches bare x.com URLs with optional www prefix. The
+// leading group preserves the boundary char so ReplaceAllStringFunc keeps it.
+var xComBareURLRegexp = regexp.MustCompile(`(?i)(^|[^a-zA-Z0-9])((?:www\.)?x\.com\b[^\s<>()]*)`)
+
+// xStatusRouteRegexp reports whether an x.com URL points at an embeddable
+// status route. FxEmbed/FixupX only serves post pages, so profile URLs
+// (x.com/<user>, x.com/home, ...) must stay unrewritten.
+var xStatusRouteRegexp = regexp.MustCompile(`(?i)(?:^|/)(?:i/web/)?status/\d+/?(?:$|[/?])`)
 
 // fixupxSchemeURLRegexp matches full https://fixupx.com URLs including path,
 // query, and fragment. Appending /en requests English translation from FxEmbed.
@@ -27,16 +32,64 @@ var fixupxBareURLRegexp = regexp.MustCompile(`(?i)(^|[^a-zA-Z0-9])((?:www\.)?fix
 
 const hardcodedBotMentionID = "1307756710072549439"
 
+// fixupXComContent rewrites x.com status-page links to fixupx.com so only
+// embeddable post URLs gain an embed proxy. Profile URLs and other x.com
+// routes are left unchanged. Any fixupx.com link still gains the /en
+// translation suffix.
 func fixupXComContent(content string) string {
-	// Replace scheme-based URLs first, preserving scheme and www.
-	content = xComSchemeRegexp.ReplaceAllString(content, "${1}${2}fixupx.com")
-	// Replace bare occurrences.
-	content = xComBareRegexp.ReplaceAllString(content, "${1}fixupx.com")
+	content = xComSchemeURLRegexp.ReplaceAllStringFunc(content, func(match string) string {
+		if !xStatusRouteRegexp.MatchString(pathOfXComURL(match)) {
+			return match
+		}
+
+		return rewriteXComToFixupx(match)
+	})
+	// Replace bare occurrences following the same status-only rule.
+	content = xComBareURLRegexp.ReplaceAllStringFunc(content, func(match string) string {
+		prefix, url := splitBareFixupxPrefix(match)
+		if !xStatusRouteRegexp.MatchString(pathOfXComURL(url)) {
+			return match
+		}
+
+		return prefix + rewriteXComToFixupx(url)
+	})
 	// Request English translation on every fixupx link.
 	content = appendFixupxTranslationSuffix(content)
 
 	return content
 }
+
+// pathOfXComURL returns the path portion of an x.com URL, tolerating bare
+// (scheme-less) matches. It stops at the first query/fragment separator.
+func pathOfXComURL(raw string) string {
+	if idx := strings.Index(raw, "://"); idx >= 0 {
+		rest := raw[idx+3:]
+
+		if idx := strings.Index(rest, "/"); idx >= 0 {
+			raw = rest[idx:]
+		} else {
+			return ""
+		}
+	} else if idx := strings.Index(raw, "/"); idx >= 0 {
+		raw = raw[idx:]
+	} else {
+		return ""
+	}
+
+	core, _ := splitFixupxQueryFragment(raw)
+
+	return strings.TrimSuffix(core, "/")
+}
+
+// rewriteXComToFixupx converts one status x.com URL to fixupx.com, preserving
+// scheme and www. prefix exactly like the previous regex replacement did.
+func rewriteXComToFixupx(match string) string {
+	return xComSchemePrefixRegexp.ReplaceAllString(match, "${1}fixupx.com")
+}
+
+// xComSchemePrefixRegexp captures scheme plus www. prefix so the domain itself
+// can be swapped while keeping everything before it intact.
+var xComSchemePrefixRegexp = regexp.MustCompile(`(?i)(^(https?://)(?:www\.)?)x\.com\b`)
 
 // appendFixupxTranslationSuffix ensures every fixupx.com link ends with /en
 // (inserted before query, fragment, and trailing punctuation) so FxEmbed

@@ -45,8 +45,8 @@ func TestFixupInstagramContent(t *testing.T) {
 func TestFixupLinkContentCombinesAll(t *testing.T) {
 	t.Parallel()
 
-	in := "https://x.com/foo https://www.tiktok.com/@user/video/123 https://www.instagram.com/reel/DeFVSFvA_AS/"
-	want := "https://fixupx.com/foo/en https://www.tnktok.com/@user/video/123 https://www.eeinstagram.com/reel/DeFVSFvA_AS/"
+	in := "https://x.com/u/status/55 https://www.tiktok.com/@user/video/123 https://www.instagram.com/reel/DeFVSFvA_AS/"
+	want := "https://fixupx.com/u/status/55/en https://www.tnktok.com/@user/video/123 https://www.eeinstagram.com/reel/DeFVSFvA_AS/"
 
 	if got := fixupLinkContent(in); got != want {
 		t.Fatalf("combined fixup mismatch: got %q want %q", got, want)

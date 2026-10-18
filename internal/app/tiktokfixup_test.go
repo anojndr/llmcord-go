@@ -46,8 +46,8 @@ func TestFixupTikTokContent(t *testing.T) {
 func TestFixupLinkContentCombinesBoth(t *testing.T) {
 	t.Parallel()
 
-	in := "https://x.com/foo and https://www.tiktok.com/@user/video/123"
-	want := "https://fixupx.com/foo/en and https://www.tnktok.com/@user/video/123"
+	in := "https://x.com/u/status/55 and https://www.tiktok.com/@user/video/123"
+	want := "https://fixupx.com/u/status/55/en and https://www.tnktok.com/@user/video/123"
 
 	if got := fixupLinkContent(in); got != want {
 		t.Fatalf("combined fixup mismatch: got %q want %q", got, want)
@@ -148,14 +148,14 @@ func TestHandleMessageCreateTikTokFixupFixesCombinedLinks(t *testing.T) {
 		&capture,
 		"msg-456",
 		"SomeUser",
-		"https://x.com/foo https://www.tiktok.com/@user/video/123",
+		"https://x.com/u/status/55 https://www.tiktok.com/@user/video/123",
 	)
 	if len(sends) != 1 {
 		t.Fatalf("expected 1 send, got %d", len(sends))
 	}
 
 	expectedContent := "SomeUser sent:\n" +
-		"https://fixupx.com/foo/en https://www.tnktok.com/@user/video/123"
+		"https://fixupx.com/u/status/55/en https://www.tnktok.com/@user/video/123"
 	if len(contents) != 1 || contents[0] != expectedContent {
 		t.Fatalf("unexpected send content: got %q want %q", contents[0], expectedContent)
 	}

@@ -230,22 +230,34 @@ func TestFixupXComContent(t *testing.T) {
 	}{
 		{"https://x.com/ExtremeBlitz__/status/2093114939397349597?s=20 check this out",
 			"https://fixupx.com/ExtremeBlitz__/status/2093114939397349597/en?s=20 check this out"},
-		{"https://x.com/foo and https://x.com/bar", "https://fixupx.com/foo/en and https://fixupx.com/bar/en"},
-		{"http://x.com/foo", "http://fixupx.com/foo/en"},
-		{"https://www.x.com/foo", "https://www.fixupx.com/foo/en"},
-		{"https://WWW.X.COM/foo", "https://WWW.fixupx.com/foo/en"},
-		{"https://fixupx.com/foo should gain translation suffix", "https://fixupx.com/foo/en should gain translation suffix"},
+		{"https://x.com/MrTacticalX profile stays put", "https://x.com/MrTacticalX profile stays put"},
+		{"https://x.com/MrTacticalX/", "https://x.com/MrTacticalX/"},
+		{"https://x.com/MrTacticalX", "https://x.com/MrTacticalX"},
+		{"visit https://x.com/mrtacticalx! = https://x.com/mrtacticalx",
+			"visit https://x.com/mrtacticalx! = https://x.com/mrtacticalx"},
+		{"x.com", "x.com"},
+		{"check x.com/foo", "check x.com/foo"},
+		{"Visit https://x.com/test!", "Visit https://x.com/test!"},
+		{"https://x.com/test.", "https://x.com/test."},
+		{"https://x.com/foo#bar", "https://x.com/foo#bar"},
+		{"https://x.com/foo?s=20", "https://x.com/foo?s=20"},
+		{"https://x.com/home stays", "https://x.com/home stays"},
+		{"https://x.com/user/status/123 profile+status mix", "https://fixupx.com/user/status/123/en profile+status mix"},
+		{"https://x.com/i/status/123 stays", "https://fixupx.com/i/status/123/en stays"},
+		{"https://x.com/i/web/status/999 web status", "https://fixupx.com/i/web/status/999/en web status"},
+		{"https://x.com/user/status/999/photo/1 photo status", "https://fixupx.com/user/status/999/photo/1/en photo status"},
+		{"https://x.com/user/status/999/retweets/with_comment", "https://fixupx.com/user/status/999/retweets/with_comment/en"},
+		{"https://x.com/user/status/999/photo stays", "https://fixupx.com/user/status/999/photo/en stays"},
+		{"https://x.com/foo and https://x.com/bar", "https://x.com/foo and https://x.com/bar"},
+		{"https://x.com/user/status/123/photo", "https://fixupx.com/user/status/123/photo/en"},
+		{"https://x.com/user/status/123", "https://fixupx.com/user/status/123/en"},
+		{"https://x.com/foo/announcements?in=tweets stays", "https://x.com/foo/announcements?in=tweets stays"},
 		{"https://fixupx.com/foo/en should not change", "https://fixupx.com/foo/en should not change"},
 		{"https://fixupx.com/i/status/2099580662281859466/en stays", "https://fixupx.com/i/status/2099580662281859466/en stays"},
 		{"https://fixupx.com/foo/EN stays", "https://fixupx.com/foo/EN stays"},
 		{"https://fixupx.com/foo/en/ stays", "https://fixupx.com/foo/en/ stays"},
-		{"https://fixupx.com/foo and https://x.com/bar", "https://fixupx.com/foo/en and https://fixupx.com/bar/en"},
-		{"x.com", "fixupx.com/en"},
-		{"check x.com/foo", "check fixupx.com/foo/en"},
-		{"Visit https://x.com/test!", "Visit https://fixupx.com/test/en!"},
-		{"https://x.com/test.", "https://fixupx.com/test/en."},
-		{"https://x.com/a?x.com=1", "https://fixupx.com/a/en?fixupx.com=1"},
-		{"https://x.com/foo#bar", "https://fixupx.com/foo/en#bar"},
+		{"https://fixupx.com/foo and https://x.com/user/status/7", "https://fixupx.com/foo/en and https://fixupx.com/user/status/7/en"},
+		{"x.com", "x.com"},
 		{"https://fixupx.com/foo?s=20 gains suffix on path", "https://fixupx.com/foo/en?s=20 gains suffix on path"},
 		{"https://fixupx.com/foo/en?s=20 stays translated", "https://fixupx.com/foo/en?s=20 stays translated"},
 		{"https://fixupx.com/foo/en#bar stays translated", "https://fixupx.com/foo/en#bar stays translated"},
@@ -285,8 +297,8 @@ func TestShouldHandleXFixup(t *testing.T) {
 
 		return m
 	}
-	if !shouldHandleXFixup(makeMessage("https://x.com/foo check", nil, false), botID) {
-		t.Fatal("expected to handle basic x.com")
+	if !shouldHandleXFixup(makeMessage("https://x.com/user/status/999 check", nil, false), botID) {
+		t.Fatal("expected to handle basic x.com status")
 	}
 
 	if !shouldHandleXFixup(makeMessage("https://fixupx.com/foo", nil, false), botID) {
@@ -344,8 +356,14 @@ func TestShouldHandleXFixup(t *testing.T) {
 	if shouldHandleXFixup(makeMessage("hello world", nil, false), botID) {
 		t.Fatal("should not handle no x.com")
 	}
+	if shouldHandleXFixup(makeMessage("https://x.com/foo", nil, false), botID) {
+		t.Fatal("should not handle non-status x.com link (profile)")
+	}
+	if !shouldHandleXFixup(makeMessage("https://x.com/user/status/999", nil, false), botID) {
+		t.Fatal("expected to handle status x.com")
+	}
 	// Ensure hasAtAIMention false for great ai doesn't block
-	if !shouldHandleXFixup(makeMessage("https://x.com/foo great ai", nil, false), botID) {
+	if !shouldHandleXFixup(makeMessage("https://x.com/user/status/999 great ai", nil, false), botID) {
 		t.Fatalf("great ai should not block fixup (word boundary)")
 	}
 }
@@ -494,7 +512,7 @@ func TestHandleMessageCreateXFixupWorksInAllChannels(t *testing.T) {
 		ChannelID: "channel-1",
 		GuildID:   "guild-1",
 		Author:    &discordgo.User{ID: "user-999", Username: "userA", Bot: false},
-		Content:   "check https://x.com/test",
+		Content:   "check https://x.com/test/status/42",
 	}
 	// Verify shouldIgnore would be true
 	if !shouldIgnoreIncomingMessage(msg, "1307756710072549439") {
@@ -548,7 +566,7 @@ func TestHandleMessageCreateXFixupRespectsBlockedChannel(t *testing.T) {
 		ChannelID: "channel-1",
 		GuildID:   "guild-1",
 		Author:    &discordgo.User{ID: "user-999", Username: "userA", Bot: false},
-		Content:   "check https://x.com/test",
+		Content:   "check https://x.com/test/status/42",
 	}
 	inst.handleMessageCreate(nil, &discordgo.MessageCreate{Message: msg})
 
@@ -598,7 +616,7 @@ func TestHandleMessageCreateNilSessionDoesNotSwallowXCom(t *testing.T) {
 		ChannelID: "channel-1",
 		GuildID:   "guild-1",
 		Author:    &discordgo.User{ID: "user-999", Username: "userA", Bot: false},
-		Content:   "https://x.com/test",
+		Content:   "https://x.com/test/status/42",
 	}
 
 	handled := instNil.handleXFixup(msg, "1307756710072549439")
