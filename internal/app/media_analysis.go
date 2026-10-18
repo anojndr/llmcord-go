@@ -176,7 +176,7 @@ func (instance *bot) mediaPartsForPreprocessing(
 // retainedMessageNodeContent), and the request rebuilds them into input_audio
 // parts whenever the model allows audio — but 9router's OpenCode route
 // rejects input_audio in any non-latest input item ("input[N].content did
-// not match any supported type", verified live on muse-spark), so those
+// not match any supported type", verified live on OpenCode models), so those
 // bytes must travel as a text transcription instead. Only non-MiMo OpenCode
 // models set allowAudio=false (see messageContentOptionsForModel); every
 // other model replays its history parts natively and needs nothing here.

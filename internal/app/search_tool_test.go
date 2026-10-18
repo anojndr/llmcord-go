@@ -637,8 +637,8 @@ func TestIsOpenCodeModel(t *testing.T) {
 		want            bool
 	}{
 		{name: "chat completions route", configuredModel: "xiaomi/oc/mimo-v2.6-flash-free:vision", want: true},
-		{name: "responses route", configuredModel: "9router/oc/muse-spark-1.3-contributor-free:vision", want: true},
-		{name: "case insensitive", configuredModel: "9router-fast/OC/muse-spark-1.3-contributor-free", want: true},
+		{name: "responses route", configuredModel: "9router/oc/mimo-v2.6-flash-free:vision", want: true},
+		{name: "case insensitive", configuredModel: "9router-fast/OC/mimo-v2.6-flash-free", want: true},
 		{name: "provider segment", configuredModel: "oc/mimo-v2.6-flash-free", want: true},
 		{name: "surrounding whitespace", configuredModel: " xiaomi/oc/mimo-v2.6-flash-free:vision ", want: true},
 		{name: "other route", configuredModel: "9router/cx/gpt-6-astra:vision", want: false},
@@ -729,7 +729,7 @@ func TestGenerateAndSendResponseAnswersOpenCodeFallbackModelWithoutToolChoiceNon
 
 	const (
 		primaryModel  = "gemini-search/gemini-3.7-flash-medium:vision"
-		fallbackModel = "9router-fast/oc/muse-spark-1.3-contributor-free:vision"
+		fallbackModel = "9router-fast/oc/mimo-v2.6-flash-free:vision"
 	)
 
 	chatClient := newStubChatClient(func(
@@ -1037,7 +1037,7 @@ func TestToolFreeFinalAnswerRequestSendsToolRoundOutputsAsText(t *testing.T) {
 		failedOutput   = webSearchFailedOutput
 		previousID     = "resp_parent"
 		previousCount  = 2
-		configuredName = "9router/muse-spark:vision"
+		configuredName = "9router/oc/mimo-v2.6-flash-free:vision"
 	)
 
 	var request chatCompletionRequest

@@ -408,8 +408,8 @@ channel_model_locks:
 #   # Optional bearer key(s) for the routing endpoint; string or list (round-robin).
 #   # api_key: YOUR_JEV_API_KEY
 #   tiers:
-#     flagship: 9router/oc/muse-spark-1.3-contributor-free:vision
-#     balanced: 9router-fast/oc/muse-spark-1.3-contributor-free:vision
+#     flagship: 9router/ag/gemini-3.8-flash-low:vision
+#     balanced: 9router-fast/ag/gemini-3.8-flash-low:vision
 #     fast: 9router/ag/gemini-3.8-flash-low:vision
 #     lite: 9router/cx/gpt-6-luna:vision
 #     eco: xiaomi/oc/mimo-v2.6-flash-free:vision

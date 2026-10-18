@@ -15,7 +15,7 @@ const webSearchToolDescription = "Search the web and return result titles, URLs,
 const webSearchObjectiveDescription = "One sentence naming the user's task plus the full item list " +
 	"copied character-for-character (hyphens, digits, dots kept). " +
 	"Example: Determine the most uncensored of big-pickle, fledge-alpha, ling-3.0-flash-fin, " +
-	"ling-3.1-flash, longcat-2.5-preview, mimo-v2.6-flash, muse-spark-1.3-contributor, " +
+	"ling-3.1-flash, longcat-2.5-preview, mimo-v2.6-flash, " +
 	"nemotron-3-ultra, nemotron-3.5-lightning, space-bunny."
 
 const webSearchQueriesDescription = "One string per item in the user's list, in the same order. " +

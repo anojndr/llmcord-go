@@ -1045,7 +1045,7 @@ func messageContentOptionsForModel(
 		// audio-capable OpenAI-compatible models hear the original clip —
 		// but 9router's OpenCode route rejects input_audio in any non-latest
 		// input item ("input[N].content did not match any supported type",
-		// verified live on muse-spark), so non-MiMo OpenCode models get a
+		// verified live on the OpenCode models), so non-MiMo OpenCode models get a
 		// preprocessed text transcription instead (see
 		// maybeAugmentConversationWithGeminiMedia). MiMo models keep native
 		// audio: they speak audio natively like they speak video_url.
